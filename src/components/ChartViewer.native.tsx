@@ -91,6 +91,12 @@ const cblareData_SI = require('../../assets/Maps/US5AK5SI_cblare.json');
 const cblareData_QG = require('../../assets/Maps/US5AK5QG_cblare.json');
 const cblareData_SJ = require('../../assets/Maps/US5AK5SJ_cblare.json');
 
+// Seabed areas (bottom type - mud, sand, rock, etc.) for each chart
+const sbdareData_PH = require('../../assets/Maps/US4AK4PH_sbdare.json');
+const sbdareData_SI = require('../../assets/Maps/US5AK5SI_sbdare.json');
+const sbdareData_QG = require('../../assets/Maps/US5AK5QG_sbdare.json');
+const sbdareData_SJ = require('../../assets/Maps/US5AK5SJ_sbdare.json');
+
 // S-52 Symbol images for navigation features
 // Metro automatically selects @2x/@3x based on device pixel density
 const NAV_SYMBOLS = {
@@ -306,6 +312,7 @@ const CHARTS = {
       obstructions: obstructionsData_PH,
       slcons: slconsData_PH,
       cblare: cblareData_PH,
+      sbdare: sbdareData_PH,
     },
   },
   US5AK5SJ: {
@@ -332,6 +339,7 @@ const CHARTS = {
       obstructions: obstructionsData_SJ,
       slcons: slconsData_SJ,
       cblare: cblareData_SJ,
+      sbdare: sbdareData_SJ,
     },
   },
   US5AK5SI: {
@@ -358,6 +366,7 @@ const CHARTS = {
       obstructions: obstructionsData_SI,
       slcons: slconsData_SI,
       cblare: cblareData_SI,
+      sbdare: sbdareData_SI,
     },
   },
   US5AK5QG: {
@@ -384,6 +393,7 @@ const CHARTS = {
       obstructions: obstructionsData_QG,
       slcons: slconsData_QG,
       cblare: cblareData_QG,
+      sbdare: sbdareData_QG,
     },
   },
 };
@@ -959,6 +969,94 @@ const RESTRICTION_CODES: Record<string, string> = {
   '27': 'Swimming prohibited',
 };
 
+// S-57 NATSUR (Nature of Surface) codes for seabed
+const SEABED_NATURE: Record<string, string> = {
+  '1': 'Mud (M)',
+  '2': 'Clay (Cy)',
+  '3': 'Silt (Si)',
+  '4': 'Sand (S)',
+  '5': 'Stone (St)',
+  '6': 'Gravel (G)',
+  '7': 'Pebbles (P)',
+  '8': 'Cobbles (Cb)',
+  '9': 'Rock (Rk)',
+  '10': 'Lava',
+  '11': 'Coral (Co)',
+  '12': 'Volcanic',
+  '13': 'Boulder (Bo)',
+  '14': 'Shells (Sh)',
+  '17': 'Hard (hrd)',
+  '18': 'Soft (sft)',
+};
+
+// Get seabed abbreviation for map display
+const getSeabedAbbrev = (natsur: string[]): string => {
+  const abbrevMap: Record<string, string> = {
+    '1': 'M', '2': 'Cy', '3': 'Si', '4': 'S', '5': 'St',
+    '6': 'G', '7': 'P', '8': 'Cb', '9': 'Rk', '10': 'Lv',
+    '11': 'Co', '12': 'V', '13': 'Bo', '14': 'Sh', '17': 'hrd', '18': 'sft',
+  };
+  return natsur.map(n => abbrevMap[n] || '?').join('.');
+};
+
+// Get color for seabed type (primary type)
+const getSeabedColor = (natsur: string[]): string => {
+  if (!natsur || natsur.length === 0) return '#888888';
+  const primary = natsur[0];
+  const colors: Record<string, string> = {
+    '1': '#6B8E6B',   // Mud - greenish grey
+    '2': '#808080',   // Clay - grey
+    '3': '#A9A9A9',   // Silt - dark grey
+    '4': '#DAA520',   // Sand - golden
+    '5': '#8B4513',   // Stone - brown
+    '6': '#D2B48C',   // Gravel - tan
+    '7': '#BC8F8F',   // Pebbles - rosy brown
+    '8': '#A0522D',   // Cobbles - sienna
+    '9': '#8B0000',   // Rock - dark red
+    '11': '#FF69B4',  // Coral - pink
+    '14': '#9932CC',  // Shells - purple
+    '17': '#8B4513',  // Hard - brown
+    '18': '#D3D3D3',  // Soft - light grey
+  };
+  return colors[primary] || '#888888';
+};
+
+// Format seabed area properties for display
+const formatSbdareInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Nature of seabed
+  const natsur = properties.NATSUR as string[] | undefined;
+  if (natsur && natsur.length > 0) {
+    const nature = natsur.map(n => SEABED_NATURE[n] || `Code ${n}`).join(', ');
+    formatted['Seabed Type'] = nature;
+  }
+  
+  // Qualifying terms
+  const natqua = properties.NATQUA as string[] | undefined;
+  if (natqua && natqua.length > 0) {
+    const qualMap: Record<string, string> = {
+      '1': 'Fine', '2': 'Medium', '3': 'Coarse', '4': 'Broken',
+      '5': 'Sticky', '6': 'Soft', '7': 'Stiff', '8': 'Volcanic',
+      '9': 'Calcareous', '10': 'Hard',
+    };
+    formatted['Quality'] = natqua.map(q => qualMap[q] || q).join(', ');
+  }
+  
+  // Color
+  const colour = properties.COLOUR as string[] | undefined;
+  if (colour && colour.length > 0) {
+    const colorMap: Record<string, string> = {
+      '1': 'White', '2': 'Black', '3': 'Red', '4': 'Green',
+      '5': 'Blue', '6': 'Yellow', '7': 'Grey', '8': 'Brown',
+      '9': 'Amber', '10': 'Violet', '11': 'Orange', '12': 'Magenta', '13': 'Pink',
+    };
+    formatted['Color'] = colour.map(c => colorMap[c] || c).join(', ');
+  }
+  
+  return formatted;
+};
+
 // Format cable area properties for display
 const formatCblareInfo = (properties: Record<string, unknown>): Record<string, string> => {
   const formatted: Record<string, string> = {};
@@ -1136,6 +1234,7 @@ export default function ChartViewerMapbox() {
   const [showHazards, setShowHazards] = useState(true);
   const [showSlcons, setShowSlcons] = useState(true);
   const [showCables, setShowCables] = useState(true);
+  const [showSeabed, setShowSeabed] = useState(true);
   const [showSatellite, setShowSatellite] = useState(false);
   
   // Pre-compute sector arc geometries for all charts
@@ -1589,6 +1688,122 @@ export default function ChartViewerMapbox() {
                 }}
               />
             </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Seabed Areas (SBDARE) - Bottom type information (mud, sand, rock, etc.)
+            Polygons show colored fills, Points show abbreviation labels */}
+        {showSeabed && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.sbdare || chart.data.sbdare.features.length === 0) return null;
+          
+          // Separate polygons and points
+          const polygonFeatures = chart.data.sbdare.features.filter(
+            (f: any) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+          );
+          const pointFeatures = chart.data.sbdare.features.filter(
+            (f: any) => f.geometry && f.geometry.type === 'Point'
+          );
+          
+          // Add seabed abbreviation to point features for labeling
+          const labeledPoints = pointFeatures.map((f: any) => ({
+            ...f,
+            properties: {
+              ...f.properties,
+              _sbdLabel: getSeabedAbbrev(f.properties?.NATSUR || []),
+              _sbdColor: getSeabedColor(f.properties?.NATSUR || []),
+            }
+          }));
+          
+          console.log(`[SBDARE] ${chartKey}: ${polygonFeatures.length} polygons, ${pointFeatures.length} points`);
+          
+          return (
+            <React.Fragment key={`sbdare-${chartKey}`}>
+              {/* Polygon seabed areas */}
+              {polygonFeatures.length > 0 && (
+                <Mapbox.ShapeSource
+                  id={`sbdare-poly-source-${chartKey}`}
+                  shape={{ type: 'FeatureCollection', features: polygonFeatures }}
+                  minZoomLevel={chart.minZoom}
+                  onPress={(e) => {
+                    if (e.features && e.features.length > 0) {
+                      const feat = e.features[0];
+                      setSelectedFeature({
+                        layerType: 'Seabed',
+                        chartKey: chartKey,
+                        properties: feat.properties || {},
+                      });
+                    }
+                  }}
+                >
+                  <Mapbox.FillLayer
+                    id={`sbdare-fill-${chartKey}`}
+                    minZoomLevel={chart.minZoom}
+                    style={{
+                      fillColor: [
+                        'match',
+                        ['at', 0, ['get', 'NATSUR']],
+                        '1', 'rgba(107, 142, 107, 0.3)',   // Mud - greenish
+                        '2', 'rgba(128, 128, 128, 0.3)',   // Clay - grey
+                        '4', 'rgba(218, 165, 32, 0.3)',    // Sand - golden
+                        '6', 'rgba(210, 180, 140, 0.3)',   // Gravel - tan
+                        '9', 'rgba(139, 0, 0, 0.3)',       // Rock - dark red
+                        '11', 'rgba(255, 105, 180, 0.3)',  // Coral - pink
+                        '14', 'rgba(153, 50, 204, 0.3)',   // Shells - purple
+                        'rgba(136, 136, 136, 0.2)',       // Default
+                      ],
+                      fillOutlineColor: [
+                        'match',
+                        ['at', 0, ['get', 'NATSUR']],
+                        '1', '#6B8E6B',
+                        '2', '#808080',
+                        '4', '#DAA520',
+                        '6', '#D2B48C',
+                        '9', '#8B0000',
+                        '11', '#FF69B4',
+                        '14', '#9932CC',
+                        '#888888',
+                      ],
+                    }}
+                  />
+                </Mapbox.ShapeSource>
+              )}
+              
+              {/* Point seabed samples - shown as text labels */}
+              {labeledPoints.length > 0 && (
+                <Mapbox.ShapeSource
+                  id={`sbdare-point-source-${chartKey}`}
+                  shape={{ type: 'FeatureCollection', features: labeledPoints }}
+                  minZoomLevel={chart.minZoom}
+                  hitbox={{ width: 20, height: 20 }}
+                  onPress={(e) => {
+                    if (e.features && e.features.length > 0) {
+                      const feat = e.features[0];
+                      setSelectedFeature({
+                        layerType: 'Seabed',
+                        chartKey: chartKey,
+                        properties: feat.properties || {},
+                      });
+                    }
+                  }}
+                >
+                  <Mapbox.SymbolLayer
+                    id={`sbdare-labels-${chartKey}`}
+                    minZoomLevel={Math.max(chart.minZoom, 11)}
+                    style={{
+                      textField: ['get', '_sbdLabel'],
+                      textSize: 10,
+                      textColor: ['get', '_sbdColor'],
+                      textHaloColor: 'white',
+                      textHaloWidth: 1,
+                      textFont: ['Open Sans Bold'],
+                      textAllowOverlap: false,
+                      textIgnorePlacement: false,
+                    }}
+                  />
+                </Mapbox.ShapeSource>
+              )}
+            </React.Fragment>
           );
         })}
 
@@ -2457,6 +2672,7 @@ export default function ChartViewerMapbox() {
                selectedFeature.layerType === 'Obstruction' ? '⚠️ OBSTRUCTION' :
                selectedFeature.layerType === 'Shoreline' ? '🏗️ SHORELINE' :
                selectedFeature.layerType === 'Cable Area' ? '⚡ CABLE AREA' :
+               selectedFeature.layerType === 'Seabed' ? '⚓ SEABED' :
                'FEATURE INSPECTOR'}
             </Text>
             <TouchableOpacity onPress={() => setSelectedFeature(null)}>
@@ -2586,6 +2802,19 @@ export default function ChartViewerMapbox() {
               </>
             )}
             
+            {/* Special formatted display for Seabed Areas */}
+            {selectedFeature.layerType === 'Seabed' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Seabed Details:</Text>
+                {Object.entries(formatSbdareInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
             {/* Raw properties for other features or additional data */}
             {(selectedFeature.layerType === 'Light' || 
               selectedFeature.layerType === 'Buoy' || 
@@ -2595,7 +2824,8 @@ export default function ChartViewerMapbox() {
               selectedFeature.layerType === 'Rock' ||
               selectedFeature.layerType === 'Obstruction' ||
               selectedFeature.layerType === 'Shoreline' ||
-              selectedFeature.layerType === 'Cable Area') ? (
+              selectedFeature.layerType === 'Cable Area' ||
+              selectedFeature.layerType === 'Seabed') ? (
               <>
                 <Text style={[styles.inspectorSubtitle, { marginTop: 10 }]}>Raw S-57 Data:</Text>
                 {Object.entries(selectedFeature.properties)
@@ -2718,6 +2948,14 @@ export default function ChartViewerMapbox() {
         >
           <Text style={[styles.layerButtonText, showCables && styles.layerButtonTextActive]}>
             Cables
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.layerButton, showSeabed && styles.layerButtonActive]}
+          onPress={() => setShowSeabed(!showSeabed)}
+        >
+          <Text style={[styles.layerButtonText, showSeabed && styles.layerButtonTextActive]}>
+            Seabed
           </Text>
         </TouchableOpacity>
       </View>
