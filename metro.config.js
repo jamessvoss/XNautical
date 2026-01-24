@@ -7,7 +7,7 @@ const config = getDefaultConfig(__dirname);
 config.resolver.assetExts = config.resolver.assetExts.filter(ext => ext !== 'geojson');
 config.resolver.sourceExts.push('geojson');
 
-// Keep pb and mbtiles as assets
-config.resolver.assetExts.push('pbf', 'mbtiles');
+// Keep pb and mbtiles as assets, and add png for symbol images
+config.resolver.assetExts.push('pbf', 'mbtiles', 'png');
 
 module.exports = config;
