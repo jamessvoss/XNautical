@@ -1902,6 +1902,10 @@ export default function ChartViewerMapbox() {
           }).filter(Boolean);
           
           console.log(`[SEAARE] ${chartKey}: ${labelPoints.length} named sea areas`);
+          // Debug: log first few label positions
+          labelPoints.slice(0, 3).forEach((lp: any) => {
+            console.log(`  - ${lp.properties.OBJNAM}: [${lp.geometry.coordinates[0].toFixed(4)}, ${lp.geometry.coordinates[1].toFixed(4)}]`);
+          });
           
           return (
             <Mapbox.ShapeSource
@@ -1928,18 +1932,16 @@ export default function ChartViewerMapbox() {
                   textField: ['get', 'OBJNAM'],
                   textSize: [
                     'interpolate', ['linear'], ['zoom'],
-                    8, 10,
-                    12, 14,
+                    8, 12,
+                    14, 18,
                   ],
-                  textColor: '#1565C0',  // Blue for water names
-                  textHaloColor: 'rgba(255, 255, 255, 0.9)',
-                  textHaloWidth: 1.5,
-                  textFont: ['Open Sans Italic'],
-                  textLetterSpacing: 0.1,
-                  textTransform: 'uppercase',
-                  textAllowOverlap: false,
-                  textIgnorePlacement: false,
-                  textOptional: true,
+                  textColor: '#0D47A1',  // Darker blue for visibility
+                  textHaloColor: 'white',
+                  textHaloWidth: 2,
+                  textFont: ['Open Sans Bold'],
+                  textLetterSpacing: 0.15,
+                  textAllowOverlap: true,  // Allow overlap to ensure visibility
+                  textIgnorePlacement: true,
                 }}
               />
             </Mapbox.ShapeSource>
