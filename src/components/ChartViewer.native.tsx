@@ -3,15 +3,16 @@
  * Uses GeoJSON data stored locally for true offline operation
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import {
   StyleSheet,
   View,
   Text,
   TouchableOpacity,
   Platform,
+  ScrollView,
 } from 'react-native';
-import Mapbox from '@rnmapbox/maps';
+import Mapbox, { MapView } from '@rnmapbox/maps';
 
 // Import GeoJSON data directly (bundled with the app)
 // Original Homer chart (US5AK5SI)
@@ -36,14 +37,29 @@ const depcntData_SJ = require('../../assets/Maps/US5AK5SJ_depcnt.json');
 const soundgData_SJ = require('../../assets/Maps/US5AK5SJ_soundg.json');
 const lndareData_SJ = require('../../assets/Maps/US5AK5SJ_lndare.json');
 
+// Debug colors for each chart
+const DEBUG_COLORS = {
+  US4AK4PH: '#FF9800',  // Orange - Approach
+  US5AK5SJ: '#9C27B0',  // Purple - Approach Detail
+  US5AK5SI: '#4CAF50',  // Green - Homer Harbor
+  US5AK5QG: '#F44336',  // Red - Seldovia Harbor
+};
+
 // Chart definitions with scale/usage bands
+// Quilting: Charts are rendered in order from least to most detailed.
+// More detailed charts overlay less detailed ones, creating a seamless "quilt"
 const CHARTS = {
   US4AK4PH: {
     name: 'Approaches to Homer Harbor',
+    shortName: 'Approach',
     center: [-151.4900, 59.6350],
     scaleType: 'approach',
+    scale: 1,  // Least detailed - base layer, always visible
     minZoom: 0,
-    maxZoom: 22,
+    scaminContour: 179999,  // SCAMIN for contours
+    scaminSounding: 119999,  // SCAMIN for soundings
+    // Bounding box: [minLon, minLat, maxLon, maxLat]
+    bounds: [-151.8000, 59.4023, -151.2000, 59.7000],
     data: {
       depare: depareData_PH,
       depcnt: depcntData_PH,
@@ -51,12 +67,33 @@ const CHARTS = {
       lndare: lndareData_PH,
     },
   },
+  US5AK5SJ: {
+    name: 'Approaches to Homer Harbor (Detail)',
+    shortName: 'Approach Detail',
+    center: [-151.4900, 59.6350],
+    scaleType: 'approach_detail',
+    scale: 2,  // More detailed than approach
+    minZoom: 11,  // Appears at zoom 11+
+    scaminContour: 44999,
+    scaminSounding: 29999,
+    bounds: [-151.3500, 59.5558, -151.2000, 59.6250],
+    data: {
+      depare: depareData_SJ,
+      depcnt: depcntData_SJ,
+      soundg: soundgData_SJ,
+      lndare: lndareData_SJ,
+    },
+  },
   US5AK5SI: {
     name: 'Homer Harbor',
+    shortName: 'Homer',
     center: [-151.4900, 59.6350],
     scaleType: 'harbor',
-    minZoom: 13,
-    maxZoom: 22,
+    scale: 3,  // Most detailed - harbor scale
+    minZoom: 12,  // Appears at zoom 12+
+    scaminContour: 21999,
+    scaminSounding: 17999,
+    bounds: [-151.5000, 59.5500, -151.3500, 59.6250],
     data: {
       depare: depareData_SI,
       depcnt: depcntData_SI,
@@ -66,10 +103,14 @@ const CHARTS = {
   },
   US5AK5QG: {
     name: 'Seldovia Harbor',
+    shortName: 'Seldovia',
     center: [-151.4900, 59.6350],
     scaleType: 'harbor',
-    minZoom: 13,
-    maxZoom: 22,
+    scale: 3,  // Most detailed - harbor scale
+    minZoom: 12,  // Appears at zoom 12+
+    scaminContour: 21999,
+    scaminSounding: 17999,
+    bounds: [-151.8000, 59.4002, -151.6704, 59.4750],
     data: {
       depare: depareData_QG,
       depcnt: depcntData_QG,
@@ -77,20 +118,36 @@ const CHARTS = {
       lndare: lndareData_QG,
     },
   },
-  US5AK5SJ: {
-    name: 'Approaches to Homer Harbor (Detail)',
-    center: [-151.4900, 59.6350],
-    scaleType: 'approach_detail',
-    minZoom: 12,
-    maxZoom: 22,
-    data: {
-      depare: depareData_SJ,
-      depcnt: depcntData_SJ,
-      soundg: soundgData_SJ,
-      lndare: lndareData_SJ,
-    },
-  },
 };
+
+// Helper to create GeoJSON polygon from bounds
+const boundsToPolygon = (bounds: number[]) => ({
+  type: 'Feature' as const,
+  properties: {},
+  geometry: {
+    type: 'Polygon' as const,
+    coordinates: [[
+      [bounds[0], bounds[1]],
+      [bounds[2], bounds[1]],
+      [bounds[2], bounds[3]],
+      [bounds[0], bounds[3]],
+      [bounds[0], bounds[1]],
+    ]],
+  },
+});
+
+// Feature info type for tap-to-inspect
+interface FeatureInfo {
+  layerType: string;
+  chartKey: string;
+  properties: Record<string, unknown>;
+}
+
+type ChartKey = keyof typeof CHARTS;
+
+// Explicit render order: least detailed first (bottom), most detailed last (top)
+// This ensures proper quilting - detailed charts overlay less detailed ones
+const CHART_RENDER_ORDER: ChartKey[] = ['US4AK4PH', 'US5AK5SJ', 'US5AK5SI', 'US5AK5QG'];
 
 // Set Mapbox access token from environment variable
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
@@ -103,31 +160,123 @@ if (MAPBOX_TOKEN) {
 // Homer Spit, Alaska coordinates
 const HOMER_HARBOR_CENTER: [number, number] = [-151.4900, 59.6350];
 
-type ChartKey = keyof typeof CHARTS;
-
 export default function ChartViewerMapbox() {
   const [showDepthAreas, setShowDepthAreas] = useState(true);
   const [showDepthContours, setShowDepthContours] = useState(true);
   const [showSoundings, setShowSoundings] = useState(true);
   const [showLand, setShowLand] = useState(true);
   const [showSatellite, setShowSatellite] = useState(false);
+  
+  // Debug state
+  const [currentZoom, setCurrentZoom] = useState(13);
+  const [selectedFeature, setSelectedFeature] = useState<FeatureInfo | null>(null);
+  const [showBoundaries, setShowBoundaries] = useState(true);
+  const mapRef = useRef<MapView>(null);
 
-  console.log('All 4 charts loaded - testing without navigation features');
+  // Calculate which charts are active at current zoom
+  const getActiveCharts = useCallback((zoom: number) => {
+    return CHART_RENDER_ORDER.filter(key => zoom >= CHARTS[key].minZoom);
+  }, []);
+
+  // Calculate SCAMIN visibility status - MUTUALLY EXCLUSIVE bands
+  const getScaminStatus = useCallback((zoom: number) => {
+    const status = {
+      harbor: zoom >= 15,                    // SCAMIN <= 50000: zoom 15+
+      approachDetail: zoom >= 13 && zoom < 15,  // SCAMIN 50-100k: zoom 13-14
+      approach: zoom >= 11 && zoom < 13,     // SCAMIN > 100k: zoom 11-12
+    };
+    return status;
+  }, []);
+
+  // Handle map idle to track zoom (replaces deprecated onRegionDidChange)
+  const handleMapIdle = useCallback((state: any) => {
+    if (state?.properties?.zoom !== undefined) {
+      setCurrentZoom(Math.round(state.properties.zoom * 10) / 10);
+    }
+  }, []);
+
+  // Handle map press for tap-to-inspect
+  const handleMapPress = useCallback(async (event: any) => {
+    if (!mapRef.current) return;
+    
+    const { geometry } = event;
+    if (!geometry?.coordinates) return;
+
+    try {
+      // Query features at the tap point
+      const features = await mapRef.current.queryRenderedFeaturesAtPoint(
+        [event.properties.screenPointX, event.properties.screenPointY],
+        undefined,
+        // Query all our layer IDs
+        CHART_RENDER_ORDER.flatMap(key => [
+          `depth-contours-${key}`,
+          `soundings-${key}`,
+          `depth-areas-${key}`,
+        ])
+      );
+
+      if (features?.features?.length > 0) {
+        const feat = features.features[0];
+        const layerId = feat.properties?.layerId || feat.source || 'unknown';
+        
+        // Extract chart key from layer ID
+        let chartKey = 'unknown';
+        let layerType = 'unknown';
+        for (const key of CHART_RENDER_ORDER) {
+          if (layerId.includes(key)) {
+            chartKey = key;
+            break;
+          }
+        }
+        if (layerId.includes('contour')) layerType = 'Contour';
+        else if (layerId.includes('sounding')) layerType = 'Sounding';
+        else if (layerId.includes('depth-area')) layerType = 'Depth Area';
+
+        setSelectedFeature({
+          layerType,
+          chartKey,
+          properties: feat.properties || {},
+        });
+      } else {
+        setSelectedFeature(null);
+      }
+    } catch (err) {
+      console.log('Query error:', err);
+    }
+  }, []);
+
+  // Count features per chart (simplified - actual visible count would need querying)
+  const featureCounts = CHART_RENDER_ORDER.reduce((acc, key) => {
+    const chart = CHARTS[key];
+    acc[key] = {
+      contours: chart.data.depcnt.features?.length || 0,
+      soundings: chart.data.soundg.features?.length || 0,
+    };
+    return acc;
+  }, {} as Record<string, { contours: number; soundings: number }>);
+
+  const activeCharts = getActiveCharts(currentZoom);
+  const scaminStatus = getScaminStatus(currentZoom);
+
+  console.log('Quilted chart display - 4 charts layered by detail level');
 
   return (
     <View style={styles.container}>
       {/* Chart Info Header */}
       <View style={styles.header}>
-        <Text style={styles.chartTitle}>All Charts - Seamless View</Text>
+        <Text style={styles.chartTitle}>Homer Harbor - Quilted Charts</Text>
         <Text style={styles.chartInfo}>
-          4 Charts | No Internet Required
+          4 Charts Layered | Zoom for Detail
         </Text>
       </View>
 
       {/* Mapbox Map */}
       <Mapbox.MapView
+        ref={mapRef}
         style={styles.map}
         styleURL={showSatellite ? Mapbox.StyleURL.Satellite : Mapbox.StyleURL.Light}
+        onMapIdle={handleMapIdle}
+        onPress={handleMapPress}
       >
         <Mapbox.Camera
           zoomLevel={13}
@@ -135,8 +284,31 @@ export default function ChartViewerMapbox() {
           animationDuration={0}
         />
 
-        {/* Land Areas */}
-        {showLand && (Object.keys(CHARTS) as ChartKey[]).map((chartKey) => {
+        {/* DEBUG: Chart boundary outlines */}
+        {showBoundaries && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          const color = DEBUG_COLORS[chartKey];
+          return (
+            <Mapbox.ShapeSource
+              key={`boundary-${chartKey}`}
+              id={`boundary-source-${chartKey}`}
+              shape={boundsToPolygon(chart.bounds)}
+            >
+              <Mapbox.LineLayer
+                id={`boundary-line-${chartKey}`}
+                style={{
+                  lineColor: color,
+                  lineWidth: 3,
+                  lineDasharray: [4, 2],
+                  lineOpacity: 0.8,
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Land Areas - Quilted: rendered in order from least to most detailed */}
+        {showLand && CHART_RENDER_ORDER.map((chartKey) => {
           const chart = CHARTS[chartKey];
           return (
             <Mapbox.ShapeSource
@@ -144,23 +316,21 @@ export default function ChartViewerMapbox() {
               id={`land-source-${chartKey}`}
               shape={chart.data.lndare}
               minZoomLevel={chart.minZoom}
-              maxZoomLevel={chart.maxZoom}
             >
               <Mapbox.FillLayer
                 id={`land-fill-${chartKey}`}
                 minZoomLevel={chart.minZoom}
-                maxZoomLevel={chart.maxZoom}
                 style={{
                   fillColor: '#E8D4A0',
-                  fillOpacity: 0.8,
+                  fillOpacity: 0.9,
                 }}
               />
             </Mapbox.ShapeSource>
           );
         })}
 
-        {/* Depth Areas */}
-        {showDepthAreas && (Object.keys(CHARTS) as ChartKey[]).map((chartKey) => {
+        {/* Depth Areas - Quilted: detailed charts overlay less detailed ones */}
+        {showDepthAreas && CHART_RENDER_ORDER.map((chartKey) => {
           const chart = CHARTS[chartKey];
           return (
             <Mapbox.ShapeSource
@@ -168,12 +338,10 @@ export default function ChartViewerMapbox() {
               id={`depth-areas-source-${chartKey}`}
               shape={chart.data.depare}
               minZoomLevel={chart.minZoom}
-              maxZoomLevel={chart.maxZoom}
             >
               <Mapbox.FillLayer
                 id={`depth-areas-${chartKey}`}
                 minZoomLevel={chart.minZoom}
-                maxZoomLevel={chart.maxZoom}
                 style={{
                   fillColor: [
                     'step',
@@ -188,13 +356,12 @@ export default function ChartViewerMapbox() {
                     20,
                     '#B8D4E8',
                   ],
-                  fillOpacity: 0.6,
+                  fillOpacity: 0.7,
                 }}
               />
               <Mapbox.LineLayer
                 id={`depth-area-outlines-${chartKey}`}
                 minZoomLevel={chart.minZoom}
-                maxZoomLevel={chart.maxZoom}
                 style={{
                   lineColor: '#1976D2',
                   lineWidth: 1,
@@ -205,41 +372,50 @@ export default function ChartViewerMapbox() {
           );
         })}
 
-        {/* Depth Contours */}
-        {showDepthContours && (Object.keys(CHARTS) as ChartKey[]).map((chartKey) => {
+        {/* Depth Contours - DEBUG: Color-coded by chart source
+            SCAMIN controls when contours appear - MUTUALLY EXCLUSIVE zoom bands
+            More detailed contours REPLACE less detailed ones at higher zoom */}
+        {showDepthContours && CHART_RENDER_ORDER.map((chartKey) => {
           const chart = CHARTS[chartKey];
+          const debugColor = DEBUG_COLORS[chartKey];
           return (
             <Mapbox.ShapeSource
               key={`depcnt-${chartKey}`}
               id={`contours-source-${chartKey}`}
               shape={chart.data.depcnt}
               minZoomLevel={chart.minZoom}
-              maxZoomLevel={chart.maxZoom}
             >
               <Mapbox.LineLayer
                 id={`depth-contours-${chartKey}`}
                 minZoomLevel={chart.minZoom}
-                maxZoomLevel={chart.maxZoom}
+                filter={[
+                  'any',
+                  // Harbor scale (SCAMIN <= 50000) -> zoom 15+ ONLY
+                  ['all', ['<=', ['get', 'SCAMIN'], 50000], ['>=', ['zoom'], 15]],
+                  // Approach detail (50000 < SCAMIN <= 100000) -> zoom 13-14 ONLY
+                  ['all', ['>', ['get', 'SCAMIN'], 50000], ['<=', ['get', 'SCAMIN'], 100000], ['>=', ['zoom'], 13], ['<', ['zoom'], 15]],
+                  // Approach scale (SCAMIN > 100000) -> zoom 11-12 ONLY
+                  ['all', ['>', ['get', 'SCAMIN'], 100000], ['>=', ['zoom'], 11], ['<', ['zoom'], 13]],
+                ]}
                 style={{
-                  lineColor: [
-                    'step',
-                    ['get', 'VALDCO'],
-                    '#0066CC',
-                    5,
-                    '#0052A3',
-                    10,
-                    '#003D7A',
-                    20,
-                    '#002952',
-                  ],
+                  // DEBUG: Use chart-specific color instead of depth-based
+                  lineColor: debugColor,
                   lineWidth: 2,
-                  lineOpacity: 0.8,
+                  lineOpacity: 0.9,
                 }}
               />
               <Mapbox.SymbolLayer
                 id={`contour-labels-${chartKey}`}
                 minZoomLevel={chart.minZoom}
-                maxZoomLevel={chart.maxZoom}
+                filter={[
+                  'any',
+                  // Harbor scale (SCAMIN <= 50000) -> zoom 15+ ONLY
+                  ['all', ['<=', ['get', 'SCAMIN'], 50000], ['>=', ['zoom'], 15]],
+                  // Approach detail (50000 < SCAMIN <= 100000) -> zoom 13-14 ONLY
+                  ['all', ['>', ['get', 'SCAMIN'], 50000], ['<=', ['get', 'SCAMIN'], 100000], ['>=', ['zoom'], 13], ['<', ['zoom'], 15]],
+                  // Approach scale (SCAMIN > 100000) -> zoom 11-12 ONLY
+                  ['all', ['>', ['get', 'SCAMIN'], 100000], ['>=', ['zoom'], 11], ['<', ['zoom'], 13]],
+                ]}
                 style={{
                   textField: ['concat', ['get', 'VALDCO'], 'm'],
                   textSize: [
@@ -251,7 +427,8 @@ export default function ChartViewerMapbox() {
                     15, 22,
                     17, 26,
                   ],
-                  textColor: '#0052A3',
+                  // DEBUG: Use chart-specific color for labels too
+                  textColor: debugColor,
                   textHaloColor: '#FFFFFF',
                   textHaloWidth: 2,
                   symbolPlacement: 'line',
@@ -262,8 +439,10 @@ export default function ChartViewerMapbox() {
           );
         })}
 
-        {/* Soundings */}
-        {showSoundings && (Object.keys(CHARTS) as ChartKey[]).map((chartKey) => {
+        {/* Soundings - ADDITIVE display (more soundings at higher zoom)
+            All soundings shown once they reach their SCAMIN threshold
+            Shallower soundings have higher display priority */}
+        {showSoundings && CHART_RENDER_ORDER.map((chartKey) => {
           const chart = CHARTS[chartKey];
           return (
             <Mapbox.ShapeSource
@@ -271,32 +450,146 @@ export default function ChartViewerMapbox() {
               id={`soundings-source-${chartKey}`}
               shape={chart.data.soundg}
               minZoomLevel={chart.minZoom}
-              maxZoomLevel={chart.maxZoom}
             >
               <Mapbox.SymbolLayer
                 id={`soundings-${chartKey}`}
                 minZoomLevel={chart.minZoom}
-                maxZoomLevel={chart.maxZoom}
+                filter={[
+                  // SCAMIN-based visibility - ADDITIVE (show more at higher zoom)
+                  'any',
+                  // Harbor scale (SCAMIN <= 20000) -> zoom 14+
+                  ['all', ['<=', ['get', 'SCAMIN'], 20000], ['>=', ['zoom'], 14]],
+                  // Approach detail (20000 < SCAMIN <= 30000) -> zoom 13+
+                  ['all', ['>', ['get', 'SCAMIN'], 20000], ['<=', ['get', 'SCAMIN'], 30000], ['>=', ['zoom'], 13]],
+                  // Approach scale (SCAMIN > 30000) -> zoom 12+
+                  ['all', ['>', ['get', 'SCAMIN'], 30000], ['>=', ['zoom'], 12]],
+                ]}
                 style={{
-                  textField: ['get', 'DEPTH'],
+                  // Format depth to 1 decimal place
+                  textField: [
+                    'number-format',
+                    ['get', 'DEPTH'],
+                    { 'min-fraction-digits': 1, 'max-fraction-digits': 1 }
+                  ],
                   textSize: [
                     'interpolate',
                     ['linear'],
                     ['zoom'],
-                    11, 16,
-                    13, 20,
-                    15, 24,
-                    17, 28,
+                    12, 9,
+                    14, 11,
+                    16, 13,
+                    18, 15,
                   ],
-                  textColor: '#0066CC',
+                  textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+                  // Depth-based coloring: shallower = more prominent
+                  textColor: [
+                    'step',
+                    ['get', 'DEPTH'],
+                    '#CC0000',  // 0-5m: Red (danger)
+                    5, '#0066CC',  // 5-10m: Blue
+                    10, '#0052A3', // 10-20m: Darker blue
+                    20, '#555555', // 20m+: Dark gray
+                  ],
                   textHaloColor: '#FFFFFF',
-                  textHaloWidth: 2,
+                  textHaloWidth: 1.5,
+                  // Priority: shallower depths shown first (lower sortKey = higher priority)
+                  symbolSortKey: ['get', 'DEPTH'],
+                  // Collision detection - don't overlap text
+                  textAllowOverlap: false,
+                  textIgnorePlacement: false,
+                  // Don't hide soundings - always try to show them
+                  textOptional: false,
+                  // Reduced padding for denser display
+                  textPadding: 1,
                 }}
               />
             </Mapbox.ShapeSource>
           );
         })}
       </Mapbox.MapView>
+
+      {/* DEBUG: Info Panel */}
+      <View style={styles.debugPanel}>
+        <Text style={styles.debugTitle}>DEBUG INFO</Text>
+        <Text style={styles.debugText}>Zoom: {currentZoom.toFixed(1)}</Text>
+        <Text style={styles.debugSubtitle}>Active SCAMIN Band:</Text>
+        <Text style={[styles.debugText, { color: scaminStatus.approach ? '#FF9800' : '#555' }]}>
+          Approach (z11-12): {scaminStatus.approach ? 'ACTIVE' : 'off'}
+        </Text>
+        <Text style={[styles.debugText, { color: scaminStatus.approachDetail ? '#9C27B0' : '#555' }]}>
+          Detail (z13-14): {scaminStatus.approachDetail ? 'ACTIVE' : 'off'}
+        </Text>
+        <Text style={[styles.debugText, { color: scaminStatus.harbor ? '#4CAF50' : '#555' }]}>
+          Harbor (z15+): {scaminStatus.harbor ? 'ACTIVE' : 'off'}
+        </Text>
+        
+        <Text style={styles.debugSubtitle}>Active Charts:</Text>
+        {CHART_RENDER_ORDER.map(key => {
+          const isActive = activeCharts.includes(key);
+          const color = DEBUG_COLORS[key];
+          return (
+            <View key={key} style={styles.chartIndicator}>
+              <View style={[styles.chartColorDot, { backgroundColor: color, opacity: isActive ? 1 : 0.3 }]} />
+              <Text style={[styles.debugText, { color: isActive ? '#333' : '#999' }]}>
+                {CHARTS[key].shortName}
+              </Text>
+            </View>
+          );
+        })}
+
+        <TouchableOpacity
+          style={[styles.debugButton, showBoundaries && styles.debugButtonActive]}
+          onPress={() => setShowBoundaries(!showBoundaries)}
+        >
+          <Text style={styles.debugButtonText}>
+            {showBoundaries ? 'Hide' : 'Show'} Bounds
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* DEBUG: Feature Counts */}
+      <View style={styles.featureCountPanel}>
+        <Text style={styles.debugTitle}>FEATURES</Text>
+        {CHART_RENDER_ORDER.map(key => {
+          const color = DEBUG_COLORS[key];
+          const counts = featureCounts[key];
+          const isActive = activeCharts.includes(key);
+          return (
+            <View key={key} style={{ opacity: isActive ? 1 : 0.4 }}>
+              <Text style={[styles.featureCountLabel, { color }]}>
+                {CHARTS[key].shortName}
+              </Text>
+              <Text style={styles.featureCountText}>
+                {counts.contours} cnt / {counts.soundings} snd
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+
+      {/* DEBUG: Feature Inspector (tap-to-inspect) */}
+      {selectedFeature && (
+        <View style={styles.featureInspector}>
+          <View style={styles.inspectorHeader}>
+            <Text style={styles.inspectorTitle}>FEATURE INSPECTOR</Text>
+            <TouchableOpacity onPress={() => setSelectedFeature(null)}>
+              <Text style={styles.inspectorClose}>X</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={styles.inspectorScroll}>
+            <Text style={styles.inspectorLabel}>Type: {selectedFeature.layerType}</Text>
+            <Text style={[styles.inspectorLabel, { color: DEBUG_COLORS[selectedFeature.chartKey as ChartKey] || '#333' }]}>
+              Chart: {selectedFeature.chartKey}
+            </Text>
+            <Text style={styles.inspectorSubtitle}>Properties:</Text>
+            {Object.entries(selectedFeature.properties).map(([key, value]) => (
+              <Text key={key} style={styles.inspectorProp}>
+                {key}: {String(value)}
+              </Text>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {/* Layer Controls */}
       <View style={styles.layerControl}>
@@ -490,5 +783,124 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: 'bold',
     fontSize: 11,
+  },
+  // Debug styles
+  debugPanel: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 280 : 240,
+    left: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    padding: 10,
+    borderRadius: 8,
+    minWidth: 140,
+  },
+  debugTitle: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#FF9800',
+    marginBottom: 6,
+  },
+  debugSubtitle: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: '#888',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  debugText: {
+    fontSize: 10,
+    color: '#fff',
+    marginBottom: 2,
+  },
+  chartIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  chartColorDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 6,
+  },
+  debugButton: {
+    backgroundColor: '#333',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 4,
+    marginTop: 8,
+    alignItems: 'center',
+  },
+  debugButtonActive: {
+    backgroundColor: '#FF9800',
+  },
+  debugButtonText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: 'bold',
+  },
+  featureCountPanel: {
+    position: 'absolute',
+    bottom: 60,
+    left: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    padding: 10,
+    borderRadius: 8,
+    minWidth: 120,
+  },
+  featureCountLabel: {
+    fontSize: 9,
+    fontWeight: 'bold',
+    marginTop: 4,
+  },
+  featureCountText: {
+    fontSize: 9,
+    color: '#ccc',
+  },
+  featureInspector: {
+    position: 'absolute',
+    bottom: 60,
+    right: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    padding: 10,
+    borderRadius: 8,
+    maxWidth: 200,
+    maxHeight: 250,
+  },
+  inspectorHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  inspectorTitle: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#FF9800',
+  },
+  inspectorClose: {
+    fontSize: 14,
+    color: '#FF5722',
+    fontWeight: 'bold',
+    paddingHorizontal: 6,
+  },
+  inspectorScroll: {
+    maxHeight: 180,
+  },
+  inspectorLabel: {
+    fontSize: 10,
+    color: '#fff',
+    marginBottom: 4,
+  },
+  inspectorSubtitle: {
+    fontSize: 9,
+    color: '#888',
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  inspectorProp: {
+    fontSize: 9,
+    color: '#aaa',
+    marginBottom: 2,
   },
 });
