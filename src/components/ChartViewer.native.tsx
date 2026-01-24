@@ -109,6 +109,41 @@ const pipsolData_SI = require('../../assets/Maps/US5AK5SI_pipsol.json');
 const pipsolData_QG = require('../../assets/Maps/US5AK5QG_pipsol.json');
 const pipsolData_SJ = require('../../assets/Maps/US5AK5SJ_pipsol.json');
 
+// ============ NEW CHARTS: US4AK4PG (large area) and US5AK5QF (detailed) ============
+// US4AK4PG - Large area chart
+const depareData_PG = require('../../assets/Maps/US4AK4PG_depare.json');
+const depcntData_PG = require('../../assets/Maps/US4AK4PG_depcnt.json');
+const lndareData_PG = require('../../assets/Maps/US4AK4PG_lndare.json');
+const lightsData_PG = require('../../assets/Maps/US4AK4PG_lights.json');
+const buoysData_PG = require('../../assets/Maps/US4AK4PG_buoys.json');
+const beaconsData_PG = require('../../assets/Maps/US4AK4PG_beacons.json');
+const landmarksData_PG = require('../../assets/Maps/US4AK4PG_landmarks.json');
+const wrecksData_PG = require('../../assets/Maps/US4AK4PG_wrecks.json');
+const rocksData_PG = require('../../assets/Maps/US4AK4PG_rocks.json');
+const obstructionsData_PG = require('../../assets/Maps/US4AK4PG_obstructions.json');
+const slconsData_PG = require('../../assets/Maps/US4AK4PG_slcons.json');
+const cblareData_PG = require('../../assets/Maps/US4AK4PG_cblare.json');
+const sbdareData_PG = require('../../assets/Maps/US4AK4PG_sbdare.json');
+const seaareData_PG = require('../../assets/Maps/US4AK4PG_seaare.json');
+const pipsolData_PG = require('../../assets/Maps/US4AK4PG_pipsol.json');
+
+// US5AK5QF - Detailed area chart
+const depareData_QF = require('../../assets/Maps/US5AK5QF_depare.json');
+const depcntData_QF = require('../../assets/Maps/US5AK5QF_depcnt.json');
+const lndareData_QF = require('../../assets/Maps/US5AK5QF_lndare.json');
+const lightsData_QF = require('../../assets/Maps/US5AK5QF_lights.json');
+const buoysData_QF = require('../../assets/Maps/US5AK5QF_buoys.json');
+const beaconsData_QF = require('../../assets/Maps/US5AK5QF_beacons.json');
+const landmarksData_QF = require('../../assets/Maps/US5AK5QF_landmarks.json');
+const wrecksData_QF = require('../../assets/Maps/US5AK5QF_wrecks.json');
+const rocksData_QF = require('../../assets/Maps/US5AK5QF_rocks.json');
+const obstructionsData_QF = require('../../assets/Maps/US5AK5QF_obstructions.json');
+const slconsData_QF = require('../../assets/Maps/US5AK5QF_slcons.json');
+const cblareData_QF = require('../../assets/Maps/US5AK5QF_cblare.json');
+const sbdareData_QF = require('../../assets/Maps/US5AK5QF_sbdare.json');
+const seaareData_QF = require('../../assets/Maps/US5AK5QF_seaare.json');
+const pipsolData_QF = require('../../assets/Maps/US5AK5QF_pipsol.json');
+
 // S-52 Symbol images for navigation features
 // Metro automatically selects @2x/@3x based on device pixel density
 const NAV_SYMBOLS = {
@@ -288,17 +323,49 @@ const extractSectorFeatures = (lightsData: GeoJSON.FeatureCollection): GeoJSON.F
 };
 
 // Debug colors for each chart
-const DEBUG_COLORS = {
+const DEBUG_COLORS: Record<string, string> = {
+  US4AK4PG: '#2196F3',  // Blue - Port Graham Area (large)
   US4AK4PH: '#FF9800',  // Orange - Approach
   US5AK5SJ: '#9C27B0',  // Purple - Approach Detail
   US5AK5SI: '#4CAF50',  // Green - Homer Harbor
   US5AK5QG: '#F44336',  // Red - Seldovia Harbor
+  US5AK5QF: '#00BCD4',  // Cyan - Port Graham Detail
 };
 
 // Chart definitions with scale/usage bands
 // Quilting: Charts are rendered in order from least to most detailed.
 // More detailed charts overlay less detailed ones, creating a seamless "quilt"
 const CHARTS = {
+  // Large area charts (scale 4) - base layers
+  US4AK4PG: {
+    name: 'Port Graham Area',
+    shortName: 'Port Graham',
+    center: [-152.1000, 59.5500],
+    scaleType: 'approach',
+    scale: 1,  // Base layer - large area
+    minZoom: 0,
+    scaminContour: 179999,
+    scaminSounding: 119999,
+    bounds: [-152.4000, 59.4000, -151.8000, 59.7000],
+    data: {
+      depare: depareData_PG,
+      depcnt: depcntData_PG,
+      soundg: { type: 'FeatureCollection', features: [] },  // No soundings extracted
+      lndare: lndareData_PG,
+      lights: lightsData_PG,
+      buoys: buoysData_PG,
+      beacons: beaconsData_PG,
+      landmarks: landmarksData_PG,
+      wrecks: wrecksData_PG,
+      rocks: rocksData_PG,
+      obstructions: obstructionsData_PG,
+      slcons: slconsData_PG,
+      cblare: cblareData_PG,
+      sbdare: sbdareData_PG,
+      seaare: seaareData_PG,
+      pipsol: pipsolData_PG,
+    },
+  },
   US4AK4PH: {
     name: 'Approaches to Homer Harbor',
     shortName: 'Approach',
@@ -414,6 +481,35 @@ const CHARTS = {
       sbdare: sbdareData_QG,
       seaare: seaareData_QG,
       pipsol: pipsolData_QG,
+    },
+  },
+  US5AK5QF: {
+    name: 'Port Graham Harbor',
+    shortName: 'Port Graham Detail',
+    center: [-151.8750, 59.4375],
+    scaleType: 'harbor',
+    scale: 3,  // Most detailed - harbor scale
+    minZoom: 12,  // Appears at zoom 12+
+    scaminContour: 21999,
+    scaminSounding: 17999,
+    bounds: [-151.9500, 59.4000, -151.8000, 59.4750],
+    data: {
+      depare: depareData_QF,
+      depcnt: depcntData_QF,
+      soundg: { type: 'FeatureCollection', features: [] },  // No soundings extracted
+      lndare: lndareData_QF,
+      lights: lightsData_QF,
+      buoys: buoysData_QF,
+      beacons: beaconsData_QF,
+      landmarks: landmarksData_QF,
+      wrecks: wrecksData_QF,
+      rocks: rocksData_QF,
+      obstructions: obstructionsData_QF,
+      slcons: slconsData_QF,
+      cblare: cblareData_QF,
+      sbdare: sbdareData_QF,
+      seaare: seaareData_QF,
+      pipsol: pipsolData_QF,
     },
   },
 };
@@ -1310,7 +1406,7 @@ type ChartKey = keyof typeof CHARTS;
 
 // Explicit render order: least detailed first (bottom), most detailed last (top)
 // This ensures proper quilting - detailed charts overlay less detailed ones
-const CHART_RENDER_ORDER: ChartKey[] = ['US4AK4PH', 'US5AK5SJ', 'US5AK5SI', 'US5AK5QG'];
+const CHART_RENDER_ORDER: ChartKey[] = ['US4AK4PG', 'US4AK4PH', 'US5AK5SJ', 'US5AK5SI', 'US5AK5QG', 'US5AK5QF'];
 
 // Set Mapbox access token from environment variable
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN || '';

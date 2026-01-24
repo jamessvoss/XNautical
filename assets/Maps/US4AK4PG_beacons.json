@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "BCNSPP",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "RCID": 1, "PRIM": 1, "GRUP": 2, "OBJL": 9, "RVER": 1, "AGEN": 550, "FIDN": 465348179, "FIDS": 3822, "LNAM": "02261BBCA6530EEE", "LNAM_REFS": [ "02261BBCA5F60EEE", "02261BBCA5E40EEE" ], "FFPT_RIND": [ 2, 2 ], "BCNSHP": 4, "CATSPM": [ "27" ], "COLOUR": [ ], "OBJNAM": "Point Pogibshi Light", "STATUS": [ "1" ], "SCAMIN": 259999, "SORDAT": "20060905", "SORIND": "US,US,reprt,17thCGD,LNM 36/06" }, "geometry": { "type": "Point", "coordinates": [ -151.886915, 59.4244317 ] } }
+]
+}
