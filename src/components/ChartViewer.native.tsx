@@ -97,6 +97,12 @@ const sbdareData_SI = require('../../assets/Maps/US5AK5SI_sbdare.json');
 const sbdareData_QG = require('../../assets/Maps/US5AK5QG_sbdare.json');
 const sbdareData_SJ = require('../../assets/Maps/US5AK5SJ_sbdare.json');
 
+// Sea areas (named bodies of water - bays, coves, straits) for each chart
+const seaareData_PH = require('../../assets/Maps/US4AK4PH_seaare.json');
+const seaareData_SI = require('../../assets/Maps/US5AK5SI_seaare.json');
+const seaareData_QG = require('../../assets/Maps/US5AK5QG_seaare.json');
+const seaareData_SJ = require('../../assets/Maps/US5AK5SJ_seaare.json');
+
 // S-52 Symbol images for navigation features
 // Metro automatically selects @2x/@3x based on device pixel density
 const NAV_SYMBOLS = {
@@ -313,6 +319,7 @@ const CHARTS = {
       slcons: slconsData_PH,
       cblare: cblareData_PH,
       sbdare: sbdareData_PH,
+      seaare: seaareData_PH,
     },
   },
   US5AK5SJ: {
@@ -340,6 +347,7 @@ const CHARTS = {
       slcons: slconsData_SJ,
       cblare: cblareData_SJ,
       sbdare: sbdareData_SJ,
+      seaare: seaareData_SJ,
     },
   },
   US5AK5SI: {
@@ -367,6 +375,7 @@ const CHARTS = {
       slcons: slconsData_SI,
       cblare: cblareData_SI,
       sbdare: sbdareData_SI,
+      seaare: seaareData_SI,
     },
   },
   US5AK5QG: {
@@ -394,6 +403,7 @@ const CHARTS = {
       slcons: slconsData_QG,
       cblare: cblareData_QG,
       sbdare: sbdareData_QG,
+      seaare: seaareData_QG,
     },
   },
 };
@@ -1021,6 +1031,49 @@ const getSeabedColor = (natsur: string[]): string => {
   return colors[primary] || '#888888';
 };
 
+// S-57 CATSEA (Category of Sea Area) codes
+const SEA_AREA_CATEGORIES: Record<string, string> = {
+  '1': 'Gulf',
+  '2': 'Basin',
+  '3': 'Reach',
+  '4': 'Anchorage',
+  '5': 'Bay',
+  '6': 'Canal',
+  '7': 'Channel',
+  '8': 'Strait',
+  '9': 'Sound',
+  '10': 'Ocean',
+  '11': 'Routing Area',
+  '12': 'Sea',
+  '13': 'Bight',
+  '14': 'Estuary',
+  '15': 'Inlet',
+  '16': 'Lake',
+  '17': 'Fjord',
+  '18': 'Harbor',
+  '19': 'Cove',
+  '20': 'Lagoon',
+};
+
+// Format sea area properties for display
+const formatSeaareInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  // Category
+  const catsea = properties.CATSEA as number | undefined;
+  if (catsea) {
+    formatted['Type'] = SEA_AREA_CATEGORIES[String(catsea)] || `Category ${catsea}`;
+  }
+  
+  return formatted;
+};
+
 // Format seabed area properties for display
 const formatSbdareInfo = (properties: Record<string, unknown>): Record<string, string> => {
   const formatted: Record<string, string> = {};
@@ -1235,6 +1288,7 @@ export default function ChartViewerMapbox() {
   const [showSlcons, setShowSlcons] = useState(true);
   const [showCables, setShowCables] = useState(true);
   const [showSeabed, setShowSeabed] = useState(true);
+  const [showSeaNames, setShowSeaNames] = useState(true);
   const [showSatellite, setShowSatellite] = useState(false);
   
   // Pre-compute sector arc geometries for all charts
@@ -1804,6 +1858,91 @@ export default function ChartViewerMapbox() {
                 </Mapbox.ShapeSource>
               )}
             </React.Fragment>
+          );
+        })}
+
+        {/* Sea Areas (SEAARE) - Named bodies of water (bays, coves, straits)
+            Rendered as text labels positioned at polygon centroids */}
+        {showSeaNames && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.seaare || chart.data.seaare.features.length === 0) return null;
+          
+          // Filter to only features with names
+          const namedFeatures = chart.data.seaare.features.filter(
+            (f: any) => f.properties?.OBJNAM
+          );
+          
+          if (namedFeatures.length === 0) return null;
+          
+          // Create point features at polygon centroids for labeling
+          const labelPoints = namedFeatures.map((f: any) => {
+            // Calculate centroid of polygon
+            let coords = f.geometry?.coordinates;
+            if (!coords) return null;
+            
+            // Handle Polygon vs MultiPolygon
+            if (f.geometry.type === 'MultiPolygon') {
+              coords = coords[0]; // Use first polygon
+            }
+            if (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon') {
+              const ring = coords[0]; // Outer ring
+              let sumX = 0, sumY = 0;
+              for (const pt of ring) {
+                sumX += pt[0];
+                sumY += pt[1];
+              }
+              const centroid = [sumX / ring.length, sumY / ring.length];
+              return {
+                type: 'Feature',
+                geometry: { type: 'Point', coordinates: centroid },
+                properties: f.properties,
+              };
+            }
+            return null;
+          }).filter(Boolean);
+          
+          console.log(`[SEAARE] ${chartKey}: ${labelPoints.length} named sea areas`);
+          
+          return (
+            <Mapbox.ShapeSource
+              key={`seaare-${chartKey}`}
+              id={`seaare-source-${chartKey}`}
+              shape={{ type: 'FeatureCollection', features: labelPoints }}
+              minZoomLevel={chart.minZoom}
+              hitbox={{ width: 60, height: 20 }}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Sea Area',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.SymbolLayer
+                id={`seaare-labels-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  textField: ['get', 'OBJNAM'],
+                  textSize: [
+                    'interpolate', ['linear'], ['zoom'],
+                    8, 10,
+                    12, 14,
+                  ],
+                  textColor: '#1565C0',  // Blue for water names
+                  textHaloColor: 'rgba(255, 255, 255, 0.9)',
+                  textHaloWidth: 1.5,
+                  textFont: ['Open Sans Italic'],
+                  textLetterSpacing: 0.1,
+                  textTransform: 'uppercase',
+                  textAllowOverlap: false,
+                  textIgnorePlacement: false,
+                  textOptional: true,
+                }}
+              />
+            </Mapbox.ShapeSource>
           );
         })}
 
@@ -2673,6 +2812,7 @@ export default function ChartViewerMapbox() {
                selectedFeature.layerType === 'Shoreline' ? '🏗️ SHORELINE' :
                selectedFeature.layerType === 'Cable Area' ? '⚡ CABLE AREA' :
                selectedFeature.layerType === 'Seabed' ? '⚓ SEABED' :
+               selectedFeature.layerType === 'Sea Area' ? '🌊 SEA AREA' :
                'FEATURE INSPECTOR'}
             </Text>
             <TouchableOpacity onPress={() => setSelectedFeature(null)}>
@@ -2815,6 +2955,19 @@ export default function ChartViewerMapbox() {
               </>
             )}
             
+            {/* Special formatted display for Sea Areas */}
+            {selectedFeature.layerType === 'Sea Area' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Sea Area Details:</Text>
+                {Object.entries(formatSeaareInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
             {/* Raw properties for other features or additional data */}
             {(selectedFeature.layerType === 'Light' || 
               selectedFeature.layerType === 'Buoy' || 
@@ -2825,7 +2978,8 @@ export default function ChartViewerMapbox() {
               selectedFeature.layerType === 'Obstruction' ||
               selectedFeature.layerType === 'Shoreline' ||
               selectedFeature.layerType === 'Cable Area' ||
-              selectedFeature.layerType === 'Seabed') ? (
+              selectedFeature.layerType === 'Seabed' ||
+              selectedFeature.layerType === 'Sea Area') ? (
               <>
                 <Text style={[styles.inspectorSubtitle, { marginTop: 10 }]}>Raw S-57 Data:</Text>
                 {Object.entries(selectedFeature.properties)
@@ -2956,6 +3110,14 @@ export default function ChartViewerMapbox() {
         >
           <Text style={[styles.layerButtonText, showSeabed && styles.layerButtonTextActive]}>
             Seabed
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.layerButton, showSeaNames && styles.layerButtonActive]}
+          onPress={() => setShowSeaNames(!showSeaNames)}
+        >
+          <Text style={[styles.layerButtonText, showSeaNames && styles.layerButtonTextActive]}>
+            Names
           </Text>
         </TouchableOpacity>
       </View>
