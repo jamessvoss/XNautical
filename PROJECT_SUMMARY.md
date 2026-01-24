@@ -2,7 +2,9 @@
 
 ## Overview
 
-MapTest is a React Native mobile application built with Expo that displays NOAA Electronic Navigational Charts (ENC) in S-57 format. The initial implementation focuses on the Homer Harbor, Alaska chart (US5AK5SI) as a proof of concept for rendering hydrographic data including depth contours, soundings, and navigation aids.
+MapTest is a **proof of concept** React Native mobile application demonstrating the feasibility of displaying NOAA Electronic Navigational Charts (ENC) in S-57 format with S-52 symbology. The implementation covers the Homer Harbor, Alaska area with 4 overlapping charts demonstrating chart quilting, navigation aid rendering, and light sector visualization.
+
+**Goal**: Validate the technical approach for integrating S-57/S-52 chart capabilities into an existing mobile application as a feature module.
 
 ## Technology Stack
 
@@ -64,49 +66,60 @@ MapTest/
 
 ## Features Implemented
 
-### Chart Display (ChartViewer.tsx)
-- ✅ Interactive map with satellite imagery
-- ✅ Centered on Homer Harbor, Alaska (59.635°N, 151.490°W)
-- ✅ Platform-specific map provider (Google Maps for Android, Apple Maps for iOS)
-- ✅ Responsive header with chart information
-- ✅ Loading state with spinner and chart name
+### Chart Display (ChartViewer.native.tsx)
+- ✅ Mapbox GL Native rendering (high performance)
+- ✅ 4 charts with proper quilting (z-order overlay)
+- ✅ SCAMIN-based feature visibility filtering
+- ✅ Toggle controls for all layer types
+- ✅ Satellite/Light base map toggle
+- ✅ Offline operation (all data bundled)
 
 ### Bathymetric Visualization
-- ✅ Color-coded depth contours (5m, 10m, 20m)
-- ✅ Individual depth soundings with labels
-- ✅ Depth-based color scheme:
-  - Light Blue (#B3E5FC): 0-5 meters
-  - Medium Blue (#4FC3F7): 5-10 meters
-  - Deep Blue (#0288D1): 10-20 meters
-  - Dark Blue (#01579B): 20+ meters
-- ✅ Interactive legend showing depth ranges
+- ✅ Color-coded depth areas (DEPARE) by depth range
+- ✅ Depth contours (DEPCNT) with labels
+- ✅ 2,478 individual soundings (SOUNDG)
+- ✅ SCAMIN filtering (mutually exclusive for contours, additive for soundings)
+- ✅ Depth-priority display (shallower = higher priority)
 
-### Navigation Features
-- ✅ Navigation aid markers (buoys and lights)
-- ✅ Marker details (name, type, description)
-- ✅ Color-coded by type (yellow for lights, green for buoys)
-- ✅ Toggle controls for depth labels and nav aids
-- ✅ Pan and zoom functionality
+### Navigation Lights
+- ✅ S-52 Light_Flare symbols (white, red, green, yellow)
+- ✅ Color-based symbol selection from S-57 COLOUR attribute
+- ✅ Light characteristic decoding (Fl, Oc, Iso, Q, etc.)
+- ✅ **Light Sector Arcs**: Dashed arc showing visible sector with gap for obscured zone
+- ✅ Sector bearing interpretation (S-57 "from seaward" + 180° offset)
+- ✅ Enhanced inspector with chart label format (e.g., "Fl G 4s 8m 5M")
 
-### Data Layer (s57Parser.ts)
-- ✅ S-57 parser class structure
-- ✅ Chart metadata extraction
-- ✅ Depth contour data structures
-- ✅ Sounding point definitions
-- ✅ Navigation aid types
-- ✅ Mock data for development/testing
-- ⚠️ Full binary S-57 parsing (future enhancement)
+### Buoys and Beacons
+- ✅ Shape-based S-52 symbols (7 buoy types, 6 beacon types)
+- ✅ BOYSHP/BCNSHP attribute decoding
+- ✅ CATLAM (lateral category) display
+- ✅ Proper iconAnchor alignment with lights
 
-### Type System (s57.ts)
-- ✅ S57Dataset interface
-- ✅ GeographicBounds interface
-- ✅ DepthContour interface
-- ✅ Coordinate interface
-- ✅ SoundingPoint interface
-- ✅ NavigationAid interface
-- ✅ S57Feature interface
-- ✅ ChartMetadata interface
-- ✅ Homer Harbor metadata constants
+### Landmarks
+- ✅ Category-based S-52 symbols (tower, chimney, monument, etc.)
+- ✅ CATLMK attribute decoding
+- ✅ FUNCTN (function) attribute display
+- ✅ Conspicuousness indicator
+
+### Feature Inspector (Tap-to-Inspect)
+- ✅ Lights: Chart label, color, characteristic, period, sequence, height, range, sector, category, exhibition, status, LNAM
+- ✅ Buoys: Name, shape, category, color, status
+- ✅ Beacons: Name, shape, category, color, additional info
+- ✅ Landmarks: Name, category, function, visibility, color
+- ✅ Raw S-57 attributes (limited display)
+
+### S-52 Symbol System
+- ✅ SVG to PNG conversion script (sharp)
+- ✅ Multi-resolution output (1x/2x/3x for device density)
+- ✅ Mapbox.Images preloading for efficient rendering
+- ✅ 30+ navigation aid symbols implemented
+
+### Debug Tools
+- ✅ Zoom level display
+- ✅ SCAMIN band indicator (Approach/Detail/Harbor)
+- ✅ Active chart list
+- ✅ Chart boundary visualization (toggle)
+- ✅ Feature counts per chart
 
 ## Chart Data
 
@@ -178,52 +191,50 @@ npm install --legacy-peer-deps
 ## Current Limitations & Future Enhancements
 
 ### Current Limitations
-1. **Mock Data**: Currently using mock depth contours and soundings
-2. **Binary Parsing**: S-57 .000 file not yet parsed (binary ISO 8211 format)
-3. **Limited Features**: Only displaying basic bathymetry
-4. **Single Chart**: Only Homer Harbor chart loaded
-5. **No Updates**: ENC update files (.001, .002, etc.) not processed
-6. **No S-52 Symbols**: Using simplified markers instead of official symbols
+1. **Limited Object Classes**: Only 8 of 100+ S-57 object classes implemented
+2. **No SLCONS**: Shoreline constructions (piers, breakwaters) not extracted
+3. **Static Data**: ENC update files (.001, .002, etc.) not processed
+4. **Single Region**: Only Homer Harbor area (4 charts)
+5. **No GPS Integration**: Position tracking not implemented
+6. **Web Platform**: Currently native-only (iOS/Android)
 
-### Planned Enhancements
+### What's Working Well (Proof of Concept Success)
+- ✅ **S-57 Data Pipeline**: ogr2ogr extraction to GeoJSON works reliably
+- ✅ **S-52 Symbology**: Symbol conversion and Mapbox rendering successful
+- ✅ **Chart Quilting**: Multi-scale overlay with proper z-ordering
+- ✅ **SCAMIN Filtering**: Official visibility thresholds implemented
+- ✅ **Light Sectors**: Complex bearing calculations verified against NOAA charts
+- ✅ **Offline Operation**: All data bundled, no network required
+- ✅ **Performance**: Smooth rendering on mobile devices
 
-#### Phase 1: Core Parsing (Priority)
-- [ ] Implement ISO 8211 binary format parser
-- [ ] Extract real depth contours from .000 file
-- [ ] Parse all S-57 feature types (DEPARE, SOUNDG, BOYCAR, etc.)
-- [ ] Implement coordinate transformations
+### For Integration into Target App
 
-#### Phase 2: Full Chart Display
-- [ ] S-52 presentation library integration
-- [ ] Official nautical chart symbols
-- [ ] Coastline and shoreline rendering
-- [ ] Anchorage areas
-- [ ] Restricted zones
-- [ ] Fairways and channels
-- [ ] Overhead cables and bridges
+#### Recommended Next Steps
+1. **Extract Additional Object Classes**:
+   - SLCONS (piers, breakwaters)
+   - RESARE (restricted areas)
+   - ACHARE (anchorage areas)
+   - DRGARE (dredged areas)
+   - FAIRWY (fairways)
+   
+2. **Chart Region Expansion**:
+   - Create extraction scripts for new regions
+   - Build chart catalog/download system
+   
+3. **Feature Module Architecture**:
+   - Package as standalone React Native module
+   - Define clear API for host app integration
+   - Implement chart data service
 
-#### Phase 3: Navigation Features
-- [ ] GPS position tracking
+#### Future Enhancements (Post-Integration)
+- [ ] GPS position tracking overlay
 - [ ] Route planning and waypoints
-- [ ] Distance and bearing measurements
-- [ ] Compass overlay
-- [ ] Speed and course display
-
-#### Phase 4: Advanced Features
-- [ ] Multiple chart support with seamless chart switching
-- [ ] Chart catalog browser
-- [ ] ENC update application (.001, .002 files)
-- [ ] Tide and current predictions
-- [ ] AIS vessel tracking integration
-- [ ] Chart notes and cautions display
-- [ ] Night mode with red lighting
-
-#### Phase 5: Performance & Polish
-- [ ] Tile-based rendering for large charts
-- [ ] Caching and offline support
-- [ ] Chart downloading and management
-- [ ] Settings and preferences
-- [ ] Help and tutorial system
+- [ ] Distance/bearing measurements
+- [ ] Night mode (red lighting)
+- [ ] AIS vessel tracking
+- [ ] Tide/current predictions
+- [ ] Fog signals (FOGSIG) display
+- [ ] Chart notes and cautions
 
 ## Technical Challenges
 
@@ -284,5 +295,20 @@ For questions or contributions, see the project repository or contact the develo
 ---
 
 **Last Updated**: January 24, 2026
-**Version**: 1.0.0
-**Status**: Initial Development - Proof of Concept
+**Version**: 1.2.0
+**Status**: Proof of Concept - **Successfully Validated**
+
+### Milestone Summary
+| Milestone | Status |
+|-----------|--------|
+| S-57 Data Extraction | ✅ Complete |
+| Bathymetric Display | ✅ Complete |
+| Chart Quilting | ✅ Complete |
+| SCAMIN Filtering | ✅ Complete |
+| Navigation Lights | ✅ Complete |
+| Light Sectors | ✅ Complete |
+| Buoys & Beacons | ✅ Complete |
+| Landmarks | ✅ Complete |
+| S-52 Symbology | ✅ Complete |
+| Feature Inspector | ✅ Complete |
+| Integration Ready | ✅ Ready for planning |
