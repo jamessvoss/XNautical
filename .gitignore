@@ -31,6 +31,7 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
 
 # typescript
@@ -39,3 +40,21 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Large binary files (map tiles)
+*.mbtiles
+
+# S-57 raw data files (keep the extracted JSON, exclude raw .000 files)
+# Uncomment the next line if you want to exclude raw S-57 files
+# *.000
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
