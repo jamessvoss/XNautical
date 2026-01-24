@@ -1179,14 +1179,29 @@ export default function ChartViewerMapbox() {
           );
         })}
 
-        {/* Land Areas - Quilted: rendered in order from least to most detailed */}
+        {/* Land Areas - Quilted: rendered in order from least to most detailed
+            Note: LNDARE can contain Point, LineString, and Polygon geometries
+            We only render Polygon/MultiPolygon features in the FillLayer */}
         {showLand && CHART_RENDER_ORDER.map((chartKey) => {
           const chart = CHARTS[chartKey];
+          
+          // Filter to only polygon geometries for FillLayer
+          const polygonFeatures = chart.data.lndare.features?.filter(
+            (f: any) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+          ) || [];
+          
+          if (polygonFeatures.length === 0) {
+            console.log(`[LNDARE] ${chartKey}: No polygon features, skipping FillLayer`);
+            return null;
+          }
+          
+          console.log(`[LNDARE] ${chartKey}: Rendering ${polygonFeatures.length} polygon features`);
+          
           return (
             <Mapbox.ShapeSource
               key={`land-${chartKey}`}
               id={`land-source-${chartKey}`}
-              shape={chart.data.lndare}
+              shape={{ type: 'FeatureCollection', features: polygonFeatures }}
               minZoomLevel={chart.minZoom}
             >
               <Mapbox.FillLayer
@@ -1204,11 +1219,27 @@ export default function ChartViewerMapbox() {
         {/* Depth Areas - Quilted: detailed charts overlay less detailed ones */}
         {showDepthAreas && CHART_RENDER_ORDER.map((chartKey) => {
           const chart = CHARTS[chartKey];
+          
+          // Filter to only polygon geometries (DEPARE should only have polygons, but be safe)
+          const polygonFeatures = chart.data.depare.features?.filter(
+            (f: any) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+          ) || [];
+          
+          if (polygonFeatures.length === 0) {
+            console.log(`[DEPARE] ${chartKey}: No polygon features, skipping`);
+            return null;
+          }
+          
+          // Log if there's a mismatch (indicates non-polygon data in the source)
+          if (polygonFeatures.length !== chart.data.depare.features?.length) {
+            console.warn(`[DEPARE] ${chartKey}: Filtered ${chart.data.depare.features.length - polygonFeatures.length} non-polygon features`);
+          }
+          
           return (
             <Mapbox.ShapeSource
               key={`depare-${chartKey}`}
               id={`depth-areas-source-${chartKey}`}
-              shape={chart.data.depare}
+              shape={{ type: 'FeatureCollection', features: polygonFeatures }}
               minZoomLevel={chart.minZoom}
             >
               <Mapbox.FillLayer
@@ -1755,7 +1786,12 @@ export default function ChartViewerMapbox() {
             (f: any) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
           );
           
-          if (polygonFeatures.length === 0) return null;
+          if (polygonFeatures.length === 0) {
+            console.log(`[OBSTRN-POLY] ${chartKey}: No polygon features`);
+            return null;
+          }
+          
+          console.log(`[OBSTRN-POLY] ${chartKey}: Rendering ${polygonFeatures.length} polygon features`);
           
           return (
             <Mapbox.ShapeSource
@@ -1820,7 +1856,12 @@ export default function ChartViewerMapbox() {
             (f: any) => f.geometry && f.geometry.type === 'Point'
           );
           
-          if (pointFeatures.length === 0) return null;
+          if (pointFeatures.length === 0) {
+            console.log(`[OBSTRN-POINT] ${chartKey}: No point features`);
+            return null;
+          }
+          
+          console.log(`[OBSTRN-POINT] ${chartKey}: Rendering ${pointFeatures.length} point features`);
           
           return (
             <Mapbox.ShapeSource
