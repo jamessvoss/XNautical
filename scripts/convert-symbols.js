@@ -24,6 +24,33 @@ const SYMBOLS_TO_CONVERT = [
   
   // Lighted beacon
   { src: 'point/P4_Lighted_beacon.svg', name: 'lighted-beacon' },
+  
+  // Buoy symbols (BOYSHP)
+  { src: 'point/Q20a_Conical_buoy.svg', name: 'buoy-conical' },      // BOYSHP=1 (nun buoy)
+  { src: 'point/Q21a_Can_buoy.svg', name: 'buoy-can' },              // BOYSHP=2
+  { src: 'point/Q22a_Spherical_buoy.svg', name: 'buoy-spherical' },  // BOYSHP=3
+  { src: 'point/Q23a_Pillar_buoy.svg', name: 'buoy-pillar' },        // BOYSHP=4
+  { src: 'point/Q24_Spar_buoy.svg', name: 'buoy-spar' },             // BOYSHP=5
+  { src: 'point/Q25a_Barrel_buoy.svg', name: 'buoy-barrel' },        // BOYSHP=6
+  { src: 'point/Q26_Super_buoy.svg', name: 'buoy-super' },           // BOYSHP=7
+  
+  // Beacon symbols (BCNSHP)
+  { src: 'point/Q90_Stake_pole.svg', name: 'beacon-stake' },         // BCNSHP=1
+  { src: 'point/Q92_Withy_port.svg', name: 'beacon-withy' },         // BCNSHP=2
+  { src: 'point/Q110a_Beacon_tower.svg', name: 'beacon-tower' },     // BCNSHP=3
+  { src: 'point/Q111_Lattice_beacon.svg', name: 'beacon-lattice' },  // BCNSHP=4
+  { src: 'point/Q80_Beacon.svg', name: 'beacon-generic' },           // Default beacon
+  { src: 'point/Q100_cairn.svg', name: 'beacon-cairn' },             // BCNSHP=6
+  
+  // Landmark symbols (CATLMK)
+  { src: 'point/E20_Tower.svg', name: 'landmark-tower' },            // CATLMK=17 (tower)
+  { src: 'point/E22_Chimney.svg', name: 'landmark-chimney' },        // CATLMK=3 (chimney)
+  { src: 'point/E24_Monument.svg', name: 'landmark-monument' },      // CATLMK=10 (monument)
+  { src: 'point/E27_Flagpole.svg', name: 'landmark-flagpole' },      // CATLMK=7 (flagpole)
+  { src: 'point/E28_Radio_mast.svg', name: 'landmark-mast' },        // CATLMK=12 (mast)
+  { src: 'point/E29_Radio_tower.svg', name: 'landmark-radio-tower' },// Radio tower
+  { src: 'point/E25_Windmill.svg', name: 'landmark-windmill' },      // CATLMK=20 (windmill)
+  { src: 'point/E10_Church.svg', name: 'landmark-church' },          // CATLMK=2 (church)
 ];
 
 const INPUT_DIR = path.join(__dirname, '../assets/symbols');

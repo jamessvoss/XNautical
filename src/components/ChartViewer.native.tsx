@@ -3,7 +3,7 @@
  * Uses GeoJSON data stored locally for true offline operation
  */
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import {
   StyleSheet,
   View,
@@ -43,13 +43,186 @@ const lightsData_SI = require('../../assets/Maps/US5AK5SI_lights.json');
 const lightsData_QG = require('../../assets/Maps/US5AK5QG_lights.json');
 const lightsData_SJ = require('../../assets/Maps/US5AK5SJ_lights.json');
 
-// S-52 Symbol images for navigation lights
+// Buoys data for each chart
+const buoysData_PH = require('../../assets/Maps/US4AK4PH_buoys.json');
+const buoysData_SI = require('../../assets/Maps/US5AK5SI_buoys.json');
+const buoysData_QG = require('../../assets/Maps/US5AK5QG_buoys.json');
+const buoysData_SJ = require('../../assets/Maps/US5AK5SJ_buoys.json');
+
+// Beacons data for each chart
+const beaconsData_PH = require('../../assets/Maps/US4AK4PH_beacons.json');
+const beaconsData_SI = require('../../assets/Maps/US5AK5SI_beacons.json');
+const beaconsData_QG = require('../../assets/Maps/US5AK5QG_beacons.json');
+const beaconsData_SJ = require('../../assets/Maps/US5AK5SJ_beacons.json');
+
+// Landmarks data for each chart
+const landmarksData_PH = require('../../assets/Maps/US4AK4PH_landmarks.json');
+const landmarksData_SI = require('../../assets/Maps/US5AK5SI_landmarks.json');
+const landmarksData_QG = require('../../assets/Maps/US5AK5QG_landmarks.json');
+const landmarksData_SJ = require('../../assets/Maps/US5AK5SJ_landmarks.json');
+
+// S-52 Symbol images for navigation features
 // Metro automatically selects @2x/@3x based on device pixel density
-const LIGHT_SYMBOLS = {
+const NAV_SYMBOLS = {
+  // Light flares
   'light-flare-white': require('../../assets/symbols/png/light-flare-white.png'),
   'light-flare-red': require('../../assets/symbols/png/light-flare-red.png'),
   'light-flare-green': require('../../assets/symbols/png/light-flare-green.png'),
   'light-flare-magenta': require('../../assets/symbols/png/light-flare-magenta.png'),
+  // Buoys (by shape)
+  'buoy-conical': require('../../assets/symbols/png/buoy-conical.png'),
+  'buoy-can': require('../../assets/symbols/png/buoy-can.png'),
+  'buoy-spherical': require('../../assets/symbols/png/buoy-spherical.png'),
+  'buoy-pillar': require('../../assets/symbols/png/buoy-pillar.png'),
+  'buoy-spar': require('../../assets/symbols/png/buoy-spar.png'),
+  'buoy-barrel': require('../../assets/symbols/png/buoy-barrel.png'),
+  'buoy-super': require('../../assets/symbols/png/buoy-super.png'),
+  // Beacons (by shape)
+  'beacon-stake': require('../../assets/symbols/png/beacon-stake.png'),
+  'beacon-withy': require('../../assets/symbols/png/beacon-withy.png'),
+  'beacon-tower': require('../../assets/symbols/png/beacon-tower.png'),
+  'beacon-lattice': require('../../assets/symbols/png/beacon-lattice.png'),
+  'beacon-generic': require('../../assets/symbols/png/beacon-generic.png'),
+  'beacon-cairn': require('../../assets/symbols/png/beacon-cairn.png'),
+  // Landmarks (by category)
+  'landmark-tower': require('../../assets/symbols/png/landmark-tower.png'),
+  'landmark-chimney': require('../../assets/symbols/png/landmark-chimney.png'),
+  'landmark-monument': require('../../assets/symbols/png/landmark-monument.png'),
+  'landmark-flagpole': require('../../assets/symbols/png/landmark-flagpole.png'),
+  'landmark-mast': require('../../assets/symbols/png/landmark-mast.png'),
+  'landmark-radio-tower': require('../../assets/symbols/png/landmark-radio-tower.png'),
+  'landmark-windmill': require('../../assets/symbols/png/landmark-windmill.png'),
+  'landmark-church': require('../../assets/symbols/png/landmark-church.png'),
+};
+
+// Generate sector arc outline for a light with sector information
+// S-57 SECTR1/SECTR2 are bearings "from seaward" (bearing TO the light as seen by vessel)
+// To show where the light PROJECTS, we add 180° to get the direction FROM the light
+// Returns a GeoJSON MultiLineString with boundary lines AND the curved arc
+const generateSectorLines = (
+  centerLon: number,
+  centerLat: number,
+  sectr1: number,
+  sectr2: number,
+  colour: string,
+  radiusNm: number = 0.4  // Default radius in nautical miles for display
+): GeoJSON.Feature<GeoJSON.MultiLineString> => {
+  // Convert nautical miles to approximate degrees (1 NM ≈ 1/60 degree at equator)
+  // Adjust for latitude
+  const radiusDeg = radiusNm / 60;
+  const latRadians = (centerLat * Math.PI) / 180;
+  const lonScale = Math.cos(latRadians);
+  
+  // S-57 bearings are "from seaward" - add 180° to get light projection direction
+  const projectedSectr1 = (sectr1 + 180) % 360;
+  const projectedSectr2 = (sectr2 + 180) % 360;
+  
+  // Calculate end points for both sector boundary lines
+  const bearing1Rad = (projectedSectr1 * Math.PI) / 180;
+  const bearing2Rad = (projectedSectr2 * Math.PI) / 180;
+  
+  // Line 1: from center to sectr1 boundary
+  const dx1 = Math.sin(bearing1Rad) * radiusDeg / lonScale;
+  const dy1 = Math.cos(bearing1Rad) * radiusDeg;
+  const endPoint1: [number, number] = [centerLon + dx1, centerLat + dy1];
+  
+  // Line 2: from center to sectr2 boundary
+  const dx2 = Math.sin(bearing2Rad) * radiusDeg / lonScale;
+  const dy2 = Math.cos(bearing2Rad) * radiusDeg;
+  const endPoint2: [number, number] = [centerLon + dx2, centerLat + dy2];
+  
+  // Generate arc points for the VISIBLE sector (every 3 degrees for smoothness)
+  // The visible sector goes FROM sectr1 CLOCKWISE around TO sectr2
+  // The GAP (where light is obscured) is the short arc from sectr2 to sectr1
+  const arcPoints: [number, number][] = [];
+  
+  // Go clockwise from sectr1 to sectr2 (the long way around)
+  // Clockwise = increasing bearing
+  let startBearing = projectedSectr1;
+  let endBearing = projectedSectr2;
+  
+  // To go clockwise from start to end:
+  // If end <= start, add 360 to end so we go the long way
+  if (endBearing <= startBearing) {
+    endBearing += 360;
+  }
+  
+  // Generate arc points going clockwise (increasing bearing)
+  for (let bearing = startBearing; bearing <= endBearing; bearing += 3) {
+    const normalizedBearing = bearing % 360;
+    const bearingRad = (normalizedBearing * Math.PI) / 180;
+    const dx = Math.sin(bearingRad) * radiusDeg / lonScale;
+    const dy = Math.cos(bearingRad) * radiusDeg;
+    arcPoints.push([centerLon + dx, centerLat + dy]);
+  }
+  
+  // Ensure we end at exactly the end bearing
+  const finalBearingRad = ((endBearing % 360) * Math.PI) / 180;
+  const dxFinal = Math.sin(finalBearingRad) * radiusDeg / lonScale;
+  const dyFinal = Math.cos(finalBearingRad) * radiusDeg;
+  arcPoints.push([centerLon + dxFinal, centerLat + dyFinal]);
+  
+  return {
+    type: 'Feature',
+    properties: {
+      colour: colour,
+      sectr1: projectedSectr1,
+      sectr2: projectedSectr2,
+    },
+    geometry: {
+      type: 'MultiLineString',
+      coordinates: [
+        // Line from center to first sector boundary
+        [[centerLon, centerLat], endPoint1],
+        // Line from center to second sector boundary  
+        [[centerLon, centerLat], endPoint2],
+        // Curved arc connecting the two boundaries
+        arcPoints,
+      ],
+    },
+  };
+};
+
+// Process lights data to extract sector line features
+const extractSectorFeatures = (lightsData: GeoJSON.FeatureCollection): GeoJSON.FeatureCollection => {
+  const sectorFeatures: GeoJSON.Feature<GeoJSON.MultiLineString>[] = [];
+  
+  if (!lightsData?.features) return { type: 'FeatureCollection', features: [] };
+  
+  for (const feature of lightsData.features) {
+    const props = feature.properties;
+    if (!props) continue;
+    
+    const sectr1 = props.SECTR1 as number | undefined;
+    const sectr2 = props.SECTR2 as number | undefined;
+    
+    // Only process lights with sector information
+    if (sectr1 !== undefined && sectr2 !== undefined) {
+      const coords = (feature.geometry as GeoJSON.Point).coordinates;
+      const colours = props.COLOUR as string[] | undefined;
+      const colour = colours && colours.length > 0 ? colours[0] : '1';
+      
+      // Use range (VALNMR) if available, otherwise default
+      const range = props.VALNMR as number | undefined;
+      const radiusNm = range ? Math.min(range * 0.2, 0.6) : 0.35;
+      
+      const sectorFeature = generateSectorLines(
+        coords[0],
+        coords[1],
+        sectr1,
+        sectr2,
+        colour,
+        radiusNm
+      );
+      
+      sectorFeatures.push(sectorFeature);
+    }
+  }
+  
+  return {
+    type: 'FeatureCollection',
+    features: sectorFeatures,
+  };
 };
 
 // Debug colors for each chart
@@ -81,6 +254,9 @@ const CHARTS = {
       soundg: soundgData_PH,
       lndare: lndareData_PH,
       lights: lightsData_PH,
+      buoys: buoysData_PH,
+      beacons: beaconsData_PH,
+      landmarks: landmarksData_PH,
     },
   },
   US5AK5SJ: {
@@ -99,6 +275,9 @@ const CHARTS = {
       soundg: soundgData_SJ,
       lndare: lndareData_SJ,
       lights: lightsData_SJ,
+      buoys: buoysData_SJ,
+      beacons: beaconsData_SJ,
+      landmarks: landmarksData_SJ,
     },
   },
   US5AK5SI: {
@@ -117,6 +296,9 @@ const CHARTS = {
       soundg: soundgData_SI,
       lndare: lndareData_SI,
       lights: lightsData_SI,
+      buoys: buoysData_SI,
+      beacons: beaconsData_SI,
+      landmarks: landmarksData_SI,
     },
   },
   US5AK5QG: {
@@ -135,6 +317,9 @@ const CHARTS = {
       soundg: soundgData_QG,
       lndare: lndareData_QG,
       lights: lightsData_QG,
+      buoys: buoysData_QG,
+      beacons: beaconsData_QG,
+      landmarks: landmarksData_QG,
     },
   },
 };
@@ -207,9 +392,256 @@ const LIGHT_CHARACTERISTICS: Record<string, string> = {
   '29': 'Fixed/alternating flashing (F+Al.Fl)',
 };
 
+// S-57 Category of light codes
+const LIGHT_CATEGORIES: Record<string, string> = {
+  '1': 'Directional',
+  '2': 'Upper range light',
+  '3': 'Lower range light',
+  '4': 'Leading light',
+  '5': 'Aero light',
+  '6': 'Air obstruction',
+  '7': 'Fog detector',
+  '8': 'Flood light',
+  '9': 'Strip light',
+  '10': 'Subsidiary',
+  '11': 'Spotlight',
+  '12': 'Front range',
+  '13': 'Rear range',
+  '14': 'Lower light',
+  '15': 'Upper light',
+  '16': 'Moire effect',
+  '17': 'Emergency',
+  '18': 'Bearing light',
+  '19': 'Horizontally disposed',
+  '20': 'Vertically disposed',
+};
+
+// S-57 Exhibition condition codes
+const EXHIBITION_CONDITIONS: Record<string, string> = {
+  '1': 'Light shown without change of character',
+  '2': 'Day light',
+  '3': 'Fog light',
+  '4': 'Night light',
+};
+
+// S-57 Light status codes
+const LIGHT_STATUS: Record<string, string> = {
+  '1': 'Permanent',
+  '2': 'Occasional',
+  '3': 'Recommended',
+  '4': 'Not in use',
+  '5': 'Periodic/Intermittent',
+  '7': 'Temporary',
+  '8': 'Private',
+  '11': 'On request',
+  '12': 'Reserved',
+  '17': 'Extinguished',
+  '18': 'Illuminated',
+};
+
+// Build abbreviated characteristic string for chart label
+const getCharAbbrev = (litchr: string): string => {
+  const abbrevs: Record<string, string> = {
+    '1': 'F',       // Fixed
+    '2': 'Fl',      // Flashing
+    '3': 'LFl',     // Long-flashing
+    '4': 'Q',       // Quick
+    '5': 'VQ',      // Very quick
+    '6': 'UQ',      // Ultra quick
+    '7': 'Iso',     // Isophase
+    '8': 'Oc',      // Occulting
+    '9': 'IQ',      // Interrupted quick
+    '10': 'IVQ',    // Interrupted very quick
+    '11': 'IUQ',    // Interrupted ultra quick
+    '12': 'Mo',     // Morse
+    '13': 'FFl',    // Fixed/flash
+    '14': 'FlLFl',  // Flash/long-flash
+    '15': 'OcFl',   // Occulting/flash
+    '16': 'FLFl',   // Fixed/long-flash
+    '17': 'OcLFl',  // Occulting/long-flash
+    '25': 'Q+LFl',  // Quick + long-flash
+    '26': 'VQ+LFl', // Very quick + long-flash
+    '27': 'UQ+LFl', // Ultra quick + long-flash
+    '28': 'Al',     // Alternating
+    '29': 'F+Al.Fl',// Fixed + alternating flash
+  };
+  return abbrevs[litchr] || '';
+};
+
+// Build abbreviated color string for chart label
+const getColorAbbrev = (colours: string[]): string => {
+  const abbrevs: Record<string, string> = {
+    '1': 'W', '2': 'Bl', '3': 'R', '4': 'G', '5': 'Bu',
+    '6': 'Y', '7': 'Gr', '8': 'Br', '9': 'Am', '10': 'Vi', '11': 'Or',
+  };
+  return colours.map(c => abbrevs[c] || '').join('');
+};
+
 // Format light properties for display
 const formatLightInfo = (properties: Record<string, unknown>): Record<string, string> => {
   const formatted: Record<string, string> = {};
+  
+  // Build chart-style label first (e.g., "Fl(1) W 4s 8m 5M")
+  const litchr = properties.LITCHR as string | undefined;
+  const siggrp = properties.SIGGRP as string | undefined;
+  const sigper = properties.SIGPER as number | undefined;
+  const height = properties.HEIGHT as number | undefined;
+  const valnmr = properties.VALNMR as number | undefined;
+  const colours = properties.COLOUR as string[] | undefined;
+  
+  let chartLabel = '';
+  if (litchr) {
+    chartLabel = getCharAbbrev(litchr);
+    if (siggrp) chartLabel += siggrp;
+  }
+  if (colours && colours.length > 0) {
+    const colorAbbr = getColorAbbrev(colours);
+    if (colorAbbr) chartLabel += ` ${colorAbbr}`;
+  }
+  if (sigper) chartLabel += ` ${sigper}s`;
+  if (height) chartLabel += ` ${height}m`;
+  if (valnmr) chartLabel += ` ${valnmr}M`;
+  
+  if (chartLabel.trim()) {
+    formatted['Chart Label'] = chartLabel.trim();
+  }
+  
+  // Color (full name)
+  if (colours && colours.length > 0) {
+    const colorNames = colours.map(c => LIGHT_COLOURS[c] || c).join(', ');
+    if (colours.length > 1) {
+      formatted['Color'] = `${colorNames} (alternating)`;
+    } else {
+      formatted['Color'] = colorNames;
+    }
+  }
+  
+  // Characteristic (full name)
+  if (litchr) {
+    formatted['Characteristic'] = LIGHT_CHARACTERISTICS[litchr] || `Code ${litchr}`;
+  }
+  
+  // Signal group
+  if (siggrp) {
+    formatted['Group'] = siggrp;
+  }
+  
+  // Signal period
+  if (sigper) {
+    formatted['Period'] = `${sigper} seconds`;
+  }
+  
+  // Signal sequence (detailed timing)
+  const sigseq = properties.SIGSEQ as string | undefined;
+  if (sigseq) {
+    formatted['Sequence'] = sigseq;
+  }
+  
+  // Height
+  if (height) {
+    formatted['Height'] = `${height}m above water`;
+  }
+  
+  // Range (nominal range in nautical miles)
+  if (valnmr) {
+    formatted['Range'] = `${valnmr} nautical miles`;
+  }
+  
+  // Sector angles
+  const sectr1 = properties.SECTR1 as number | undefined;
+  const sectr2 = properties.SECTR2 as number | undefined;
+  if (sectr1 !== undefined && sectr2 !== undefined) {
+    formatted['Sector'] = `${sectr1}° to ${sectr2}° (visible arc)`;
+  }
+  
+  // Orientation
+  const orient = properties.ORIENT as number | undefined;
+  if (orient !== undefined) {
+    formatted['Orientation'] = `${orient}° (direction of light)`;
+  }
+  
+  // Category of light
+  const catlit = properties.CATLIT as string[] | undefined;
+  if (catlit && catlit.length > 0) {
+    const categories = catlit.map(c => LIGHT_CATEGORIES[c] || `Code ${c}`).join(', ');
+    formatted['Category'] = categories;
+  }
+  
+  // Exhibition condition
+  const exclit = properties.EXCLIT as number | undefined;
+  if (exclit) {
+    formatted['Exhibition'] = EXHIBITION_CONDITIONS[String(exclit)] || `Code ${exclit}`;
+  }
+  
+  // Status
+  const status = properties.STATUS as string[] | string | undefined;
+  if (status) {
+    const statusArray = Array.isArray(status) ? status : [status];
+    const statusNames = statusArray.map(s => LIGHT_STATUS[s] || `Code ${s}`).join(', ');
+    formatted['Status'] = statusNames;
+  }
+  
+  // LNAM (unique identifier)
+  const lnam = properties.LNAM as string | undefined;
+  if (lnam) {
+    formatted['ID (LNAM)'] = lnam;
+  }
+  
+  return formatted;
+};
+
+// S-57 Buoy shape codes
+const BUOY_SHAPES: Record<string, string> = {
+  '1': 'Conical (nun)',
+  '2': 'Can (cylindrical)',
+  '3': 'Spherical',
+  '4': 'Pillar',
+  '5': 'Spar',
+  '6': 'Barrel',
+  '7': 'Super-buoy',
+  '8': 'Ice buoy',
+};
+
+// S-57 Beacon shape codes
+const BEACON_SHAPES: Record<string, string> = {
+  '1': 'Stake/pole',
+  '2': 'Withy',
+  '3': 'Tower',
+  '4': 'Lattice',
+  '5': 'Pile',
+  '6': 'Cairn',
+  '7': 'Buoyant',
+};
+
+// S-57 Category of lateral mark
+const LATERAL_CATEGORIES: Record<string, string> = {
+  '1': 'Port hand (red, left side)',
+  '2': 'Starboard hand (green, right side)',
+  '3': 'Preferred channel to starboard',
+  '4': 'Preferred channel to port',
+};
+
+// Format buoy properties for display
+const formatBuoyInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  // Shape
+  const boyshp = properties.BOYSHP as string | undefined;
+  if (boyshp) {
+    formatted['Shape'] = BUOY_SHAPES[boyshp] || `Code ${boyshp}`;
+  }
+  
+  // Lateral category
+  const catlam = properties.CATLAM as string | undefined;
+  if (catlam) {
+    formatted['Category'] = LATERAL_CATEGORIES[catlam] || `Code ${catlam}`;
+  }
   
   // Color
   const colours = properties.COLOUR as string[] | undefined;
@@ -218,64 +650,132 @@ const formatLightInfo = (properties: Record<string, unknown>): Record<string, st
     formatted['Color'] = colorNames;
   }
   
-  // Characteristic
-  const litchr = properties.LITCHR as string | undefined;
-  if (litchr) {
-    formatted['Characteristic'] = LIGHT_CHARACTERISTICS[litchr] || `Code ${litchr}`;
-  }
-  
-  // Signal period
-  const sigper = properties.SIGPER as number | undefined;
-  if (sigper) {
-    formatted['Period'] = `${sigper} seconds`;
-  }
-  
-  // Signal group
-  const siggrp = properties.SIGGRP as string | undefined;
-  if (siggrp) {
-    formatted['Group'] = siggrp;
-  }
-  
-  // Height
-  const height = properties.HEIGHT as number | undefined;
-  if (height) {
-    formatted['Height'] = `${height} meters`;
-  }
-  
-  // Range (nominal range in nautical miles)
-  const valnmr = properties.VALNMR as number | undefined;
-  if (valnmr) {
-    formatted['Range'] = `${valnmr} NM`;
-  }
-  
-  // Sector angles
-  const sectr1 = properties.SECTR1 as number | undefined;
-  const sectr2 = properties.SECTR2 as number | undefined;
-  if (sectr1 !== undefined) {
-    if (sectr2 !== undefined) {
-      formatted['Sector'] = `${sectr1}° - ${sectr2}°`;
-    } else {
-      formatted['Orientation'] = `${sectr1}°`;
-    }
-  }
-  
   // Status
-  const status = properties.STATUS as string | undefined;
-  if (status) {
+  const status = properties.STATUS as string[] | undefined;
+  if (status && status.length > 0) {
     const statusMap: Record<string, string> = {
-      '1': 'Permanent',
-      '2': 'Occasional',
-      '3': 'Recommended',
-      '4': 'Not in use',
-      '5': 'Periodic/Intermittent',
-      '7': 'Temporary',
-      '8': 'Private',
-      '11': 'On request',
-      '12': 'Reserved',
-      '17': 'Extinguished',
-      '18': 'Illuminated',
+      '1': 'Permanent', '2': 'Occasional', '4': 'Not in use', '8': 'Private',
     };
-    formatted['Status'] = statusMap[status] || `Code ${status}`;
+    formatted['Status'] = status.map(s => statusMap[s] || s).join(', ');
+  }
+  
+  return formatted;
+};
+
+// S-57 Landmark category codes
+const LANDMARK_CATEGORIES: Record<string, string> = {
+  '1': 'Cairn',
+  '2': 'Cemetery',
+  '3': 'Chimney',
+  '4': 'Dish aerial',
+  '5': 'Flagstaff',
+  '6': 'Flare stack',
+  '7': 'Mast',
+  '8': 'Windsock',
+  '9': 'Monument',
+  '10': 'Column/pillar',
+  '11': 'Memorial plaque',
+  '12': 'Obelisk',
+  '13': 'Statue',
+  '14': 'Cross',
+  '15': 'Dome',
+  '16': 'Radar scanner',
+  '17': 'Tower',
+  '18': 'Windmill',
+  '19': 'Windmotor',
+  '20': 'Spire/minaret',
+};
+
+// S-57 Function codes
+const LANDMARK_FUNCTIONS: Record<string, string> = {
+  '2': 'Harbour-Loss',
+  '3': 'Custom',
+  '4': 'Health',
+  '7': 'Hospital',
+  '9': 'Police',
+  '20': 'Control',
+  '21': 'Coastguard',
+  '33': 'Light support',
+  '35': 'Radio/TV',
+  '45': 'Bus station',
+  '46': 'Railway station',
+};
+
+// Format landmark properties for display
+const formatLandmarkInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  // Category
+  const catlmk = properties.CATLMK as string[] | undefined;
+  if (catlmk && catlmk.length > 0) {
+    const categories = catlmk.map(c => LANDMARK_CATEGORIES[c] || `Code ${c}`).join(', ');
+    formatted['Category'] = categories;
+  }
+  
+  // Function
+  const functn = properties.FUNCTN as string[] | undefined;
+  if (functn && functn.length > 0) {
+    const functions = functn.map(f => LANDMARK_FUNCTIONS[f] || `Code ${f}`).join(', ');
+    formatted['Function'] = functions;
+  }
+  
+  // Conspicuous
+  const convis = properties.CONVIS as number | undefined;
+  if (convis === 1) {
+    formatted['Visibility'] = 'Conspicuous';
+  } else if (convis === 2) {
+    formatted['Visibility'] = 'Not conspicuous';
+  }
+  
+  // Color
+  const colours = properties.COLOUR as string[] | undefined;
+  if (colours && colours.length > 0) {
+    const colorNames = colours.map(c => LIGHT_COLOURS[c] || c).join(', ');
+    formatted['Color'] = colorNames;
+  }
+  
+  return formatted;
+};
+
+// Format beacon properties for display
+const formatBeaconInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  // Shape
+  const bcnshp = properties.BCNSHP as string | undefined;
+  if (bcnshp) {
+    formatted['Shape'] = BEACON_SHAPES[bcnshp] || `Code ${bcnshp}`;
+  }
+  
+  // Lateral category
+  const catlam = properties.CATLAM as string | undefined;
+  if (catlam) {
+    formatted['Category'] = LATERAL_CATEGORIES[catlam] || `Code ${catlam}`;
+  }
+  
+  // Color
+  const colours = properties.COLOUR as string[] | undefined;
+  if (colours && colours.length > 0) {
+    const colorNames = colours.map(c => LIGHT_COLOURS[c] || c).join(', ');
+    formatted['Color'] = colorNames;
+  }
+  
+  // Additional info
+  const inform = properties.INFORM as string | undefined;
+  if (inform) {
+    formatted['Info'] = inform;
   }
   
   return formatted;
@@ -304,7 +804,21 @@ export default function ChartViewerMapbox() {
   const [showSoundings, setShowSoundings] = useState(true);
   const [showLand, setShowLand] = useState(true);
   const [showLights, setShowLights] = useState(true);
+  const [showBuoys, setShowBuoys] = useState(true);
+  const [showBeacons, setShowBeacons] = useState(true);
+  const [showLandmarks, setShowLandmarks] = useState(true);
+  const [showSectors, setShowSectors] = useState(true);
   const [showSatellite, setShowSatellite] = useState(false);
+  
+  // Pre-compute sector arc geometries for all charts
+  const sectorData = useMemo(() => {
+    return {
+      US4AK4PH: extractSectorFeatures(lightsData_PH),
+      US5AK5SJ: extractSectorFeatures(lightsData_SJ),
+      US5AK5SI: extractSectorFeatures(lightsData_SI),
+      US5AK5QG: extractSectorFeatures(lightsData_QG),
+    };
+  }, []);
   
   // Debug state
   const [currentZoom, setCurrentZoom] = useState(13);
@@ -448,7 +962,7 @@ export default function ChartViewerMapbox() {
         />
 
         {/* Load S-52 symbol images for navigation features */}
-        <Mapbox.Images images={LIGHT_SYMBOLS} />
+        <Mapbox.Images images={NAV_SYMBOLS} />
 
         {/* DEBUG: Chart boundary outlines */}
         {showBoundaries && CHART_RENDER_ORDER.map((chartKey) => {
@@ -673,6 +1187,264 @@ export default function ChartViewerMapbox() {
           );
         })}
 
+        {/* Landmarks - Towers, monuments, and other conspicuous structures */}
+        {showLandmarks && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.landmarks) return null;
+          return (
+            <Mapbox.ShapeSource
+              key={`landmarks-${chartKey}`}
+              id={`landmarks-source-${chartKey}`}
+              shape={chart.data.landmarks}
+              minZoomLevel={chart.minZoom}
+              hitbox={{ width: 44, height: 44 }}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Landmark',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.SymbolLayer
+                id={`landmarks-symbol-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  // Select icon based on CATLMK (category of landmark)
+                  iconImage: [
+                    'match',
+                    ['to-string', ['at', 0, ['get', 'CATLMK']]],
+                    '17', 'landmark-tower',      // Tower
+                    '3', 'landmark-chimney',     // Chimney
+                    '9', 'landmark-monument',    // Monument
+                    '10', 'landmark-monument',   // Column/pillar
+                    '5', 'landmark-flagpole',    // Flagstaff
+                    '7', 'landmark-mast',        // Mast
+                    '18', 'landmark-windmill',   // Windmill
+                    '19', 'landmark-windmill',   // Windmotor
+                    '2', 'landmark-church',      // Cemetery (use church)
+                    'landmark-tower',            // Default: tower
+                  ],
+                  iconSize: [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    10, 0.4,
+                    14, 0.6,
+                    18, 0.8,
+                  ],
+                  iconAnchor: 'bottom',  // Anchor at base for proper light alignment
+                  iconAllowOverlap: true,
+                }}
+              />
+              {/* Landmark name label at higher zoom */}
+              <Mapbox.SymbolLayer
+                id={`landmarks-label-${chartKey}`}
+                minZoomLevel={14}
+                style={{
+                  textField: ['get', 'OBJNAM'],
+                  textSize: 10,
+                  textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+                  textColor: '#000000',
+                  textHaloColor: '#FFFFFF',
+                  textHaloWidth: 1.5,
+                  textOffset: [0, 1.5],
+                  textAnchor: 'top',
+                  textAllowOverlap: false,
+                  textOptional: true,
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Buoys - Navigation buoys with shape-based symbols */}
+        {showBuoys && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.buoys) return null;
+          return (
+            <Mapbox.ShapeSource
+              key={`buoys-${chartKey}`}
+              id={`buoys-source-${chartKey}`}
+              shape={chart.data.buoys}
+              minZoomLevel={chart.minZoom}
+              hitbox={{ width: 44, height: 44 }}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Buoy',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.SymbolLayer
+                id={`buoys-symbol-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  // Select icon based on BOYSHP (buoy shape) attribute
+                  iconImage: [
+                    'match',
+                    ['to-string', ['get', 'BOYSHP']],
+                    '1', 'buoy-conical',    // Conical/nun
+                    '2', 'buoy-can',        // Can/cylindrical
+                    '3', 'buoy-spherical',  // Spherical
+                    '4', 'buoy-pillar',     // Pillar
+                    '5', 'buoy-spar',       // Spar
+                    '6', 'buoy-barrel',     // Barrel
+                    '7', 'buoy-super',      // Super-buoy
+                    'buoy-pillar',          // Default
+                  ],
+                  iconSize: [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    10, 0.4,
+                    14, 0.6,
+                    18, 0.8,
+                  ],
+                  iconAnchor: 'bottom',  // Anchor at waterline for proper light alignment
+                  iconAllowOverlap: true,
+                }}
+              />
+              {/* Buoy name label at higher zoom */}
+              <Mapbox.SymbolLayer
+                id={`buoys-label-${chartKey}`}
+                minZoomLevel={14}
+                style={{
+                  textField: ['get', 'OBJNAM'],
+                  textSize: 10,
+                  textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+                  textColor: '#000000',
+                  textHaloColor: '#FFFFFF',
+                  textHaloWidth: 1.5,
+                  textOffset: [0, 1.5],
+                  textAnchor: 'top',
+                  textAllowOverlap: false,
+                  textOptional: true,
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Beacons - Fixed navigation beacons with shape-based symbols */}
+        {showBeacons && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.beacons) return null;
+          return (
+            <Mapbox.ShapeSource
+              key={`beacons-${chartKey}`}
+              id={`beacons-source-${chartKey}`}
+              shape={chart.data.beacons}
+              minZoomLevel={chart.minZoom}
+              hitbox={{ width: 44, height: 44 }}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Beacon',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.SymbolLayer
+                id={`beacons-symbol-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  // Select icon based on BCNSHP (beacon shape) attribute
+                  iconImage: [
+                    'match',
+                    ['to-string', ['get', 'BCNSHP']],
+                    '1', 'beacon-stake',    // Stake/pole
+                    '2', 'beacon-withy',    // Withy
+                    '3', 'beacon-tower',    // Tower
+                    '4', 'beacon-lattice',  // Lattice
+                    '6', 'beacon-cairn',    // Cairn
+                    'beacon-generic',       // Default
+                  ],
+                  iconSize: [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    10, 0.4,
+                    14, 0.6,
+                    18, 0.8,
+                  ],
+                  iconAnchor: 'bottom',  // Anchor at base for proper light alignment
+                  iconAllowOverlap: true,
+                }}
+              />
+              {/* Beacon name label at higher zoom */}
+              <Mapbox.SymbolLayer
+                id={`beacons-label-${chartKey}`}
+                minZoomLevel={14}
+                style={{
+                  textField: ['get', 'OBJNAM'],
+                  textSize: 10,
+                  textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+                  textColor: '#000000',
+                  textHaloColor: '#FFFFFF',
+                  textHaloWidth: 1.5,
+                  textOffset: [0, 1.5],
+                  textAnchor: 'top',
+                  textAllowOverlap: false,
+                  textOptional: true,
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Light Sectors - Colored lines showing sector boundaries
+            S-57 SECTR1/SECTR2 are "from seaward" so we add 180° to show projection direction
+            Rendered before lights so light symbols appear on top */}
+        {showSectors && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          const sectors = sectorData[chartKey];
+          if (!sectors || sectors.features.length === 0) return null;
+          return (
+            <Mapbox.ShapeSource
+              key={`sectors-${chartKey}`}
+              id={`sectors-source-${chartKey}`}
+              shape={sectors}
+              minZoomLevel={chart.minZoom}
+            >
+              {/* Sector boundary lines - colored by light color */}
+              <Mapbox.LineLayer
+                id={`sectors-line-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  lineColor: [
+                    'match',
+                    ['get', 'colour'],
+                    '1', '#DAA520',    // White/yellow -> goldenrod
+                    '3', '#DC143C',    // Red -> crimson
+                    '4', '#228B22',    // Green -> forest green
+                    '6', '#FFD700',    // Yellow -> gold
+                    '#BA55D3',         // Default: magenta
+                  ],
+                  lineWidth: [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    12, 2,
+                    16, 3,
+                  ],
+                  lineDasharray: [6, 3],
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
         {/* Lights - Navigation lights using S-52 standard symbols
             COLOUR codes: 1=white, 3=red, 4=green
             Uses Light_Flare symbols rotated based on ORIENT/SECTR attributes
@@ -752,6 +1524,7 @@ export default function ChartViewerMapbox() {
                     135,  // Default: point SW (standard chart convention)
                   ],
                   iconRotationAlignment: 'map',
+                  iconAnchor: 'bottom',  // Anchor at tip so flare emanates from structure
                   iconAllowOverlap: true,
                   iconIgnorePlacement: false,
                 }}
@@ -855,7 +1628,11 @@ export default function ChartViewerMapbox() {
         <View style={styles.featureInspector}>
           <View style={styles.inspectorHeader}>
             <Text style={styles.inspectorTitle}>
-              {selectedFeature.layerType === 'Light' ? '💡 LIGHT INFO' : 'FEATURE INSPECTOR'}
+              {selectedFeature.layerType === 'Light' ? '💡 LIGHT INFO' : 
+               selectedFeature.layerType === 'Buoy' ? '🔴 BUOY INFO' :
+               selectedFeature.layerType === 'Beacon' ? '🔺 BEACON INFO' :
+               selectedFeature.layerType === 'Landmark' ? '🗼 LANDMARK INFO' :
+               'FEATURE INSPECTOR'}
             </Text>
             <TouchableOpacity onPress={() => setSelectedFeature(null)}>
               <Text style={styles.inspectorClose}>✕</Text>
@@ -868,7 +1645,7 @@ export default function ChartViewerMapbox() {
             </Text>
             
             {/* Special formatted display for Lights */}
-            {selectedFeature.layerType === 'Light' ? (
+            {selectedFeature.layerType === 'Light' && (
               <>
                 <Text style={styles.inspectorSubtitle}>Light Details:</Text>
                 {Object.entries(formatLightInfo(selectedFeature.properties)).map(([key, value]) => (
@@ -877,10 +1654,58 @@ export default function ChartViewerMapbox() {
                     <Text style={styles.inspectorPropValue}>{value}</Text>
                   </View>
                 ))}
+              </>
+            )}
+            
+            {/* Special formatted display for Buoys */}
+            {selectedFeature.layerType === 'Buoy' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Buoy Details:</Text>
+                {Object.entries(formatBuoyInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
+            {/* Special formatted display for Beacons */}
+            {selectedFeature.layerType === 'Beacon' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Beacon Details:</Text>
+                {Object.entries(formatBeaconInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
+            {/* Special formatted display for Landmarks */}
+            {selectedFeature.layerType === 'Landmark' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Landmark Details:</Text>
+                {Object.entries(formatLandmarkInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
+            {/* Raw properties for other features or additional data */}
+            {(selectedFeature.layerType === 'Light' || 
+              selectedFeature.layerType === 'Buoy' || 
+              selectedFeature.layerType === 'Beacon' ||
+              selectedFeature.layerType === 'Landmark') ? (
+              <>
                 <Text style={[styles.inspectorSubtitle, { marginTop: 10 }]}>Raw S-57 Data:</Text>
                 {Object.entries(selectedFeature.properties)
                   .filter(([key]) => !['layerId'].includes(key))
-                  .slice(0, 10)  // Limit raw properties shown
+                  .slice(0, 8)
                   .map(([key, value]) => (
                   <Text key={key} style={styles.inspectorProp}>
                     {key}: {String(value)}
@@ -942,6 +1767,38 @@ export default function ChartViewerMapbox() {
         >
           <Text style={[styles.layerButtonText, showLights && styles.layerButtonTextActive]}>
             Lights
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.layerButton, showSectors && styles.layerButtonActive]}
+          onPress={() => setShowSectors(!showSectors)}
+        >
+          <Text style={[styles.layerButtonText, showSectors && styles.layerButtonTextActive]}>
+            Sectors
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.layerButton, showBuoys && styles.layerButtonActive]}
+          onPress={() => setShowBuoys(!showBuoys)}
+        >
+          <Text style={[styles.layerButtonText, showBuoys && styles.layerButtonTextActive]}>
+            Buoys
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.layerButton, showBeacons && styles.layerButtonActive]}
+          onPress={() => setShowBeacons(!showBeacons)}
+        >
+          <Text style={[styles.layerButtonText, showBeacons && styles.layerButtonTextActive]}>
+            Beacons
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.layerButton, showLandmarks && styles.layerButtonActive]}
+          onPress={() => setShowLandmarks(!showLandmarks)}
+        >
+          <Text style={[styles.layerButtonText, showLandmarks && styles.layerButtonTextActive]}>
+            Landmarks
           </Text>
         </TouchableOpacity>
       </View>
