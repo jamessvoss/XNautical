@@ -61,6 +61,24 @@ const landmarksData_SI = require('../../assets/Maps/US5AK5SI_landmarks.json');
 const landmarksData_QG = require('../../assets/Maps/US5AK5QG_landmarks.json');
 const landmarksData_SJ = require('../../assets/Maps/US5AK5SJ_landmarks.json');
 
+// Wrecks data for each chart
+const wrecksData_PH = require('../../assets/Maps/US4AK4PH_wrecks.json');
+const wrecksData_SI = require('../../assets/Maps/US5AK5SI_wrecks.json');
+const wrecksData_QG = require('../../assets/Maps/US5AK5QG_wrecks.json');
+const wrecksData_SJ = require('../../assets/Maps/US5AK5SJ_wrecks.json');
+
+// Rocks data for each chart
+const rocksData_PH = require('../../assets/Maps/US4AK4PH_rocks.json');
+const rocksData_SI = require('../../assets/Maps/US5AK5SI_rocks.json');
+const rocksData_QG = require('../../assets/Maps/US5AK5QG_rocks.json');
+const rocksData_SJ = require('../../assets/Maps/US5AK5SJ_rocks.json');
+
+// Obstructions data for each chart
+const obstructionsData_PH = require('../../assets/Maps/US4AK4PH_obstructions.json');
+const obstructionsData_SI = require('../../assets/Maps/US5AK5SI_obstructions.json');
+const obstructionsData_QG = require('../../assets/Maps/US5AK5QG_obstructions.json');
+const obstructionsData_SJ = require('../../assets/Maps/US5AK5SJ_obstructions.json');
+
 // S-52 Symbol images for navigation features
 // Metro automatically selects @2x/@3x based on device pixel density
 const NAV_SYMBOLS = {
@@ -93,6 +111,20 @@ const NAV_SYMBOLS = {
   'landmark-radio-tower': require('../../assets/symbols/png/landmark-radio-tower.png'),
   'landmark-windmill': require('../../assets/symbols/png/landmark-windmill.png'),
   'landmark-church': require('../../assets/symbols/png/landmark-church.png'),
+  // Wrecks (by CATWRK and WATLEV)
+  'wreck-hull': require('../../assets/symbols/png/wreck-hull.png'),
+  'wreck-submerged': require('../../assets/symbols/png/wreck-submerged.png'),
+  'wreck-uncovers': require('../../assets/symbols/png/wreck-uncovers.png'),
+  'wreck-safe': require('../../assets/symbols/png/wreck-safe.png'),
+  'wreck-danger': require('../../assets/symbols/png/wreck-danger.png'),
+  // Rocks (by WATLEV)
+  'rock-uncovers': require('../../assets/symbols/png/rock-uncovers.png'),
+  'rock-awash': require('../../assets/symbols/png/rock-awash.png'),
+  'rock-submerged': require('../../assets/symbols/png/rock-submerged.png'),
+  'rock-above-water': require('../../assets/symbols/png/rock-above-water.png'),
+  // Obstructions
+  'obstruction': require('../../assets/symbols/png/obstruction.png'),
+  'foul-ground': require('../../assets/symbols/png/foul-ground.png'),
 };
 
 // Generate sector arc outline for a light with sector information
@@ -257,6 +289,9 @@ const CHARTS = {
       buoys: buoysData_PH,
       beacons: beaconsData_PH,
       landmarks: landmarksData_PH,
+      wrecks: wrecksData_PH,
+      rocks: rocksData_PH,
+      obstructions: obstructionsData_PH,
     },
   },
   US5AK5SJ: {
@@ -278,6 +313,9 @@ const CHARTS = {
       buoys: buoysData_SJ,
       beacons: beaconsData_SJ,
       landmarks: landmarksData_SJ,
+      wrecks: wrecksData_SJ,
+      rocks: rocksData_SJ,
+      obstructions: obstructionsData_SJ,
     },
   },
   US5AK5SI: {
@@ -299,6 +337,9 @@ const CHARTS = {
       buoys: buoysData_SI,
       beacons: beaconsData_SI,
       landmarks: landmarksData_SI,
+      wrecks: wrecksData_SI,
+      rocks: rocksData_SI,
+      obstructions: obstructionsData_SI,
     },
   },
   US5AK5QG: {
@@ -320,6 +361,9 @@ const CHARTS = {
       buoys: buoysData_QG,
       beacons: beaconsData_QG,
       landmarks: landmarksData_QG,
+      wrecks: wrecksData_QG,
+      rocks: rocksData_QG,
+      obstructions: obstructionsData_QG,
     },
   },
 };
@@ -743,6 +787,153 @@ const formatLandmarkInfo = (properties: Record<string, unknown>): Record<string,
   return formatted;
 };
 
+// S-57 Category of wreck codes
+const WRECK_CATEGORIES: Record<string, string> = {
+  '1': 'Non-dangerous (depth known)',
+  '2': 'Dangerous (submerged)',
+  '3': 'Distributed remains',
+  '4': 'Mast(s) showing',
+  '5': 'Hull showing',
+};
+
+// S-57 Water level effect codes (shared with rocks/obstructions)
+const WATER_LEVEL_EFFECT: Record<string, string> = {
+  '1': 'Partly submerged at high water',
+  '2': 'Always dry',
+  '3': 'Always underwater/submerged',
+  '4': 'Covers and uncovers',
+  '5': 'Awash',
+  '6': 'Subject to flooding',
+  '7': 'Floating',
+};
+
+// S-57 Category of obstruction codes
+const OBSTRUCTION_CATEGORIES: Record<string, string> = {
+  '1': 'Snag/stump',
+  '2': 'Wellhead',
+  '3': 'Diffuser',
+  '4': 'Crib',
+  '5': 'Fish haven',
+  '6': 'Foul area/ground',
+  '7': 'Foul area (fishing)',
+  '8': 'Foul area (cables)',
+  '9': 'Pipeline area',
+  '10': 'Ice boom',
+};
+
+// Format wreck properties for display
+const formatWreckInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Category
+  const catwrk = properties.CATWRK as string | number | undefined;
+  if (catwrk) {
+    formatted['Category'] = WRECK_CATEGORIES[String(catwrk)] || `Code ${catwrk}`;
+  }
+  
+  // Water level effect
+  const watlev = properties.WATLEV as string | number | undefined;
+  if (watlev) {
+    formatted['Water Level'] = WATER_LEVEL_EFFECT[String(watlev)] || `Code ${watlev}`;
+  }
+  
+  // Depth over wreck
+  const valsou = properties.VALSOU as number | undefined;
+  if (valsou !== undefined) {
+    formatted['Depth Over'] = `${valsou}m`;
+  }
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  // Additional info
+  const inform = properties.INFORM as string | undefined;
+  if (inform) {
+    formatted['Info'] = inform;
+  }
+  
+  // Source date
+  const sordat = properties.SORDAT as string | undefined;
+  if (sordat) {
+    formatted['Survey Date'] = sordat;
+  }
+  
+  return formatted;
+};
+
+// Format rock properties for display
+const formatRockInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Water level effect
+  const watlev = properties.WATLEV as string | number | undefined;
+  if (watlev) {
+    formatted['Water Level'] = WATER_LEVEL_EFFECT[String(watlev)] || `Code ${watlev}`;
+  }
+  
+  // Depth over rock
+  const valsou = properties.VALSOU as number | undefined;
+  if (valsou !== undefined) {
+    formatted['Depth Over'] = `${valsou}m`;
+  }
+  
+  // Exposition of sounding
+  const expsou = properties.EXPSOU as number | undefined;
+  if (expsou === 1) {
+    formatted['Depth Status'] = 'Within range of depth';
+  } else if (expsou === 2) {
+    formatted['Depth Status'] = 'Shoaler than depth shown';
+  }
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  return formatted;
+};
+
+// Format obstruction properties for display
+const formatObstructionInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Category
+  const catobs = properties.CATOBS as string | number | undefined;
+  if (catobs) {
+    formatted['Category'] = OBSTRUCTION_CATEGORIES[String(catobs)] || `Code ${catobs}`;
+  }
+  
+  // Water level effect
+  const watlev = properties.WATLEV as string | number | undefined;
+  if (watlev) {
+    formatted['Water Level'] = WATER_LEVEL_EFFECT[String(watlev)] || `Code ${watlev}`;
+  }
+  
+  // Depth
+  const valsou = properties.VALSOU as number | undefined;
+  if (valsou !== undefined) {
+    formatted['Depth'] = `${valsou}m`;
+  }
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  // Additional info
+  const inform = properties.INFORM as string | undefined;
+  if (inform) {
+    formatted['Info'] = inform;
+  }
+  
+  return formatted;
+};
+
 // Format beacon properties for display
 const formatBeaconInfo = (properties: Record<string, unknown>): Record<string, string> => {
   const formatted: Record<string, string> = {};
@@ -808,6 +999,7 @@ export default function ChartViewerMapbox() {
   const [showBeacons, setShowBeacons] = useState(true);
   const [showLandmarks, setShowLandmarks] = useState(true);
   const [showSectors, setShowSectors] = useState(true);
+  const [showHazards, setShowHazards] = useState(true);
   const [showSatellite, setShowSatellite] = useState(false);
   
   // Pre-compute sector arc geometries for all charts
@@ -1403,6 +1595,267 @@ export default function ChartViewerMapbox() {
           );
         })}
 
+        {/* Hazards: Wrecks - Point features showing shipwrecks */}
+        {showHazards && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.wrecks || chart.data.wrecks.features.length === 0) return null;
+          return (
+            <Mapbox.ShapeSource
+              key={`wrecks-${chartKey}`}
+              id={`wrecks-source-${chartKey}`}
+              shape={chart.data.wrecks}
+              minZoomLevel={chart.minZoom}
+              hitbox={{ width: 44, height: 44 }}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Wreck',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.SymbolLayer
+                id={`wrecks-symbol-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  // Select icon based on CATWRK (category) and WATLEV (water level)
+                  iconImage: [
+                    'case',
+                    // Hull showing (CATWRK=5)
+                    ['==', ['to-number', ['get', 'CATWRK']], 5], 'wreck-hull',
+                    // Mast showing (CATWRK=4) or covers/uncovers (WATLEV=4)
+                    ['any',
+                      ['==', ['to-number', ['get', 'CATWRK']], 4],
+                      ['==', ['to-number', ['get', 'WATLEV']], 4]
+                    ], 'wreck-uncovers',
+                    // Not dangerous (CATWRK=1)
+                    ['==', ['to-number', ['get', 'CATWRK']], 1], 'wreck-safe',
+                    // Dangerous submerged (CATWRK=2) or always submerged (WATLEV=3)
+                    ['any',
+                      ['==', ['to-number', ['get', 'CATWRK']], 2],
+                      ['==', ['to-number', ['get', 'WATLEV']], 3]
+                    ], 'wreck-submerged',
+                    // Default: dangerous wreck
+                    'wreck-danger',
+                  ],
+                  iconSize: [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    10, 0.5,
+                    14, 0.7,
+                    18, 0.9,
+                  ],
+                  iconAllowOverlap: true,
+                }}
+              />
+              {/* Depth label for wrecks with known depth */}
+              <Mapbox.SymbolLayer
+                id={`wrecks-label-${chartKey}`}
+                minZoomLevel={14}
+                filter={['has', 'VALSOU']}
+                style={{
+                  textField: ['concat', ['number-format', ['get', 'VALSOU'], {'min-fraction-digits': 1, 'max-fraction-digits': 1}], 'm'],
+                  textSize: 9,
+                  textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+                  textColor: '#000000',
+                  textHaloColor: '#FFFFFF',
+                  textHaloWidth: 1.5,
+                  textOffset: [0, 1.5],
+                  textAnchor: 'top',
+                  textAllowOverlap: false,
+                  textOptional: true,
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Hazards: Rocks - Point features showing underwater rocks */}
+        {showHazards && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.rocks || chart.data.rocks.features.length === 0) return null;
+          return (
+            <Mapbox.ShapeSource
+              key={`rocks-${chartKey}`}
+              id={`rocks-source-${chartKey}`}
+              shape={chart.data.rocks}
+              minZoomLevel={chart.minZoom}
+              hitbox={{ width: 44, height: 44 }}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Rock',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.SymbolLayer
+                id={`rocks-symbol-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  // Select icon based on WATLEV (water level effect)
+                  iconImage: [
+                    'match',
+                    ['to-number', ['get', 'WATLEV']],
+                    1, 'rock-above-water',   // Partly submerged at high water
+                    2, 'rock-above-water',   // Always dry
+                    3, 'rock-submerged',     // Always underwater
+                    4, 'rock-uncovers',      // Covers and uncovers
+                    5, 'rock-awash',         // Awash
+                    'rock-submerged',        // Default: submerged
+                  ],
+                  iconSize: [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    10, 0.4,
+                    14, 0.6,
+                    18, 0.8,
+                  ],
+                  iconAllowOverlap: true,
+                }}
+              />
+              {/* Depth label for rocks with known depth */}
+              <Mapbox.SymbolLayer
+                id={`rocks-label-${chartKey}`}
+                minZoomLevel={15}
+                filter={['has', 'VALSOU']}
+                style={{
+                  textField: ['concat', ['number-format', ['get', 'VALSOU'], {'min-fraction-digits': 1, 'max-fraction-digits': 1}], 'm'],
+                  textSize: 8,
+                  textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+                  textColor: '#CC0000',
+                  textHaloColor: '#FFFFFF',
+                  textHaloWidth: 1.5,
+                  textOffset: [0, 1.2],
+                  textAnchor: 'top',
+                  textAllowOverlap: false,
+                  textOptional: true,
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Hazards: Obstructions - Point and polygon features */}
+        {showHazards && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.obstructions || chart.data.obstructions.features.length === 0) return null;
+          
+          // Separate point and polygon features
+          const pointFeatures = chart.data.obstructions.features.filter(
+            (f: any) => f.geometry.type === 'Point'
+          );
+          const polygonFeatures = chart.data.obstructions.features.filter(
+            (f: any) => f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'
+          );
+          
+          return (
+            <React.Fragment key={`obstructions-${chartKey}`}>
+              {/* Polygon obstructions (kelp beds, foul ground areas) */}
+              {polygonFeatures.length > 0 && (
+                <Mapbox.ShapeSource
+                  id={`obstructions-poly-source-${chartKey}`}
+                  shape={{ type: 'FeatureCollection', features: polygonFeatures }}
+                  minZoomLevel={chart.minZoom}
+                  onPress={(e) => {
+                    if (e.features && e.features.length > 0) {
+                      const feat = e.features[0];
+                      setSelectedFeature({
+                        layerType: 'Obstruction',
+                        chartKey: chartKey,
+                        properties: feat.properties || {},
+                      });
+                    }
+                  }}
+                >
+                  <Mapbox.FillLayer
+                    id={`obstructions-fill-${chartKey}`}
+                    minZoomLevel={chart.minZoom}
+                    style={{
+                      fillColor: [
+                        'match',
+                        ['to-number', ['get', 'CATOBS']],
+                        6, 'rgba(0, 128, 0, 0.2)',  // Foul ground - green tint
+                        'rgba(128, 0, 128, 0.15)', // Other - purple tint
+                      ],
+                      fillOutlineColor: [
+                        'match',
+                        ['to-number', ['get', 'CATOBS']],
+                        6, '#006400',  // Foul ground - dark green
+                        '#800080',     // Other - purple
+                      ],
+                    }}
+                  />
+                  <Mapbox.LineLayer
+                    id={`obstructions-outline-${chartKey}`}
+                    minZoomLevel={chart.minZoom}
+                    style={{
+                      lineColor: [
+                        'match',
+                        ['to-number', ['get', 'CATOBS']],
+                        6, '#006400',  // Foul ground
+                        '#800080',     // Other
+                      ],
+                      lineWidth: 1,
+                      lineDasharray: [4, 2],
+                    }}
+                  />
+                </Mapbox.ShapeSource>
+              )}
+              
+              {/* Point obstructions */}
+              {pointFeatures.length > 0 && (
+                <Mapbox.ShapeSource
+                  id={`obstructions-point-source-${chartKey}`}
+                  shape={{ type: 'FeatureCollection', features: pointFeatures }}
+                  minZoomLevel={chart.minZoom}
+                  hitbox={{ width: 44, height: 44 }}
+                  onPress={(e) => {
+                    if (e.features && e.features.length > 0) {
+                      const feat = e.features[0];
+                      setSelectedFeature({
+                        layerType: 'Obstruction',
+                        chartKey: chartKey,
+                        properties: feat.properties || {},
+                      });
+                    }
+                  }}
+                >
+                  <Mapbox.SymbolLayer
+                    id={`obstructions-symbol-${chartKey}`}
+                    minZoomLevel={chart.minZoom}
+                    style={{
+                      iconImage: [
+                        'match',
+                        ['to-number', ['get', 'CATOBS']],
+                        6, 'foul-ground',  // Foul ground/kelp
+                        'obstruction',     // Default obstruction
+                      ],
+                      iconSize: [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        10, 0.4,
+                        14, 0.6,
+                        18, 0.8,
+                      ],
+                      iconAllowOverlap: true,
+                    }}
+                  />
+                </Mapbox.ShapeSource>
+              )}
+            </React.Fragment>
+          );
+        })}
+
         {/* Light Sectors - Colored lines showing sector boundaries
             S-57 SECTR1/SECTR2 are "from seaward" so we add 180° to show projection direction
             Rendered before lights so light symbols appear on top */}
@@ -1632,6 +2085,9 @@ export default function ChartViewerMapbox() {
                selectedFeature.layerType === 'Buoy' ? '🔴 BUOY INFO' :
                selectedFeature.layerType === 'Beacon' ? '🔺 BEACON INFO' :
                selectedFeature.layerType === 'Landmark' ? '🗼 LANDMARK INFO' :
+               selectedFeature.layerType === 'Wreck' ? '⚓ WRECK INFO' :
+               selectedFeature.layerType === 'Rock' ? '🪨 ROCK INFO' :
+               selectedFeature.layerType === 'Obstruction' ? '⚠️ OBSTRUCTION' :
                'FEATURE INSPECTOR'}
             </Text>
             <TouchableOpacity onPress={() => setSelectedFeature(null)}>
@@ -1696,11 +2152,53 @@ export default function ChartViewerMapbox() {
               </>
             )}
             
+            {/* Special formatted display for Wrecks */}
+            {selectedFeature.layerType === 'Wreck' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Wreck Details:</Text>
+                {Object.entries(formatWreckInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
+            {/* Special formatted display for Rocks */}
+            {selectedFeature.layerType === 'Rock' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Rock Details:</Text>
+                {Object.entries(formatRockInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
+            {/* Special formatted display for Obstructions */}
+            {selectedFeature.layerType === 'Obstruction' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Obstruction Details:</Text>
+                {Object.entries(formatObstructionInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
             {/* Raw properties for other features or additional data */}
             {(selectedFeature.layerType === 'Light' || 
               selectedFeature.layerType === 'Buoy' || 
               selectedFeature.layerType === 'Beacon' ||
-              selectedFeature.layerType === 'Landmark') ? (
+              selectedFeature.layerType === 'Landmark' ||
+              selectedFeature.layerType === 'Wreck' ||
+              selectedFeature.layerType === 'Rock' ||
+              selectedFeature.layerType === 'Obstruction') ? (
               <>
                 <Text style={[styles.inspectorSubtitle, { marginTop: 10 }]}>Raw S-57 Data:</Text>
                 {Object.entries(selectedFeature.properties)
@@ -1799,6 +2297,14 @@ export default function ChartViewerMapbox() {
         >
           <Text style={[styles.layerButtonText, showLandmarks && styles.layerButtonTextActive]}>
             Landmarks
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.layerButton, showHazards && styles.layerButtonActive]}
+          onPress={() => setShowHazards(!showHazards)}
+        >
+          <Text style={[styles.layerButtonText, showHazards && styles.layerButtonTextActive]}>
+            Hazards
           </Text>
         </TouchableOpacity>
       </View>

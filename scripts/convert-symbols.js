@@ -51,6 +51,23 @@ const SYMBOLS_TO_CONVERT = [
   { src: 'point/E29_Radio_tower.svg', name: 'landmark-radio-tower' },// Radio tower
   { src: 'point/E25_Windmill.svg', name: 'landmark-windmill' },      // CATLMK=20 (windmill)
   { src: 'point/E10_Church.svg', name: 'landmark-church' },          // CATLMK=2 (church)
+  
+  // Wreck symbols (CATWRK)
+  { src: 'point/K24_Wreck_showing_hull.svg', name: 'wreck-hull' },      // CATWRK=5 (showing hull)
+  { src: 'point/K22_Wreck_submerged.svg', name: 'wreck-submerged' },    // CATWRK=1,2 (submerged dangerous)
+  { src: 'point/K21_Wreck_uncovers.svg', name: 'wreck-uncovers' },      // CATWRK=4 (shows at low water)
+  { src: 'point/K29_Wreck_notdangerous.svg', name: 'wreck-safe' },      // Not dangerous to navigation
+  { src: 'point/K25_Wreck_danger_no_depth.svg', name: 'wreck-danger' }, // Dangerous, depth unknown
+  
+  // Rock symbols (WATLEV)
+  { src: 'point/K11a_Rock_uncovers.svg', name: 'rock-uncovers' },       // WATLEV=4 (covers and uncovers)
+  { src: 'point/K12a_Rock_awash.svg', name: 'rock-awash' },             // WATLEV=5 (awash)
+  { src: 'point/K13a_Dangerous_underwater_rk.svg', name: 'rock-submerged' }, // WATLEV=3 (always submerged)
+  { src: 'point/K10_LandPoint.svg', name: 'rock-above-water' },         // WATLEV=1,2 (always dry)
+  
+  // Obstruction symbols (CATOBS)
+  { src: 'point/K1_Obstruction4mm_shoal.svg', name: 'obstruction' },    // Generic obstruction
+  { src: 'point/K31_Foul_ground.svg', name: 'foul-ground' },            // CATOBS=6 (foul ground/kelp)
 ];
 
 const INPUT_DIR = path.join(__dirname, '../assets/symbols');
