@@ -103,6 +103,12 @@ const seaareData_SI = require('../../assets/Maps/US5AK5SI_seaare.json');
 const seaareData_QG = require('../../assets/Maps/US5AK5QG_seaare.json');
 const seaareData_SJ = require('../../assets/Maps/US5AK5SJ_seaare.json');
 
+// Pipelines (submarine/on land - outfalls, intake pipes) for each chart
+const pipsolData_PH = require('../../assets/Maps/US4AK4PH_pipsol.json');
+const pipsolData_SI = require('../../assets/Maps/US5AK5SI_pipsol.json');
+const pipsolData_QG = require('../../assets/Maps/US5AK5QG_pipsol.json');
+const pipsolData_SJ = require('../../assets/Maps/US5AK5SJ_pipsol.json');
+
 // S-52 Symbol images for navigation features
 // Metro automatically selects @2x/@3x based on device pixel density
 const NAV_SYMBOLS = {
@@ -320,6 +326,7 @@ const CHARTS = {
       cblare: cblareData_PH,
       sbdare: sbdareData_PH,
       seaare: seaareData_PH,
+      pipsol: pipsolData_PH,
     },
   },
   US5AK5SJ: {
@@ -348,6 +355,7 @@ const CHARTS = {
       cblare: cblareData_SJ,
       sbdare: sbdareData_SJ,
       seaare: seaareData_SJ,
+      pipsol: pipsolData_SJ,
     },
   },
   US5AK5SI: {
@@ -376,6 +384,7 @@ const CHARTS = {
       cblare: cblareData_SI,
       sbdare: sbdareData_SI,
       seaare: seaareData_SI,
+      pipsol: pipsolData_SI,
     },
   },
   US5AK5QG: {
@@ -404,6 +413,7 @@ const CHARTS = {
       cblare: cblareData_QG,
       sbdare: sbdareData_QG,
       seaare: seaareData_QG,
+      pipsol: pipsolData_QG,
     },
   },
 };
@@ -1053,6 +1063,45 @@ const SEA_AREA_CATEGORIES: Record<string, string> = {
   '18': 'Harbor',
   '19': 'Cove',
   '20': 'Lagoon',
+};
+
+// S-57 CATPIP (Category of Pipeline) codes
+const PIPELINE_CATEGORIES: Record<string, string> = {
+  '1': 'Oil pipeline',
+  '2': 'Gas pipeline',
+  '3': 'Water pipeline',
+  '4': 'Outfall pipe',
+  '5': 'Intake pipe',
+  '6': 'Sewer pipe',
+  '7': 'Bubbler system',
+  '8': 'Supply pipe',
+};
+
+// Format pipeline properties for display
+const formatPipsolInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Category
+  const catpip = properties.CATPIP as string[] | undefined;
+  if (catpip && catpip.length > 0) {
+    formatted['Type'] = catpip.map(c => PIPELINE_CATEGORIES[c] || `Category ${c}`).join(', ');
+  } else {
+    formatted['Type'] = 'Submarine pipeline';
+  }
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  // Product
+  const prodct = properties.PRODCT as string | undefined;
+  if (prodct) {
+    formatted['Product'] = prodct;
+  }
+  
+  return formatted;
 };
 
 // Format sea area properties for display
@@ -1739,6 +1788,45 @@ export default function ChartViewerMapbox() {
                   lineColor: '#FF00FF',  // Magenta outline
                   lineWidth: 2,
                   lineDasharray: [8, 4],  // Dashed line
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Pipelines (PIPSOL) - Submarine pipelines (outfalls, intakes)
+            Rendered as cyan dashed lines to distinguish from cables */}
+        {showCables && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.pipsol || chart.data.pipsol.features.length === 0) return null;
+          
+          console.log(`[PIPSOL] ${chartKey}: ${chart.data.pipsol.features.length} pipelines`);
+          
+          return (
+            <Mapbox.ShapeSource
+              key={`pipsol-${chartKey}`}
+              id={`pipsol-source-${chartKey}`}
+              shape={chart.data.pipsol}
+              minZoomLevel={chart.minZoom}
+              hitbox={{ width: 10, height: 10 }}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Pipeline',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.LineLayer
+                id={`pipsol-line-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  lineColor: '#00CED1',  // Dark cyan for pipelines
+                  lineWidth: 2,
+                  lineDasharray: [6, 3],  // Different dash pattern than cables
                 }}
               />
             </Mapbox.ShapeSource>
@@ -2815,6 +2903,7 @@ export default function ChartViewerMapbox() {
                selectedFeature.layerType === 'Cable Area' ? '⚡ CABLE AREA' :
                selectedFeature.layerType === 'Seabed' ? '⚓ SEABED' :
                selectedFeature.layerType === 'Sea Area' ? '🌊 SEA AREA' :
+               selectedFeature.layerType === 'Pipeline' ? '🔵 PIPELINE' :
                'FEATURE INSPECTOR'}
             </Text>
             <TouchableOpacity onPress={() => setSelectedFeature(null)}>
@@ -2970,6 +3059,19 @@ export default function ChartViewerMapbox() {
               </>
             )}
             
+            {/* Special formatted display for Pipelines */}
+            {selectedFeature.layerType === 'Pipeline' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Pipeline Details:</Text>
+                {Object.entries(formatPipsolInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
             {/* Raw properties for other features or additional data */}
             {(selectedFeature.layerType === 'Light' || 
               selectedFeature.layerType === 'Buoy' || 
@@ -2981,7 +3083,8 @@ export default function ChartViewerMapbox() {
               selectedFeature.layerType === 'Shoreline' ||
               selectedFeature.layerType === 'Cable Area' ||
               selectedFeature.layerType === 'Seabed' ||
-              selectedFeature.layerType === 'Sea Area') ? (
+              selectedFeature.layerType === 'Sea Area' ||
+              selectedFeature.layerType === 'Pipeline') ? (
               <>
                 <Text style={[styles.inspectorSubtitle, { marginTop: 10 }]}>Raw S-57 Data:</Text>
                 {Object.entries(selectedFeature.properties)
