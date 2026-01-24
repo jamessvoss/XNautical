@@ -79,6 +79,12 @@ const obstructionsData_SI = require('../../assets/Maps/US5AK5SI_obstructions.jso
 const obstructionsData_QG = require('../../assets/Maps/US5AK5QG_obstructions.json');
 const obstructionsData_SJ = require('../../assets/Maps/US5AK5SJ_obstructions.json');
 
+// Shoreline constructions (piers, jetties, breakwaters) for each chart
+const slconsData_PH = require('../../assets/Maps/US4AK4PH_slcons.json');
+const slconsData_SI = require('../../assets/Maps/US5AK5SI_slcons.json');
+const slconsData_QG = require('../../assets/Maps/US5AK5QG_slcons.json');
+const slconsData_SJ = require('../../assets/Maps/US5AK5SJ_slcons.json');
+
 // S-52 Symbol images for navigation features
 // Metro automatically selects @2x/@3x based on device pixel density
 const NAV_SYMBOLS = {
@@ -292,6 +298,7 @@ const CHARTS = {
       wrecks: wrecksData_PH,
       rocks: rocksData_PH,
       obstructions: obstructionsData_PH,
+      slcons: slconsData_PH,
     },
   },
   US5AK5SJ: {
@@ -316,6 +323,7 @@ const CHARTS = {
       wrecks: wrecksData_SJ,
       rocks: rocksData_SJ,
       obstructions: obstructionsData_SJ,
+      slcons: slconsData_SJ,
     },
   },
   US5AK5SI: {
@@ -340,6 +348,7 @@ const CHARTS = {
       wrecks: wrecksData_SI,
       rocks: rocksData_SI,
       obstructions: obstructionsData_SI,
+      slcons: slconsData_SI,
     },
   },
   US5AK5QG: {
@@ -364,6 +373,7 @@ const CHARTS = {
       wrecks: wrecksData_QG,
       rocks: rocksData_QG,
       obstructions: obstructionsData_QG,
+      slcons: slconsData_QG,
     },
   },
 };
@@ -897,6 +907,72 @@ const formatRockInfo = (properties: Record<string, unknown>): Record<string, str
   return formatted;
 };
 
+// S-57 Category of shoreline construction codes
+const SLCONS_CATEGORIES: Record<string, string> = {
+  '1': 'Breakwater',
+  '2': 'Mole',
+  '3': 'Pier/jetty',
+  '4': 'Promenade pier',
+  '5': 'Wharf/quay',
+  '6': 'Training wall',
+  '7': 'Groyne',
+  '8': 'Dyke/levee',
+  '9': 'Lock/gate',
+  '10': 'Flood barrage',
+  '11': 'Slip',
+  '12': 'Ramp',
+  '13': 'Revetment',
+  '14': 'Sea wall',
+  '15': 'Landing steps',
+  '16': 'Rip rap',
+  '17': 'Reclamation area',
+  '18': 'Floating breakwater',
+};
+
+// Format shoreline construction properties for display
+const formatSlconsInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  // Category
+  const catslc = properties.CATSLC as string | number | undefined;
+  if (catslc) {
+    formatted['Type'] = SLCONS_CATEGORIES[String(catslc)] || `Code ${catslc}`;
+  }
+  
+  // Water level effect
+  const watlev = properties.WATLEV as string | number | undefined;
+  if (watlev) {
+    formatted['Water Level'] = WATER_LEVEL_EFFECT[String(watlev)] || `Code ${watlev}`;
+  }
+  
+  // Condition
+  const condtn = properties.CONDTN as number | undefined;
+  if (condtn) {
+    const conditions: Record<string, string> = {
+      '1': 'Under construction',
+      '2': 'Ruined',
+      '3': 'Under reclamation',
+      '4': 'Wingless',
+      '5': 'Planned construction',
+    };
+    formatted['Condition'] = conditions[String(condtn)] || `Code ${condtn}`;
+  }
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  // Additional info
+  const inform = properties.INFORM as string | undefined;
+  if (inform) {
+    formatted['Info'] = inform;
+  }
+  
+  return formatted;
+};
+
 // Format obstruction properties for display
 const formatObstructionInfo = (properties: Record<string, unknown>): Record<string, string> => {
   const formatted: Record<string, string> = {};
@@ -1000,6 +1076,7 @@ export default function ChartViewerMapbox() {
   const [showLandmarks, setShowLandmarks] = useState(true);
   const [showSectors, setShowSectors] = useState(true);
   const [showHazards, setShowHazards] = useState(true);
+  const [showSlcons, setShowSlcons] = useState(true);
   const [showSatellite, setShowSatellite] = useState(false);
   
   // Pre-compute sector arc geometries for all charts
@@ -1213,6 +1290,134 @@ export default function ChartViewerMapbox() {
                 }}
               />
             </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Shoreline Constructions (SLCONS) - Piers, jetties, breakwaters
+            Rendered on top of land/water as dark brown lines/polygons */}
+        {showSlcons && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.slcons || chart.data.slcons.features.length === 0) return null;
+          
+          // Separate by geometry type
+          const lineFeatures = chart.data.slcons.features.filter(
+            (f: any) => f.geometry && f.geometry.type === 'LineString'
+          );
+          const polygonFeatures = chart.data.slcons.features.filter(
+            (f: any) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+          );
+          const pointFeatures = chart.data.slcons.features.filter(
+            (f: any) => f.geometry && f.geometry.type === 'Point'
+          );
+          
+          console.log(`[SLCONS] ${chartKey}: ${lineFeatures.length} lines, ${polygonFeatures.length} polys, ${pointFeatures.length} points`);
+          
+          return (
+            <React.Fragment key={`slcons-${chartKey}`}>
+              {/* Polygon SLCONS (larger structures like ramps) */}
+              {polygonFeatures.length > 0 && (
+                <Mapbox.ShapeSource
+                  id={`slcons-poly-source-${chartKey}`}
+                  shape={{ type: 'FeatureCollection', features: polygonFeatures }}
+                  minZoomLevel={chart.minZoom}
+                  onPress={(e) => {
+                    if (e.features && e.features.length > 0) {
+                      const feat = e.features[0];
+                      setSelectedFeature({
+                        layerType: 'Shoreline',
+                        chartKey: chartKey,
+                        properties: feat.properties || {},
+                      });
+                    }
+                  }}
+                >
+                  <Mapbox.FillLayer
+                    id={`slcons-fill-${chartKey}`}
+                    minZoomLevel={chart.minZoom}
+                    style={{
+                      fillColor: '#8B7355',  // Dark brown/tan for structures
+                      fillOpacity: 0.8,
+                    }}
+                  />
+                  <Mapbox.LineLayer
+                    id={`slcons-poly-outline-${chartKey}`}
+                    minZoomLevel={chart.minZoom}
+                    style={{
+                      lineColor: '#4A3728',  // Darker brown outline
+                      lineWidth: 1,
+                    }}
+                  />
+                </Mapbox.ShapeSource>
+              )}
+              
+              {/* Line SLCONS (piers, jetties, breakwaters) */}
+              {lineFeatures.length > 0 && (
+                <Mapbox.ShapeSource
+                  id={`slcons-line-source-${chartKey}`}
+                  shape={{ type: 'FeatureCollection', features: lineFeatures }}
+                  minZoomLevel={chart.minZoom}
+                  onPress={(e) => {
+                    if (e.features && e.features.length > 0) {
+                      const feat = e.features[0];
+                      setSelectedFeature({
+                        layerType: 'Shoreline',
+                        chartKey: chartKey,
+                        properties: feat.properties || {},
+                      });
+                    }
+                  }}
+                >
+                  <Mapbox.LineLayer
+                    id={`slcons-line-${chartKey}`}
+                    minZoomLevel={chart.minZoom}
+                    style={{
+                      lineColor: '#4A3728',  // Dark brown for piers
+                      lineWidth: [
+                        'interpolate',
+                        ['linear'],
+                        ['zoom'],
+                        10, 2,
+                        14, 3,
+                        18, 5,
+                      ],
+                      lineCap: 'round',
+                      lineJoin: 'round',
+                    }}
+                  />
+                </Mapbox.ShapeSource>
+              )}
+              
+              {/* Point SLCONS (rare - small features) */}
+              {pointFeatures.length > 0 && (
+                <Mapbox.ShapeSource
+                  id={`slcons-point-source-${chartKey}`}
+                  shape={{ type: 'FeatureCollection', features: pointFeatures }}
+                  minZoomLevel={chart.minZoom}
+                  hitbox={{ width: 30, height: 30 }}
+                  onPress={(e) => {
+                    if (e.features && e.features.length > 0) {
+                      const feat = e.features[0];
+                      setSelectedFeature({
+                        layerType: 'Shoreline',
+                        chartKey: chartKey,
+                        properties: feat.properties || {},
+                      });
+                    }
+                  }}
+                >
+                  <Mapbox.CircleLayer
+                    id={`slcons-circle-${chartKey}`}
+                    minZoomLevel={chart.minZoom}
+                    style={{
+                      circleRadius: 4,
+                      circleColor: '#4A3728',
+                      circleStrokeColor: '#FFFFFF',
+                      circleStrokeWidth: 1,
+                    }}
+                  />
+                </Mapbox.ShapeSource>
+              )}
+            </React.Fragment>
           );
         })}
 
@@ -2138,6 +2343,7 @@ export default function ChartViewerMapbox() {
                selectedFeature.layerType === 'Wreck' ? '⚓ WRECK INFO' :
                selectedFeature.layerType === 'Rock' ? '🪨 ROCK INFO' :
                selectedFeature.layerType === 'Obstruction' ? '⚠️ OBSTRUCTION' :
+               selectedFeature.layerType === 'Shoreline' ? '🏗️ SHORELINE' :
                'FEATURE INSPECTOR'}
             </Text>
             <TouchableOpacity onPress={() => setSelectedFeature(null)}>
@@ -2241,6 +2447,19 @@ export default function ChartViewerMapbox() {
               </>
             )}
             
+            {/* Special formatted display for Shoreline Constructions */}
+            {selectedFeature.layerType === 'Shoreline' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Shoreline Construction:</Text>
+                {Object.entries(formatSlconsInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
             {/* Raw properties for other features or additional data */}
             {(selectedFeature.layerType === 'Light' || 
               selectedFeature.layerType === 'Buoy' || 
@@ -2248,7 +2467,8 @@ export default function ChartViewerMapbox() {
               selectedFeature.layerType === 'Landmark' ||
               selectedFeature.layerType === 'Wreck' ||
               selectedFeature.layerType === 'Rock' ||
-              selectedFeature.layerType === 'Obstruction') ? (
+              selectedFeature.layerType === 'Obstruction' ||
+              selectedFeature.layerType === 'Shoreline') ? (
               <>
                 <Text style={[styles.inspectorSubtitle, { marginTop: 10 }]}>Raw S-57 Data:</Text>
                 {Object.entries(selectedFeature.properties)
@@ -2355,6 +2575,14 @@ export default function ChartViewerMapbox() {
         >
           <Text style={[styles.layerButtonText, showHazards && styles.layerButtonTextActive]}>
             Hazards
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.layerButton, showSlcons && styles.layerButtonActive]}
+          onPress={() => setShowSlcons(!showSlcons)}
+        >
+          <Text style={[styles.layerButtonText, showSlcons && styles.layerButtonTextActive]}>
+            Piers
           </Text>
         </TouchableOpacity>
       </View>
