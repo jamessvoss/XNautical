@@ -1744,115 +1744,124 @@ export default function ChartViewerMapbox() {
           );
         })}
 
-        {/* Hazards: Obstructions - Point and polygon features */}
+        {/* Hazards: Obstructions - Polygon features only (kelp beds, foul ground areas)
+            Point obstructions are handled separately below */}
         {showHazards && CHART_RENDER_ORDER.map((chartKey) => {
           const chart = CHARTS[chartKey];
           if (!chart.data.obstructions || chart.data.obstructions.features.length === 0) return null;
           
-          // Separate point and polygon features
-          const pointFeatures = chart.data.obstructions.features.filter(
-            (f: any) => f.geometry.type === 'Point'
-          );
+          // Only render polygon obstructions here
           const polygonFeatures = chart.data.obstructions.features.filter(
-            (f: any) => f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'
+            (f: any) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
           );
           
+          if (polygonFeatures.length === 0) return null;
+          
           return (
-            <React.Fragment key={`obstructions-${chartKey}`}>
-              {/* Polygon obstructions (kelp beds, foul ground areas) */}
-              {polygonFeatures.length > 0 && (
-                <Mapbox.ShapeSource
-                  id={`obstructions-poly-source-${chartKey}`}
-                  shape={{ type: 'FeatureCollection', features: polygonFeatures }}
-                  minZoomLevel={chart.minZoom}
-                  onPress={(e) => {
-                    if (e.features && e.features.length > 0) {
-                      const feat = e.features[0];
-                      setSelectedFeature({
-                        layerType: 'Obstruction',
-                        chartKey: chartKey,
-                        properties: feat.properties || {},
-                      });
-                    }
-                  }}
-                >
-                  <Mapbox.FillLayer
-                    id={`obstructions-fill-${chartKey}`}
-                    minZoomLevel={chart.minZoom}
-                    style={{
-                      fillColor: [
-                        'match',
-                        ['to-number', ['get', 'CATOBS']],
-                        6, 'rgba(0, 128, 0, 0.2)',  // Foul ground - green tint
-                        'rgba(128, 0, 128, 0.15)', // Other - purple tint
-                      ],
-                      fillOutlineColor: [
-                        'match',
-                        ['to-number', ['get', 'CATOBS']],
-                        6, '#006400',  // Foul ground - dark green
-                        '#800080',     // Other - purple
-                      ],
-                    }}
-                  />
-                  <Mapbox.LineLayer
-                    id={`obstructions-outline-${chartKey}`}
-                    minZoomLevel={chart.minZoom}
-                    style={{
-                      lineColor: [
-                        'match',
-                        ['to-number', ['get', 'CATOBS']],
-                        6, '#006400',  // Foul ground
-                        '#800080',     // Other
-                      ],
-                      lineWidth: 1,
-                      lineDasharray: [4, 2],
-                    }}
-                  />
-                </Mapbox.ShapeSource>
-              )}
-              
-              {/* Point obstructions */}
-              {pointFeatures.length > 0 && (
-                <Mapbox.ShapeSource
-                  id={`obstructions-point-source-${chartKey}`}
-                  shape={{ type: 'FeatureCollection', features: pointFeatures }}
-                  minZoomLevel={chart.minZoom}
-                  hitbox={{ width: 44, height: 44 }}
-                  onPress={(e) => {
-                    if (e.features && e.features.length > 0) {
-                      const feat = e.features[0];
-                      setSelectedFeature({
-                        layerType: 'Obstruction',
-                        chartKey: chartKey,
-                        properties: feat.properties || {},
-                      });
-                    }
-                  }}
-                >
-                  <Mapbox.SymbolLayer
-                    id={`obstructions-symbol-${chartKey}`}
-                    minZoomLevel={chart.minZoom}
-                    style={{
-                      iconImage: [
-                        'match',
-                        ['to-number', ['get', 'CATOBS']],
-                        6, 'foul-ground',  // Foul ground/kelp
-                        'obstruction',     // Default obstruction
-                      ],
-                      iconSize: [
-                        'interpolate',
-                        ['linear'],
-                        ['zoom'],
-                        10, 0.4,
-                        14, 0.6,
-                        18, 0.8,
-                      ],
-                      iconAllowOverlap: true,
-                    }}
-                  />
-                </Mapbox.ShapeSource>
-              )}
-            </React.Fragment>
+            <Mapbox.ShapeSource
+              key={`obstructions-poly-${chartKey}`}
+              id={`obstructions-poly-source-${chartKey}`}
+              shape={{ type: 'FeatureCollection', features: polygonFeatures }}
+              minZoomLevel={chart.minZoom}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Obstruction',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.FillLayer
+                id={`obstructions-fill-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  fillColor: [
+                    'match',
+                    ['to-number', ['get', 'CATOBS']],
+                    6, 'rgba(0, 128, 0, 0.2)',  // Foul ground - green tint
+                    'rgba(128, 0, 128, 0.15)', // Other - purple tint
+                  ],
+                  fillOutlineColor: [
+                    'match',
+                    ['to-number', ['get', 'CATOBS']],
+                    6, '#006400',  // Foul ground - dark green
+                    '#800080',     // Other - purple
+                  ],
+                }}
+              />
+              <Mapbox.LineLayer
+                id={`obstructions-outline-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  lineColor: [
+                    'match',
+                    ['to-number', ['get', 'CATOBS']],
+                    6, '#006400',  // Foul ground
+                    '#800080',     // Other
+                  ],
+                  lineWidth: 1,
+                  lineDasharray: [4, 2],
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Hazards: Obstructions - Point features only */}
+        {showHazards && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.obstructions || chart.data.obstructions.features.length === 0) return null;
+          
+          // Only render point obstructions here
+          const pointFeatures = chart.data.obstructions.features.filter(
+            (f: any) => f.geometry && f.geometry.type === 'Point'
+          );
+          
+          if (pointFeatures.length === 0) return null;
+          
+          return (
+            <Mapbox.ShapeSource
+              key={`obstructions-point-${chartKey}`}
+              id={`obstructions-point-source-${chartKey}`}
+              shape={{ type: 'FeatureCollection', features: pointFeatures }}
+              minZoomLevel={chart.minZoom}
+              hitbox={{ width: 44, height: 44 }}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Obstruction',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.SymbolLayer
+                id={`obstructions-symbol-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  iconImage: [
+                    'match',
+                    ['to-number', ['get', 'CATOBS']],
+                    6, 'foul-ground',  // Foul ground/kelp
+                    'obstruction',     // Default obstruction
+                  ],
+                  iconSize: [
+                    'interpolate',
+                    ['linear'],
+                    ['zoom'],
+                    10, 0.4,
+                    14, 0.6,
+                    18, 0.8,
+                  ],
+                  iconAllowOverlap: true,
+                }}
+              />
+            </Mapbox.ShapeSource>
           );
         })}
 
