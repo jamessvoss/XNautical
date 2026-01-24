@@ -85,6 +85,12 @@ const slconsData_SI = require('../../assets/Maps/US5AK5SI_slcons.json');
 const slconsData_QG = require('../../assets/Maps/US5AK5QG_slcons.json');
 const slconsData_SJ = require('../../assets/Maps/US5AK5SJ_slcons.json');
 
+// Cable areas (submarine cables - anchoring restricted) for each chart
+const cblareData_PH = require('../../assets/Maps/US4AK4PH_cblare.json');
+const cblareData_SI = require('../../assets/Maps/US5AK5SI_cblare.json');
+const cblareData_QG = require('../../assets/Maps/US5AK5QG_cblare.json');
+const cblareData_SJ = require('../../assets/Maps/US5AK5SJ_cblare.json');
+
 // S-52 Symbol images for navigation features
 // Metro automatically selects @2x/@3x based on device pixel density
 const NAV_SYMBOLS = {
@@ -299,6 +305,7 @@ const CHARTS = {
       rocks: rocksData_PH,
       obstructions: obstructionsData_PH,
       slcons: slconsData_PH,
+      cblare: cblareData_PH,
     },
   },
   US5AK5SJ: {
@@ -324,6 +331,7 @@ const CHARTS = {
       rocks: rocksData_SJ,
       obstructions: obstructionsData_SJ,
       slcons: slconsData_SJ,
+      cblare: cblareData_SJ,
     },
   },
   US5AK5SI: {
@@ -349,6 +357,7 @@ const CHARTS = {
       rocks: rocksData_SI,
       obstructions: obstructionsData_SI,
       slcons: slconsData_SI,
+      cblare: cblareData_SI,
     },
   },
   US5AK5QG: {
@@ -374,6 +383,7 @@ const CHARTS = {
       rocks: rocksData_QG,
       obstructions: obstructionsData_QG,
       slcons: slconsData_QG,
+      cblare: cblareData_QG,
     },
   },
 };
@@ -929,6 +939,54 @@ const SLCONS_CATEGORIES: Record<string, string> = {
   '18': 'Floating breakwater',
 };
 
+// S-57 Restriction codes (used by CBLARE and other areas)
+const RESTRICTION_CODES: Record<string, string> = {
+  '1': 'Anchoring prohibited',
+  '2': 'Anchoring restricted',
+  '3': 'Fishing prohibited',
+  '4': 'Fishing restricted',
+  '5': 'Trawling prohibited',
+  '6': 'Entry prohibited',
+  '7': 'Dredging prohibited',
+  '8': 'Diving prohibited',
+  '9': 'No wake',
+  '10': 'Area to be avoided',
+  '11': 'Construction prohibited',
+  '13': 'Discharging prohibited',
+  '14': 'Discharging restricted',
+  '17': 'Speed restricted',
+  '24': 'Anchoring prohibited',
+  '27': 'Swimming prohibited',
+};
+
+// Format cable area properties for display
+const formatCblareInfo = (properties: Record<string, unknown>): Record<string, string> => {
+  const formatted: Record<string, string> = {};
+  
+  formatted['Type'] = 'Submarine Cable Area';
+  
+  // Restrictions
+  const restrn = properties.RESTRN as string[] | undefined;
+  if (restrn && restrn.length > 0) {
+    const restrictions = restrn.map(r => RESTRICTION_CODES[r] || `Code ${r}`).join(', ');
+    formatted['Restrictions'] = restrictions;
+  }
+  
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) {
+    formatted['Name'] = objnam;
+  }
+  
+  // Additional info
+  const inform = properties.INFORM as string | undefined;
+  if (inform) {
+    formatted['Info'] = inform;
+  }
+  
+  return formatted;
+};
+
 // Format shoreline construction properties for display
 const formatSlconsInfo = (properties: Record<string, unknown>): Record<string, string> => {
   const formatted: Record<string, string> = {};
@@ -1077,6 +1135,7 @@ export default function ChartViewerMapbox() {
   const [showSectors, setShowSectors] = useState(true);
   const [showHazards, setShowHazards] = useState(true);
   const [showSlcons, setShowSlcons] = useState(true);
+  const [showCables, setShowCables] = useState(true);
   const [showSatellite, setShowSatellite] = useState(false);
   
   // Pre-compute sector arc geometries for all charts
@@ -1474,6 +1533,59 @@ export default function ChartViewerMapbox() {
                   lineColor: '#1976D2',
                   lineWidth: 1,
                   lineOpacity: 0.5,
+                }}
+              />
+            </Mapbox.ShapeSource>
+          );
+        })}
+
+        {/* Cable Areas (CBLARE) - Submarine cable zones with anchoring restrictions
+            Rendered as magenta dashed outline with semi-transparent fill */}
+        {showCables && CHART_RENDER_ORDER.map((chartKey) => {
+          const chart = CHARTS[chartKey];
+          if (!chart.data.cblare || chart.data.cblare.features.length === 0) return null;
+          
+          // Filter to polygons only
+          const polygonFeatures = chart.data.cblare.features.filter(
+            (f: any) => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')
+          );
+          
+          if (polygonFeatures.length === 0) return null;
+          
+          console.log(`[CBLARE] ${chartKey}: Rendering ${polygonFeatures.length} cable areas`);
+          
+          return (
+            <Mapbox.ShapeSource
+              key={`cblare-${chartKey}`}
+              id={`cblare-source-${chartKey}`}
+              shape={{ type: 'FeatureCollection', features: polygonFeatures }}
+              minZoomLevel={chart.minZoom}
+              onPress={(e) => {
+                if (e.features && e.features.length > 0) {
+                  const feat = e.features[0];
+                  setSelectedFeature({
+                    layerType: 'Cable Area',
+                    chartKey: chartKey,
+                    properties: feat.properties || {},
+                  });
+                }
+              }}
+            >
+              <Mapbox.FillLayer
+                id={`cblare-fill-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  fillColor: 'rgba(255, 0, 255, 0.1)',  // Light magenta fill
+                  fillOutlineColor: '#FF00FF',
+                }}
+              />
+              <Mapbox.LineLayer
+                id={`cblare-outline-${chartKey}`}
+                minZoomLevel={chart.minZoom}
+                style={{
+                  lineColor: '#FF00FF',  // Magenta outline
+                  lineWidth: 2,
+                  lineDasharray: [8, 4],  // Dashed line
                 }}
               />
             </Mapbox.ShapeSource>
@@ -2344,6 +2456,7 @@ export default function ChartViewerMapbox() {
                selectedFeature.layerType === 'Rock' ? '🪨 ROCK INFO' :
                selectedFeature.layerType === 'Obstruction' ? '⚠️ OBSTRUCTION' :
                selectedFeature.layerType === 'Shoreline' ? '🏗️ SHORELINE' :
+               selectedFeature.layerType === 'Cable Area' ? '⚡ CABLE AREA' :
                'FEATURE INSPECTOR'}
             </Text>
             <TouchableOpacity onPress={() => setSelectedFeature(null)}>
@@ -2460,6 +2573,19 @@ export default function ChartViewerMapbox() {
               </>
             )}
             
+            {/* Special formatted display for Cable Areas */}
+            {selectedFeature.layerType === 'Cable Area' && (
+              <>
+                <Text style={styles.inspectorSubtitle}>Cable Area Details:</Text>
+                {Object.entries(formatCblareInfo(selectedFeature.properties)).map(([key, value]) => (
+                  <View key={key} style={styles.inspectorRow}>
+                    <Text style={styles.inspectorPropKey}>{key}:</Text>
+                    <Text style={styles.inspectorPropValue}>{value}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            
             {/* Raw properties for other features or additional data */}
             {(selectedFeature.layerType === 'Light' || 
               selectedFeature.layerType === 'Buoy' || 
@@ -2468,7 +2594,8 @@ export default function ChartViewerMapbox() {
               selectedFeature.layerType === 'Wreck' ||
               selectedFeature.layerType === 'Rock' ||
               selectedFeature.layerType === 'Obstruction' ||
-              selectedFeature.layerType === 'Shoreline') ? (
+              selectedFeature.layerType === 'Shoreline' ||
+              selectedFeature.layerType === 'Cable Area') ? (
               <>
                 <Text style={[styles.inspectorSubtitle, { marginTop: 10 }]}>Raw S-57 Data:</Text>
                 {Object.entries(selectedFeature.properties)
@@ -2583,6 +2710,14 @@ export default function ChartViewerMapbox() {
         >
           <Text style={[styles.layerButtonText, showSlcons && styles.layerButtonTextActive]}>
             Piers
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.layerButton, showCables && styles.layerButtonActive]}
+          onPress={() => setShowCables(!showCables)}
+        >
+          <Text style={[styles.layerButtonText, showCables && styles.layerButtonTextActive]}>
+            Cables
           </Text>
         </TouchableOpacity>
       </View>
