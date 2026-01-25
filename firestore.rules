@@ -3,15 +3,32 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     // Chart metadata - readable by all authenticated users
-    match /charts/{chartId} {
+    match /chart-metadata/{chartId} {
       allow read: if request.auth != null;
       allow write: if false; // Only admin/server can write
     }
     
-    // Regions - readable by all authenticated users
-    match /regions/{regionId} {
+    // Chart regions - readable by all authenticated users
+    match /chart-regions/{regionId} {
       allow read: if request.auth != null;
       allow write: if false; // Only admin/server can write
+    }
+    
+    // Chart versions - readable by all authenticated users
+    match /chart-versions/{versionId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only admin/server can write
+    }
+    
+    // Chart update log - readable by all authenticated users
+    match /chart-update-log/{logId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only admin/server can write
+    }
+    
+    // Verification codes - only accessible by Cloud Functions (admin)
+    match /verificationCodes/{phoneId} {
+      allow read, write: if false; // Only admin SDK can access
     }
     
     // User data - users can read/write their own data

@@ -33,6 +33,7 @@ yarn-error.*
 # local env files
 .env
 .env*.local
+functions/.env
 
 # Firebase config files (contain sensitive keys)
 google-services.json
@@ -65,3 +66,4 @@ GoogleService-Info.plist
 .vscode/
 *.swp
 *.swo
+AK_ENCProdCat_19115.xml

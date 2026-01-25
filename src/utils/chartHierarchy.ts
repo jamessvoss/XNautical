@@ -25,9 +25,9 @@ export function getChartLevel(chartId: string): number {
 }
 
 /**
- * Check if bounds A contains bounds B (B is inside A)
+ * Check if bounds A contains bounds B (B's center is inside A)
  */
-function boundsContain(
+export function boundsContain(
   outer: [number, number, number, number] | null,
   inner: [number, number, number, number] | null
 ): boolean {
@@ -209,6 +209,59 @@ export function getAllChartIds(node: ChartNode): string[] {
   }
   
   return ids;
+}
+
+/**
+ * Get all ancestor chart IDs by walking UP the hierarchy
+ * Uses the same containment logic as buildChartHierarchy but in reverse
+ */
+export function getAncestorChartIds(
+  chartId: string,
+  allCharts: ChartMetadata[]
+): string[] {
+  const ancestors: string[] = [];
+  const chart = allCharts.find(c => c.chartId === chartId);
+  if (!chart || !chart.bounds) return ancestors;
+
+  let currentLevel = getChartLevel(chartId);
+  let currentBounds = chart.bounds;
+
+  // Walk UP the levels: 5 → 4 → 3 → 2 → 1
+  while (currentLevel > 1) {
+    const parentLevel = currentLevel - 1;
+    
+    // Find charts at parent level
+    const parentCandidates = allCharts.filter(c => 
+      getChartLevel(c.chartId) === parentLevel && c.bounds
+    );
+    
+    // Find best parent (smallest one that contains current bounds)
+    let bestParent: ChartMetadata | null = null;
+    let bestScore = 0;
+    
+    for (const candidate of parentCandidates) {
+      if (boundsContain(candidate.bounds, currentBounds)) {
+        // Prefer smaller (more specific) parents
+        const [w, s, e, n] = candidate.bounds!;
+        const area = (e - w) * (n - s);
+        const score = 1 / area;
+        
+        if (score > bestScore) {
+          bestScore = score;
+          bestParent = candidate;
+        }
+      }
+    }
+    
+    if (bestParent) {
+      ancestors.push(bestParent.chartId);
+      currentBounds = bestParent.bounds!;
+    }
+    
+    currentLevel--;
+  }
+
+  return ancestors;
 }
 
 /**

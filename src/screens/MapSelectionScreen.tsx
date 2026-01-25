@@ -20,6 +20,7 @@ import {
   ChartNode,
   buildChartHierarchy,
   getAllChartIds,
+  getAncestorChartIds,
   getLevelName,
   getChartLevel,
 } from '../utils/chartHierarchy';
@@ -100,21 +101,30 @@ export default function MapSelectionScreen() {
     }
   };
 
-  // Toggle selection for a node (and all its children)
+  // Toggle selection for a node (and all its children AND ancestors)
   const toggleSelection = useCallback((node: ChartNode) => {
-    const allIds = getAllChartIds(node);
+    // Get all descendants (children, grandchildren, etc.)
+    const descendantIds = getAllChartIds(node);
+    // Get all ancestors (parents, grandparents, up to root)
+    const ancestorIds = getAncestorChartIds(node.chart.chartId, allCharts);
+    // Combine both directions
+    const allIds = [...descendantIds, ...ancestorIds];
+    
     const newSelected = new Set(selectedChartIds);
     
+    // Check if ALL related charts are already selected
     const allSelected = allIds.every(id => selectedChartIds.has(id));
     
     if (allSelected) {
+      // Deselect all (node + children + ancestors)
       allIds.forEach(id => newSelected.delete(id));
     } else {
+      // Select all (node + children + ancestors)
       allIds.forEach(id => newSelected.add(id));
     }
     
     setSelectedChartIds(newSelected);
-  }, [selectedChartIds]);
+  }, [selectedChartIds, allCharts]);
 
   // Drill down into a node
   const drillDown = useCallback((node: ChartNode) => {
