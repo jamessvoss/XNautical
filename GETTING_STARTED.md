@@ -4,114 +4,185 @@ Welcome! This guide will help you get your NOAA Electronic Navigational Chart vi
 
 ## 📋 What You Have
 
-Your project is now set up as a React Native app that displays nautical charts. Here's what's included:
+Your project is a React Native app that displays professional-quality nautical charts using S-57 ENC data rendered with Mapbox.
 
 ### Core App
 - ✅ React Native with Expo framework
 - ✅ TypeScript for type safety
-- ✅ Cross-platform support (iOS, Android, Web)
-- ✅ Interactive map display
-- ✅ Chart viewer component
+- ✅ iOS and Android support (Mapbox native)
+- ✅ High-performance vector map rendering
+- ✅ S-52 standard symbology
 
 ### Chart Data
-- ✅ NOAA ENC data for Homer Harbor, Alaska (US5AK5SI)
-- ✅ S-57 format hydrographic data
-- ✅ Chart located at: `assets/Maps/US5AK5SI_ENC_ROOT/`
+- ✅ Multiple NOAA ENC charts for Cook Inlet / Kachemak Bay, Alaska
+- ✅ Chart quilting (multi-scale display)
+- ✅ Automated GeoJSON extraction from S-57 format
+- ✅ 25+ feature types supported
 
 ### Features
-- ✅ Depth contours with color coding
-- ✅ Sounding markers (depth measurements)
-- ✅ Navigation aids (buoys, lights)
-- ✅ Interactive legend
+- ✅ Depth areas with gradient coloring
+- ✅ Depth contours with labels
+- ✅ Soundings (individual depth measurements)
+- ✅ Navigation lights with sector arcs
+- ✅ Buoys and beacons with proper symbology
+- ✅ Hazards (wrecks, rocks, obstructions)
+- ✅ Submarine cables and pipelines
+- ✅ Shoreline constructions (piers, jetties)
+- ✅ Sea area names
+- ✅ Interactive feature inspector
 - ✅ Layer toggle controls
-- ✅ Satellite imagery overlay
 
-## 🎯 Quick Start (5 Minutes)
+## 🎯 Quick Start
 
-### Option 1: Run on Web (Easiest - No Setup Required!)
+### Prerequisites
+
+1. **Node.js** (v18+)
+2. **GDAL/OGR** tools for S-57 extraction:
+   ```bash
+   # macOS
+   brew install gdal
+   
+   # Ubuntu/Debian
+   sudo apt install gdal-bin
+   
+   # Verify installation
+   ogr2ogr --version
+   ```
+3. **Mapbox Access Token** (get one at https://mapbox.com)
+
+### Setup
 
 ```bash
-npm run web
+# Install dependencies
+npm install --legacy-peer-deps
+
+# Copy environment template
+cp .env.example .env
+
+# Edit .env and add your Mapbox token:
+# EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN=pk.your_token_here
+
+# Prebuild for native
+npx expo prebuild
+
+# Run on iOS
+npm run ios
+
+# Run on Android
+npm run android
 ```
 
-That's it! The app will open in your browser showing the Homer Harbor chart.
+## 🗺️ Adding New Charts
 
-### Option 2: Run on iOS/Android (Requires API Key)
+### Step 1: Download ENC Data
 
-#### Step 1: Get Google Maps API Key
+1. Visit https://nauticalcharts.noaa.gov/charts/noaa-enc.html
+2. Find your area of interest
+3. Download the ENC file (will be a ZIP containing `*_ENC_ROOT` folder)
+4. Extract to `assets/Maps/`
 
-1. Visit https://console.cloud.google.com/
-2. Create a new project (or select existing)
-3. Enable these APIs:
-   - "Maps SDK for iOS"
-   - "Maps SDK for Android"
-4. Go to "Credentials" → "Create Credentials" → "API Key"
-5. Copy your API key
+### Step 2: Extract Features
 
-#### Step 2: Add API Key to Project
+Use the extraction script to convert S-57 data to GeoJSON:
 
-Open `app.json` and find these two sections:
+```bash
+# Extract from a single chart
+python3 scripts/extract-enc-features.py assets/Maps/US4AK4PG_ENC_ROOT
 
-```json
-"ios": {
-  "config": {
-    "googleMapsApiKey": "YOUR_GOOGLE_MAPS_API_KEY"  ← Replace this
-  }
+# Extract from ALL charts in the Maps directory
+python3 scripts/extract-enc-features.py assets/Maps --all
+
+# See all available options
+python3 scripts/extract-enc-features.py --help
+
+# List all extractable feature types
+python3 scripts/extract-enc-features.py --list-features
+
+# Dry run (see what would be extracted without writing files)
+python3 scripts/extract-enc-features.py assets/Maps --all --dry-run
+
+# Verbose output
+python3 scripts/extract-enc-features.py assets/Maps --all --verbose
+```
+
+The script extracts these feature types:
+
+| Feature | S-57 Layers | Description |
+|---------|-------------|-------------|
+| depare | DEPARE | Depth areas (polygons with depth ranges) |
+| depcnt | DEPCNT | Depth contours (lines) |
+| soundg | SOUNDG | Soundings (individual depths) |
+| lndare | LNDARE | Land areas |
+| coalne | COALNE | Coastline |
+| lights | LIGHTS | Navigation lights |
+| buoys | BOYLAT, BOYCAR, etc. | All buoy types |
+| beacons | BCNLAT, BCNCAR, etc. | All beacon types |
+| landmarks | LNDMRK | Landmarks (towers, etc.) |
+| daymar | DAYMAR | Daymarks/daybeacons |
+| wrecks | WRECKS | Shipwrecks |
+| uwtroc | UWTROC | Underwater rocks |
+| obstrn | OBSTRN | Obstructions |
+| slcons | SLCONS | Shoreline constructions |
+| cblare | CBLARE, CBLSUB | Cable areas and submarine cables |
+| pipsol | PIPSOL | Pipelines |
+| sbdare | SBDARE | Seabed areas (bottom type) |
+| seaare | SEAARE | Named sea areas |
+| pilpnt | PILPNT | Pilot boarding points |
+| anchrg | ACHARE, ACHBRT | Anchorage areas |
+| fairwy | FAIRWY | Fairways/channels |
+| drgare | DRGARE | Dredged areas |
+| resare | RESARE | Restricted areas |
+| rivers | RIVERS | Rivers |
+| lndrgn | LNDRGN | Named land regions |
+
+### Step 3: Configure the Chart in App
+
+Edit `src/components/ChartViewer.native.tsx`:
+
+1. Import the GeoJSON files:
+```typescript
+import depareData_NEW from '../../assets/Maps/US4NEW_depare.json';
+import depcntData_NEW from '../../assets/Maps/US4NEW_depcnt.json';
+// ... import all feature types
+```
+
+2. Add to the `CHARTS` configuration:
+```typescript
+US4NEW: {
+  name: 'Your Chart Name',
+  shortName: 'Short Name',
+  center: [-152.0, 59.5],  // Chart center [lon, lat]
+  scaleType: 'approach',    // 'general', 'approach', or 'harbor'
+  scale: 1,                 // Rendering order (higher = on top)
+  minZoom: 0,
+  scaminContour: 179999,    // SCAMIN for contours
+  scaminSounding: 119999,   // SCAMIN for soundings
+  bounds: [-152.4, 59.4, -151.8, 59.7],  // [minLon, minLat, maxLon, maxLat]
+  data: {
+    depare: depareData_NEW,
+    depcnt: depcntData_NEW,
+    soundg: soundgData_NEW,
+    lndare: lndareData_NEW,
+    lights: lightsData_NEW,
+    buoys: buoysData_NEW,
+    beacons: beaconsData_NEW,
+    landmarks: landmarksData_NEW,
+    wrecks: wrecksData_NEW,
+    uwtroc: uwtrocData_NEW,
+    obstrn: obstrnData_NEW,
+    slcons: slconsData_NEW,
+    cblare: cblareData_NEW,
+    sbdare: sbdareData_NEW,
+    seaare: seaareData_NEW,
+    pipsol: pipsolData_NEW,
+  },
 },
-"android": {
-  "config": {
-    "googleMaps": {
-      "apiKey": "YOUR_GOOGLE_MAPS_API_KEY"  ← Replace this
-    }
-  }
-}
 ```
 
-#### Step 3: Run the App
-
-```bash
-# Start Expo dev server
-npm start
-
-# Then press:
-# - 'i' for iOS simulator
-# - 'a' for Android emulator
-# - 'w' for web browser
+3. Add to `CHART_RENDER_ORDER` (from largest scale to smallest):
+```typescript
+const CHART_RENDER_ORDER = ['US3LARGE', 'US4NEW', 'US5DETAIL'];
 ```
-
-Or run directly:
-```bash
-npm run ios        # iOS
-npm run android    # Android
-npm run web        # Web
-```
-
-## 🗺️ What You'll See
-
-The app displays Homer Harbor near the Homer Spit in Alaska:
-
-- **Location**: 59.635°N, 151.490°W
-- **Chart Type**: Harbor/Approach Chart
-- **Data Source**: NOAA US5AK5SI
-- **Edition**: 1 (October 2024)
-
-### Map Features
-
-1. **Depth Contours** (colored lines):
-   - Light Blue: Shallow water (0-5 meters)
-   - Medium Blue: 5-10 meters
-   - Deep Blue: 10-20 meters
-   - Dark Blue: Deep water (20+ meters)
-
-2. **Depth Numbers**: Individual soundings showing exact depths in meters
-
-3. **Navigation Aids**:
-   - Yellow pins: Lights
-   - Green pins: Buoys
-
-4. **Controls** (bottom of screen):
-   - Toggle depth labels on/off
-   - Toggle navigation aids on/off
 
 ## 📁 Project Structure
 
@@ -120,170 +191,129 @@ MapTest/
 ├── App.tsx                         ← App entry point
 ├── src/
 │   ├── components/
-│   │   └── ChartViewer.tsx         ← Main chart display
-│   ├── types/
-│   │   └── s57.ts                  ← Type definitions
-│   └── utils/
-│       ├── s57Parser.ts            ← Data parser
-│       └── s57BinaryParser.ts      ← Future binary parser
+│   │   └── ChartViewer.native.tsx  ← Main chart display (Mapbox)
+│   └── types/
+│       └── s57.ts                  ← Type definitions
 ├── assets/
-│   └── Maps/
-│       └── US5AK5SI_ENC_ROOT/      ← Chart data
-│           └── US5AK5SI/
-│               └── US5AK5SI.000    ← Binary chart file
+│   ├── Maps/
+│   │   ├── extraction_manifest.json ← Extraction summary
+│   │   ├── US5AK5SI_ENC_ROOT/       ← Raw ENC data
+│   │   ├── US5AK5SI_depare.json     ← Extracted depth areas
+│   │   ├── US5AK5SI_depcnt.json     ← Extracted contours
+│   │   └── ...                      ← Other extracted features
+│   └── symbols/
+│       └── png/                     ← S-52 navigation symbols
+├── scripts/
+│   ├── extract-enc-features.py     ← Main extraction script
+│   └── convert-symbols.js          ← SVG to PNG converter
 └── [documentation files]
 ```
 
-## 📚 Documentation
-
-Your project includes comprehensive documentation:
-
-1. **README.md** - Main project documentation
-2. **QUICKSTART.md** - Quick start guide (you're reading a better version!)
-3. **CHART_CONFIG.md** - Detailed chart configuration
-4. **PROJECT_SUMMARY.md** - Technical overview and roadmap
-
 ## 🔧 Customization
 
-### Change Map Type
+### Depth Area Colors
 
-In `src/components/ChartViewer.tsx`, find:
+In `ChartViewer.native.tsx`, find the `fillColor` expression in the depth areas layer:
+
 ```typescript
-mapType="satellite"
+fillColor: [
+  'step',
+  ['get', 'DRVAL2'],
+  '#B8E4F0',    // 0-5m (very shallow)
+  5, '#A5D6E8',  // 5-10m
+  10, '#8DC9E0', // 10-20m
+  20, '#75BCD8', // 20-50m
+  50, '#5DAFD0', // 50-100m
+  100, '#4BA2C8', // 100m+
+],
 ```
 
-Options: `"standard"`, `"satellite"`, `"hybrid"`, `"terrain"`
+### Layer Visibility
 
-### Adjust Initial View
+Toggle layers on/off using the UI buttons or by modifying the default state:
 
-Find `HOMER_HARBOR_CENTER` in `ChartViewer.tsx`:
 ```typescript
-const HOMER_HARBOR_CENTER = {
-  latitude: 59.6350,
-  longitude: -151.4900,
-  latitudeDelta: 0.05,    // Zoom level (smaller = more zoomed in)
-  longitudeDelta: 0.05,
-};
+const [showLand, setShowLand] = useState(true);
+const [showDepthAreas, setShowDepthAreas] = useState(true);
+const [showContours, setShowContours] = useState(true);
+// ... etc.
 ```
 
-### Change Depth Colors
+### Chart Center and Zoom
 
-Find `DEPTH_COLORS` in `ChartViewer.tsx`:
+Modify the initial camera position:
+
 ```typescript
-const DEPTH_COLORS = {
-  shallow: '#B3E5FC',    // Change these hex colors
-  medium: '#4FC3F7',
-  deep: '#0288D1',
-  veryDeep: '#01579B',
-};
+<Mapbox.Camera
+  centerCoordinate={[-151.4900, 59.6350]}
+  zoomLevel={11}
+/>
 ```
-
-## 🚀 Next Steps
-
-### Immediate Tasks
-1. Get the app running on at least one platform
-2. Explore the chart by zooming and panning
-3. Toggle the layer controls to see different data
-
-### Development Ideas
-1. **Add More Charts**: Download more NOAA ENCs from nauticalcharts.noaa.gov
-2. **Real Data**: Implement actual S-57 binary parsing (see `s57BinaryParser.ts`)
-3. **GPS Tracking**: Add your current position on the map
-4. **Route Planning**: Add waypoints and route lines
-5. **Offline Mode**: Cache charts for offline use
-
-### Learning Resources
-- **S-57 Format**: https://iho.int/en/s-57-edition-3-1
-- **NOAA Charts**: https://nauticalcharts.noaa.gov
-- **React Native Maps**: https://github.com/react-native-maps/react-native-maps
-- **Expo Docs**: https://docs.expo.dev
 
 ## 🐛 Troubleshooting
 
-### "Cannot find module" errors
+### Extraction Issues
+
+**"ogr2ogr: command not found"**
+```bash
+# Install GDAL
+brew install gdal  # macOS
+sudo apt install gdal-bin  # Ubuntu
+```
+
+**"FillBucket: adding non-polygon geometry" warnings**
+- These occur when a layer has mixed geometry types
+- The app handles this automatically by filtering geometries
+- Warnings are cosmetic and don't affect functionality
+
+### Build Issues
+
+**"Cannot find module" errors**
 ```bash
 rm -rf node_modules package-lock.json
 npm install --legacy-peer-deps
-npm start --clear
+npx expo prebuild --clean
 ```
 
-### Map not showing on iOS/Android
-- Verify you added the Google Maps API key to `app.json`
-- Check the API key is valid and APIs are enabled
-- Try running on web first to verify the app works
+**Mapbox token issues**
+- Ensure token is in `.env` file
+- Token must have the right scopes enabled in Mapbox dashboard
+- Check for typos in `EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN`
 
-### "Unable to resolve react-native-maps"
-```bash
-npm install --legacy-peer-deps
-```
+### Runtime Issues
 
-### Expo dev tools not opening
-```bash
-npm start --clear
-# Then manually open: http://localhost:8081
-```
+**Chart not showing data**
+1. Check the extraction manifest: `assets/Maps/extraction_manifest.json`
+2. Verify GeoJSON files exist and have features
+3. Check console for errors
+4. Ensure chart is in `CHART_RENDER_ORDER`
 
-### TypeScript errors
-```bash
-npx tsc --noEmit
-```
-This checks for type errors without building.
+**Missing features on one side of chart**
+- Check if features are being quilted out
+- Verify chart bounds are correct
+- Check SCAMIN values aren't too restrictive
 
-## 💡 Tips
+## 📚 Resources
 
-1. **Start with Web**: Web is easiest to test - no API key needed
-2. **Mock Data**: Current app uses mock depth data for demonstration
-3. **Learn by Doing**: Modify colors, positions, or text to see changes
-4. **Check the Console**: Use `console.log()` to debug - output shows in terminal
-5. **Hot Reload**: Save files and see changes instantly in the app
+- **S-57 Standard**: https://iho.int/en/s-57-edition-3-1
+- **S-52 Presentation Library**: https://iho.int/en/s-52-main
+- **NOAA ENC Charts**: https://nauticalcharts.noaa.gov
+- **Mapbox Documentation**: https://docs.mapbox.com
+- **Expo Documentation**: https://docs.expo.dev
 
-## 🎓 Understanding the Code
+## 🎉 Success Checklist
 
-### Main Flow
-1. `App.tsx` → Renders `ChartViewer` component
-2. `ChartViewer.tsx` → Loads chart data and displays map
-3. `s57Parser.ts` → Provides mock chart data (depth contours, soundings, etc.)
-4. React Native Maps → Displays the interactive map
-
-### Key Components
-- **MapView**: The map itself
-- **Polyline**: Draws depth contour lines
-- **Marker**: Places pins for soundings and nav aids
-
-### Data Flow
-```
-s57Parser.ts (mock data)
-    ↓
-ChartViewer.tsx (state management)
-    ↓
-MapView (rendering)
-    ↓
-User sees interactive chart
-```
-
-## 📞 Need Help?
-
-1. Check the documentation files in the project
-2. Review the inline code comments
-3. Search for error messages online
-4. Check React Native Maps GitHub issues
-5. Review Expo documentation
-
-## 🎉 Success!
-
-If you can see a map with blue depth contours and markers, congratulations! You have a working NOAA chart viewer.
-
-The foundation is built. Now you can:
-- Add more features
-- Load additional charts
-- Implement real S-57 parsing
-- Build navigation tools
-- Share with others
-
-Happy charting! ⚓🗺️
+- [ ] App builds and runs without errors
+- [ ] Charts display with depth areas colored
+- [ ] Depth contours visible when zoomed in
+- [ ] Soundings appear at high zoom levels
+- [ ] Navigation lights show with correct colors
+- [ ] Feature inspector works when tapping features
+- [ ] Layer toggles hide/show features correctly
+- [ ] Multiple charts quilt together properly
 
 ---
 
 **Created**: January 24, 2026  
-**Version**: 1.0.0  
-**Next**: See PROJECT_SUMMARY.md for development roadmap
+**Version**: 1.2.0  
+**See Also**: README.md, PROJECT_SUMMARY.md
