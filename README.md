@@ -65,8 +65,8 @@ A React Native application demonstrating offline display of official NOAA S-57 e
 
 ```bash
 # Clone the repository
-git clone https://github.com/jamessvoss/MapTest.git
-cd MapTest
+git clone https://github.com/jamessvoss/XNautical.git
+cd XNautical
 
 # Install dependencies
 npm install
@@ -125,7 +125,7 @@ See [TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md) for detailed inform
 ## Project Structure
 
 ```
-MapTest/
+XNautical/
 ├── src/components/
 │   └── ChartViewer.native.tsx   # Main map component (1,900+ lines)
 ├── assets/

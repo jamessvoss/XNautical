@@ -1,4 +1,4 @@
-# Quick Start Guide - MapTest NOAA Chart Viewer
+# Quick Start Guide - XNautical NOAA Chart Viewer
 
 ## 🚀 Getting Started in 5 Minutes
 

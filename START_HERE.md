@@ -1,4 +1,4 @@
-# 🎉 MapTest - Complete NOAA Offline Nautical Chart App
+# 🎉 XNautical - Complete NOAA Offline Nautical Chart App
 
 ## ✅ Project Complete!
 
@@ -153,7 +153,7 @@ npm start --clear
 
 ```
 ┌─────────────────────────────────────────┐
-│  React Native App (MapTest)             │
+│  React Native App (XNautical)           │
 ├─────────────────────────────────────────┤
 │                                         │
 │  Platform Detection                     │

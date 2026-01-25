@@ -1,8 +1,8 @@
-# MapTest - NOAA ENC Chart Viewer Project Summary
+# XNautical - NOAA ENC Chart Viewer Project Summary
 
 ## Overview
 
-MapTest is a **proof of concept** React Native mobile application demonstrating the feasibility of displaying NOAA Electronic Navigational Charts (ENC) in S-57 format with S-52 symbology. The implementation covers the Homer Harbor, Alaska area with 4 overlapping charts demonstrating chart quilting, navigation aid rendering, and light sector visualization.
+XNautical is a **proof of concept** React Native mobile application demonstrating the feasibility of displaying NOAA Electronic Navigational Charts (ENC) in S-57 format with S-52 symbology. The implementation covers the Homer Harbor, Alaska area with 4 overlapping charts demonstrating chart quilting, navigation aid rendering, and light sector visualization.
 
 **Goal**: Validate the technical approach for integrating S-57/S-52 chart capabilities into an existing mobile application as a feature module.
 
@@ -29,7 +29,7 @@ MapTest is a **proof of concept** React Native mobile application demonstrating 
 ## Project Structure
 
 ```
-MapTest/
+XNautical/
 ├── assets/
 │   ├── Maps/
 │   │   └── US5AK5SI_ENC_ROOT/          # NOAA ENC Dataset

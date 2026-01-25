@@ -19,7 +19,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../config/firebase';
 
-const REMEMBER_EMAIL_KEY = '@MapTest:rememberedEmail';
+const REMEMBER_EMAIL_KEY = '@XNautical:rememberedEmail';
 
 interface Props {
   onLoginSuccess: () => void;
@@ -110,7 +110,7 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
         style={styles.content}
       >
         <View style={styles.header}>
-          <Text style={styles.title}>MapTest POC</Text>
+          <Text style={styles.title}>XNautical</Text>
           <Text style={styles.subtitle}>Alaska Nautical Charts</Text>
         </View>
 

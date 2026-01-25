@@ -1,4 +1,4 @@
-# 🚢 MapTest - NOAA ENC Chart Viewer - Complete Setup Guide
+# 🚢 XNautical - NOAA ENC Chart Viewer - Complete Setup Guide
 
 Welcome! This guide will help you get your NOAA Electronic Navigational Chart viewer up and running.
 
@@ -187,7 +187,7 @@ const CHART_RENDER_ORDER = ['US3LARGE', 'US4NEW', 'US5DETAIL'];
 ## 📁 Project Structure
 
 ```
-MapTest/
+XNautical/
 ├── App.tsx                         ← App entry point
 ├── src/
 │   ├── components/

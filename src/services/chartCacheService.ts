@@ -17,9 +17,9 @@ import {
 
 // Storage keys
 const STORAGE_KEYS = {
-  DOWNLOADED_CHARTS: '@MapTest:downloadedCharts',
-  CHART_METADATA_CACHE: '@MapTest:chartMetadataCache',
-  REGIONS_CACHE: '@MapTest:regionsCache',
+  DOWNLOADED_CHARTS: '@XNautical:downloadedCharts',
+  CHART_METADATA_CACHE: '@XNautical:chartMetadataCache',
+  REGIONS_CACHE: '@XNautical:regionsCache',
 } as const;
 
 // Base directory for chart data

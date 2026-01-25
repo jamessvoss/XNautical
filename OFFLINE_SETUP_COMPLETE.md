@@ -40,7 +40,7 @@ You need two Mapbox tokens (both free on their free tier):
 1. **Add MBTiles to Xcode Project:**
    ```bash
    # The MBTiles file needs to be in the iOS bundle
-   cp assets/Maps/homer_chart.mbtiles ios/MapTest/assets/Maps/
+   cp assets/Maps/homer_chart.mbtiles ios/XNautical/assets/Maps/
    ```
 
 2. **Run iOS:**
@@ -76,7 +76,7 @@ npm run web
 ```bash
 # 1. Add Mapbox tokens (see above)
 # 2. Copy MBTiles to iOS assets
-cp assets/Maps/homer_chart.mbtiles ios/MapTest/assets/Maps/
+cp assets/Maps/homer_chart.mbtiles ios/XNautical/assets/Maps/
 # 3. Build and run
 npx expo prebuild --platform ios
 npm run ios

@@ -229,7 +229,7 @@ The app includes comprehensive debugging tools:
 ## File Structure
 
 ```
-MapTest/
+XNautical/
 ├── src/
 │   └── components/
 │       ├── ChartViewer.native.tsx  # Main map component

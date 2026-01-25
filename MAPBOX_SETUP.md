@@ -8,7 +8,7 @@ The Android build requires a Mapbox **Download Token** with `DOWNLOADS:READ` sco
 
 1. Go to: https://account.mapbox.com/access-tokens/
 2. Click **"Create a token"**
-3. Token name: `MapTest Download Token`
+3. Token name: `XNautical Download Token`
 4. **Important:** Check the **"DOWNLOADS:READ"** scope checkbox
 5. Click **"Create token"**
 6. Copy the token (starts with `sk.`)

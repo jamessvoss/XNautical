@@ -1,8 +1,8 @@
-# MapTest Architecture
+# XNautical Architecture
 
 ## Overview
 
-MapTest is a cross-platform React Native application for displaying NOAA Electronic Navigational Charts (ENC). The app uses a **platform-specific approach** to optimize for each target platform while maintaining consistent user experience.
+XNautical is a cross-platform React Native application for displaying NOAA Electronic Navigational Charts (ENC). The app uses a **platform-specific approach** to optimize for each target platform while maintaining consistent user experience.
 
 ## Architecture Decision
 
