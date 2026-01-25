@@ -25,7 +25,7 @@ Usage:
     # Verbose output
     python extract-enc-features.py /path/to/Maps --all --verbose
 
-Author: MapTest Project
+Author: XNautical Project
 Version: 1.0.0
 """
 

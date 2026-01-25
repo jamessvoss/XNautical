@@ -8,7 +8,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { initializeAuth, getReactNativePersistence } = require('@firebase/auth/dist/rn/index.js');
 
-// Alaska Fishtopia Firebase configuration (shared with FishTopia app)
+// XNautical Firebase configuration
 // Values loaded from environment variables (.env file)
 const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,

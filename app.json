@@ -4,11 +4,11 @@
     "slug": "XNautical",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/Logos/XNautical-Logo-Square.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/Logos/XNautical-Logo-Square.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -21,7 +21,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/Logos/XNautical-Logo-Square.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
@@ -34,7 +34,7 @@
       }
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/Logos/XNautical-Logo-Square.png"
     },
     "plugins": [
       [
@@ -47,6 +47,12 @@
         "@rnmapbox/maps",
         {
           "RNMapboxMapsImpl": "mapbox"
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow XNautical to use Face ID for quick sign-in."
         }
       ]
     ]

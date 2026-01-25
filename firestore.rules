@@ -1,0 +1,27 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Chart metadata - readable by all authenticated users
+    match /charts/{chartId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only admin/server can write
+    }
+    
+    // Regions - readable by all authenticated users
+    match /regions/{regionId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only admin/server can write
+    }
+    
+    // User data - users can read/write their own data
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // User's downloaded charts tracking
+    match /users/{userId}/downloads/{downloadId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

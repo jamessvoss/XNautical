@@ -42,10 +42,9 @@ XNautical is a React Native mobile app for displaying NOAA Electronic Navigation
 
 ### Immediate (Before Running App)
 
-1. **Get Web App ID from Firebase Console**
-   - Go to Firebase Console > Project Settings > Your Apps > Web app
-   - Copy the `appId` value
-   - Update `.env`: `EXPO_PUBLIC_FIREBASE_APP_ID=<your_web_app_id>`
+1. ~~**Get Web App ID from Firebase Console**~~ ✅ DONE
+   - Web App ID: `1:653355603694:web:ea9d293f4b469ea2a6c5ff`
+   - Updated in `.env`
 
 2. **Regenerate Native Projects**
    ```bash
@@ -156,9 +155,19 @@ EXPO_PUBLIC_FIREBASE_APP_ID=<needs_web_app_id>
 - Sea area names
 - Seabed composition
 
-## Notes for Next Session
+## Migration Completed (January 25, 2026)
 
-1. The app was previously using Alaska Fishtopia's Firebase - now switching to dedicated XNautical project
-2. Chart data in Alaska Fishtopia's storage may need to be migrated or re-processed
-3. Cloud Run chart processor service needs to be deployed to new project
-4. User authentication will need new accounts in XNautical Firebase project
+### Code References Updated
+- ✅ `src/config/firebase.ts` - Comment updated to XNautical
+- ✅ `src/screens/LoginScreen.tsx` - Footer text updated to XNautical
+- ✅ `scripts/extract-enc-features.py` - Author updated to XNautical Project
+- ✅ `package-lock.json` - Regenerated with correct name
+- ✅ `.env` - Web App ID added
+
+### Remaining Firebase Setup
+1. Chart data in Alaska Fishtopia's storage may need to be migrated or re-processed
+2. Cloud Run chart processor service needs to be deployed to new project
+3. User authentication will need new accounts in XNautical Firebase project
+4. Enable Authentication (Email/Password) in Firebase Console
+5. Set up Firestore database
+6. Set up Storage bucket

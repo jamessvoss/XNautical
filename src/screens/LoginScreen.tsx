@@ -1,5 +1,5 @@
 /**
- * Login Screen - Simple email/password authentication
+ * Login Screen - Email/password authentication with biometric support
  */
 
 import React, { useState, useEffect } from 'react';
@@ -13,13 +13,21 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail 
+} from 'firebase/auth';
 import { auth } from '../config/firebase';
+import * as LocalAuthentication from 'expo-local-authentication';
 
 const REMEMBER_EMAIL_KEY = '@XNautical:rememberedEmail';
+const BIOMETRIC_ENABLED_KEY = '@XNautical:biometricEnabled';
+const BIOMETRIC_CREDENTIALS_KEY = '@XNautical:biometricCredentials';
 
 interface Props {
   onLoginSuccess: () => void;
@@ -31,10 +39,15 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
   const [loading, setLoading] = useState(false);
   const [isSignUp, setIsSignUp] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [biometricType, setBiometricType] = useState<string>('Biometrics');
 
-  // Load remembered email on mount
+  // Check biometric availability and load settings on mount
   useEffect(() => {
     loadRememberedEmail();
+    checkBiometricAvailability();
+    loadBiometricSettings();
   }, []);
 
   const loadRememberedEmail = async () => {
@@ -46,6 +59,70 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
       }
     } catch (error) {
       console.error('Error loading remembered email:', error);
+    }
+  };
+
+  const checkBiometricAvailability = async () => {
+    try {
+      const compatible = await LocalAuthentication.hasHardwareAsync();
+      const enrolled = await LocalAuthentication.isEnrolledAsync();
+      setBiometricAvailable(compatible && enrolled);
+
+      if (compatible && enrolled) {
+        const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
+        if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
+          setBiometricType('Face ID');
+        } else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
+          setBiometricType('Fingerprint');
+        }
+      }
+    } catch (error) {
+      console.error('Error checking biometric availability:', error);
+    }
+  };
+
+  const loadBiometricSettings = async () => {
+    try {
+      const enabled = await AsyncStorage.getItem(BIOMETRIC_ENABLED_KEY);
+      setBiometricEnabled(enabled === 'true');
+    } catch (error) {
+      console.error('Error loading biometric settings:', error);
+    }
+  };
+
+  const handleBiometricLogin = async () => {
+    try {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: `Sign in with ${biometricType}`,
+        cancelLabel: 'Cancel',
+        disableDeviceFallback: false,
+      });
+
+      if (result.success) {
+        // Get stored credentials
+        const credentialsJson = await AsyncStorage.getItem(BIOMETRIC_CREDENTIALS_KEY);
+        if (credentialsJson) {
+          const credentials = JSON.parse(credentialsJson);
+          setLoading(true);
+          try {
+            await signInWithEmailAndPassword(auth, credentials.email, credentials.password);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            onLoginSuccess();
+          } catch (error: any) {
+            Alert.alert('Error', 'Stored credentials are invalid. Please sign in with email and password.');
+            // Clear invalid credentials
+            await AsyncStorage.removeItem(BIOMETRIC_CREDENTIALS_KEY);
+            await AsyncStorage.setItem(BIOMETRIC_ENABLED_KEY, 'false');
+            setBiometricEnabled(false);
+          } finally {
+            setLoading(false);
+          }
+        } else {
+          Alert.alert('Setup Required', 'Please sign in with email and password first to enable biometric login.');
+        }
+      }
+    } catch (error) {
+      console.error('Biometric authentication error:', error);
     }
   };
 
@@ -77,9 +154,38 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
         await AsyncStorage.removeItem(REMEMBER_EMAIL_KEY);
       }
 
-      // Small delay to let auth state propagate
-      await new Promise(resolve => setTimeout(resolve, 500));
-      onLoginSuccess();
+      // Offer to enable biometrics if available and not already enabled
+      if (biometricAvailable && !biometricEnabled && !isSignUp) {
+        Alert.alert(
+          `Enable ${biometricType}?`,
+          `Would you like to use ${biometricType} for faster sign-in next time?`,
+          [
+            {
+              text: 'Not Now',
+              style: 'cancel',
+              onPress: async () => {
+                await new Promise(resolve => setTimeout(resolve, 500));
+                onLoginSuccess();
+              },
+            },
+            {
+              text: 'Enable',
+              onPress: async () => {
+                // Store credentials securely for biometric login
+                await AsyncStorage.setItem(BIOMETRIC_CREDENTIALS_KEY, JSON.stringify({ email, password }));
+                await AsyncStorage.setItem(BIOMETRIC_ENABLED_KEY, 'true');
+                setBiometricEnabled(true);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                onLoginSuccess();
+              },
+            },
+          ]
+        );
+      } else {
+        // Small delay to let auth state propagate
+        await new Promise(resolve => setTimeout(resolve, 500));
+        onLoginSuccess();
+      }
     } catch (error: any) {
       let message = 'Authentication failed';
       
@@ -103,6 +209,45 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
     }
   };
 
+  const handleForgotPassword = async () => {
+    if (!email) {
+      Alert.alert('Email Required', 'Please enter your email address first, then tap "Forgot Password".');
+      return;
+    }
+
+    Alert.alert(
+      'Reset Password',
+      `Send password reset email to ${email}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Send',
+          onPress: async () => {
+            setLoading(true);
+            try {
+              await sendPasswordResetEmail(auth, email);
+              Alert.alert(
+                'Email Sent',
+                'Check your inbox for a password reset link. It may take a few minutes to arrive.',
+                [{ text: 'OK' }]
+              );
+            } catch (error: any) {
+              let message = 'Failed to send reset email';
+              if (error.code === 'auth/user-not-found') {
+                message = 'No account found with this email address';
+              } else if (error.code === 'auth/invalid-email') {
+                message = 'Invalid email address';
+              }
+              Alert.alert('Error', message);
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView 
@@ -110,8 +255,13 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
         style={styles.content}
       >
         <View style={styles.header}>
-          <Text style={styles.title}>XNautical</Text>
-          <Text style={styles.subtitle}>Alaska Nautical Charts</Text>
+          <Image 
+            source={require('../../assets/Logos/XNautical-Logo-Square.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+          <Text style={styles.title}>XNautical: Marine Charts Pro</Text>
+          <Text style={styles.subtitle}>Precision Navigation powered by NOAA & Global Hydrographic Data</Text>
         </View>
 
         <View style={styles.form}>
@@ -140,16 +290,24 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
             autoCapitalize="none"
           />
 
-          {/* Remember Me Checkbox */}
-          <TouchableOpacity 
-            style={styles.rememberRow}
-            onPress={() => setRememberMe(!rememberMe)}
-          >
-            <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
-              {rememberMe && <Text style={styles.checkmark}>✓</Text>}
-            </View>
-            <Text style={styles.rememberText}>Remember me</Text>
-          </TouchableOpacity>
+          {/* Remember Me and Forgot Password Row */}
+          <View style={styles.optionsRow}>
+            <TouchableOpacity 
+              style={styles.rememberRow}
+              onPress={() => setRememberMe(!rememberMe)}
+            >
+              <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
+                {rememberMe && <Text style={styles.checkmark}>✓</Text>}
+              </View>
+              <Text style={styles.rememberText}>Remember me</Text>
+            </TouchableOpacity>
+
+            {!isSignUp && (
+              <TouchableOpacity onPress={handleForgotPassword}>
+                <Text style={styles.forgotText}>Forgot Password?</Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
           <TouchableOpacity
             style={[styles.button, loading && styles.buttonDisabled]}
@@ -165,6 +323,20 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
             )}
           </TouchableOpacity>
 
+          {/* Biometric Login Button */}
+          {biometricAvailable && biometricEnabled && !isSignUp && (
+            <TouchableOpacity
+              style={styles.biometricButton}
+              onPress={handleBiometricLogin}
+              disabled={loading}
+            >
+              <Text style={styles.biometricIcon}>
+                {biometricType === 'Face ID' ? '👤' : '👆'}
+              </Text>
+              <Text style={styles.biometricText}>Sign in with {biometricType}</Text>
+            </TouchableOpacity>
+          )}
+
           <TouchableOpacity
             style={styles.switchButton}
             onPress={() => setIsSignUp(!isSignUp)}
@@ -179,7 +351,7 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            Uses Alaska Fishtopia authentication
+            XNautical Authentication
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -190,7 +362,7 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a365d',
+    backgroundColor: '#ffffff',
   },
   content: {
     flex: 1,
@@ -199,17 +371,25 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: 'center',
-    marginBottom: 48,
+    marginBottom: 32,
+  },
+  logo: {
+    width: 180,
+    height: 180,
+    marginBottom: 16,
   },
   title: {
-    fontSize: 32,
+    fontSize: 22,
     fontWeight: '700',
-    color: '#fff',
+    color: '#1a365d',
     marginBottom: 8,
+    textAlign: 'center',
   },
   subtitle: {
-    fontSize: 16,
-    color: '#90cdf4',
+    fontSize: 14,
+    color: '#4a5568',
+    textAlign: 'center',
+    paddingHorizontal: 20,
   },
   form: {
     backgroundColor: '#fff',
@@ -217,7 +397,7 @@ const styles = StyleSheet.create({
     padding: 24,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.15,
     shadowRadius: 8,
     elevation: 8,
   },
@@ -237,10 +417,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e0e0e0',
   },
+  optionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
   rememberRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
   },
   checkbox: {
     width: 22,
@@ -265,6 +450,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
   },
+  forgotText: {
+    fontSize: 14,
+    color: '#2563eb',
+  },
   button: {
     backgroundColor: '#2563eb',
     borderRadius: 8,
@@ -277,6 +466,26 @@ const styles = StyleSheet.create({
   },
   buttonText: {
     color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  biometricButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#2563eb',
+    backgroundColor: '#f0f7ff',
+  },
+  biometricIcon: {
+    fontSize: 20,
+    marginRight: 8,
+  },
+  biometricText: {
+    color: '#2563eb',
     fontSize: 16,
     fontWeight: '600',
   },
@@ -293,7 +502,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   footerText: {
-    color: '#90cdf4',
+    color: '#718096',
     fontSize: 12,
   },
 });

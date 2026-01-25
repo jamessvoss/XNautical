@@ -38,6 +38,8 @@ yarn-error.*
 google-services.json
 google-services-webapp.json
 GoogleService-Info.plist
+*-service-account.json
+*-adminsdk-*.json
 
 # typescript
 *.tsbuildinfo
