@@ -401,13 +401,43 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </Mapbox.ShapeSource>
         )}
 
-        {/* Soundings - sparse at zoom 8-10, all at zoom 10+ */}
+        {/* Soundings - SCAMIN-based progressive disclosure
+            SCAMIN indicates the minimum scale denominator at which feature should display.
+            Higher SCAMIN = designed for smaller scales (more zoomed out).
+            
+            Actual SCAMIN values in our data:
+            - 259999: Overview charts (US3*, 1:200,000)
+            - 119999: Approach charts (US4*, 1:90,000)
+            - 29999: Harbor charts (US5*, 1:30,000)
+            - 17999: Detailed harbor charts (US5*, 1:18,000)
+            
+            Progressive disclosure by chart detail level:
+            - Zoom 8-9: Only overview soundings (SCAMIN >= 200000)
+            - Zoom 9-10: Overview + approach (SCAMIN >= 100000)
+            - Zoom 10-11: Most soundings (SCAMIN >= 20000)
+            - Zoom 11+: All soundings
+        */}
         {showSoundings && combinedFeatures.soundg && currentZoom >= 8 && (
           <Mapbox.ShapeSource id="soundg" shape={combinedFeatures.soundg}>
-            {/* Sparse soundings at zoom 8-10 (~30% using modulo on RCID) */}
+            {/* Zoom 8-9: Only show overview soundings (from 1:200k+ charts) */}
             <Mapbox.SymbolLayer
-              id="soundg-text-sparse"
-              filter={['==', ['%', ['get', 'RCID'], 3], 0]}
+              id="soundg-text-overview"
+              filter={['>=', ['coalesce', ['get', 'SCAMIN'], 0], 200000]}
+              maxZoomLevel={9}
+              style={{
+                textField: ['to-string', ['round', ['get', 'DEPTH']]],
+                textSize: 8,
+                textColor: '#000080',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1,
+                textAllowOverlap: false,
+              }}
+            />
+            {/* Zoom 9-10: Show overview + approach soundings (from 1:90k+ charts) */}
+            <Mapbox.SymbolLayer
+              id="soundg-text-general"
+              filter={['>=', ['coalesce', ['get', 'SCAMIN'], 0], 100000]}
+              minZoomLevel={9}
               maxZoomLevel={10}
               style={{
                 textField: ['to-string', ['round', ['get', 'DEPTH']]],
@@ -418,10 +448,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textAllowOverlap: false,
               }}
             />
-            {/* All soundings at zoom 10+ */}
+            {/* Zoom 10-11: Show most soundings (from 1:20k+ charts) */}
+            <Mapbox.SymbolLayer
+              id="soundg-text-approach"
+              filter={['>=', ['coalesce', ['get', 'SCAMIN'], 0], 20000]}
+              minZoomLevel={10}
+              maxZoomLevel={11}
+              style={{
+                textField: ['to-string', ['round', ['get', 'DEPTH']]],
+                textSize: 9,
+                textColor: '#000080',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1,
+                textAllowOverlap: false,
+              }}
+            />
+            {/* Zoom 11+: Show all soundings */}
             <Mapbox.SymbolLayer
               id="soundg-text-full"
-              minZoomLevel={10}
+              minZoomLevel={11}
               style={{
                 textField: ['to-string', ['round', ['get', 'DEPTH']]],
                 textSize: 9,

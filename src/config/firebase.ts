@@ -9,15 +9,16 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const { initializeAuth, getReactNativePersistence } = require('@firebase/auth/dist/rn/index.js');
 
 // Alaska Fishtopia Firebase configuration (shared with FishTopia app)
+// Values loaded from environment variables (.env file)
 const firebaseConfig = {
-  apiKey: "AIzaSyAUouZuXj1TpVpldvG4YlD1diPZZRwhYzM",
-  authDomain: "alaska-fishtopia.firebaseapp.com",
-  databaseURL: "https://alaska-fishtopia-default-rtdb.firebaseio.com",
-  projectId: "alaska-fishtopia",
-  storageBucket: "alaska-fishtopia.firebasestorage.app",
-  messagingSenderId: "411186688461",
-  appId: "1:411186688461:web:0f38f22eb9454a21bb9484",
-  measurementId: "G-W3L0R35PX6"
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  databaseURL: process.env.EXPO_PUBLIC_FIREBASE_DATABASE_URL,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
+  measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
 };
 
 // Initialize Firebase
