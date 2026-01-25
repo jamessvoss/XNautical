@@ -4,8 +4,7 @@ import { StyleSheet, View, Text, Platform, ActivityIndicator, TouchableOpacity }
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth } from './src/config/firebase';
+import { FirebaseAuthTypes, getAuth, onAuthStateChanged } from '@react-native-firebase/auth';
 
 // Platform-specific imports
 import ChartViewer from './src/components/ChartViewer';
@@ -150,7 +149,7 @@ function SettingsTab() {
 }
 
 function AppContent() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
   // Initialize Crashlytics and listen for auth state changes
@@ -160,7 +159,16 @@ function AppContent() {
       crashlytics().setCrashlyticsCollectionEnabled(true);
     }
 
-    const unsubscribe = onAuthStateChanged(auth, (authUser) => {
+    // Web platform doesn't use auth
+    if (Platform.OS === 'web') {
+      setAuthLoading(false);
+      return;
+    }
+
+    // Use native Firebase Auth listener with modular API
+    const authInstance = getAuth();
+    const unsubscribe = onAuthStateChanged(authInstance, (authUser: FirebaseAuthTypes.User | null) => {
+      console.log('Auth state changed:', authUser ? `Logged in as ${authUser.email}` : 'Logged out');
       setUser(authUser);
       setAuthLoading(false);
 

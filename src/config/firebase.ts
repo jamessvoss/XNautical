@@ -1,12 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-// Import React Native specific auth functions
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { initializeAuth, getReactNativePersistence } = require('@firebase/auth/dist/rn/index.js');
+import { Platform } from 'react-native';
 
 // XNautical Firebase configuration
 // Values loaded from environment variables (.env file)
@@ -21,13 +16,8 @@ const firebaseConfig = {
   measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
 };
 
-// Initialize Firebase
+// Initialize Firebase JS SDK (for Firestore and Storage)
 const app = initializeApp(firebaseConfig);
-
-// Initialize Auth with AsyncStorage persistence
-const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(AsyncStorage)
-});
 
 // Initialize Firestore for chart metadata
 const db = getFirestore(app);
@@ -35,75 +25,90 @@ const db = getFirestore(app);
 // Initialize Storage for chart GeoJSON files
 const storage = getStorage(app);
 
-// Auth state tracking
-let currentUser: User | null = null;
-let authResolvers: Array<(user: User | null) => void> = [];
+// Native Firebase Auth (only on native platforms)
+let nativeAuth: any = null;
+if (Platform.OS !== 'web') {
+  try {
+    nativeAuth = require('@react-native-firebase/auth').default;
+  } catch (e) {
+    console.log('Native Firebase Auth not available');
+  }
+}
 
-// Listen for auth state changes
-onAuthStateChanged(auth, (user) => {
-  currentUser = user;
-  console.log('Auth state changed:', user ? `Logged in as ${user.email} (uid: ${user.uid})` : 'Logged out');
-  
-  // Resolve any waiting promises
-  authResolvers.forEach(resolve => resolve(user));
-  authResolvers = [];
-});
+// Type for Firebase User from native SDK
+export interface NativeFirebaseUser {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  phoneNumber: string | null;
+  photoURL: string | null;
+  emailVerified: boolean;
+}
 
 /**
- * Get current user (throws if not authenticated)
+ * Get current user from native auth
  */
-export function getCurrentUser(): User {
-  if (!currentUser) {
-    throw new Error('User not authenticated');
+export function getCurrentUser(): NativeFirebaseUser | null {
+  if (nativeAuth) {
+    return nativeAuth().currentUser;
   }
-  return currentUser;
+  return null;
 }
 
 /**
  * Check if user is authenticated
  */
 export function isAuthenticated(): boolean {
-  return currentUser !== null;
+  if (nativeAuth) {
+    return nativeAuth().currentUser !== null;
+  }
+  return false;
 }
 
 /**
- * Wait for auth to be ready (waits for first auth state)
+ * Wait for auth to be ready
  */
-export function waitForAuth(): Promise<User | null> {
-  console.log('waitForAuth called, currentUser:', currentUser?.email || 'null');
+export function waitForAuth(): Promise<NativeFirebaseUser | null> {
+  console.log('waitForAuth called');
   
-  // If we already have a user, return immediately
-  if (currentUser !== null) {
+  if (!nativeAuth) {
+    console.log('Native auth not available');
+    return Promise.resolve(null);
+  }
+  
+  const currentUser = nativeAuth().currentUser;
+  if (currentUser) {
     console.log('waitForAuth: Already authenticated as', currentUser.email);
     return Promise.resolve(currentUser);
   }
   
-  // Check auth.currentUser directly as backup
-  const directUser = auth.currentUser;
-  if (directUser) {
-    console.log('waitForAuth: Found user via auth.currentUser:', directUser.email);
-    currentUser = directUser;
-    return Promise.resolve(directUser);
-  }
-  
-  // Wait for the next auth state change
+  // Wait for the auth state to be determined
   return new Promise((resolve) => {
-    console.log('waitForAuth: Waiting for auth state change...');
+    console.log('waitForAuth: Waiting for auth state...');
     
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = nativeAuth().onAuthStateChanged((user: NativeFirebaseUser | null) => {
       console.log('waitForAuth: Auth state changed to:', user?.email || 'null');
       unsubscribe();
-      currentUser = user;
       resolve(user);
     });
     
     // Timeout after 5 seconds
     setTimeout(() => {
-      console.log('waitForAuth: Timeout, resolving with:', currentUser?.email || auth.currentUser?.email || 'null');
+      console.log('waitForAuth: Timeout, resolving with current user');
       unsubscribe();
-      resolve(currentUser || auth.currentUser);
+      resolve(nativeAuth().currentUser);
     }, 5000);
   });
 }
 
-export { app, auth, db, storage };
+/**
+ * Get the native auth instance
+ */
+export function getAuth() {
+  if (!nativeAuth) {
+    throw new Error('Native Firebase Auth not available');
+  }
+  return nativeAuth();
+}
+
+export { app, db, storage, nativeAuth };

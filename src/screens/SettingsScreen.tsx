@@ -13,8 +13,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { signOut } from 'firebase/auth';
-import { auth } from '../config/firebase';
+import { getAuth, signOut } from '@react-native-firebase/auth';
 import * as chartCacheService from '../services/chartCacheService';
 import { formatBytes } from '../services/chartService';
 
@@ -80,7 +79,8 @@ export default function SettingsScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await signOut(auth);
+              const authInstance = getAuth();
+              await signOut(authInstance);
             } catch (error) {
               console.error('Logout error:', error);
             }
@@ -90,7 +90,7 @@ export default function SettingsScreen() {
     );
   };
 
-  const user = auth.currentUser;
+  const user = getAuth().currentUser;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>

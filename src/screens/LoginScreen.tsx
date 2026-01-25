@@ -19,13 +19,14 @@ import {
   StatusBar,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { app } from '../config/firebase';
 import { 
+  getAuth, 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
   sendPasswordResetEmail 
-} from 'firebase/auth';
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { auth, app } from '../config/firebase';
+} from '@react-native-firebase/auth';
 import * as LocalAuthentication from 'expo-local-authentication';
 import {
   Mail,
@@ -246,7 +247,8 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
         const credentialsJson = await AsyncStorage.getItem(BIOMETRIC_CREDENTIALS_KEY);
         if (credentialsJson) {
           const credentials = JSON.parse(credentialsJson);
-          await signInWithEmailAndPassword(auth, credentials.email, credentials.password);
+          const authInstance = getAuth();
+          await signInWithEmailAndPassword(authInstance, credentials.email, credentials.password);
           onAuthSuccess();
         } else {
           setLoginError('No saved credentials found. Please login with email and password.');
@@ -292,7 +294,8 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
     setLoading(true);
 
     try {
-      await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPass);
+      const authInstance = getAuth();
+      await signInWithEmailAndPassword(authInstance, loginEmail.trim(), loginPass);
 
       if (rememberEmail) {
         await AsyncStorage.setItem(REMEMBER_EMAIL_KEY, 'true');
@@ -381,7 +384,8 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
 
       if (data.success) {
         // Create the account
-        await createUserWithEmailAndPassword(auth, newEmail.trim(), newPass);
+        const authInstance = getAuth();
+        await createUserWithEmailAndPassword(authInstance, newEmail.trim(), newPass);
 
         // Create user profile
         try {
@@ -459,7 +463,8 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
     setLoading(true);
 
     try {
-      await sendPasswordResetEmail(auth, resetEmail.trim());
+      const authInstance = getAuth();
+      await sendPasswordResetEmail(authInstance, resetEmail.trim());
       setResetSent(true);
     } catch (error: any) {
       Alert.alert('Error', getFirebaseErrorMessage(error.code || ''));
