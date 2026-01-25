@@ -132,13 +132,13 @@ XNautical/
 EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN=<mapbox_public_token>
 RNMAPBOX_MAPS_DOWNLOAD_TOKEN=<mapbox_secret_token>
 
-# Firebase (XNautical project)
-EXPO_PUBLIC_FIREBASE_API_KEY=AIzaSyC41D83BdBdl4jLR0pu-GA64hhWukoTUIk
-EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=xnautical-8a296.firebaseapp.com
-EXPO_PUBLIC_FIREBASE_PROJECT_ID=xnautical-8a296
-EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=xnautical-8a296.firebasestorage.app
-EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=653355603694
-EXPO_PUBLIC_FIREBASE_APP_ID=<needs_web_app_id>
+# Firebase (XNautical project) - Get values from Firebase Console
+EXPO_PUBLIC_FIREBASE_API_KEY=<your_firebase_api_key>
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=<your_project>.firebaseapp.com
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=<your_project_id>
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=<your_project>.firebasestorage.app
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=<your_sender_id>
+EXPO_PUBLIC_FIREBASE_APP_ID=<your_app_id>
 ```
 
 ## Chart Features Implemented
