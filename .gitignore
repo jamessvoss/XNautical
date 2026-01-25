@@ -68,3 +68,9 @@ GoogleService-Info.plist
 *.swo
 AK_ENCProdCat_19115.xml
 functions/lib/
+
+# Map data (stored in Firestore)
+assets/Maps/
+
+# Generated output
+output/
