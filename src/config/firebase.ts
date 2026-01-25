@@ -1,5 +1,4 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { Platform } from 'react-native';
 
@@ -16,11 +15,8 @@ const firebaseConfig = {
   measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
 };
 
-// Initialize Firebase JS SDK (for Firestore and Storage)
+// Initialize Firebase JS SDK (for Storage - still needed for file downloads)
 const app = initializeApp(firebaseConfig);
-
-// Initialize Firestore for chart metadata
-const db = getFirestore(app);
 
 // Initialize Storage for chart GeoJSON files
 const storage = getStorage(app);
@@ -111,4 +107,4 @@ export function getAuth() {
   return nativeAuth();
 }
 
-export { app, db, storage, nativeAuth };
+export { app, storage, nativeAuth };

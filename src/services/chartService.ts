@@ -2,18 +2,8 @@
  * Chart Service - Handles fetching chart metadata and downloading chart data from Firebase
  */
 
-import { 
-  collection, 
-  doc, 
-  getDoc, 
-  getDocs, 
-  query, 
-  where,
-  orderBy 
-} from 'firebase/firestore';
-import { ref, getBytes } from 'firebase/storage';
+import { Platform } from 'react-native';
 import pako from 'pako';
-import { db, storage } from '../config/firebase';
 import { 
   ChartRegion, 
   ChartMetadata, 
@@ -22,6 +12,24 @@ import {
   GeoJSONFeatureCollection,
   ALL_FEATURE_TYPES
 } from '../types/chart';
+
+// Native Firebase modules (only on native platforms)
+let firestore: any = null;
+let storage: any = null;
+
+if (Platform.OS !== 'web') {
+  try {
+    firestore = require('@react-native-firebase/firestore').default;
+  } catch (e) {
+    console.log('Native Firestore not available');
+  }
+  
+  try {
+    storage = require('@react-native-firebase/storage').default;
+  } catch (e) {
+    console.log('Native Storage not available');
+  }
+}
 
 // Firestore collection names
 const COLLECTIONS = {
@@ -35,16 +43,33 @@ const COLLECTIONS = {
  */
 export async function getRegions(): Promise<ChartRegion[]> {
   try {
-    const regionsRef = collection(db, COLLECTIONS.REGIONS);
-    const snapshot = await getDocs(regionsRef);
+    if (!firestore) {
+      throw new Error('Firestore not available');
+    }
     
-    return snapshot.docs.map(doc => ({
+    // Log auth state for debugging
+    let authModule: any = null;
+    try {
+      authModule = require('@react-native-firebase/auth').default;
+      const currentUser = authModule().currentUser;
+      console.log('getRegions - Auth state:', currentUser ? `Logged in as ${currentUser.email} (uid: ${currentUser.uid})` : 'NOT LOGGED IN');
+    } catch (e) {
+      console.log('getRegions - Could not check auth state');
+    }
+    
+    console.log('getRegions - Fetching from collection:', COLLECTIONS.REGIONS);
+    const snapshot = await firestore().collection(COLLECTIONS.REGIONS).get();
+    console.log('getRegions - Got', snapshot.docs.length, 'documents');
+    
+    return snapshot.docs.map((doc: any) => ({
       id: doc.id as RegionId,
       ...doc.data(),
       lastUpdated: doc.data().lastUpdated?.toDate() || new Date(),
     })) as ChartRegion[];
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching regions:', error);
+    console.error('Error code:', error.code);
+    console.error('Error message:', error.message);
     throw error;
   }
 }
@@ -54,10 +79,16 @@ export async function getRegions(): Promise<ChartRegion[]> {
  */
 export async function getRegion(regionId: RegionId): Promise<ChartRegion | null> {
   try {
-    const regionRef = doc(db, COLLECTIONS.REGIONS, regionId);
-    const snapshot = await getDoc(regionRef);
+    if (!firestore) {
+      throw new Error('Firestore not available');
+    }
     
-    if (!snapshot.exists()) {
+    const snapshot = await firestore()
+      .collection(COLLECTIONS.REGIONS)
+      .doc(regionId)
+      .get();
+    
+    if (!snapshot.exists) {
       return null;
     }
     
@@ -78,15 +109,17 @@ export async function getRegion(regionId: RegionId): Promise<ChartRegion | null>
  */
 export async function getChartsByRegion(regionId: RegionId): Promise<ChartMetadata[]> {
   try {
-    const chartsRef = collection(db, COLLECTIONS.METADATA);
-    const q = query(
-      chartsRef, 
-      where('region', '==', regionId),
-      orderBy('scale', 'desc') // Harbor charts first (higher scale number)
-    );
-    const snapshot = await getDocs(q);
+    if (!firestore) {
+      throw new Error('Firestore not available');
+    }
     
-    return snapshot.docs.map(doc => ({
+    const snapshot = await firestore()
+      .collection(COLLECTIONS.METADATA)
+      .where('region', '==', regionId)
+      .orderBy('scale', 'desc') // Harbor charts first (higher scale number)
+      .get();
+    
+    return snapshot.docs.map((doc: any) => ({
       ...doc.data(),
       chartId: doc.id,
       lastUpdated: doc.data().lastUpdated?.toDate() || new Date(),
@@ -102,16 +135,33 @@ export async function getChartsByRegion(regionId: RegionId): Promise<ChartMetada
  */
 export async function getAllCharts(): Promise<ChartMetadata[]> {
   try {
-    const chartsRef = collection(db, COLLECTIONS.METADATA);
-    const snapshot = await getDocs(chartsRef);
+    if (!firestore) {
+      throw new Error('Firestore not available');
+    }
     
-    return snapshot.docs.map(doc => ({
+    // Log auth state for debugging
+    let authModule: any = null;
+    try {
+      authModule = require('@react-native-firebase/auth').default;
+      const currentUser = authModule().currentUser;
+      console.log('getAllCharts - Auth state:', currentUser ? `Logged in as ${currentUser.email} (uid: ${currentUser.uid})` : 'NOT LOGGED IN');
+    } catch (e) {
+      console.log('getAllCharts - Could not check auth state');
+    }
+    
+    console.log('getAllCharts - Fetching from collection:', COLLECTIONS.METADATA);
+    const snapshot = await firestore().collection(COLLECTIONS.METADATA).get();
+    console.log('getAllCharts - Got', snapshot.docs.length, 'documents');
+    
+    return snapshot.docs.map((doc: any) => ({
       ...doc.data(),
       chartId: doc.id,
       lastUpdated: doc.data().lastUpdated?.toDate() || new Date(),
     })) as ChartMetadata[];
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching all charts:', error);
+    console.error('Error code:', error.code);
+    console.error('Error message:', error.message);
     throw error;
   }
 }
@@ -153,10 +203,16 @@ export async function getChartsInBounds(
  */
 export async function getChartMetadata(chartId: string): Promise<ChartMetadata | null> {
   try {
-    const chartRef = doc(db, COLLECTIONS.METADATA, chartId);
-    const snapshot = await getDoc(chartRef);
+    if (!firestore) {
+      throw new Error('Firestore not available');
+    }
     
-    if (!snapshot.exists()) {
+    const snapshot = await firestore()
+      .collection(COLLECTIONS.METADATA)
+      .doc(chartId)
+      .get();
+    
+    if (!snapshot.exists) {
       return null;
     }
     
@@ -201,13 +257,32 @@ export async function downloadChartFeature(
   const storagePath = `charts/${region}/${chartId}/${featureType}.json.gz`;
   
   try {
+    if (!storage) {
+      throw new Error('Native Storage not available');
+    }
+    
+    // Log auth state for debugging
+    try {
+      const authModule = require('@react-native-firebase/auth').default;
+      const currentUser = authModule().currentUser;
+      console.log(`downloadChartFeature - Auth: ${currentUser ? currentUser.email : 'NOT LOGGED IN'}`);
+    } catch (e) {
+      console.log('downloadChartFeature - Could not check auth');
+    }
+    
     console.log(`Downloading: ${storagePath}`);
-    const fileRef = ref(storage, storagePath);
+    const fileRef = storage().ref(storagePath);
     
-    const compressedData = await getBytes(fileRef);
-    console.log(`Got ${compressedData.byteLength} bytes for ${featureType}`);
+    // Download to a data URL and extract the base64 data
+    const downloadUrl = await fileRef.getDownloadURL();
+    console.log(`Got download URL for ${featureType}`);
     
-    const jsonString = await decompressGzip(compressedData);
+    // Fetch the file data
+    const response = await fetch(downloadUrl);
+    const arrayBuffer = await response.arrayBuffer();
+    console.log(`Got ${arrayBuffer.byteLength} bytes for ${featureType}`);
+    
+    const jsonString = decompressGzip(arrayBuffer);
     console.log(`Decompressed to ${jsonString.length} chars for ${featureType}`);
     
     const geojson = JSON.parse(jsonString) as GeoJSONFeatureCollection;
@@ -217,7 +292,7 @@ export async function downloadChartFeature(
   } catch (error: unknown) {
     // File might not exist for this chart (not all charts have all feature types)
     const errorMessage = error instanceof Error ? error.message : String(error);
-    if (errorMessage.includes('object-not-found') || errorMessage.includes('404')) {
+    if (errorMessage.includes('object-not-found') || errorMessage.includes('404') || errorMessage.includes('does not exist')) {
       console.log(`No ${featureType} file for ${chartId} at ${storagePath}`);
       return null;
     }
