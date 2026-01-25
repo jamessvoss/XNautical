@@ -317,6 +317,7 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
         onAuthSuccess();
       }
     } catch (error: any) {
+      console.error('Login error:', error.code, error.message, error);
       setLoginError(getFirebaseErrorMessage(error.code || ''));
     } finally {
       setLoading(false);
