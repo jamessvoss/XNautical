@@ -54,7 +54,9 @@
         {
           "faceIDPermission": "Allow XNautical to use Face ID for quick sign-in."
         }
-      ]
+      ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/crashlytics"
     ]
   }
 }

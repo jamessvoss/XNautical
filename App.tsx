@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, View, Text, Platform, ActivityIndicator } from 'react-native';
+import { StyleSheet, View, Text, Platform, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -15,13 +15,106 @@ let LoginScreen: React.ComponentType<{ onLoginSuccess: () => void }> | null = nu
 let MapSelectionScreen: React.ComponentType | null = null;
 let DynamicChartViewer: React.ComponentType<{ onNavigateToDownloads?: () => void }> | null = null;
 let SettingsScreen: React.ComponentType | null = null;
+let crashlytics: any = null;
 
 if (Platform.OS !== 'web') {
   LoginScreen = require('./src/screens/LoginScreen').default;
   MapSelectionScreen = require('./src/screens/MapSelectionScreen').default;
   DynamicChartViewer = require('./src/components/DynamicChartViewer.native').default;
   SettingsScreen = require('./src/screens/SettingsScreen').default;
+  
+  // Initialize Crashlytics for native platforms
+  try {
+    crashlytics = require('@react-native-firebase/crashlytics').default;
+  } catch (e) {
+    console.log('Crashlytics not available');
+  }
 }
+
+// Error Boundary to catch JavaScript errors
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    // Log to Crashlytics
+    if (crashlytics) {
+      crashlytics().recordError(error);
+      crashlytics().log(`Component stack: ${errorInfo.componentStack}`);
+    }
+    console.error('ErrorBoundary caught:', error, errorInfo);
+  }
+
+  handleRetry = () => {
+    this.setState({ hasError: false, error: null });
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={errorStyles.container}>
+          <Text style={errorStyles.title}>Something went wrong</Text>
+          <Text style={errorStyles.message}>
+            {this.state.error?.message || 'An unexpected error occurred'}
+          </Text>
+          <TouchableOpacity style={errorStyles.button} onPress={this.handleRetry}>
+            <Text style={errorStyles.buttonText}>Try Again</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+const errorStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1a365d',
+    padding: 20,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 12,
+  },
+  message: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.7)',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  button: {
+    backgroundColor: '#3b82f6',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+});
 
 const Tab = createBottomTabNavigator();
 
@@ -56,15 +149,29 @@ function SettingsTab() {
   return <SettingsScreen />;
 }
 
-export default function App() {
+function AppContent() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  // Listen for auth state changes
+  // Initialize Crashlytics and listen for auth state changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
+    // Enable Crashlytics collection (disabled by default in dev)
+    if (crashlytics && !__DEV__) {
+      crashlytics().setCrashlyticsCollectionEnabled(true);
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, (authUser) => {
+      setUser(authUser);
       setAuthLoading(false);
+
+      // Set user ID in Crashlytics for crash attribution
+      if (crashlytics && authUser) {
+        crashlytics().setUserId(authUser.uid);
+        crashlytics().setAttributes({
+          email: authUser.email || '',
+        });
+        crashlytics().log(`User authenticated: ${authUser.email}`);
+      }
     });
     return unsubscribe;
   }, []);
@@ -146,6 +253,15 @@ export default function App() {
       </NavigationContainer>
       <StatusBar style="dark" />
     </SafeAreaProvider>
+  );
+}
+
+// Main App wrapper with ErrorBoundary
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 }
 
