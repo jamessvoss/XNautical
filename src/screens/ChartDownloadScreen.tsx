@@ -25,6 +25,9 @@ import * as chartService from '../services/chartService';
 import * as chartCacheService from '../services/chartCacheService';
 import * as chartLoader from '../services/chartLoader';
 
+// Charts that have MBTiles versions available
+const MBTILES_AVAILABLE = ['US5AK5QG', 'US5AK5SI', 'US5AK5SJ', 'US4AK4PH'];
+
 interface Props {
   onNavigateToViewer: () => void;
 }
@@ -38,6 +41,7 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
   const [selectedRegion, setSelectedRegion] = useState<RegionId | null>(null);
   const [charts, setCharts] = useState<ChartMetadata[]>([]);
   const [downloadedChartIds, setDownloadedChartIds] = useState<string[]>([]);
+  const [downloadedMBTilesIds, setDownloadedMBTilesIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
@@ -59,13 +63,18 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
       const regionsData = await chartService.getRegions();
       setRegions(regionsData);
       
-      // Load downloaded chart IDs
+      // Load downloaded chart IDs (GeoJSON)
       const downloaded = await chartCacheService.getDownloadedChartIds();
       setDownloadedChartIds(downloaded);
       
-      // Get cache size
-      const cacheSize = await chartCacheService.getCacheSize();
-      setTotalCacheSize(cacheSize);
+      // Load downloaded MBTiles IDs
+      const downloadedMBTiles = await chartCacheService.getDownloadedMBTilesIds();
+      setDownloadedMBTilesIds(downloadedMBTiles);
+      
+      // Get cache size (both GeoJSON and MBTiles)
+      const geojsonSize = await chartCacheService.getCacheSize();
+      const mbtilesSize = await chartCacheService.getMBTilesCacheSize();
+      setTotalCacheSize(geojsonSize + mbtilesSize);
     } catch (error) {
       console.error('Error loading data:', error);
       Alert.alert('Error', 'Failed to load chart data. Please check your connection.');
@@ -101,44 +110,71 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
       return;
     }
 
+    // Check if MBTiles version is available
+    const hasMBTiles = MBTILES_AVAILABLE.includes(chart.chartId);
+
     try {
       setDownloadProgress({
         chartId: chart.chartId,
-        totalFeatures: 17,
+        totalFeatures: hasMBTiles ? 1 : 17,
         downloadedFeatures: 0,
         bytesDownloaded: 0,
         totalBytes: chart.fileSizeBytes,
         status: 'downloading',
+        currentFeature: hasMBTiles ? 'mbtiles' : undefined,
       });
 
-      const features = await chartService.downloadChart(
-        chart.chartId,
-        chart.region,
-        (featureType: FeatureType, downloaded: number, total: number) => {
-          setDownloadProgress(prev => prev ? {
-            ...prev,
-            currentFeature: featureType,
-            downloadedFeatures: downloaded,
-          } : null);
-        }
-      );
+      if (hasMBTiles) {
+        // Download MBTiles version
+        console.log(`Downloading MBTiles for ${chart.chartId}...`);
+        await chartService.downloadChartMBTiles(chart.chartId);
+        
+        // Update state
+        setDownloadedMBTilesIds(prev => [...prev, chart.chartId]);
+        const mbtilesSize = await chartCacheService.getMBTilesCacheSize();
+        const geojsonSize = await chartCacheService.getCacheSize();
+        setTotalCacheSize(geojsonSize + mbtilesSize);
 
-      // Save to cache
-      await chartCacheService.saveChart(chart.chartId, features);
+        setDownloadProgress({
+          chartId: chart.chartId,
+          totalFeatures: 1,
+          downloadedFeatures: 1,
+          bytesDownloaded: chart.fileSizeBytes,
+          totalBytes: chart.fileSizeBytes,
+          status: 'completed',
+        });
+      } else {
+        // Download GeoJSON version
+        const features = await chartService.downloadChart(
+          chart.chartId,
+          chart.region,
+          (featureType: FeatureType, downloaded: number, total: number) => {
+            setDownloadProgress(prev => prev ? {
+              ...prev,
+              currentFeature: featureType,
+              downloadedFeatures: downloaded,
+            } : null);
+          }
+        );
 
-      // Update state
-      setDownloadedChartIds(prev => [...prev, chart.chartId]);
-      const cacheSize = await chartCacheService.getCacheSize();
-      setTotalCacheSize(cacheSize);
+        // Save to cache
+        await chartCacheService.saveChart(chart.chartId, features);
 
-      setDownloadProgress({
-        chartId: chart.chartId,
-        totalFeatures: 17,
-        downloadedFeatures: 17,
-        bytesDownloaded: chart.fileSizeBytes,
-        totalBytes: chart.fileSizeBytes,
-        status: 'completed',
-      });
+        // Update state
+        setDownloadedChartIds(prev => [...prev, chart.chartId]);
+        const cacheSize = await chartCacheService.getCacheSize();
+        const mbtilesSize = await chartCacheService.getMBTilesCacheSize();
+        setTotalCacheSize(cacheSize + mbtilesSize);
+
+        setDownloadProgress({
+          chartId: chart.chartId,
+          totalFeatures: 17,
+          downloadedFeatures: 17,
+          bytesDownloaded: chart.fileSizeBytes,
+          totalBytes: chart.fileSizeBytes,
+          status: 'completed',
+        });
+      }
 
       setTimeout(() => setDownloadProgress(null), 2000);
     } catch (error) {
@@ -164,11 +200,23 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
           style: 'destructive',
           onPress: async () => {
             try {
-              await chartCacheService.deleteChart(chartId);
-              chartLoader.unloadChart(chartId);
-              setDownloadedChartIds(prev => prev.filter(id => id !== chartId));
-              const cacheSize = await chartCacheService.getCacheSize();
-              setTotalCacheSize(cacheSize);
+              // Delete GeoJSON if exists
+              if (downloadedChartIds.includes(chartId)) {
+                await chartCacheService.deleteChart(chartId);
+                chartLoader.unloadChart(chartId);
+                setDownloadedChartIds(prev => prev.filter(id => id !== chartId));
+              }
+              
+              // Delete MBTiles if exists
+              if (downloadedMBTilesIds.includes(chartId)) {
+                await chartCacheService.deleteMBTiles(chartId);
+                setDownloadedMBTilesIds(prev => prev.filter(id => id !== chartId));
+              }
+              
+              // Update cache size
+              const geojsonSize = await chartCacheService.getCacheSize();
+              const mbtilesSize = await chartCacheService.getMBTilesCacheSize();
+              setTotalCacheSize(geojsonSize + mbtilesSize);
             } catch (error) {
               console.error('Error deleting chart:', error);
               Alert.alert('Error', 'Failed to delete chart');
@@ -233,18 +281,30 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
   };
 
   const renderChartItem = ({ item }: { item: ChartMetadata }) => {
-    const isDownloaded = downloadedChartIds.includes(item.chartId);
+    const isDownloadedGeoJSON = downloadedChartIds.includes(item.chartId);
+    const isDownloadedMBTiles = downloadedMBTilesIds.includes(item.chartId);
+    const isDownloaded = isDownloadedGeoJSON || isDownloadedMBTiles;
     const isDownloading = downloadProgress?.chartId === item.chartId;
+    const hasMBTiles = MBTILES_AVAILABLE.includes(item.chartId);
 
     return (
       <View style={styles.listItem}>
         <View style={styles.listItemContent}>
-          <Text style={styles.listItemTitle}>{item.chartId}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <Text style={styles.listItemTitle}>{item.chartId}</Text>
+            {hasMBTiles && (
+              <View style={styles.mbtilesTag}>
+                <Text style={styles.mbtilesTagText}>Vector</Text>
+              </View>
+            )}
+          </View>
           <Text style={styles.listItemSubtitle}>
             {item.scaleType} • Scale {item.scale}
           </Text>
           <Text style={styles.listItemInfo}>
             {chartService.formatBytes(item.fileSizeBytes)}
+            {isDownloadedMBTiles && ' • MBTiles'}
+            {isDownloadedGeoJSON && !isDownloadedMBTiles && ' • GeoJSON'}
           </Text>
         </View>
         
@@ -252,7 +312,9 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
           <View style={styles.downloadingContainer}>
             <ActivityIndicator size="small" color="#007AFF" />
             <Text style={styles.downloadingText}>
-              {downloadProgress?.downloadedFeatures || 0}/{downloadProgress?.totalFeatures || 17}
+              {downloadProgress?.currentFeature === 'mbtiles' 
+                ? 'MBTiles...' 
+                : `${downloadProgress?.downloadedFeatures || 0}/${downloadProgress?.totalFeatures || 17}`}
             </Text>
           </View>
         ) : isDownloaded ? (
@@ -264,10 +326,12 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
-            style={styles.downloadButton}
+            style={[styles.downloadButton, hasMBTiles && styles.downloadButtonMBTiles]}
             onPress={() => downloadChart(item)}
           >
-            <Text style={styles.downloadButtonText}>Download</Text>
+            <Text style={styles.downloadButtonText}>
+              {hasMBTiles ? 'Download' : 'Download'}
+            </Text>
           </TouchableOpacity>
         )}
       </View>
@@ -314,7 +378,7 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
       {/* Cache Status */}
       <View style={styles.statusBar}>
         <Text style={styles.statusText}>
-          {downloadedChartIds.length} charts downloaded • {chartService.formatBytes(totalCacheSize)}
+          {downloadedChartIds.length + downloadedMBTilesIds.length} charts downloaded • {chartService.formatBytes(totalCacheSize)}
         </Text>
         {viewMode === 'charts' && (
           <TouchableOpacity onPress={downloadAllInRegion}>
@@ -501,9 +565,24 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 6,
   },
+  downloadButtonMBTiles: {
+    backgroundColor: '#28a745',
+  },
   downloadButtonText: {
     color: '#fff',
     fontSize: 14,
+    fontWeight: '600',
+  },
+  mbtilesTag: {
+    backgroundColor: '#28a745',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  mbtilesTagText: {
+    color: '#fff',
+    fontSize: 10,
     fontWeight: '600',
   },
   deleteButton: {

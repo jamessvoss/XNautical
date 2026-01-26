@@ -1,0 +1,17 @@
+# Cloud Build configuration for enc-converter
+# Builds and pushes Docker image to Container Registry
+
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/enc-converter:latest', '.']
+  
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/enc-converter:latest']
+
+images:
+  - 'gcr.io/$PROJECT_ID/enc-converter:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

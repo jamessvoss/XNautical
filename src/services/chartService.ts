@@ -1,5 +1,6 @@
 /**
  * Chart Service - Handles fetching chart metadata and downloading chart data from Firebase
+ * Uses the modular API (React Native Firebase v22+)
  */
 
 import { Platform } from 'react-native';
@@ -12,22 +13,62 @@ import {
   GeoJSONFeatureCollection,
   ALL_FEATURE_TYPES
 } from '../types/chart';
+import { documentDirectory, makeDirectoryAsync, getInfoAsync, writeAsStringAsync } from 'expo-file-system/legacy';
+import * as chartCacheService from './chartCacheService';
 
-// Native Firebase modules (only on native platforms)
-let firestore: any = null;
-let storage: any = null;
+// Modular Firebase imports (only on native platforms)
+let firestoreDb: any = null;
+let firestoreFns: {
+  collection: (db: any, path: string) => any;
+  doc: (db: any, path: string, id: string) => any;
+  getDocs: (query: any) => Promise<any>;
+  getDoc: (docRef: any) => Promise<any>;
+  query: (collectionRef: any, ...constraints: any[]) => any;
+  where: (field: string, op: string, value: any) => any;
+  orderBy: (field: string, direction?: string) => any;
+} | null = null;
+
+let storageRef: any = null;
+let storageFns: {
+  ref: (storage: any, path: string) => any;
+  getDownloadURL: (ref: any) => Promise<string>;
+} | null = null;
+
+let authInstance: any = null;
 
 if (Platform.OS !== 'web') {
   try {
-    firestore = require('@react-native-firebase/firestore').default;
+    const rnfbFirestore = require('@react-native-firebase/firestore');
+    firestoreDb = rnfbFirestore.getFirestore();
+    firestoreFns = {
+      collection: rnfbFirestore.collection,
+      doc: rnfbFirestore.doc,
+      getDocs: rnfbFirestore.getDocs,
+      getDoc: rnfbFirestore.getDoc,
+      query: rnfbFirestore.query,
+      where: rnfbFirestore.where,
+      orderBy: rnfbFirestore.orderBy,
+    };
   } catch (e) {
     console.log('Native Firestore not available');
   }
   
   try {
-    storage = require('@react-native-firebase/storage').default;
+    const rnfbStorage = require('@react-native-firebase/storage');
+    storageRef = rnfbStorage.getStorage();
+    storageFns = {
+      ref: rnfbStorage.ref,
+      getDownloadURL: rnfbStorage.getDownloadURL,
+    };
   } catch (e) {
     console.log('Native Storage not available');
+  }
+  
+  try {
+    const rnfbAuth = require('@react-native-firebase/auth');
+    authInstance = rnfbAuth.getAuth();
+  } catch (e) {
+    console.log('Native Auth not available for chartService');
   }
 }
 
@@ -43,22 +84,19 @@ const COLLECTIONS = {
  */
 export async function getRegions(): Promise<ChartRegion[]> {
   try {
-    if (!firestore) {
+    if (!firestoreDb || !firestoreFns) {
       throw new Error('Firestore not available');
     }
     
     // Log auth state for debugging
-    let authModule: any = null;
-    try {
-      authModule = require('@react-native-firebase/auth').default;
-      const currentUser = authModule().currentUser;
+    if (authInstance) {
+      const currentUser = authInstance.currentUser;
       console.log('getRegions - Auth state:', currentUser ? `Logged in as ${currentUser.email} (uid: ${currentUser.uid})` : 'NOT LOGGED IN');
-    } catch (e) {
-      console.log('getRegions - Could not check auth state');
     }
     
     console.log('getRegions - Fetching from collection:', COLLECTIONS.REGIONS);
-    const snapshot = await firestore().collection(COLLECTIONS.REGIONS).get();
+    const collectionRef = firestoreFns.collection(firestoreDb, COLLECTIONS.REGIONS);
+    const snapshot = await firestoreFns.getDocs(collectionRef);
     console.log('getRegions - Got', snapshot.docs.length, 'documents');
     
     return snapshot.docs.map((doc: any) => ({
@@ -79,16 +117,14 @@ export async function getRegions(): Promise<ChartRegion[]> {
  */
 export async function getRegion(regionId: RegionId): Promise<ChartRegion | null> {
   try {
-    if (!firestore) {
+    if (!firestoreDb || !firestoreFns) {
       throw new Error('Firestore not available');
     }
     
-    const snapshot = await firestore()
-      .collection(COLLECTIONS.REGIONS)
-      .doc(regionId)
-      .get();
+    const docRef = firestoreFns.doc(firestoreDb, COLLECTIONS.REGIONS, regionId);
+    const snapshot = await firestoreFns.getDoc(docRef);
     
-    if (!snapshot.exists) {
+    if (!snapshot.exists()) {
       return null;
     }
     
@@ -109,15 +145,17 @@ export async function getRegion(regionId: RegionId): Promise<ChartRegion | null>
  */
 export async function getChartsByRegion(regionId: RegionId): Promise<ChartMetadata[]> {
   try {
-    if (!firestore) {
+    if (!firestoreDb || !firestoreFns) {
       throw new Error('Firestore not available');
     }
     
-    const snapshot = await firestore()
-      .collection(COLLECTIONS.METADATA)
-      .where('region', '==', regionId)
-      .orderBy('scale', 'desc') // Harbor charts first (higher scale number)
-      .get();
+    const collectionRef = firestoreFns.collection(firestoreDb, COLLECTIONS.METADATA);
+    const q = firestoreFns.query(
+      collectionRef,
+      firestoreFns.where('region', '==', regionId),
+      firestoreFns.orderBy('scale', 'desc') // Harbor charts first (higher scale number)
+    );
+    const snapshot = await firestoreFns.getDocs(q);
     
     return snapshot.docs.map((doc: any) => ({
       ...doc.data(),
@@ -135,22 +173,19 @@ export async function getChartsByRegion(regionId: RegionId): Promise<ChartMetada
  */
 export async function getAllCharts(): Promise<ChartMetadata[]> {
   try {
-    if (!firestore) {
+    if (!firestoreDb || !firestoreFns) {
       throw new Error('Firestore not available');
     }
     
     // Log auth state for debugging
-    let authModule: any = null;
-    try {
-      authModule = require('@react-native-firebase/auth').default;
-      const currentUser = authModule().currentUser;
+    if (authInstance) {
+      const currentUser = authInstance.currentUser;
       console.log('getAllCharts - Auth state:', currentUser ? `Logged in as ${currentUser.email} (uid: ${currentUser.uid})` : 'NOT LOGGED IN');
-    } catch (e) {
-      console.log('getAllCharts - Could not check auth state');
     }
     
     console.log('getAllCharts - Fetching from collection:', COLLECTIONS.METADATA);
-    const snapshot = await firestore().collection(COLLECTIONS.METADATA).get();
+    const collectionRef = firestoreFns.collection(firestoreDb, COLLECTIONS.METADATA);
+    const snapshot = await firestoreFns.getDocs(collectionRef);
     console.log('getAllCharts - Got', snapshot.docs.length, 'documents');
     
     return snapshot.docs.map((doc: any) => ({
@@ -203,16 +238,14 @@ export async function getChartsInBounds(
  */
 export async function getChartMetadata(chartId: string): Promise<ChartMetadata | null> {
   try {
-    if (!firestore) {
+    if (!firestoreDb || !firestoreFns) {
       throw new Error('Firestore not available');
     }
     
-    const snapshot = await firestore()
-      .collection(COLLECTIONS.METADATA)
-      .doc(chartId)
-      .get();
+    const docRef = firestoreFns.doc(firestoreDb, COLLECTIONS.METADATA, chartId);
+    const snapshot = await firestoreFns.getDoc(docRef);
     
-    if (!snapshot.exists) {
+    if (!snapshot.exists()) {
       return null;
     }
     
@@ -257,24 +290,21 @@ export async function downloadChartFeature(
   const storagePath = `charts/${region}/${chartId}/${featureType}.json.gz`;
   
   try {
-    if (!storage) {
+    if (!storageRef || !storageFns) {
       throw new Error('Native Storage not available');
     }
     
     // Log auth state for debugging
-    try {
-      const authModule = require('@react-native-firebase/auth').default;
-      const currentUser = authModule().currentUser;
+    if (authInstance) {
+      const currentUser = authInstance.currentUser;
       console.log(`downloadChartFeature - Auth: ${currentUser ? currentUser.email : 'NOT LOGGED IN'}`);
-    } catch (e) {
-      console.log('downloadChartFeature - Could not check auth');
     }
     
     console.log(`Downloading: ${storagePath}`);
-    const fileRef = storage().ref(storagePath);
+    const fileRef = storageFns.ref(storageRef, storagePath);
     
     // Download to a data URL and extract the base64 data
-    const downloadUrl = await fileRef.getDownloadURL();
+    const downloadUrl = await storageFns.getDownloadURL(fileRef);
     console.log(`Got download URL for ${featureType}`);
     
     // Fetch the file data
@@ -366,4 +396,122 @@ export function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
+
+// ============================================
+// MBTiles Download Functions
+// ============================================
+
+/**
+ * Download an MBTiles file for a chart from Firebase Storage
+ * Returns the local file path where the MBTiles was saved
+ */
+export async function downloadChartMBTiles(
+  chartId: string,
+  onProgress?: (bytesDownloaded: number, totalBytes: number) => void
+): Promise<string> {
+  const storagePath = `enc-mbtiles/${chartId}.mbtiles`;
+  const localPath = chartCacheService.getMBTilesPath(chartId);
+  
+  try {
+    if (!storageRef || !storageFns) {
+      throw new Error('Native Storage not available');
+    }
+    
+    // Log auth state for debugging
+    if (authInstance) {
+      const currentUser = authInstance.currentUser;
+      console.log(`downloadChartMBTiles - Auth: ${currentUser ? currentUser.email : 'NOT LOGGED IN'}`);
+    }
+    
+    // Ensure mbtiles directory exists
+    const mbtilesDir = chartCacheService.getMBTilesDir();
+    const dirInfo = await getInfoAsync(mbtilesDir);
+    if (!dirInfo.exists) {
+      await makeDirectoryAsync(mbtilesDir, { intermediates: true });
+    }
+    
+    console.log(`Downloading MBTiles: ${storagePath}`);
+    const fileRef = storageFns.ref(storageRef, storagePath);
+    
+    // Get download URL
+    const downloadUrl = await storageFns.getDownloadURL(fileRef);
+    console.log(`Got download URL for ${chartId}.mbtiles`);
+    
+    // Fetch the binary file
+    const response = await fetch(downloadUrl);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    // Get the total size for progress
+    const contentLength = response.headers.get('content-length');
+    const totalBytes = contentLength ? parseInt(contentLength, 10) : 0;
+    
+    // Read as array buffer
+    const arrayBuffer = await response.arrayBuffer();
+    console.log(`Downloaded ${arrayBuffer.byteLength} bytes for ${chartId}.mbtiles`);
+    
+    if (onProgress && totalBytes) {
+      onProgress(arrayBuffer.byteLength, totalBytes);
+    }
+    
+    // Convert to base64 and write to file
+    // expo-file-system can write base64-encoded binary data
+    const uint8Array = new Uint8Array(arrayBuffer);
+    const base64 = uint8ArrayToBase64(uint8Array);
+    
+    // Write using expo-file-system's downloadAsync would be better, but for now use base64
+    const FileSystem = require('expo-file-system/legacy');
+    await FileSystem.writeAsStringAsync(localPath, base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    
+    console.log(`Saved MBTiles to: ${localPath}`);
+    
+    // Mark as downloaded
+    await chartCacheService.markMBTilesDownloaded(chartId);
+    
+    return localPath;
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage.includes('object-not-found') || errorMessage.includes('404') || errorMessage.includes('does not exist')) {
+      console.error(`MBTiles file not found for ${chartId} at ${storagePath}`);
+      throw new Error(`MBTiles file not found for chart ${chartId}`);
+    }
+    console.error(`Error downloading MBTiles for ${chartId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Check if an MBTiles file exists for a chart in Firebase Storage
+ */
+export async function checkMBTilesExists(chartId: string): Promise<boolean> {
+  const storagePath = `enc-mbtiles/${chartId}.mbtiles`;
+  
+  try {
+    if (!storageRef || !storageFns) {
+      return false;
+    }
+    
+    const fileRef = storageFns.ref(storageRef, storagePath);
+    await storageFns.getDownloadURL(fileRef);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Helper function to convert Uint8Array to base64
+ */
+function uint8ArrayToBase64(uint8Array: Uint8Array): string {
+  let binary = '';
+  const len = uint8Array.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(uint8Array[i]);
+  }
+  return btoa(binary);
 }

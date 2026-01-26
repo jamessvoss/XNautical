@@ -22,6 +22,7 @@ import {
   ALL_FEATURE_TYPES,
 } from '../types/chart';
 import * as chartCacheService from '../services/chartCacheService';
+import * as tileServer from '../services/tileServer';
 import {
   DEPTH_COLORS,
   SECTOR_COLOURS,
@@ -100,6 +101,11 @@ interface LoadedChartData {
   features: Partial<Record<FeatureType, GeoJSONFeatureCollection>>;
 }
 
+interface LoadedMBTilesChart {
+  chartId: string;
+  path: string;
+}
+
 export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
@@ -109,12 +115,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Loaded chart data
   const [loading, setLoading] = useState(true);
   const [charts, setCharts] = useState<LoadedChartData[]>([]);
+  const [mbtilesCharts, setMbtilesCharts] = useState<LoadedMBTilesChart[]>([]);
+  const [tileServerReady, setTileServerReady] = useState(false);
+  
+  // Data source toggles
+  const [useMBTiles, setUseMBTiles] = useState(true);
   
   // Layer toggles
   const [showDepthAreas, setShowDepthAreas] = useState(true);
   const [showDepthContours, setShowDepthContours] = useState(true);
   const [showSoundings, setShowSoundings] = useState(true);
   const [showLand, setShowLand] = useState(true);
+  const [showCoastline, setShowCoastline] = useState(true);
   const [showLights, setShowLights] = useState(true);
   const [showBuoys, setShowBuoys] = useState(true);
   const [showBeacons, setShowBeacons] = useState(true);
@@ -130,20 +142,102 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [selectedFeature, setSelectedFeature] = useState<FeatureInfo | null>(null);
   const [showControls, setShowControls] = useState(false);
 
+  // Debug state
+  const [debugInfo, setDebugInfo] = useState<string>('');
+  const [showDebug, setShowDebug] = useState(false);
+  
+  // Cache buster to force Mapbox to re-fetch tiles
+  const [cacheBuster, setCacheBuster] = useState(0);
+
   // Load cached charts
   useEffect(() => {
     loadCharts();
+    
+    // Cleanup on unmount
+    return () => {
+      tileServer.stopTileServer();
+    };
   }, []);
+  
 
   const loadCharts = async () => {
     try {
       setLoading(true);
       await chartCacheService.initializeCache();
       
-      const downloadedIds = await chartCacheService.getDownloadedChartIds();
-      console.log('Downloaded chart IDs:', downloadedIds);
+      // HARDCODED TEST CHARTS - scan mbtiles directory directly
+      const FileSystem = require('expo-file-system/legacy');
+      const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
       
-      if (downloadedIds.length === 0) {
+      // Ensure directory exists
+      const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
+      if (!dirInfo.exists) {
+        await FileSystem.makeDirectoryAsync(mbtilesDir, { intermediates: true });
+      }
+      
+      // Scan for any .mbtiles files in the directory
+      let filesInDir: string[] = [];
+      try {
+        filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
+        console.log('Files in mbtiles directory:', filesInDir);
+      } catch (e) {
+        console.log('Could not read mbtiles directory:', e);
+      }
+      
+      // Load any .mbtiles files found
+      const loadedMbtiles: LoadedMBTilesChart[] = [];
+      for (const filename of filesInDir) {
+        if (filename.endsWith('.mbtiles')) {
+          const chartId = filename.replace('.mbtiles', '');
+          const path = `${mbtilesDir}/${filename}`;
+          console.log(`Found MBTiles file: ${chartId} at ${path}`);
+          loadedMbtiles.push({ chartId, path });
+        }
+      }
+      
+      // Also check the registered downloads (legacy)
+      const mbtilesIds = await chartCacheService.getDownloadedMBTilesIds();
+      console.log('Registered MBTiles IDs:', mbtilesIds);
+      for (const chartId of mbtilesIds) {
+        if (!loadedMbtiles.some(m => m.chartId === chartId)) {
+          const exists = await chartCacheService.hasMBTiles(chartId);
+          if (exists) {
+            const path = chartCacheService.getMBTilesPath(chartId);
+            console.log(`Found registered MBTiles: ${chartId} at ${path}`);
+            loadedMbtiles.push({ chartId, path });
+          }
+        }
+      }
+      
+      console.log(`Total MBTiles found: ${loadedMbtiles.length}`);
+      setMbtilesCharts(loadedMbtiles);
+      
+      // Start tile server if we have MBTiles charts
+      if (loadedMbtiles.length > 0) {
+        console.log('Starting local tile server...');
+        const serverUrl = await tileServer.startTileServer();
+        if (serverUrl) {
+          console.log('Tile server started at:', serverUrl);
+          // Pre-load databases for faster tile serving
+          await tileServer.preloadDatabases(loadedMbtiles.map(m => m.chartId));
+          setTileServerReady(true);
+          
+          // Set debug info
+          const tileUrls = loadedMbtiles.map(m => tileServer.getTileUrlTemplate(m.chartId));
+          setDebugInfo(`Server: ${serverUrl}\nMBTiles: ${loadedMbtiles.map(m => m.chartId).join(', ')}\nDir: ${mbtilesDir}\nURLs:\n${tileUrls.join('\n')}`);
+        } else {
+          console.warn('Failed to start tile server');
+          setDebugInfo(`Failed to start tile server\nDir: ${mbtilesDir}`);
+        }
+      } else {
+        setDebugInfo(`No MBTiles files found.\n\nPut .mbtiles files in:\n${mbtilesDir}\n\nOr download via Charts screen.`);
+      }
+      
+      // Also load GeoJSON charts (legacy format)
+      const downloadedIds = await chartCacheService.getDownloadedChartIds();
+      console.log('Downloaded GeoJSON chart IDs:', downloadedIds);
+      
+      if (downloadedIds.length === 0 && loadedMbtiles.length === 0) {
         console.log('No charts downloaded');
         setLoading(false);
         return;
@@ -152,7 +246,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const loadedCharts: LoadedChartData[] = [];
       
       for (const chartId of downloadedIds) {
-        console.log(`Loading chart: ${chartId}`);
+        // Skip if we have MBTiles version
+        if (loadedMbtiles.some(m => m.chartId === chartId)) {
+          console.log(`Skipping GeoJSON for ${chartId} - MBTiles version exists`);
+          continue;
+        }
+        
+        console.log(`Loading GeoJSON chart: ${chartId}`);
         const features = await chartCacheService.loadChart(chartId);
         const featureTypes = Object.keys(features);
         console.log(`  Loaded features for ${chartId}:`, featureTypes);
@@ -167,7 +267,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }
       }
       
-      console.log(`Total charts loaded: ${loadedCharts.length}`);
+      console.log(`Total GeoJSON charts loaded: ${loadedCharts.length}`);
+      console.log(`Total MBTiles charts loaded: ${loadedMbtiles.length}`);
       setCharts(loadedCharts);
     } catch (error) {
       console.error('Error loading charts:', error);
@@ -244,6 +345,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       setCurrentZoom(Math.round(state.properties.zoom * 10) / 10);
     }
   }, []);
+  
 
   const handleFeaturePress = useCallback((layerType: string) => (e: any) => {
     const feature = e.features?.[0];
@@ -255,16 +357,31 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }
   }, []);
 
-  // Calculate initial center from loaded charts
+  // Calculate initial center from loaded charts (prefer MBTiles if available)
   const initialCenter = useMemo(() => {
+    // If we have MBTiles charts, use appropriate center
+    if (mbtilesCharts.length > 0) {
+      // Check for US4AK4PH (Homer/Kachemak Bay)
+      const hasUS4AK4PH = mbtilesCharts.some(c => c.chartId === 'US4AK4PH');
+      if (hasUS4AK4PH) {
+        // Homer, Alaska - center of US4AK4PH chart
+        return [-151.55, 59.64] as [number, number];
+      }
+      // Check for US3AK12M (Cook Inlet Southern Part)
+      const hasUS3AK12M = mbtilesCharts.some(c => c.chartId === 'US3AK12M');
+      if (hasUS3AK12M) {
+        return [-153.32, 59.34] as [number, number];
+      }
+      // Default MBTiles center (Kachemak Bay area)
+      return [-151.5, 59.55] as [number, number];
+    }
+    
     if (charts.length === 0) {
-      console.log('No charts, using default center');
       return [-152, 61] as [number, number];
     }
     
-    // Try to find center from first chart's features
+    // Try to find center from first GeoJSON chart's features
     const firstChart = charts[0];
-    console.log('Finding center from chart:', firstChart.chartId);
     
     // Try depare first, then other polygon features
     const polygonFeatures = firstChart.features.depare || firstChart.features.lndare;
@@ -279,7 +396,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           (Math.min(...lons) + Math.max(...lons)) / 2,
           (Math.min(...lats) + Math.max(...lats)) / 2,
         ] as [number, number];
-        console.log('Calculated center:', center);
         return center;
       }
     }
@@ -289,7 +405,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       if (data?.features?.[0]?.geometry) {
         const geom = data.features[0].geometry as any;
         if (geom.type === 'Point' && geom.coordinates) {
-          console.log(`Using ${type} point as center:`, geom.coordinates);
           return geom.coordinates as [number, number];
         }
       }
@@ -297,7 +412,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     
     console.log('Could not calculate center, using default');
     return [-152, 61] as [number, number];
-  }, [charts]);
+  }, [charts, mbtilesCharts]);
 
   if (loading) {
     return (
@@ -310,7 +425,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     );
   }
 
-  if (charts.length === 0) {
+  if (charts.length === 0 && mbtilesCharts.length === 0) {
     return (
       <View style={styles.container}>
         <View style={styles.emptyContainer}>
@@ -345,482 +460,774 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       >
         <Mapbox.Camera
           ref={cameraRef}
-          zoomLevel={10}
-          centerCoordinate={initialCenter}
+          defaultSettings={{
+            zoomLevel: 10,
+            centerCoordinate: [-151.55, 59.64],  // HARDCODED: Homer, Alaska
+          }}
         />
 
         <Mapbox.Images images={NAV_SYMBOLS} />
 
-        {/* Land Areas */}
-        {showLand && lndarePolygons && (
-          <Mapbox.ShapeSource id="lndare" shape={lndarePolygons}>
+        {/* MBTiles Vector Sources - NO FILTERING, SHOW EVERYTHING */}
+        {useMBTiles && tileServerReady && mbtilesCharts.map((chart) => {
+          const tileUrl = tileServer.getTileUrlTemplate(chart.chartId);
+          return (
+          <Mapbox.VectorSource
+            key={`mbtiles-src-${chart.chartId}-${cacheBuster}`}
+            id={`mbtiles-src-${chart.chartId}`}
+            tileUrlTemplates={[tileUrl]}
+          >
+            {/* M_COVR is chart coverage metadata - hide it (no fill or outline needed) */}
+            
+            {/* DEPARE - Depth Areas with proper depth-based coloring */}
+            {/* DRVAL1 = shallow depth of area, used for coloring */}
             <Mapbox.FillLayer
-              id="lndare-fill"
-              style={{
-                fillColor: '#F5DEB3',
-                fillOpacity: 1,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Depth Areas */}
-        {showDepthAreas && deparePolygons && (
-          <Mapbox.ShapeSource id="depare" shape={deparePolygons}>
-            <Mapbox.FillLayer
-              id="depare-fill"
+              id={`mbtiles-depare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'DEPARE']}
               style={{
                 fillColor: [
+                  'step',
+                  ['get', 'DRVAL1'],
+                  // Drying/intertidal (below 0m) - tan/green tint
+                  '#C8D6A3',
+                  0,
+                  // 0-2m - very light blue (danger zone)
+                  '#B5E3F0',
+                  2,
+                  // 2-5m - light blue
+                  '#9DD5E8',
+                  5,
+                  // 5-10m - medium light blue
+                  '#7EC8E3',
+                  10,
+                  // 10-20m - medium blue
+                  '#5BB4D6',
+                  20,
+                  // 20-50m - darker blue
+                  '#3A9FC9',
+                  50,
+                  // 50m+ - deep blue
+                  '#2185B5',
+                ],
+                fillOpacity: 0.7,
+                visibility: showDepthAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* DRGARE - Dredged Areas (maintained channels with specific depths) */}
+            <Mapbox.FillLayer
+              id={`mbtiles-drgare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'DRGARE']}
+              style={{
+                fillColor: '#87CEEB',  // Light sky blue for dredged areas
+                fillOpacity: 0.4,
+              }}
+            />
+            <Mapbox.LineLayer
+              id={`mbtiles-drgare-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'DRGARE']}
+              style={{
+                lineColor: '#4682B4',  // Steel blue outline
+                lineWidth: 1.5,
+                lineDasharray: [4, 2],  // Dashed line for dredged areas
+              }}
+            />
+            
+            {/* FAIRWY - Fairways (navigation channels) */}
+            <Mapbox.FillLayer
+              id={`mbtiles-fairwy-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'FAIRWY']}
+              style={{
+                fillColor: '#E6E6FA',  // Light lavender/purple tint
+                fillOpacity: 0.3,
+              }}
+            />
+            <Mapbox.LineLayer
+              id={`mbtiles-fairwy-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'FAIRWY']}
+              style={{
+                lineColor: '#9370DB',  // Medium purple
+                lineWidth: 2,
+                lineDasharray: [8, 4],  // Longer dashes for fairways
+              }}
+            />
+            
+            {/* DEPCNT - Depth Contours (isobath lines) */}
+            {/* VALDCO = value of depth contour in meters */}
+            <Mapbox.LineLayer
+              id={`mbtiles-depcnt-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'DEPCNT']}
+              style={{
+                lineColor: [
+                  'step',
+                  ['coalesce', ['get', 'VALDCO'], 0],
+                  // 0m (drying line) - black, prominent
+                  '#000000',
+                  0.1,
+                  // 0-2m - dark blue (danger zone)
+                  '#1E3A5F',
+                  2,
+                  // 2-5m - medium dark blue
+                  '#2E5984',
+                  5,
+                  // 5-10m - medium blue
+                  '#4A7BA7',
+                  10,
+                  // 10-20m - lighter blue
+                  '#6B9BC3',
+                  20,
+                  // 20-50m - light blue
+                  '#8FBCD9',
+                  50,
+                  // 50m+ - very light blue
+                  '#B0D4E8',
+                ],
+                lineWidth: [
+                  'step',
+                  ['coalesce', ['get', 'VALDCO'], 0],
+                  // 0m (drying line) - thickest
+                  2.0,
+                  0.1,
+                  // Shallow contours - medium thick
+                  1.5,
+                  5,
+                  // Medium depth - normal
+                  1.0,
+                  20,
+                  // Deep - thinner
+                  0.7,
+                  50,
+                  // Very deep - thinnest
+                  0.5,
+                ],
+                lineCap: 'round',
+                lineJoin: 'round',
+                visibility: showDepthContours ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* DEPCNT Labels - Show depth values on contour lines */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-depcnt-labels-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'DEPCNT']}
+              minZoomLevel={12}
+              style={{
+                textField: ['to-string', ['coalesce', ['get', 'VALDCO'], '']],
+                textSize: 10,
+                textColor: '#1E3A5F',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                symbolPlacement: 'line',
+                symbolSpacing: 300,
+                textFont: ['Open Sans Regular'],
+                textMaxAngle: 30,
+                textAllowOverlap: false,
+                visibility: showDepthContours ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* ALL LINES - cyan/teal debug layer (disabled - proper layers now hooked up)
+            <Mapbox.LineLayer
+              id={`mbtiles-lines-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['all',
+                ['has', '_layer'],
+                // Exclude layers we've already styled
+                ['!=', ['get', '_layer'], 'DEPCNT'],
+                // Exclude ALL meta layers (any layer starting with 'M_')
+                ['!=', ['slice', ['get', '_layer'], 0, 2], 'M_'],
+              ]}
+              style={{
+                lineColor: '#00CED1',
+                lineWidth: 1.5,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
+            */}
+            
+            {/* Soundings - depth numbers */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-soundg-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              maxZoomLevel={22}
+              filter={['==', ['get', '_layer'], 'SOUNDG']}
+              style={{
+                textField: ['to-string', ['round', ['get', 'DEPTH']]],
+                textSize: 11,
+                textColor: '#000080',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textAllowOverlap: true,
+                textIgnorePlacement: true,
+                visibility: showSoundings ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Navigation Lights - S-52 symbol based on COLOUR */}
+            {/* S-57 COLOUR: 1=white, 3=RED, 4=GREEN, 6=yellow */}
+            {/* _ORIENT: calculated orientation in degrees for symbol rotation */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-lights-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'LIGHTS']}
+              minZoomLevel={0}
+              maxZoomLevel={22}
+              style={{
+                iconImage: [
                   'case',
-                  ['<', ['coalesce', ['get', 'DRVAL1'], 0], 2], DEPTH_COLORS.veryShallow,
-                  ['<', ['coalesce', ['get', 'DRVAL1'], 0], 5], DEPTH_COLORS.shallow,
-                  ['<', ['coalesce', ['get', 'DRVAL1'], 0], 10], DEPTH_COLORS.medium,
-                  ['<', ['coalesce', ['get', 'DRVAL1'], 0], 20], DEPTH_COLORS.deep,
-                  ['<', ['coalesce', ['get', 'DRVAL1'], 0], 30], DEPTH_COLORS.deeper,
-                  ['<', ['coalesce', ['get', 'DRVAL1'], 0], 50], DEPTH_COLORS.veryDeep,
-                  ['<', ['coalesce', ['get', 'DRVAL1'], 0], 100], DEPTH_COLORS.ultraDeep,
-                  DEPTH_COLORS.abyssal,
+                  // Check for RED (code 3)
+                  ['any',
+                    ['==', ['get', 'COLOUR'], '["3"]'],
+                    ['==', ['get', 'COLOUR'], '3'],
+                    ['in', '"3"', ['to-string', ['get', 'COLOUR']]],
+                  ],
+                  'light-red',
+                  // Check for GREEN (code 4)
+                  ['any',
+                    ['==', ['get', 'COLOUR'], '["4"]'],
+                    ['==', ['get', 'COLOUR'], '4'],
+                    ['in', '"4"', ['to-string', ['get', 'COLOUR']]],
+                  ],
+                  'light-green',
+                  // Check for white (code 1) or yellow (code 6)
+                  ['any',
+                    ['==', ['get', 'COLOUR'], '["1"]'],
+                    ['==', ['get', 'COLOUR'], '1'],
+                    ['in', '"1"', ['to-string', ['get', 'COLOUR']]],
+                    ['==', ['get', 'COLOUR'], '["6"]'],
+                    ['==', ['get', 'COLOUR'], '6'],
+                    ['in', '"6"', ['to-string', ['get', 'COLOUR']]],
+                  ],
+                  'light-white',
+                  // Default - magenta
+                  'light-major',
                 ],
-                fillOpacity: 0.9,
+                // Scale icons based on zoom: smaller when zoomed out, larger when zoomed in
+                iconSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  8, 0.3,    // Small at zoom 8
+                  12, 0.5,   // Medium at zoom 12
+                  16, 0.8    // Full size at zoom 16+
+                ],
+                // Rotate symbol based on _ORIENT (calculated from sector midpoint or ORIENT attr)
+                // _ORIENT is degrees clockwise from north (direction the flare points)
+                // Symbol flare points UP (0°) by default, light source is at bottom
+                iconRotate: ['coalesce', ['get', '_ORIENT'], 135],
+                iconRotationAlignment: 'map',  // Keep rotation fixed relative to map (not viewport)
+                iconAnchor: 'bottom',  // Anchor at the light source (narrow point of teardrop)
+                iconAllowOverlap: true,
+                iconIgnorePlacement: true,
+                visibility: showLights ? 'visible' : 'none',
               }}
             />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Depth Contours */}
-        {showDepthContours && combinedFeatures.depcnt && (
-          <Mapbox.ShapeSource id="depcnt" shape={combinedFeatures.depcnt}>
-            <Mapbox.LineLayer
-              id="depcnt-line"
+            
+            {/* All Buoys - S-52 symbols based on BOYSHP (buoy shape) */}
+            {/* BOYSHP: 1=conical, 2=can, 3=spherical, 4=pillar, 5=spar, 6=barrel, 7=super-buoy */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-buoys-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['any',
+                ['==', ['get', '_layer'], 'BOYLAT'],
+                ['==', ['get', '_layer'], 'BOYCAR'],
+                ['==', ['get', '_layer'], 'BOYSAW'],
+                ['==', ['get', '_layer'], 'BOYSPP'],
+                ['==', ['get', '_layer'], 'BOYISD'],
+              ]}
               style={{
-                lineColor: '#4169E1',
-                lineWidth: 0.5,
+                iconImage: [
+                  'match',
+                  ['get', 'BOYSHP'],
+                  1, 'buoy-conical',    // Conical (nun)
+                  2, 'buoy-can',        // Can (cylindrical)
+                  3, 'buoy-spherical',  // Spherical
+                  4, 'buoy-pillar',     // Pillar
+                  5, 'buoy-spar',       // Spar
+                  6, 'buoy-barrel',     // Barrel
+                  7, 'buoy-super',      // Super buoy
+                  'buoy-pillar',        // Default to pillar
+                ],
+                iconSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  8, 0.25,   // Small at zoom 8
+                  12, 0.45,  // Medium at zoom 12
+                  16, 0.7    // Full size at zoom 16+
+                ],
+                iconAllowOverlap: true,
+                visibility: showBuoys ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* All Beacons - S-52 symbols based on BCNSHP (beacon shape) */}
+            {/* BCNSHP: 1=stake/pole, 2=withy, 3=tower, 4=lattice, 5=cairn, 6=buoyant */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-beacons-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['any',
+                ['==', ['get', '_layer'], 'BCNLAT'],
+                ['==', ['get', '_layer'], 'BCNSPP'],
+                ['==', ['get', '_layer'], 'BCNCAR'],
+                ['==', ['get', '_layer'], 'BCNISD'],
+                ['==', ['get', '_layer'], 'BCNSAW'],
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'BCNSHP'],
+                  1, 'beacon-stake',    // Stake/pole
+                  2, 'beacon-withy',    // Withy
+                  3, 'beacon-tower',    // Tower
+                  4, 'beacon-lattice',  // Lattice
+                  5, 'beacon-cairn',    // Cairn
+                  'beacon-generic',     // Default
+                ],
+                iconSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  8, 0.25,   // Small at zoom 8
+                  12, 0.45,  // Medium at zoom 12
+                  16, 0.7    // Full size at zoom 16+
+                ],
+                iconAllowOverlap: true,
+                visibility: showBeacons ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Seabed Areas (SBDARE) - Bottom composition - TEXT ONLY per S-52 */}
+            {/* NATSUR codes: 1=Mud, 2=Clay, 3=Silt, 4=Sand, 5=Stone, 6=Gravel, 7=Pebbles, */}
+            {/*              8=Cobbles, 9=Rock, 11=Coral, 14=Shells */}
+            {/* S-52 shows just the abbreviation text, no symbol dot */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-sbdare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['all',
+                ['==', ['get', '_layer'], 'SBDARE'],
+                ['==', ['geometry-type'], 'Point'],
+                ['has', 'NATSUR']
+              ]}
+              style={{
+                textField: [
+                  'case',
+                  ['in', '11', ['to-string', ['get', 'NATSUR']]], 'Co',  // Coral
+                  ['in', '14', ['to-string', ['get', 'NATSUR']]], 'Sh',  // Shells
+                  ['in', '"1"', ['to-string', ['get', 'NATSUR']]], 'M',   // Mud
+                  ['in', '"2"', ['to-string', ['get', 'NATSUR']]], 'Cy',  // Clay
+                  ['in', '"3"', ['to-string', ['get', 'NATSUR']]], 'Si',  // Silt
+                  ['in', '"4"', ['to-string', ['get', 'NATSUR']]], 'S',   // Sand
+                  ['in', '"5"', ['to-string', ['get', 'NATSUR']]], 'St',  // Stone
+                  ['in', '"6"', ['to-string', ['get', 'NATSUR']]], 'G',   // Gravel
+                  ['in', '"7"', ['to-string', ['get', 'NATSUR']]], 'P',   // Pebbles
+                  ['in', '"8"', ['to-string', ['get', 'NATSUR']]], 'Cb',  // Cobbles
+                  ['in', '"9"', ['to-string', ['get', 'NATSUR']]], 'R',   // Rock
+                  '',
+                ],
+                textSize: 10,
+                textColor: '#6B4423',  // Brown color per S-52 for seabed
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textFont: ['Open Sans Italic'],  // Italic per S-52 convention
+                textAllowOverlap: false,
+                visibility: showSeabed ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* WRECKS - S-52 symbols based on WATLEV and CATWRK */}
+            {/* WATLEV: 1=partly submerged, 2=always dry, 3=always underwater, 4=covers/uncovers, 5=awash */}
+            {/* CATWRK: 1=non-dangerous, 2=dangerous, 3=distributed, 4=mast showing, 5=hull showing */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-wrecks-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['all',
+                ['==', ['get', '_layer'], 'WRECKS'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: [
+                  'case',
+                  // Hull showing
+                  ['==', ['get', 'CATWRK'], 5], 'wreck-hull',
+                  // Dangerous or awash
+                  ['any',
+                    ['==', ['get', 'CATWRK'], 2],
+                    ['==', ['get', 'WATLEV'], 5]
+                  ], 'wreck-danger',
+                  // Covers/uncovers
+                  ['==', ['get', 'WATLEV'], 4], 'wreck-uncovers',
+                  // Safe (non-dangerous)
+                  ['==', ['get', 'CATWRK'], 1], 'wreck-safe',
+                  // Submerged (default for underwater)
+                  ['==', ['get', 'WATLEV'], 3], 'wreck-submerged',
+                  // Default
+                  'wreck-danger',
+                ],
+                iconSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  8, 0.25,   // Small at zoom 8
+                  12, 0.45,  // Medium at zoom 12
+                  16, 0.7    // Full size at zoom 16+
+                ],
+                iconAllowOverlap: true,
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* UWTROC - Underwater Rocks - S-52 symbols based on WATLEV */}
+            {/* WATLEV: 3=always underwater (most dangerous), 4=covers/uncovers, 5=awash */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-uwtroc-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['all',
+                ['==', ['get', '_layer'], 'UWTROC'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: [
+                  'case',
+                  // Awash
+                  ['==', ['get', 'WATLEV'], 5], 'rock-awash',
+                  // Covers and uncovers
+                  ['==', ['get', 'WATLEV'], 4], 'rock-uncovers',
+                  // Always submerged (default)
+                  'rock-submerged',
+                ],
+                iconSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  8, 0.25,   // Small at zoom 8
+                  12, 0.45,  // Medium at zoom 12
+                  16, 0.7    // Full size at zoom 16+
+                ],
+                iconAllowOverlap: true,
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            <Mapbox.SymbolLayer
+              id={`mbtiles-uwtroc-label-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['all',
+                ['==', ['get', '_layer'], 'UWTROC'],
+                ['==', ['geometry-type'], 'Point'],
+                ['has', 'VALSOU']
+              ]}
+              minZoomLevel={12}
+              style={{
+                textField: ['to-string', ['round', ['get', 'VALSOU']]],
+                textSize: 9,
+                textColor: '#000000',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textOffset: [0, 1.3],
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* OBSTRN - Obstructions - S-52 symbols */}
+            {/* CATOBS: 1=snag, 2=wellhead, 3=diffuser, 4=crib, 5=fish haven, 6=foul area, 7=foul ground */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-obstrn-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['all',
+                ['==', ['get', '_layer'], 'OBSTRN'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: [
+                  'case',
+                  // Foul area/ground
+                  ['any',
+                    ['==', ['get', 'CATOBS'], 6],
+                    ['==', ['get', 'CATOBS'], 7]
+                  ], 'foul-ground',
+                  // Default obstruction
+                  'obstruction',
+                ],
+                iconSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  8, 0.25,   // Small at zoom 8
+                  12, 0.45,  // Medium at zoom 12
+                  16, 0.7    // Full size at zoom 16+
+                ],
+                iconAllowOverlap: true,
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* CBLSUB - Submarine Cables (lines) */}
+            {/* CATCBL: 1=power, 2=telephone/telegraph, 3=transmission, 4=telephone, 5=telegraph, 6=mooring */}
+            <Mapbox.LineLayer
+              id={`mbtiles-cblsub-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'CBLSUB']}
+              style={{
+                lineColor: '#800080',  // Purple for cables
+                lineWidth: 2,
+                lineDasharray: [4, 2],  // Dashed line per S-52
+                lineCap: 'round',
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            <Mapbox.SymbolLayer
+              id={`mbtiles-cblsub-label-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'CBLSUB']}
+              minZoomLevel={12}
+              style={{
+                textField: 'Cable',
+                textSize: 9,
+                textColor: '#800080',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                symbolPlacement: 'line',
+                symbolSpacing: 400,
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* CBLARE - Cable Areas (polygons) */}
+            <Mapbox.FillLayer
+              id={`mbtiles-cblare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'CBLARE']}
+              style={{
+                fillColor: '#800080',
+                fillOpacity: 0.15,
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            <Mapbox.LineLayer
+              id={`mbtiles-cblare-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'CBLARE']}
+              style={{
+                lineColor: '#800080',
+                lineWidth: 1.5,
+                lineDasharray: [4, 2],
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* PIPSOL - Pipelines, submarine/on land (lines) */}
+            {/* CATPIP: 1=oil, 2=gas, 3=water, 4=sewage, 5=bubbler, 6=supply */}
+            <Mapbox.LineLayer
+              id={`mbtiles-pipsol-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'PIPSOL']}
+              style={{
+                lineColor: '#008000',  // Green for pipelines
+                lineWidth: 2.5,
+                lineDasharray: [6, 3],  // Different dash pattern than cables
+                lineCap: 'round',
+                visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            <Mapbox.SymbolLayer
+              id={`mbtiles-pipsol-label-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'PIPSOL']}
+              minZoomLevel={12}
+              style={{
+                textField: [
+                  'case',
+                  ['==', ['get', 'CATPIP'], 1], 'Oil',
+                  ['==', ['get', 'CATPIP'], 2], 'Gas',
+                  ['==', ['get', 'CATPIP'], 3], 'Water',
+                  ['==', ['get', 'CATPIP'], 4], 'Sewer',
+                  'Pipe',
+                ],
+                textSize: 9,
+                textColor: '#006400',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                symbolPlacement: 'line',
+                symbolSpacing: 400,
+                visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* PIPARE - Pipeline Areas (polygons) */}
+            <Mapbox.FillLayer
+              id={`mbtiles-pipare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'PIPARE']}
+              style={{
+                fillColor: '#008000',
+                fillOpacity: 0.15,
+                visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            <Mapbox.LineLayer
+              id={`mbtiles-pipare-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'PIPARE']}
+              style={{
+                lineColor: '#008000',
+                lineWidth: 1.5,
+                lineDasharray: [6, 3],
+                visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* LNDARE - Land Areas (polygons) */}
+            <Mapbox.FillLayer
+              id={`mbtiles-lndare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'LNDARE']}
+              style={{
+                fillColor: '#F5DEB3',  // Wheat/tan color for land
+                fillOpacity: 1,
+                visibility: showLand ? 'visible' : 'none',
+              }}
+            />
+            <Mapbox.LineLayer
+              id={`mbtiles-lndare-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'LNDARE']}
+              style={{
+                lineColor: '#8B7355',  // Darker tan for outline
+                lineWidth: 1,
+                visibility: showLand ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* COALNE - Coastline (lines) */}
+            <Mapbox.LineLayer
+              id={`mbtiles-coalne-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['==', ['get', '_layer'], 'COALNE']}
+              style={{
+                lineColor: '#000000',  // Black coastline
+                lineWidth: 1.5,
+                lineCap: 'round',
+                lineJoin: 'round',
+                visibility: showCoastline ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Light Sectors - Directional arc showing where light is visible */}
+            {/* Placed AFTER land/coastline so arc renders on top */}
+            {/* S-57 COLOUR: 1=white, 3=RED, 4=GREEN, 6=yellow, 11=orange */}
+            
+            {/* Black outline for ALL sector arcs (provides contrast, esp for white/yellow) */}
+            <Mapbox.LineLayer
+              id={`mbtiles-lights-sector-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              maxZoomLevel={22}
+              filter={['==', ['get', '_layer'], 'LIGHTS_SECTOR']}
+              style={{
+                lineColor: '#000000',
+                lineWidth: 7,
                 lineOpacity: 0.7,
+                visibility: showLights ? 'visible' : 'none',
               }}
             />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Soundings - SCAMIN-based progressive disclosure
-            SCAMIN indicates the minimum scale denominator at which feature should display.
-            Higher SCAMIN = designed for smaller scales (more zoomed out).
             
-            Actual SCAMIN values in our data:
-            - 259999: Overview charts (US3*, 1:200,000)
-            - 119999: Approach charts (US4*, 1:90,000)
-            - 29999: Harbor charts (US5*, 1:30,000)
-            - 17999: Detailed harbor charts (US5*, 1:18,000)
+            {/* Colored sector arcs (rendered on top of outline) */}
+            <Mapbox.LineLayer
+              id={`mbtiles-lights-sector-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              maxZoomLevel={22}
+              filter={['==', ['get', '_layer'], 'LIGHTS_SECTOR']}
+              style={{
+                lineColor: [
+                  'match',
+                  ['to-string', ['get', 'COLOUR']],
+                  '1', '#FFFFFF',        // White
+                  '3', '#FF0000',        // RED (code 3)
+                  '4', '#00FF00',        // GREEN (code 4)
+                  '6', '#FFFF00',        // Yellow
+                  '11', '#FFA500',       // Orange
+                  '#FF00FF',             // Default MAGENTA (makes missing colors obvious)
+                ],
+                lineWidth: 4,
+                lineOpacity: 1.0,
+                visibility: showLights ? 'visible' : 'none',
+              }}
+            />
             
-            Progressive disclosure by chart detail level:
-            - Zoom 8-9: Only overview soundings (SCAMIN >= 200000)
-            - Zoom 9-10: Overview + approach (SCAMIN >= 100000)
-            - Zoom 10-11: Most soundings (SCAMIN >= 20000)
-            - Zoom 11+: All soundings
-        */}
-        {showSoundings && combinedFeatures.soundg && currentZoom >= 8 && (
-          <Mapbox.ShapeSource id="soundg" shape={combinedFeatures.soundg}>
-            {/* Zoom 8-9: Only show overview soundings (from 1:200k+ charts) */}
+            {/* LNDMRK - Landmarks - S-52 symbols based on CATLMK */}
+            {/* CATLMK: 1=cairn, 2=cemetery, 3=chimney, 4=dish aerial, 5=flagstaff, 6=flare stack, */}
+            {/*         7=mast, 8=windsock, 9=monument, 10=column, 11=memorial plaque, 12=obelisk, */}
+            {/*         13=statue, 14=cross, 15=dome, 16=radar scanner, 17=tower, 18=windmill, */}
+            {/*         19=windmotor, 20=spire/minaret, 21=large rock/boulder */}
             <Mapbox.SymbolLayer
-              id="soundg-text-overview"
-              filter={['>=', ['coalesce', ['get', 'SCAMIN'], 0], 200000]}
-              maxZoomLevel={9}
+              id={`mbtiles-lndmrk-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['all',
+                ['==', ['get', '_layer'], 'LNDMRK'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
               style={{
-                textField: ['to-string', ['round', ['get', 'DEPTH']]],
-                textSize: 8,
-                textColor: '#000080',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
-                textAllowOverlap: false,
-              }}
-            />
-            {/* Zoom 9-10: Show overview + approach soundings (from 1:90k+ charts) */}
-            <Mapbox.SymbolLayer
-              id="soundg-text-general"
-              filter={['>=', ['coalesce', ['get', 'SCAMIN'], 0], 100000]}
-              minZoomLevel={9}
-              maxZoomLevel={10}
-              style={{
-                textField: ['to-string', ['round', ['get', 'DEPTH']]],
-                textSize: 8,
-                textColor: '#000080',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
-                textAllowOverlap: false,
-              }}
-            />
-            {/* Zoom 10-11: Show most soundings (from 1:20k+ charts) */}
-            <Mapbox.SymbolLayer
-              id="soundg-text-approach"
-              filter={['>=', ['coalesce', ['get', 'SCAMIN'], 0], 20000]}
-              minZoomLevel={10}
-              maxZoomLevel={11}
-              style={{
-                textField: ['to-string', ['round', ['get', 'DEPTH']]],
-                textSize: 9,
-                textColor: '#000080',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
-                textAllowOverlap: false,
-              }}
-            />
-            {/* Zoom 11+: Show all soundings */}
-            <Mapbox.SymbolLayer
-              id="soundg-text-full"
-              minZoomLevel={11}
-              style={{
-                textField: ['to-string', ['round', ['get', 'DEPTH']]],
-                textSize: 9,
-                textColor: '#000080',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
-                textAllowOverlap: false,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Cable Areas (Polygons) - restricted zones */}
-        {showCables && combinedFeatures.cblare && (
-          <Mapbox.ShapeSource 
-            id="cblare-poly" 
-            shape={combinedFeatures.cblare}
-            onPress={handleFeaturePress('Cable Area')}
-          >
-            <Mapbox.FillLayer
-              id="cblare-fill"
-              filter={['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'MultiPolygon']]}
-              style={{
-                fillColor: '#FF00FF',
-                fillOpacity: 0.1,
-              }}
-            />
-            <Mapbox.LineLayer
-              id="cblare-outline"
-              filter={['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'MultiPolygon']]}
-              style={{
-                lineColor: '#FF00FF',
-                lineWidth: 2,
-                lineDasharray: [8, 4],
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Submarine Cable Lines - actual cable routes */}
-        {showCables && combinedFeatures.cblare && (
-          <Mapbox.ShapeSource 
-            id="cblare-lines" 
-            shape={combinedFeatures.cblare}
-            onPress={handleFeaturePress('Submarine Cable')}
-            hitbox={{ width: 10, height: 10 }}
-          >
-            <Mapbox.LineLayer
-              id="cblare-line"
-              filter={['any', ['==', ['geometry-type'], 'LineString'], ['==', ['geometry-type'], 'MultiLineString']]}
-              style={{
-                lineColor: '#FF00FF',
-                lineWidth: 2,
-                lineDasharray: [8, 4],
-                lineOpacity: 0.9,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Seabed Areas - Bottom composition (mud, sand, rock, etc.) */}
-        {showSeabed && combinedFeatures.sbdare && (
-          <Mapbox.ShapeSource
-            id="sbdare"
-            shape={combinedFeatures.sbdare}
-            onPress={handleFeaturePress('Seabed')}
-          >
-            <Mapbox.FillLayer
-              id="sbdare-fill"
-              filter={['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'MultiPolygon']]}
-              style={{
-                fillColor: [
+                iconImage: [
                   'match',
-                  ['to-string', ['at', 0, ['get', 'NATSUR']]],
-                  '1', 'rgba(107, 142, 107, 0.3)',   // Mud - greenish
-                  '2', 'rgba(128, 128, 128, 0.3)',   // Clay - grey
-                  '3', 'rgba(169, 169, 169, 0.3)',   // Silt - dark grey
-                  '4', 'rgba(218, 165, 32, 0.3)',    // Sand - golden
-                  '5', 'rgba(139, 69, 19, 0.3)',     // Stone - brown
-                  '6', 'rgba(210, 180, 140, 0.3)',   // Gravel - tan
-                  '7', 'rgba(188, 143, 143, 0.3)',   // Pebbles - rosy brown
-                  '8', 'rgba(160, 82, 45, 0.3)',     // Cobbles - sienna
-                  '9', 'rgba(139, 0, 0, 0.3)',       // Rock - dark red
-                  '11', 'rgba(255, 105, 180, 0.3)', // Coral - pink
-                  '14', 'rgba(153, 50, 204, 0.3)',  // Shells - purple
-                  'rgba(136, 136, 136, 0.2)',       // Default
+                  ['get', 'CATLMK'],
+                  3, 'landmark-chimney',      // Chimney
+                  5, 'landmark-flagpole',     // Flagstaff
+                  7, 'landmark-mast',         // Mast
+                  9, 'landmark-monument',     // Monument
+                  10, 'landmark-monument',    // Column (use monument)
+                  12, 'landmark-monument',    // Obelisk (use monument)
+                  13, 'landmark-monument',    // Statue (use monument)
+                  14, 'landmark-church',      // Cross (use church)
+                  17, 'landmark-tower',       // Tower
+                  18, 'landmark-windmill',    // Windmill
+                  19, 'landmark-windmill',    // Windmotor (use windmill)
+                  20, 'landmark-church',      // Spire/minaret (use church)
+                  28, 'landmark-radio-tower', // Radio/TV tower
+                  'landmark-tower',           // Default to tower
                 ],
-                fillOutlineColor: [
-                  'match',
-                  ['to-string', ['at', 0, ['get', 'NATSUR']]],
-                  '1', '#6B8E6B', '2', '#808080', '3', '#A9A9A9', '4', '#DAA520',
-                  '5', '#8B4513', '6', '#D2B48C', '7', '#BC8F8F', '8', '#A0522D',
-                  '9', '#8B0000', '11', '#FF69B4', '14', '#9932CC',
-                  '#888888',
+                iconSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  8, 0.25,   // Small at zoom 8
+                  12, 0.45,  // Medium at zoom 12
+                  16, 0.7    // Full size at zoom 16+
                 ],
+                iconAllowOverlap: true,
+                visibility: showLandmarks ? 'visible' : 'none',
               }}
             />
             <Mapbox.SymbolLayer
-              id="sbdare-labels"
-              filter={['==', ['geometry-type'], 'Point']}
+              id={`mbtiles-lndmrk-label-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              filter={['all',
+                ['==', ['get', '_layer'], 'LNDMRK'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
               minZoomLevel={11}
               style={{
                 textField: [
-                  'match',
-                  ['to-string', ['at', 0, ['get', 'NATSUR']]],
-                  '1', 'M', '2', 'Cy', '3', 'Si', '4', 'S', '5', 'St',
-                  '6', 'G', '7', 'P', '8', 'Cb', '9', 'Rk', '10', 'Lv',
-                  '11', 'Co', '12', 'Sh', '13', 'Bo', '14', 'V',
-                  '?',
+                  'case',
+                  ['has', 'OBJNAM'], ['get', 'OBJNAM'],
+                  ['==', ['get', 'CATLMK'], 3], 'Chy',
+                  ['==', ['get', 'CATLMK'], 7], 'Mast',
+                  ['==', ['get', 'CATLMK'], 9], 'Mon',
+                  ['==', ['get', 'CATLMK'], 13], 'Statue',
+                  ['==', ['get', 'CATLMK'], 14], 'Cross',
+                  ['==', ['get', 'CATLMK'], 17], 'Tr',
+                  ['==', ['get', 'CATLMK'], 18], 'Windmill',
+                  ['==', ['get', 'CATLMK'], 20], 'Spire',
+                  '',
                 ],
                 textSize: 10,
-                textColor: [
-                  'match',
-                  ['to-string', ['at', 0, ['get', 'NATSUR']]],
-                  '1', '#6B8E6B', '2', '#808080', '3', '#A9A9A9', '4', '#DAA520',
-                  '5', '#8B4513', '6', '#D2B48C', '7', '#BC8F8F', '8', '#A0522D',
-                  '9', '#8B0000', '11', '#FF69B4', '14', '#9932CC',
-                  '#888888',
-                ],
+                textColor: '#333333',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
-                textFont: ['Open Sans Bold'],
+                textHaloWidth: 1.5,
+                textOffset: [0, 1.3],
                 textAllowOverlap: false,
+                visibility: showLandmarks ? 'visible' : 'none',
               }}
             />
-          </Mapbox.ShapeSource>
-        )}
+          </Mapbox.VectorSource>
+        );
+        })}
 
-        {/* Pipelines */}
-        {showPipelines && combinedFeatures.pipsol && (
-          <Mapbox.ShapeSource id="pipsol" shape={combinedFeatures.pipsol}>
-            <Mapbox.LineLayer
-              id="pipsol-line"
-              style={{
-                lineColor: '#800080',
-                lineWidth: 2,
-                lineDasharray: [6, 3],
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Shoreline Constructions */}
-        {combinedFeatures.slcons && (
-          <Mapbox.ShapeSource id="slcons" shape={combinedFeatures.slcons}>
-            <Mapbox.LineLayer
-              id="slcons-line"
-              style={{
-                lineColor: '#8B4513',
-                lineWidth: 2,
-              }}
-            />
-            <Mapbox.FillLayer
-              id="slcons-fill"
-              filter={['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'MultiPolygon']]}
-              style={{
-                fillColor: '#D2B48C',
-                fillOpacity: 0.6,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Wrecks */}
-        {showHazards && combinedFeatures.wrecks && (
-          <Mapbox.ShapeSource
-            id="wrecks"
-            shape={combinedFeatures.wrecks}
-            onPress={handleFeaturePress('Wreck')}
-          >
-            <Mapbox.SymbolLayer
-              id="wrecks-symbol"
-              style={{
-                iconImage: 'wreck-danger',
-                iconSize: 0.5,
-                iconAllowOverlap: true,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Rocks */}
-        {showHazards && combinedFeatures.uwtroc && (
-          <Mapbox.ShapeSource
-            id="uwtroc"
-            shape={combinedFeatures.uwtroc}
-            onPress={handleFeaturePress('Rock')}
-          >
-            <Mapbox.SymbolLayer
-              id="uwtroc-symbol"
-              style={{
-                iconImage: 'rock-submerged',
-                iconSize: 0.4,
-                iconAllowOverlap: true,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Obstructions */}
-        {showHazards && combinedFeatures.obstrn && (
-          <Mapbox.ShapeSource
-            id="obstrn"
-            shape={combinedFeatures.obstrn}
-            onPress={handleFeaturePress('Obstruction')}
-          >
-            <Mapbox.SymbolLayer
-              id="obstrn-symbol"
-              style={{
-                iconImage: 'obstruction',
-                iconSize: 0.4,
-                iconAllowOverlap: true,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Light Sectors */}
-        {showSectors && sectorFeatures.features.length > 0 && (
-          <Mapbox.ShapeSource id="sectors" shape={sectorFeatures}>
-            {/* Black outline for white sectors (renders underneath) */}
-            <Mapbox.LineLayer
-              id="sectors-outline"
-              filter={['==', ['get', 'colour'], '1']}
-              style={{
-                lineColor: '#000000',
-                lineWidth: 3.5,
-                lineOpacity: 0.7,
-              }}
-            />
-            {/* Colored sector lines */}
-            <Mapbox.LineLayer
-              id="sectors-line"
-              style={{
-                lineColor: [
-                  'match', ['get', 'colour'],
-                  '1', '#FFFFFF', '3', '#FF0000', '4', '#00FF00',
-                  '6', '#FFFF00', '11', '#FFA500',
-                  '#FFFFFF',
-                ],
-                lineWidth: 2,
-                lineOpacity: 0.9,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Lights */}
-        {showLights && combinedFeatures.lights && (
-          <Mapbox.ShapeSource
-            id="lights"
-            shape={combinedFeatures.lights}
-            onPress={handleFeaturePress('Light')}
-            hitbox={{ width: 30, height: 30 }}
-          >
-            <Mapbox.SymbolLayer
-              id="lights-symbol"
-              style={{
-                iconImage: 'light-major',
-                iconSize: 0.4,
-                iconAllowOverlap: true,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Buoys */}
-        {showBuoys && combinedFeatures.buoys && (
-          <Mapbox.ShapeSource
-            id="buoys"
-            shape={combinedFeatures.buoys}
-            onPress={handleFeaturePress('Buoy')}
-            hitbox={{ width: 30, height: 30 }}
-          >
-            <Mapbox.SymbolLayer
-              id="buoys-symbol"
-              style={{
-                iconImage: 'buoy-can',
-                iconSize: 0.4,
-                iconAllowOverlap: true,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Beacons */}
-        {showBeacons && combinedFeatures.beacons && (
-          <Mapbox.ShapeSource
-            id="beacons"
-            shape={combinedFeatures.beacons}
-            onPress={handleFeaturePress('Beacon')}
-            hitbox={{ width: 30, height: 30 }}
-          >
-            <Mapbox.SymbolLayer
-              id="beacons-symbol"
-              style={{
-                iconImage: 'beacon-generic',
-                iconSize: 0.4,
-                iconAllowOverlap: true,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Landmarks - Towers, monuments, and other conspicuous structures */}
-        {showLandmarks && combinedFeatures.landmarks && (
-          <Mapbox.ShapeSource
-            id="landmarks"
-            shape={combinedFeatures.landmarks}
-            onPress={handleFeaturePress('Landmark')}
-            hitbox={{ width: 30, height: 30 }}
-          >
-            <Mapbox.SymbolLayer
-              id="landmarks-symbol"
-              style={{
-                // Select icon based on CATLMK (category of landmark)
-                iconImage: [
-                  'match',
-                  ['to-string', ['at', 0, ['get', 'CATLMK']]],
-                  '17', 'landmark-tower',      // Tower
-                  '3', 'landmark-chimney',     // Chimney
-                  '9', 'landmark-monument',    // Monument
-                  '10', 'landmark-monument',   // Column/pillar
-                  '5', 'landmark-flagpole',    // Flagstaff
-                  '7', 'landmark-mast',        // Mast
-                  '18', 'landmark-windmill',   // Windmill
-                  '19', 'landmark-windmill',   // Windmotor
-                  '2', 'landmark-church',      // Cemetery (use church)
-                  'landmark-tower',            // Default: tower
-                ],
-                iconSize: 0.5,
-                iconAnchor: 'bottom',
-                iconAllowOverlap: true,
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
-
-        {/* Sea Area Names */}
-        {combinedFeatures.seaare && currentZoom >= 10 && (
-          <Mapbox.ShapeSource id="seaare" shape={combinedFeatures.seaare}>
-            <Mapbox.SymbolLayer
-              id="seaare-label"
-              style={{
-                textField: ['get', 'OBJNAM'],
-                textSize: 12,
-                textColor: '#4169E1',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
-                textFont: ['Open Sans Italic'],
-              }}
-            />
-          </Mapbox.ShapeSource>
-        )}
       </Mapbox.MapView>
 
       {/* Layers button - positioned in safe area */}
@@ -835,6 +1242,61 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </View>
       </TouchableOpacity>
 
+      {/* Debug button */}
+      <TouchableOpacity 
+        style={[styles.debugBtn, { top: insets.top + 12, left: 12 }]}
+        onPress={() => setShowDebug(!showDebug)}
+      >
+        <Text style={styles.debugBtnText}>🔧</Text>
+      </TouchableOpacity>
+
+      {/* Debug Info Panel */}
+      {showDebug && (
+        <View style={[styles.debugPanel, { top: insets.top + 56 }]}>
+          <Text style={styles.debugTitle}>Data Source Toggles</Text>
+          <View style={styles.debugToggleRow}>
+            <TouchableOpacity 
+              style={[styles.debugToggle, useMBTiles && styles.debugToggleActive]}
+              onPress={() => setUseMBTiles(!useMBTiles)}
+            >
+              <Text style={[styles.debugToggleText, useMBTiles && styles.debugToggleTextActive]}>
+                MBTiles ({mbtilesCharts.length})
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.debugDivider} />
+          <Text style={styles.debugText}>
+            Server: {tileServerReady ? '✅ Running' : '❌ Not running'}
+          </Text>
+          <Text style={styles.debugInfo} selectable>{debugInfo}</Text>
+          <View style={styles.debugDivider} />
+          <TouchableOpacity 
+            style={styles.debugActionBtn}
+            onPress={async () => {
+              // Stop tile server (closes all database connections)
+              await tileServer.stopTileServer();
+              // Clear MBTiles state
+              setMbtilesCharts([]);
+              setTileServerReady(false);
+              // Increment cache buster to force Mapbox to re-fetch tiles
+              setCacheBuster(prev => prev + 1);
+              // Small delay to ensure cleanup
+              await new Promise(r => setTimeout(r, 500));
+              // Reload everything fresh
+              loadCharts();
+            }}
+          >
+            <Text style={styles.debugActionBtnText}>Clear Cache & Reload</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            style={styles.debugCloseBtn} 
+            onPress={() => setShowDebug(false)}
+          >
+            <Text style={styles.debugCloseBtnText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Zoom indicator - bottom right, aligned with scale bar */}
       <View style={[styles.zoomBadge, { bottom: 16, right: 12 }]}>
         <Text style={styles.zoomText}>{currentZoom.toFixed(1)}x</Text>
@@ -848,6 +1310,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Toggle label="Depth Contours" value={showDepthContours} onToggle={setShowDepthContours} />
             <Toggle label="Soundings" value={showSoundings} onToggle={setShowSoundings} />
             <Toggle label="Land" value={showLand} onToggle={setShowLand} />
+            <Toggle label="Coastline" value={showCoastline} onToggle={setShowCoastline} />
             <Toggle label="Lights" value={showLights} onToggle={setShowLights} />
             <Toggle label="Light Sectors" value={showSectors} onToggle={setShowSectors} />
             <Toggle label="Buoys" value={showBuoys} onToggle={setShowBuoys} />
@@ -989,6 +1452,101 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 2,
     elevation: 3,
+  },
+  debugBtn: {
+    position: 'absolute',
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  debugBtnText: {
+    fontSize: 20,
+  },
+  debugPanel: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    borderRadius: 8,
+    padding: 12,
+    maxHeight: 300,
+  },
+  debugTitle: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  debugText: {
+    color: '#ddd',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  debugInfo: {
+    color: '#88ff88',
+    fontSize: 10,
+    marginTop: 8,
+  },
+  debugDivider: {
+    height: 1,
+    backgroundColor: '#444',
+    marginVertical: 8,
+  },
+  debugToggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  debugToggle: {
+    flex: 1,
+    backgroundColor: '#333',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#333',
+  },
+  debugToggleActive: {
+    backgroundColor: '#28a745',
+    borderColor: '#28a745',
+  },
+  debugToggleText: {
+    color: '#888',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  debugToggleTextActive: {
+    color: '#fff',
+  },
+  debugActionBtn: {
+    backgroundColor: '#007AFF',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    marginBottom: 8,
+    alignItems: 'center',
+  },
+  debugActionBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  debugCloseBtn: {
+    marginTop: 4,
+    alignItems: 'center',
+  },
+  debugCloseBtnText: {
+    color: '#888',
+    fontSize: 14,
   },
   layersIcon: {
     width: 22,

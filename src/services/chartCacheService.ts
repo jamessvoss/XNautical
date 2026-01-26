@@ -18,21 +18,28 @@ import {
 // Storage keys
 const STORAGE_KEYS = {
   DOWNLOADED_CHARTS: '@XNautical:downloadedCharts',
+  DOWNLOADED_MBTILES: '@XNautical:downloadedMBTiles',
   CHART_METADATA_CACHE: '@XNautical:chartMetadataCache',
   REGIONS_CACHE: '@XNautical:regionsCache',
 } as const;
 
 // Base directory for chart data
 const CHARTS_DIR = `${documentDirectory}charts/`;
+const MBTILES_DIR = `${documentDirectory}mbtiles/`;
 
 /**
- * Initialize the cache directory
+ * Initialize the cache directories (charts and mbtiles)
  */
 export async function initializeCache(): Promise<void> {
   try {
-    const dirInfo = await getInfoAsync(CHARTS_DIR);
-    if (!dirInfo.exists) {
+    const chartsDirInfo = await getInfoAsync(CHARTS_DIR);
+    if (!chartsDirInfo.exists) {
       await makeDirectoryAsync(CHARTS_DIR, { intermediates: true });
+    }
+    
+    const mbtilesDirInfo = await getInfoAsync(MBTILES_DIR);
+    if (!mbtilesDirInfo.exists) {
+      await makeDirectoryAsync(MBTILES_DIR, { intermediates: true });
     }
   } catch (error) {
     console.error('Error initializing cache directory:', error);
@@ -387,5 +394,144 @@ export async function getCachedChartMetadata(): Promise<ChartMetadata[] | null> 
   } catch (error) {
     console.error('Error getting cached chart metadata:', error);
     return null;
+  }
+}
+
+// ============================================
+// MBTiles Cache Functions
+// ============================================
+
+/**
+ * Get the file path for an MBTiles file
+ */
+export function getMBTilesPath(chartId: string): string {
+  return `${MBTILES_DIR}${chartId}.mbtiles`;
+}
+
+/**
+ * Get the MBTiles directory path
+ */
+export function getMBTilesDir(): string {
+  return MBTILES_DIR;
+}
+
+/**
+ * Check if an MBTiles file exists for a chart
+ */
+export async function hasMBTiles(chartId: string): Promise<boolean> {
+  try {
+    const filePath = getMBTilesPath(chartId);
+    const fileInfo = await getInfoAsync(filePath);
+    return fileInfo.exists;
+  } catch (error) {
+    console.error(`Error checking MBTiles for ${chartId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Get list of all downloaded MBTiles chart IDs
+ */
+export async function getDownloadedMBTilesIds(): Promise<string[]> {
+  try {
+    const json = await AsyncStorage.getItem(STORAGE_KEYS.DOWNLOADED_MBTILES);
+    return json ? JSON.parse(json) : [];
+  } catch (error) {
+    console.error('Error getting downloaded MBTiles IDs:', error);
+    return [];
+  }
+}
+
+/**
+ * Mark an MBTiles chart as downloaded
+ */
+export async function markMBTilesDownloaded(chartId: string): Promise<void> {
+  try {
+    const downloadedCharts = await getDownloadedMBTilesIds();
+    if (!downloadedCharts.includes(chartId)) {
+      downloadedCharts.push(chartId);
+      await AsyncStorage.setItem(
+        STORAGE_KEYS.DOWNLOADED_MBTILES,
+        JSON.stringify(downloadedCharts)
+      );
+    }
+  } catch (error) {
+    console.error(`Error marking MBTiles downloaded for ${chartId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Delete an MBTiles file
+ */
+export async function deleteMBTiles(chartId: string): Promise<void> {
+  try {
+    const filePath = getMBTilesPath(chartId);
+    const fileInfo = await getInfoAsync(filePath);
+    
+    if (fileInfo.exists) {
+      await deleteAsync(filePath, { idempotent: true });
+    }
+    
+    // Remove from downloaded list
+    const downloadedCharts = await getDownloadedMBTilesIds();
+    const filtered = downloadedCharts.filter(id => id !== chartId);
+    await AsyncStorage.setItem(
+      STORAGE_KEYS.DOWNLOADED_MBTILES,
+      JSON.stringify(filtered)
+    );
+  } catch (error) {
+    console.error(`Error deleting MBTiles for ${chartId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Delete all cached MBTiles files
+ */
+export async function clearAllMBTiles(): Promise<void> {
+  try {
+    const dirInfo = await getInfoAsync(MBTILES_DIR);
+    if (dirInfo.exists) {
+      await deleteAsync(MBTILES_DIR, { idempotent: true });
+    }
+    
+    // Recreate empty directory
+    await makeDirectoryAsync(MBTILES_DIR, { intermediates: true });
+    
+    // Clear downloaded list
+    await AsyncStorage.setItem(STORAGE_KEYS.DOWNLOADED_MBTILES, JSON.stringify([]));
+  } catch (error) {
+    console.error('Error clearing all MBTiles:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get total MBTiles cache size in bytes
+ */
+export async function getMBTilesCacheSize(): Promise<number> {
+  try {
+    const dirInfo = await getInfoAsync(MBTILES_DIR);
+    if (!dirInfo.exists) {
+      return 0;
+    }
+    
+    let totalSize = 0;
+    const files = await readDirectoryAsync(MBTILES_DIR);
+    
+    for (const file of files) {
+      if (file.endsWith('.mbtiles')) {
+        const fileInfo = await getInfoAsync(`${MBTILES_DIR}${file}`);
+        if (fileInfo.exists && 'size' in fileInfo) {
+          totalSize += fileInfo.size || 0;
+        }
+      }
+    }
+    
+    return totalSize;
+  } catch (error) {
+    console.error('Error calculating MBTiles cache size:', error);
+    return 0;
   }
 }

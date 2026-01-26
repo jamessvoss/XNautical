@@ -14,7 +14,16 @@ let LoginScreen: React.ComponentType<{ onLoginSuccess: () => void }> | null = nu
 let MapSelectionScreen: React.ComponentType | null = null;
 let DynamicChartViewer: React.ComponentType<{ onNavigateToDownloads?: () => void }> | null = null;
 let SettingsScreen: React.ComponentType | null = null;
-let crashlytics: any = null;
+
+// Modular Crashlytics API (v22+ requires passing instance as first param)
+let crashlyticsInstance: any = null;
+let crashlyticsFns: {
+  setCrashlyticsCollectionEnabled: (crashlytics: any, enabled: boolean) => void;
+  setUserId: (crashlytics: any, userId: string) => void;
+  setAttributes: (crashlytics: any, attributes: Record<string, string>) => void;
+  log: (crashlytics: any, message: string) => void;
+  recordError: (crashlytics: any, error: Error) => void;
+} | null = null;
 
 if (Platform.OS !== 'web') {
   LoginScreen = require('./src/screens/LoginScreen').default;
@@ -22,9 +31,17 @@ if (Platform.OS !== 'web') {
   DynamicChartViewer = require('./src/components/DynamicChartViewer.native').default;
   SettingsScreen = require('./src/screens/SettingsScreen').default;
   
-  // Initialize Crashlytics for native platforms
+  // Initialize Crashlytics for native platforms (modular API)
   try {
-    crashlytics = require('@react-native-firebase/crashlytics').default;
+    const rnfbCrashlytics = require('@react-native-firebase/crashlytics');
+    crashlyticsInstance = rnfbCrashlytics.getCrashlytics();
+    crashlyticsFns = {
+      setCrashlyticsCollectionEnabled: rnfbCrashlytics.setCrashlyticsCollectionEnabled,
+      setUserId: rnfbCrashlytics.setUserId,
+      setAttributes: rnfbCrashlytics.setAttributes,
+      log: rnfbCrashlytics.log,
+      recordError: rnfbCrashlytics.recordError,
+    };
   } catch (e) {
     console.log('Crashlytics not available');
   }
@@ -52,9 +69,9 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     // Log to Crashlytics
-    if (crashlytics) {
-      crashlytics().recordError(error);
-      crashlytics().log(`Component stack: ${errorInfo.componentStack}`);
+    if (crashlyticsFns && crashlyticsInstance) {
+      crashlyticsFns.recordError(crashlyticsInstance, error);
+      crashlyticsFns.log(crashlyticsInstance, `Component stack: ${errorInfo.componentStack}`);
     }
     console.error('ErrorBoundary caught:', error, errorInfo);
   }
@@ -155,8 +172,8 @@ function AppContent() {
   // Initialize Crashlytics and listen for auth state changes
   useEffect(() => {
     // Enable Crashlytics collection (disabled by default in dev)
-    if (crashlytics && !__DEV__) {
-      crashlytics().setCrashlyticsCollectionEnabled(true);
+    if (crashlyticsFns && crashlyticsInstance && !__DEV__) {
+      crashlyticsFns.setCrashlyticsCollectionEnabled(crashlyticsInstance, true);
     }
 
     // Web platform doesn't use auth
@@ -173,12 +190,12 @@ function AppContent() {
       setAuthLoading(false);
 
       // Set user ID in Crashlytics for crash attribution
-      if (crashlytics && authUser) {
-        crashlytics().setUserId(authUser.uid);
-        crashlytics().setAttributes({
+      if (crashlyticsFns && crashlyticsInstance && authUser) {
+        crashlyticsFns.setUserId(crashlyticsInstance, authUser.uid);
+        crashlyticsFns.setAttributes(crashlyticsInstance, {
           email: authUser.email || '',
         });
-        crashlytics().log(`User authenticated: ${authUser.email}`);
+        crashlyticsFns.log(crashlyticsInstance, `User authenticated: ${authUser.email}`);
       }
     });
     return unsubscribe;
