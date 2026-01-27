@@ -1,0 +1,79 @@
+# Charts overlapping US2PACZS (Gulf of Alaska)
+# Based on NOAA ENC catalog and geographic coverage
+
+# US1 - Global overview (includes Alaska)
+US1GLBDA
+US1GLBDC
+US1GLBDD
+US1GLBEA
+
+# US2 - Regional (already have)
+US2PACZS
+
+# US3 - Cook Inlet and Prince William Sound approaches
+US3AK12M
+US3AK1DM
+US3AK1EM
+US3AK1HM
+
+# US4 - Harbor approaches (Cook Inlet, Prince William Sound, Kodiak)
+# Cook Inlet area
+US4AK4OF
+US4AK4OG
+US4AK4OH
+US4AK4OI
+US4AK4PF
+US4AK4PG
+US4AK4PH
+US4AK4PI
+US4AK4QF
+US4AK4QG
+US4AK4QH
+US4AK4QI
+
+# Prince William Sound area
+US4AK53M
+US4AK54M
+US4AK5EM
+
+# Kodiak area  
+US4AK1PM
+US4AK1QM
+
+# US5 - Harbor details (Homer, Seward, Whittier, Valdez, Cordova, Kodiak, Anchorage)
+# Homer area
+US5AK5NF
+US5AK5NG
+US5AK5PE
+US5AK5PF
+US5AK5QF
+US5AK5QG
+
+# Seward/Resurrection Bay
+US5AK5SI
+US5AK5SJ
+
+# Whittier/Passage Canal
+US5AK5ZV
+US5AK5ZW
+
+# Valdez/Port Valdez
+US5AK6CN
+US5AK6DN
+US5AK6EN
+US5AK6FN
+
+# Cordova
+US5AK6MK
+US5AK6ML
+US5AK6MN
+US5AK6MO
+
+# Kodiak
+US5AK2NF
+US5AK2NI
+US5AK2NJ
+US5AK2OE
+US5AK2OL
+US5AK2PL
+US5AK2PM

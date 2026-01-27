@@ -1,14 +1,15 @@
 /**
- * Local Tile Server - Serves MBTiles vector tiles via local HTTP server
+ * Local Tile Server - Serves MBTiles vector and raster tiles via local HTTP server
  * 
  * This service wraps native modules (LocalTileServer) that run an embedded HTTP server
- * on the device to serve vector tiles from MBTiles SQLite databases.
+ * on the device to serve tiles from MBTiles SQLite databases.
  * 
  * The server:
  * - Runs on localhost:8765 (or configurable port)
- * - Handles GET requests: /tiles/{chartId}/{z}/{x}/{y}.pbf
+ * - Handles GET requests: /tiles/{chartId}/{z}/{x}/{y}.pbf (vector tiles)
+ * - Handles GET requests: /tiles/{chartId}/{z}/{x}/{y}.png (raster tiles)
  * - Reads tile_data directly from MBTiles SQLite
- * - Returns gzipped MVT protobuf with proper Content-Encoding header
+ * - Returns gzipped MVT protobuf or PNG images with proper headers
  * 
  * MBTiles uses TMS y-coordinate which is handled in native code:
  * tmsY = (1 << z) - 1 - y
@@ -163,6 +164,34 @@ export async function getTileUrlTemplateAsync(chartId: string): Promise<string> 
 }
 
 /**
+ * Get the raster tile URL template for a chart (PNG format)
+ * Returns a URL template suitable for use with Mapbox RasterSource
+ * 
+ * @param chartId The chart ID (e.g., "BATHY_TEST")
+ * @returns URL template like "http://127.0.0.1:8765/tiles/BATHY_TEST/{z}/{x}/{y}.png"
+ */
+export function getRasterTileUrlTemplate(chartId: string): string {
+  return `${getTileServerUrl()}/tiles/${chartId}/{z}/{x}/{y}.png`;
+}
+
+/**
+ * Get the raster tile URL template asynchronously from native module
+ * This ensures the URL uses the correct port even if it was auto-assigned
+ */
+export async function getRasterTileUrlTemplateAsync(chartId: string): Promise<string> {
+  if (Platform.OS === 'web' || !LocalTileServer) {
+    return getRasterTileUrlTemplate(chartId);
+  }
+
+  try {
+    return await LocalTileServer.getRasterTileUrlTemplate(chartId);
+  } catch (error) {
+    console.error('[TileServer] Error getting raster tile URL template:', error);
+    return getRasterTileUrlTemplate(chartId);
+  }
+}
+
+/**
  * Pre-load databases for faster tile serving
  * Note: This is handled automatically by the native module on first tile request,
  * but can be called explicitly to warm up the database connections
@@ -248,6 +277,8 @@ export default {
   getTileServerUrl,
   getTileUrlTemplate,
   getTileUrlTemplateAsync,
+  getRasterTileUrlTemplate,
+  getRasterTileUrlTemplateAsync,
   preloadDatabases,
   clearCache,
   getMetadata,

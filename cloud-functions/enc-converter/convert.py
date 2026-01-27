@@ -268,21 +268,28 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
                             elif layer == 'SOUNDG':
                                 geom = feature['geometry']
                                 coords = geom.get('coordinates', [])
+                                props = feature.get('properties', {})
+                                # Preserve SCAMIN from original feature for zoom filtering
+                                scamin = props.get('SCAMIN')
                                 
                                 # Soundings are often MultiPoint with [lon, lat, depth]
                                 if geom['type'] == 'MultiPoint':
                                     for coord in coords:
                                         if len(coord) >= 3:
+                                            point_props = {
+                                                '_layer': 'SOUNDG',
+                                                'DEPTH': coord[2]
+                                            }
+                                            # Include SCAMIN if present for zoom-based filtering
+                                            if scamin is not None:
+                                                point_props['SCAMIN'] = scamin
                                             point_feature = {
                                                 'type': 'Feature',
                                                 'geometry': {
                                                     'type': 'Point',
                                                     'coordinates': [coord[0], coord[1]]
                                                 },
-                                                'properties': {
-                                                    '_layer': 'SOUNDG',
-                                                    'DEPTH': coord[2]
-                                                }
+                                                'properties': point_props
                                             }
                                             all_features.append(point_feature)
                                 elif geom['type'] == 'Point' and len(coords) >= 3:
@@ -338,34 +345,106 @@ def check_geojson_has_features(geojson_path: str) -> bool:
         return False
 
 
+def get_tippecanoe_settings(chart_id: str) -> tuple:
+    """
+    Get scale-appropriate tippecanoe settings based on chart ID.
+    
+    Returns: (max_zoom, min_zoom, additional_flags)
+    
+    Scale bands:
+    - US1: Overview charts - z8 max (prevents GB-sized files)
+    - US2: General charts - z10 max (prevents GB-sized files)  
+    - US3: Coastal charts - z13 max (stop line simplification)
+    - US4: Approach charts - z16 max (high precision)
+    - US5: Harbor charts - z18 max (maximum detail)
+    """
+    
+    # Detect chart scale from ID prefix
+    if chart_id.startswith('US1'):
+        # Overview charts: minimize file size, reasonable for overview
+        return (8, 0, [
+            '--drop-densest-as-needed',
+            '--simplify-only-low-zooms',
+            '-r2.5'
+        ])
+    
+    elif chart_id.startswith('US2'):
+        # General charts: prevent GB-sized files, optimize for regional view
+        return (10, 8, [
+            '--drop-densest-as-needed',
+            '--simplify-only-low-zooms',
+            '-r1'
+        ])
+    
+    elif chart_id.startswith('US3'):
+        # Coastal charts: preserve line accuracy, stop simplification
+        return (13, 10, [
+            '--no-line-simplification',
+            '--maximum-tile-bytes=2500000',
+            '-r1'
+        ])
+    
+    elif chart_id.startswith('US4'):
+        # Approach charts: high precision for channels
+        return (16, 11, [
+            '--no-feature-limit',
+            '--no-line-simplification',
+            '--maximum-tile-bytes=5000000',
+            '-r1'
+        ])
+    
+    elif chart_id.startswith('US5'):
+        # Harbor charts: maximum detail, no compromises
+        return (18, 13, [
+            '--no-feature-limit',
+            '--no-tile-size-limit',
+            '--no-line-simplification',
+            '--no-tiny-polygon-reduction',
+            '-r1'
+        ])
+    
+    else:
+        # Default: assume high-detail chart
+        print(f"Warning: Unknown chart scale for {chart_id}, using US5 settings")
+        return (18, 13, [
+            '--no-feature-limit',
+            '--no-tile-size-limit',
+            '--no-line-simplification',
+            '--no-tiny-polygon-reduction',
+            '-r1'
+        ])
+
+
 def convert_geojson_to_mbtiles(geojson_path: str, output_path: str, chart_id: str) -> str:
-    """Convert GeoJSON to MBTiles using tippecanoe."""
+    """Convert GeoJSON to MBTiles using tippecanoe with scale-appropriate settings."""
     
     # First check if the GeoJSON has valid features
     if not check_geojson_has_features(geojson_path):
         raise Exception(f"GeoJSON has no valid features with geometry - skipping")
     
-    # Tippecanoe options for nautical charts
-    # KEEP EVERYTHING - no dropping, no coalescing, no limits
+    # Get scale-appropriate settings
+    max_zoom, min_zoom, additional_flags = get_tippecanoe_settings(chart_id)
+    
+    print(f"Converting to MBTiles: {chart_id}")
+    print(f"  Scale settings: z{min_zoom}-{max_zoom} ({chart_id[:3]} scale)")
+    
+    # Build tippecanoe command
     cmd = [
         "tippecanoe",
         "-o", output_path,
-        "-z", "17",                          # Max zoom level
-        "-Z", "0",                           # Min zoom level
+        "-z", str(max_zoom),
+        "-Z", str(min_zoom),
         "--force",
         "-l", chart_id,
-        "--no-feature-limit",                # No limit on features per tile
-        "--no-tile-size-limit",              # No limit on tile size
-        "--no-line-simplification",          # Keep all line detail
-        "--no-tiny-polygon-reduction",       # Keep tiny polygons
-        "-r1",                               # Minimal point dropping
         "--attribution", "NOAA ENC",
         "--name", chart_id,
         "--description", f"Vector tiles for {chart_id}",
-        geojson_path
     ]
     
-    print(f"Converting to MBTiles: {chart_id}...")
+    # Add scale-specific flags
+    cmd.extend(additional_flags)
+    cmd.append(geojson_path)
+    
     result = subprocess.run(cmd, capture_output=True, text=True)
     
     if result.returncode != 0:
@@ -380,11 +459,15 @@ def convert_geojson_to_mbtiles(geojson_path: str, output_path: str, chart_id: st
     return output_path
 
 
-def convert_chart(s57_path: str, output_dir: str, temp_dir: str = "/tmp") -> str:
+def convert_chart(s57_path: str, output_dir: str = None, temp_dir: str = "/tmp") -> str:
     """Convert a single S-57 chart to MBTiles."""
     
     s57_path = Path(s57_path)
     chart_id = s57_path.stem
+    
+    # If output_dir not specified, use the source file's parent directory
+    if output_dir is None:
+        output_dir = s57_path.parent
     
     # Create temp directory for intermediate files
     temp_path = Path(temp_dir) / chart_id
@@ -409,12 +492,13 @@ def convert_chart(s57_path: str, output_dir: str, temp_dir: str = "/tmp") -> str
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: convert.py <input.000> <output_dir>")
+    if len(sys.argv) < 2:
+        print("Usage: convert.py <input.000> [output_dir]")
+        print("  If output_dir is not specified, output will be in the same directory as the source file")
         sys.exit(1)
     
     s57_file = sys.argv[1]
-    output_dir = sys.argv[2]
+    output_dir = sys.argv[2] if len(sys.argv) >= 3 else None
     
     result = convert_chart(s57_file, output_dir)
     print(f"Conversion complete: {result}")

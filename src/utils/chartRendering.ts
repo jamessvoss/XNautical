@@ -3,6 +3,39 @@
  * Used by both static and dynamic chart viewers
  */
 
+/**
+ * Safely parse an array value that might come as a string from MBTiles
+ * MBTiles stores arrays as JSON strings like '["1", "2"]' or just '1'
+ */
+function safeParseArray(value: unknown): string[] {
+  if (!value) return [];
+  
+  // Already an array
+  if (Array.isArray(value)) {
+    return value.map(v => String(v));
+  }
+  
+  // String that looks like a JSON array
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.map(v => String(v));
+        }
+      } catch {
+        // Not valid JSON, treat as single value
+      }
+    }
+    // Single value string
+    return [trimmed];
+  }
+  
+  // Number or other primitive
+  return [String(value)];
+}
+
 // S-57 Color codes
 export const LIGHT_COLOURS: Record<string, string> = {
   '1': 'White', '2': 'Black', '3': 'Red', '4': 'Green', '5': 'Blue',
@@ -235,8 +268,8 @@ export function extractSectorFeatures(lightsData: GeoJSON.FeatureCollection): Ge
     
     if (sectr1 !== undefined && sectr2 !== undefined) {
       const coords = (feature.geometry as GeoJSON.Point).coordinates;
-      const colours = props.COLOUR as string[] | undefined;
-      const colour = colours && colours.length > 0 ? colours[0] : '1';
+      const colours = safeParseArray(props.COLOUR);
+      const colour = colours.length > 0 ? colours[0] : '1';
       const range = props.VALNMR as number | undefined;
       const radiusNm = range ? Math.min(range * 0.2, 0.6) : 0.35;
       
@@ -301,7 +334,7 @@ export function formatLightInfo(properties: Record<string, unknown>): Record<str
   const sigper = properties.SIGPER as number | undefined;
   const height = properties.HEIGHT as number | undefined;
   const valnmr = properties.VALNMR as number | undefined;
-  const colours = properties.COLOUR as string[] | undefined;
+  const colours = safeParseArray(properties.COLOUR);
   
   // Build chart-style label first (e.g., "Fl(1) W 4s 8m 5M")
   let chartLabel = '';
@@ -376,8 +409,8 @@ export function formatLightInfo(properties: Record<string, unknown>): Record<str
   }
   
   // Category of light
-  const catlit = properties.CATLIT as string[] | undefined;
-  if (catlit && catlit.length > 0) {
+  const catlit = safeParseArray(properties.CATLIT);
+  if (catlit.length > 0) {
     const categories = catlit.map(c => LIGHT_CATEGORIES[c] || `Code ${c}`).join(', ');
     formatted['Category'] = categories;
   }
@@ -389,10 +422,9 @@ export function formatLightInfo(properties: Record<string, unknown>): Record<str
   }
   
   // Status
-  const status = properties.STATUS as string[] | string | undefined;
-  if (status) {
-    const statusArray = Array.isArray(status) ? status : [status];
-    const statusNames = statusArray.map(s => LIGHT_STATUS[s] || `Code ${s}`).join(', ');
+  const status = safeParseArray(properties.STATUS);
+  if (status.length > 0) {
+    const statusNames = status.map(s => LIGHT_STATUS[s] || `Code ${s}`).join(', ');
     formatted['Status'] = statusNames;
   }
   
@@ -416,8 +448,8 @@ export function formatBuoyInfo(properties: Record<string, unknown>): Record<stri
   const catlam = properties.CATLAM as string | undefined;
   if (catlam) formatted['Category'] = LATERAL_CATEGORIES[catlam] || `Code ${catlam}`;
   
-  const colours = properties.COLOUR as string[] | undefined;
-  if (colours && colours.length > 0) {
+  const colours = safeParseArray(properties.COLOUR);
+  if (colours.length > 0) {
     formatted['Color'] = colours.map(c => LIGHT_COLOURS[c] || c).join(', ');
   }
   
@@ -450,15 +482,15 @@ export function formatLandmarkInfo(properties: Record<string, unknown>): Record<
   if (objnam) formatted['Name'] = objnam;
   
   // Category
-  const catlmk = properties.CATLMK as string[] | undefined;
-  if (catlmk && catlmk.length > 0) {
+  const catlmk = safeParseArray(properties.CATLMK);
+  if (catlmk.length > 0) {
     const categories = catlmk.map(c => LANDMARK_CATEGORIES[c] || `Code ${c}`).join(', ');
     formatted['Category'] = categories;
   }
   
   // Function
-  const functn = properties.FUNCTN as string[] | undefined;
-  if (functn && functn.length > 0) {
+  const functn = safeParseArray(properties.FUNCTN);
+  if (functn.length > 0) {
     const functions = functn.map(f => LANDMARK_FUNCTIONS[f] || `Code ${f}`).join(', ');
     formatted['Function'] = functions;
   }
@@ -472,9 +504,9 @@ export function formatLandmarkInfo(properties: Record<string, unknown>): Record<
   }
   
   // Color
-  const colours = properties.COLOUR as string[] | undefined;
-  if (colours && colours.length > 0) {
-    const colorNames = colours.map(c => LIGHT_COLOURS[c] || c).join(', ');
+  const lmkColours = safeParseArray(properties.COLOUR);
+  if (lmkColours.length > 0) {
+    const colorNames = lmkColours.map(c => LIGHT_COLOURS[c] || c).join(', ');
     formatted['Color'] = colorNames;
   }
   
@@ -521,15 +553,15 @@ export function formatSeabedInfo(properties: Record<string, unknown>): Record<st
   const formatted: Record<string, string> = {};
   
   // Nature of seabed
-  const natsur = properties.NATSUR as string[] | undefined;
-  if (natsur && natsur.length > 0) {
+  const natsur = safeParseArray(properties.NATSUR);
+  if (natsur.length > 0) {
     const nature = natsur.map(n => SEABED_NATURE[n] || `Code ${n}`).join(', ');
     formatted['Seabed Type'] = nature;
   }
   
   // Qualifying terms
-  const natqua = properties.NATQUA as string[] | undefined;
-  if (natqua && natqua.length > 0) {
+  const natqua = safeParseArray(properties.NATQUA);
+  if (natqua.length > 0) {
     const qualMap: Record<string, string> = {
       '1': 'Fine', '2': 'Medium', '3': 'Coarse', '4': 'Broken',
       '5': 'Sticky', '6': 'Soft', '7': 'Stiff', '8': 'Volcanic',
@@ -539,9 +571,9 @@ export function formatSeabedInfo(properties: Record<string, unknown>): Record<st
   }
   
   // Color
-  const colour = properties.COLOUR as string[] | undefined;
-  if (colour && colour.length > 0) {
-    formatted['Color'] = colour.map(c => LIGHT_COLOURS[c] || c).join(', ');
+  const sbdColour = safeParseArray(properties.COLOUR);
+  if (sbdColour.length > 0) {
+    formatted['Color'] = sbdColour.map(c => LIGHT_COLOURS[c] || c).join(', ');
   }
   
   return formatted;
@@ -575,8 +607,8 @@ export function formatCableInfo(properties: Record<string, unknown>): Record<str
   }
   
   // Restrictions
-  const restrn = properties.RESTRN as string[] | undefined;
-  if (restrn && restrn.length > 0) {
+  const restrn = safeParseArray(properties.RESTRN);
+  if (restrn.length > 0) {
     const restrictions = restrn.map(r => RESTRICTION_CODES[r] || `Code ${r}`).join(', ');
     formatted['Restrictions'] = restrictions;
   }

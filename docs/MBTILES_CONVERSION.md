@@ -40,16 +40,23 @@ S-57 ENC (.000)  →  GeoJSON  →  MBTiles
 ## Quick Start: Single Chart Conversion
 
 ```bash
-# Convert a single S-57 chart
+# Convert a single S-57 chart (settings auto-detected from chart scale)
 python3 cloud-functions/enc-converter/convert.py \
     /path/to/ENC_ROOT/US4AK4PH/US4AK4PH.000 \
     /tmp/mbtiles-output
+
+# Output will use appropriate settings for US4 (approach chart):
+# - Max zoom: z16
+# - Min zoom: z11  
+# - High precision settings for channel navigation
 
 # Push to Android device
 adb push /tmp/mbtiles-output/US4AK4PH.mbtiles /sdcard/Download/
 adb shell "cat /sdcard/Download/US4AK4PH.mbtiles | run-as com.xnautical.app tee /data/data/com.xnautical.app/files/mbtiles/US4AK4PH.mbtiles > /dev/null"
 adb shell "rm /sdcard/Download/US4AK4PH.mbtiles"
 ```
+
+**New in 2026-01-27**: Tippecanoe settings are automatically selected based on chart scale (US1/US2/US3/US4/US5). See [`SCALE_BASED_CONVERSION.md`](SCALE_BASED_CONVERSION.md) for details.
 
 ## Batch Conversion: Multiple Charts
 
@@ -132,38 +139,22 @@ These features get: `{'tippecanoe': {'minzoom': 0, 'maxzoom': 17}}`
 
 ### Tippecanoe Settings
 
-**CRITICAL: These settings must be identical for ALL charts.**
+**IMPORTANT**: As of 2026-01-27, tippecanoe settings are **automatically selected based on chart scale**. See [`docs/SCALE_BASED_CONVERSION.md`](SCALE_BASED_CONVERSION.md) for complete details.
 
-```bash
-tippecanoe \
-    -o output.mbtiles \
-    -z 17 \                              # Max zoom (most detailed)
-    -Z 0 \                               # Min zoom (world view)
-    --force \                            # Overwrite existing
-    -l ${CHART_ID} \                     # Layer name = chart ID
-    --drop-densest-as-needed \           # Manage density at low zooms
-    --extend-zooms-if-still-dropping \   # Ensure features appear by max zoom
-    --coalesce-densest-as-needed \       # Merge dense features intelligently
-    --attribution "NOAA ENC" \
-    --name "${CHART_ID}" \
-    --description "Vector tiles for ${CHART_ID}" \
-    input.geojson
-```
+| Scale | Max Zoom | Min Zoom | Rationale |
+|-------|----------|----------|-----------|
+| US1 | z8 | z0 | Overview only - prevents GB files |
+| US2 | z10 | z8 | Regional view - prevents GB files |
+| US3 | z13 | z10 | Coastal detail - stop line simplification |
+| US4 | z16 | z11 | High precision for channels |
+| US5 | z18 | z13 | Maximum detail for docking |
 
-| Option | Purpose |
-|--------|---------|
-| `-z 17` | Maximum zoom level (most detailed) |
-| `-Z 0` | Minimum zoom level (world view) |
-| `-l ${CHART_ID}` | Layer name in vector tiles (matches `sourceLayerID` in app) |
-| `--drop-densest-as-needed` | Drop features in dense areas at low zooms |
-| `--extend-zooms-if-still-dropping` | Keep trying to include features at higher zooms |
-| `--coalesce-densest-as-needed` | Merge nearby features at low zooms |
+The script [`convert.py`](../cloud-functions/enc-converter/convert.py) automatically detects chart scale from the filename and applies appropriate settings.
 
-**Why these settings matter:**
-
-1. **Consistency**: Adjacent charts must behave identically at tile boundaries
-2. **Performance**: Prevents massive tiles at low zoom levels
-3. **Completeness**: Navigation aids always visible; dense data (soundings) visible at high zoom
+**Why scale-based settings**:
+- US2 charts were producing GB-sized files with uniform z17 settings
+- Cartographic correctness: don't show detail beyond source resolution
+- Optimized file sizes while preserving maximum detail where needed
 
 ## S-57 Layer Reference
 
