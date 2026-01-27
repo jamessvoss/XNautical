@@ -23,6 +23,7 @@ import {
 } from '../types/chart';
 import * as chartCacheService from '../services/chartCacheService';
 import * as tileServer from '../services/tileServer';
+import { loadChartIndex, ChartIndex } from '../services/chartIndex';
 import {
   DEPTH_COLORS,
   SECTOR_COLOURS,
@@ -125,6 +126,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [loading, setLoading] = useState(true);
   const [charts, setCharts] = useState<LoadedChartData[]>([]);
   const [mbtilesCharts, setMbtilesCharts] = useState<LoadedMBTilesChart[]>([]);
+  const [chartsToRender, setChartsToRender] = useState<string[]>([]); // Chart IDs to render (progressive loading)
+  const [loadingPhase, setLoadingPhase] = useState<'us1' | 'tier1' | 'complete'>('us1');
   const [rasterCharts, setRasterCharts] = useState<LoadedRasterChart[]>([]);
   const [tileServerReady, setTileServerReady] = useState(false);
   const [storageUsed, setStorageUsed] = useState<{ total: number; vector: number; raster: number }>({ total: 0, vector: 0, raster: 0 });
@@ -167,7 +170,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showTerrainNames, setShowTerrainNames] = useState(false);  // Valleys, basins (off by default)
   
   // UI state
-  const [currentZoom, setCurrentZoom] = useState(10);
+  const [currentZoom, setCurrentZoom] = useState(8);
   const [centerCoord, setCenterCoord] = useState<[number, number]>([-151.55, 59.64]);
   const [selectedFeature, setSelectedFeature] = useState<FeatureInfo | null>(null);
   const [showControls, setShowControls] = useState(false);
@@ -260,6 +263,58 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
   }, []);
   
+  // Progressive loading: Add more charts after initial render
+  useEffect(() => {
+    // DEBUG: Log every time this effect runs
+    console.log(`[PROGRESSIVE] Effect triggered - phase=${loadingPhase}, tileServerReady=${tileServerReady}, mbtilesCharts=${mbtilesCharts.length}, chartsToRender=${chartsToRender.length}`);
+    
+    if (loadingPhase === 'us1' && tileServerReady && mbtilesCharts.length > 0) {
+      console.log(`[PROGRESSIVE] Scheduling Phase 2...`);
+      // Phase 2: Add US2+US3 after a short delay to let UI settle
+      const timer = setTimeout(() => {
+        console.log(`[PROGRESSIVE] Phase 2 timer fired`);
+        const tier1All = mbtilesCharts
+          .filter(m => m.chartId.match(/^US[123]/))
+          .map(m => m.chartId);
+        
+        console.log(`[PERF] Phase 2: Adding US2+US3, total ${tier1All.length} Tier1 charts`);
+        setChartsToRender(tier1All);
+        setLoadingPhase('tier1');
+      }, 100); // Small delay to ensure initial render completes
+      
+      return () => {
+        console.log(`[PROGRESSIVE] Phase 2 timer cleanup`);
+        clearTimeout(timer);
+      };
+    }
+    
+    if (loadingPhase === 'tier1' && chartsToRender.length > 0) {
+      console.log(`[PROGRESSIVE] Scheduling Phase 3...`);
+      // Phase 3: Add some US4 charts to reach ~100 total (like before)
+      const timer = setTimeout(() => {
+        console.log(`[PROGRESSIVE] Phase 3 timer fired`);
+        const us4Charts = mbtilesCharts
+          .filter(m => m.chartId.startsWith('US4'))
+          .map(m => m.chartId)
+          .slice(0, 100 - chartsToRender.length); // Fill up to 100
+        
+        if (us4Charts.length > 0) {
+          const allCharts = [...chartsToRender, ...us4Charts];
+          console.log(`[PERF] Phase 3: Adding ${us4Charts.length} US4 charts, total ${allCharts.length}`);
+          setChartsToRender(allCharts);
+        }
+        setLoadingPhase('complete');
+      }, 500); // Longer delay for phase 3
+      
+      return () => {
+        console.log(`[PROGRESSIVE] Phase 3 timer cleanup`);
+        clearTimeout(timer);
+      };
+    }
+    
+    console.log(`[PROGRESSIVE] No action taken this run`);
+  }, [loadingPhase, tileServerReady, mbtilesCharts, chartsToRender]);
+  
   // Start/stop GPS tracking when panel is shown/hidden
   useEffect(() => {
     if (showGPSPanel || showCompass) {
@@ -280,334 +335,216 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [followGPS, gpsData.latitude, gpsData.longitude]);
 
   const loadCharts = async () => {
-    const totalLoadStart = Date.now();
+    const t0 = Date.now();
+    console.log('=== STARTUP PERFORMANCE ===');
+    console.log(`[PERF] Start: ${new Date().toISOString()}`);
+    
     try {
       setLoading(true);
-      console.log('=== CHART LOADING START ===');
-      console.log(`Timestamp: ${new Date().toISOString()}`);
-      
-      await chartCacheService.initializeCache();
       
       const FileSystem = require('expo-file-system/legacy');
       
-      console.log('FileSystem.documentDirectory:', FileSystem.documentDirectory);
-      
-      // Check multiple locations for mbtiles files
-      // Priority: 1) App's internal storage, 2) App's external files dir (dev - survives reinstall)
+      // === PHASE 1: Find mbtiles directory ===
+      const dirStart = Date.now();
       const appDir = `${FileSystem.documentDirectory}mbtiles`;
-      // App's external files directory - accessible without permissions, writable via adb
-      // Note: expo-file-system needs file:// prefix for paths
       const externalAppDir = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
-      // Also try the old Download location in case permissions work
-      const downloadDir = 'file:///sdcard/Download/xnautical_charts';
-      
-      console.log('Checking directories:');
-      console.log('  1. App internal:', appDir);
-      console.log('  2. App external:', externalAppDir);
-      console.log('  3. Download folder:', downloadDir);
       
       let mbtilesDir = appDir;
-      let filesInDir: string[] = [];
       
       // Ensure app directory exists
       const appDirInfo = await FileSystem.getInfoAsync(appDir);
-      console.log('App dir exists:', appDirInfo.exists);
       if (!appDirInfo.exists) {
         await FileSystem.makeDirectoryAsync(appDir, { intermediates: true });
-        console.log('Created app dir');
       }
       
-      // Try app's internal storage first (production location)
-      try {
-        const appFiles = await FileSystem.readDirectoryAsync(appDir);
-        console.log(`App internal dir files (${appFiles.length}):`, appFiles.slice(0, 5));
-        const mbtilesCount = appFiles.filter((f: string) => f.endsWith('.mbtiles')).length;
-        if (mbtilesCount > 0) {
-          console.log(`✓ Found ${mbtilesCount} mbtiles in app storage: ${appDir}`);
-          filesInDir = appFiles;
-        } else {
-          console.log('✗ No mbtiles in app internal storage');
-        }
-      } catch (e) {
-        console.log('✗ Could not read app mbtiles directory:', e);
-      }
-      
-      // Fallback to app's external files directory (development: accessible via adb push)
-      if (filesInDir.length === 0) {
-        console.log('Trying app external dir...');
-        try {
-          const externalInfo = await FileSystem.getInfoAsync(externalAppDir);
-          console.log('App external dir exists:', externalInfo.exists);
-          if (externalInfo.exists) {
-            const externalFiles = await FileSystem.readDirectoryAsync(externalAppDir);
-            console.log(`App external dir files (${externalFiles.length}):`, externalFiles.slice(0, 5));
-            const mbtilesCount = externalFiles.filter((f: string) => f.endsWith('.mbtiles')).length;
-            if (mbtilesCount > 0) {
-              console.log(`✓ [DEV MODE] Found ${mbtilesCount} mbtiles in app external dir`);
-              mbtilesDir = externalAppDir;
-              filesInDir = externalFiles;
-            } else {
-              console.log('✗ No mbtiles in app external dir');
-            }
-          } else {
-            console.log('✗ App external dir does not exist');
-          }
-        } catch (e) {
-          console.log('✗ App external dir error:', e);
+      // Check if external dir has chart_index.json (dev mode)
+      const externalIndexInfo = await FileSystem.getInfoAsync(`${externalAppDir}/chart_index.json`);
+      if (externalIndexInfo.exists) {
+        mbtilesDir = externalAppDir;
+        console.log('[PERF] Using external app dir (dev mode)');
+      } else {
+        // Check internal dir for chart_index.json
+        const internalIndexInfo = await FileSystem.getInfoAsync(`${appDir}/chart_index.json`);
+        if (!internalIndexInfo.exists) {
+          // No index found anywhere - fall back to legacy scanning
+          console.log('[PERF] No chart_index.json found, using legacy loading');
         }
       }
+      console.log(`[PERF] Directory check: ${Date.now() - dirStart}ms`);
       
-      // Fallback to Download folder (may need permissions)
-      if (filesInDir.length === 0) {
-        console.log('Trying Download folder...');
-        try {
-          const downloadInfo = await FileSystem.getInfoAsync(downloadDir);
-          console.log('Download dir exists:', downloadInfo.exists);
-          if (downloadInfo.exists) {
-            const downloadFiles = await FileSystem.readDirectoryAsync(downloadDir);
-            console.log(`Download dir files (${downloadFiles.length}):`, downloadFiles.slice(0, 5));
-            const mbtilesCount = downloadFiles.filter((f: string) => f.endsWith('.mbtiles')).length;
-            if (mbtilesCount > 0) {
-              console.log(`✓ Found ${mbtilesCount} mbtiles in Download folder`);
-              mbtilesDir = downloadDir;
-              filesInDir = downloadFiles;
-            } else {
-              console.log('✗ No mbtiles in Download folder');
-            }
-          } else {
-            console.log('✗ Download dir does not exist or not accessible');
-          }
-        } catch (e) {
-          console.log('✗ Download folder error:', e);
-        }
+      // === PHASE 2: Load chart index ===
+      const indexStart = Date.now();
+      const index = await loadChartIndex(`${mbtilesDir}/chart_index.json`);
+      console.log(`[PERF] Index load: ${Date.now() - indexStart}ms`);
+      
+      let tier1ChartIds: string[] = [];
+      let tier2ChartIds: string[] = [];
+      let totalChartCount = 0;
+      
+      if (index) {
+        // Progressive loading: US1 first, then US2+US3, then US4 up to 100
+        tier1ChartIds = index.tier1Charts; // All Tier 1 (81 charts)
+        tier2ChartIds = index.tier2Charts; // Tier 2 (1135 charts)
+        totalChartCount = index.stats.totalCharts;
+        
+        const us1Charts = tier1ChartIds.filter(id => id.startsWith('US1'));
+        console.log(`[PERF] Index: ${us1Charts.length} US1, ${tier1ChartIds.length} Tier1, ${tier2ChartIds.length} Tier2`);
+      } else {
+        console.log('[PERF] No index available - will use legacy scanning');
       }
       
-      console.log('=== FINAL RESULT ===');
-      console.log(`Using mbtiles directory: ${mbtilesDir}`);
-      console.log(`Total files found: ${filesInDir.length}`);
+      // === PHASE 3: Check for special files (GNIS, basemap) ===
+      const specialStart = Date.now();
+      const [gnisInfo, basemapInfo] = await Promise.all([
+        FileSystem.getInfoAsync(`${mbtilesDir}/gnis_names_ak.mbtiles`),
+        FileSystem.getInfoAsync(`${mbtilesDir}/basemap_alaska.mbtiles`),
+      ]);
       
-      // Load any .mbtiles files found - separate vector charts from raster charts and reference data
+      const gnisFound = gnisInfo.exists;
+      const basemapFound = basemapInfo.exists;
+      
+      setGnisAvailable(gnisFound);
+      setHasLocalBasemap(basemapFound);
+      
+      console.log(`[PERF] Special files check: ${Date.now() - specialStart}ms (GNIS: ${gnisFound}, Basemap: ${basemapFound})`);
+      
+      // === PHASE 4: Build chart list from index or legacy scan ===
+      const buildStart = Date.now();
       const loadedMbtiles: LoadedMBTilesChart[] = [];
       const loadedRasters: LoadedRasterChart[] = [];
-      let gnisFound = false;
-      let basemapFound = false;
       
-      console.log('=== PROCESSING FILES ===');
-      const processStart = Date.now();
-      let processedCount = 0;
-      
-      for (const filename of filesInDir) {
-        if (filename.endsWith('.mbtiles') && !filename.startsWith('._')) {
-          // Skip macOS resource fork files (._*)
-          const chartId = filename.replace('.mbtiles', '');
-          const path = `${mbtilesDir}/${filename}`;
-          
-          // GNIS place names - reference data layer
-          if (chartId.startsWith('gnis_names_')) {
-            console.log(`✓ Found GNIS file: ${chartId}`);
-            gnisFound = true;
-          }
-          // Local basemap - vector base map tiles
-          else if (chartId.startsWith('basemap_')) {
-            console.log(`✓ Found local basemap: ${chartId}`);
-            basemapFound = true;
-          }
-          // BATHY_* files are raster (bathymetric) charts
-          else if (chartId.startsWith('BATHY_')) {
-            loadedRasters.push({ chartId, path });
-          } else {
-            loadedMbtiles.push({ chartId, path });
-          }
-          
-          processedCount++;
-          // Log progress every 100 files
-          if (processedCount % 100 === 0) {
-            console.log(`  Processed ${processedCount} files...`);
-          }
+      if (index && tier1ChartIds.length > 0) {
+        // Use index - much faster, charts are pre-sorted
+        for (const chartId of tier1ChartIds) {
+          loadedMbtiles.push({ chartId, path: `${mbtilesDir}/${chartId}.mbtiles` });
         }
-      }
-      console.log(`File processing complete: ${processedCount} files in ${Date.now() - processStart}ms`);
-      
-      // Set GNIS availability
-      setGnisAvailable(gnisFound);
-      if (gnisFound) {
-        console.log('GNIS place names layer available');
-      }
-      
-      // Set local basemap availability
-      setHasLocalBasemap(basemapFound);
-      if (basemapFound) {
-        console.log('Local offline basemap available');
-      }
-      
-      // Also check the registered downloads (legacy)
-      const mbtilesIds = await chartCacheService.getDownloadedMBTilesIds();
-      console.log('Registered MBTiles IDs:', mbtilesIds);
-      for (const chartId of mbtilesIds) {
-        if (!loadedMbtiles.some(m => m.chartId === chartId)) {
-          const exists = await chartCacheService.hasMBTiles(chartId);
-          if (exists) {
-            const path = chartCacheService.getMBTilesPath(chartId);
-            console.log(`Found registered MBTiles: ${chartId} at ${path}`);
-            loadedMbtiles.push({ chartId, path });
-          }
+        // Also add tier2 to the list (for reference count display)
+        for (const chartId of tier2ChartIds) {
+          loadedMbtiles.push({ chartId, path: `${mbtilesDir}/${chartId}.mbtiles` });
         }
+        console.log(`[PERF] Built chart list from index: ${Date.now() - buildStart}ms`);
+      } else {
+        // Legacy: scan directory (slower)
+        console.log('[PERF] Falling back to directory scan...');
+        const scanStart = Date.now();
+        try {
+          const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
+          for (const filename of filesInDir) {
+            if (filename.endsWith('.mbtiles') && !filename.startsWith('._')) {
+              const chartId = filename.replace('.mbtiles', '');
+              const path = `${mbtilesDir}/${filename}`;
+              
+              // Skip special files (already handled)
+              if (chartId.startsWith('gnis_names_') || chartId.startsWith('basemap_')) {
+                continue;
+              }
+              
+              if (chartId.startsWith('BATHY_')) {
+                loadedRasters.push({ chartId, path });
+              } else {
+                loadedMbtiles.push({ chartId, path });
+              }
+            }
+          }
+          
+          // Sort by tier for proper quilting
+          loadedMbtiles.sort((a, b) => {
+            const getScaleNum = (id: string) => {
+              const match = id.match(/^US(\d)/);
+              return match ? parseInt(match[1], 10) : 0;
+            };
+            return getScaleNum(a.chartId) - getScaleNum(b.chartId);
+          });
+          
+          // Separate into tiers
+          tier1ChartIds = loadedMbtiles.filter(m => m.chartId.match(/^US[123]/)).map(m => m.chartId);
+          tier2ChartIds = loadedMbtiles.filter(m => m.chartId.match(/^US[456]/)).map(m => m.chartId);
+        } catch (e) {
+          console.log('[PERF] Directory scan failed:', e);
+        }
+        console.log(`[PERF] Directory scan: ${Date.now() - scanStart}ms (${loadedMbtiles.length} charts)`);
       }
       
-      console.log(`Total MBTiles found: ${loadedMbtiles.length}`);
-      
-      // Sort charts by scale for proper quilting (less detailed first, more detailed on top)
-      // US chart naming: US3* = General (small scale), US4* = Harbor, US5* = Approach (large scale)
-      // Higher number = more detail = should render LAST (on top)
-      console.log('=== SORTING CHARTS ===');
-      const sortStart = Date.now();
-      loadedMbtiles.sort((a, b) => {
-        // Extract the scale digit (e.g., "3" from "US3AK12M", "4" from "US4AK4PH", "5" from "US5AK5SI")
-        const getScaleNum = (chartId: string) => {
-          const match = chartId.match(/^US(\d)/);
-          return match ? parseInt(match[1], 10) : 0;
-        };
-        return getScaleNum(a.chartId) - getScaleNum(b.chartId);
-      });
-      
-      // Count charts by tier
+      // Count charts by tier for logging
       const tierCounts: Record<string, number> = {};
       for (const m of loadedMbtiles) {
         const tier = m.chartId.substring(0, 3);
         tierCounts[tier] = (tierCounts[tier] || 0) + 1;
       }
-      console.log(`Sorted ${loadedMbtiles.length} charts in ${Date.now() - sortStart}ms`);
-      console.log('Charts by tier:', tierCounts);
-      console.log(`Total Raster charts: ${loadedRasters.length}`);
+      console.log(`[PERF] Charts by tier:`, tierCounts);
       
       setMbtilesCharts(loadedMbtiles);
+      
+      // Progressive loading: Start with US1 only for fast initial render
+      const us1Only = tier1ChartIds.filter(id => id.startsWith('US1'));
+      setChartsToRender(us1Only);
+      setLoadingPhase('us1');
+      console.log(`[PERF] Phase 1: Rendering ${us1Only.length} US1 charts`);
+      
       setRasterCharts(loadedRasters);
       
-      // Calculate storage used by MBTiles files (skip for large collections to avoid slowdown)
-      console.log('=== CALCULATING STORAGE ===');
-      const storageStart = Date.now();
-      let vectorSize = 0;
-      let rasterSize = 0;
-      
-      const totalCharts = loadedMbtiles.length + loadedRasters.length;
-      if (totalCharts > 200) {
-        // Skip individual file size checks for large collections - too slow
-        console.log(`Skipping size calculation for ${totalCharts} files (too many)`);
+      // Skip storage calculation for large collections
+      if (loadedMbtiles.length > 200) {
         setStorageUsed({ total: 0, vector: 0, raster: 0 });
-      } else {
-        for (const chart of loadedMbtiles) {
-          try {
-            const info = await FileSystem.getInfoAsync(chart.path);
-            if (info.exists && 'size' in info) {
-              vectorSize += info.size || 0;
-            }
-          } catch (e) {
-            // Silently skip
-          }
-        }
-        for (const chart of loadedRasters) {
-          try {
-            const info = await FileSystem.getInfoAsync(chart.path);
-            if (info.exists && 'size' in info) {
-              rasterSize += info.size || 0;
-            }
-          } catch (e) {
-            // Silently skip
-          }
-        }
-        setStorageUsed({ total: vectorSize + rasterSize, vector: vectorSize, raster: rasterSize });
-        console.log(`Storage: ${((vectorSize + rasterSize) / 1024 / 1024).toFixed(1)} MB (${Date.now() - storageStart}ms)`);
       }
       
-      // Start tile server if we have MBTiles or raster charts
+      // === PHASE 5: Start tile server ===
       if (loadedMbtiles.length > 0 || loadedRasters.length > 0) {
-        console.log('=== STARTING TILE SERVER ===');
         const serverStart = Date.now();
-        console.log(`Starting local tile server with dir: ${mbtilesDir}`);
         
         try {
           const serverUrl = await tileServer.startTileServer({ mbtilesDir });
-          console.log(`Tile server started in ${Date.now() - serverStart}ms at: ${serverUrl}`);
+          console.log(`[PERF] Tile server start: ${Date.now() - serverStart}ms`);
           
           if (serverUrl) {
-            // Pre-load databases - limit to Tier 1 charts (US1/US2/US3) to avoid overload
-            const tier1Charts = loadedMbtiles
-              .filter(m => m.chartId.match(/^US[123]/))
-              .map(m => m.chartId);
-            
-            console.log(`=== PRELOADING DATABASES ===`);
-            console.log(`Preloading ${tier1Charts.length} Tier 1 charts (skipping ${loadedMbtiles.length - tier1Charts.length} Tier 2 charts)`);
-            const preloadStart = Date.now();
-            
-            if (tier1Charts.length > 0) {
-              await tileServer.preloadDatabases(tier1Charts);
-            }
-            console.log(`Preload complete in ${Date.now() - preloadStart}ms`);
-            
             setTileServerReady(true);
             
-            // Set debug info (summarized for large collections)
-            const chartSummary = `${loadedMbtiles.length} vector charts, ${loadedRasters.length} raster charts`;
+            const chartSummary = `${tier1ChartIds.length} Tier1, ${tier2ChartIds.length} Tier2`;
             setDebugInfo(`Server: ${serverUrl}\nCharts: ${chartSummary}\nDir: ${mbtilesDir}`);
           } else {
-            console.warn('Failed to start tile server - no URL returned');
+            console.warn('[PERF] Failed to start tile server');
             setDebugInfo(`Failed to start tile server\nDir: ${mbtilesDir}`);
           }
         } catch (e) {
-          console.error('Tile server error:', e);
+          console.error('[PERF] Tile server error:', e);
           setDebugInfo(`Tile server error: ${e}`);
         }
       } else {
         setDebugInfo(`No MBTiles files found.\n\nPut .mbtiles files in:\n${mbtilesDir}\n\nOr download via Charts screen.`);
       }
       
-      // Also load GeoJSON charts (legacy format)
+      // === PHASE 6: Load legacy GeoJSON (if any) ===
+      const geoStart = Date.now();
       const downloadedIds = await chartCacheService.getDownloadedChartIds();
-      console.log('Downloaded GeoJSON chart IDs:', downloadedIds);
-      
-      if (downloadedIds.length === 0 && loadedMbtiles.length === 0) {
-        console.log('No charts downloaded');
-        setLoading(false);
-        return;
-      }
-      
       const loadedCharts: LoadedChartData[] = [];
       
       for (const chartId of downloadedIds) {
-        // Skip if we have MBTiles version
-        if (loadedMbtiles.some(m => m.chartId === chartId)) {
-          console.log(`Skipping GeoJSON for ${chartId} - MBTiles version exists`);
-          continue;
-        }
+        if (loadedMbtiles.some(m => m.chartId === chartId)) continue;
         
-        console.log(`Loading GeoJSON chart: ${chartId}`);
         const features = await chartCacheService.loadChart(chartId);
-        const featureTypes = Object.keys(features);
-        console.log(`  Loaded features for ${chartId}:`, featureTypes);
-        
-        // Log feature counts
-        for (const [type, data] of Object.entries(features)) {
-          console.log(`    ${type}: ${data?.features?.length || 0} features`);
-        }
-        
         if (Object.keys(features).length > 0) {
           loadedCharts.push({ chartId, features });
         }
       }
       
-      console.log(`Total GeoJSON charts loaded: ${loadedCharts.length}`);
-      console.log(`Total MBTiles charts loaded: ${loadedMbtiles.length}`);
+      if (loadedCharts.length > 0) {
+        console.log(`[PERF] GeoJSON load: ${Date.now() - geoStart}ms (${loadedCharts.length} charts)`);
+      }
       setCharts(loadedCharts);
       
-      console.log('=== CHART LOADING COMPLETE ===');
-      console.log(`Total load time: ${Date.now() - totalLoadStart}ms`);
-      console.log(`MBTiles: ${loadedMbtiles.length}, GeoJSON: ${loadedCharts.length}`);
-      if (loadedMbtiles.length > 100) {
-        console.warn(`⚠️ Only rendering first 100 of ${loadedMbtiles.length} charts for performance`);
+      // === FINAL SUMMARY ===
+      const totalTime = Date.now() - t0;
+      console.log('=== STARTUP COMPLETE ===');
+      console.log(`[PERF] Total startup: ${totalTime}ms`);
+      console.log(`[PERF] Progressive loading: US1 → US2+US3 → US4 (up to 100)`);
+      console.log(`[PERF] Special: GNIS=${gnisFound}, Basemap=${basemapFound}`);
+      
+      if (totalTime > 5000) {
+        console.warn(`[PERF] ⚠️ Startup took ${(totalTime/1000).toFixed(1)}s - consider optimization`);
       }
+      
     } catch (error) {
-      console.error('=== CHART LOADING ERROR ===');
-      console.error('Error:', error);
+      console.error('[PERF] STARTUP ERROR:', error);
       Alert.alert('Error', 'Failed to load cached charts');
     } finally {
       setLoading(false);
@@ -733,19 +670,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     ];
     
     const ids: string[] = [];
-    for (const chart of mbtilesCharts) {
+    // Build layer IDs for currently rendered charts
+    for (const chartId of chartsToRender) {
       for (const layerType of layerTypes) {
-        ids.push(`mbtiles-${layerType}-${chart.chartId}`);
+        ids.push(`mbtiles-${layerType}-${chartId}`);
       }
     }
-    // Limit queryable layers to match rendered charts (max 100)
-    const renderedChartCount = Math.min(mbtilesCharts.length, 100);
-    console.log(`[MapPress] Built ${ids.length} queryable layer IDs for ${renderedChartCount} rendered charts`);
-    if (mbtilesCharts.length > 100) {
-      console.warn(`[MapPress] ⚠️ ${mbtilesCharts.length - 100} charts not rendered (performance limit)`);
-    }
-    return ids.slice(0, renderedChartCount * layerTypes.length);
-  }, [mbtilesCharts]);
+    console.log(`[MapPress] Built ${ids.length} queryable layer IDs for ${chartsToRender.length} charts`);
+    return ids;
+  }, [chartsToRender]);
 
   // Handle map press - query features at tap location from MBTiles vector layers
   const handleMapPress = useCallback(async (e: any) => {
@@ -1006,7 +939,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         <Mapbox.Camera
           ref={cameraRef}
           defaultSettings={{
-            zoomLevel: 10,
+            zoomLevel: 8,  // Start at z8 where US1 overview charts are visible
             centerCoordinate: [-151.55, 59.64],  // HARDCODED: Homer, Alaska
           }}
           maxZoomLevel={effectiveMaxZoom}
@@ -1389,9 +1322,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         )}
 
         {/* MBTiles Vector Sources - Chart quilting with zoom-based visibility */}
-        {/* PERFORMANCE: Limit to 100 charts max to prevent Mapbox overload */}
-        {useMBTiles && tileServerReady && mbtilesCharts.slice(0, 100).map((chart) => {
-          const tileUrl = tileServer.getTileUrlTemplate(chart.chartId);
+        {/* PERFORMANCE: Progressive loading - US1 first, then US2+US3, then US4 */}
+        {useMBTiles && tileServerReady && chartsToRender.map((chartId) => {
+          const tileUrl = tileServer.getTileUrlTemplate(chartId);
           
           // Determine minZoomLevel based on chart scale for proper quilting
           // Matches the tippecanoe min zoom settings from convert.py
@@ -1410,12 +1343,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             if (scaleNum >= 6) return 13;   // US6+ (if any)
             return 0;
           };
-          const chartMinZoom = getChartMinZoom(chart.chartId);
+          const chartMinZoom = getChartMinZoom(chartId);
           
           return (
           <Mapbox.VectorSource
-            key={`mbtiles-src-${chart.chartId}-${cacheBuster}`}
-            id={`mbtiles-src-${chart.chartId}`}
+            key={`mbtiles-src-${chartId}-${cacheBuster}`}
+            id={`mbtiles-src-${chartId}`}
             tileUrlTemplates={[tileUrl]}
           >
             {/* ============================================================ */}
@@ -1432,8 +1365,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* DEPARE - Depth Areas with proper depth-based coloring */}
             <Mapbox.FillLayer
-              id={`mbtiles-depare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-depare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'DEPARE']}
               style={{
@@ -1455,8 +1388,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* DRGARE - Dredged Areas (maintained channels) */}
             <Mapbox.FillLayer
-              id={`mbtiles-drgare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-drgare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'DRGARE']}
               style={{
@@ -1467,8 +1400,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* FAIRWY - Fairways (navigation channels) */}
             <Mapbox.FillLayer
-              id={`mbtiles-fairwy-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-fairwy-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'FAIRWY']}
               style={{
@@ -1481,8 +1414,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* LNDARE - Land Areas - MUST be early to mask water features on land */}
             <Mapbox.FillLayer
-              id={`mbtiles-lndare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-lndare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'LNDARE']}
               style={{
@@ -1496,8 +1429,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* CBLARE - Cable Areas (fill only, outline later) */}
             <Mapbox.FillLayer
-              id={`mbtiles-cblare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-cblare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'CBLARE']}
               style={{
@@ -1509,8 +1442,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* PIPARE - Pipeline Areas (fill only, outline later) */}
             <Mapbox.FillLayer
-              id={`mbtiles-pipare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-pipare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'PIPARE']}
               style={{
@@ -1526,8 +1459,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/*         22=no wake, 24=swinging area, 27=water skiing */}
             {/* Available at all zoom levels for route planning */}
             <Mapbox.FillLayer
-              id={`mbtiles-resare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-resare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'RESARE']}
               style={{
@@ -1550,8 +1483,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* CTNARE - Caution Areas (areas requiring special attention) */}
             {/* Available at all zoom levels for route planning */}
             <Mapbox.FillLayer
-              id={`mbtiles-ctnare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-ctnare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'CTNARE']}
               style={{
@@ -1564,8 +1497,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* MIPARE - Military Practice Areas */}
             {/* Available at all zoom levels for route planning */}
             <Mapbox.FillLayer
-              id={`mbtiles-mipare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-mipare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'MIPARE']}
               style={{
@@ -1578,8 +1511,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* ACHARE - Anchorage Areas */}
             {/* Available at all zoom levels for route planning */}
             <Mapbox.FillLayer
-              id={`mbtiles-achare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-achare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'ACHARE']}
               style={{
@@ -1592,8 +1525,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* MARCUL - Marine Farm/Culture (aquaculture) */}
             {/* Available at all zoom levels for route planning */}
             <Mapbox.FillLayer
-              id={`mbtiles-marcul-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-marcul-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'MARCUL']}
               style={{
@@ -1607,8 +1540,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* DEPCNT - Depth Contours */}
             <Mapbox.LineLayer
-              id={`mbtiles-depcnt-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-depcnt-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={[
                 'all',
@@ -1642,8 +1575,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* COALNE - Coastline */}
             <Mapbox.LineLayer
-              id={`mbtiles-coalne-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-coalne-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'COALNE']}
               style={{
@@ -1657,8 +1590,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* LNDARE outline */}
             <Mapbox.LineLayer
-              id={`mbtiles-lndare-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-lndare-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'LNDARE']}
               style={{
@@ -1670,8 +1603,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* DRGARE outline */}
             <Mapbox.LineLayer
-              id={`mbtiles-drgare-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-drgare-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'DRGARE']}
               style={{
@@ -1683,8 +1616,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* FAIRWY outline */}
             <Mapbox.LineLayer
-              id={`mbtiles-fairwy-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-fairwy-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'FAIRWY']}
               style={{
@@ -1696,8 +1629,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* CBLARE outline */}
             <Mapbox.LineLayer
-              id={`mbtiles-cblare-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-cblare-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'CBLARE']}
               style={{
@@ -1710,8 +1643,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* CBLSUB - Submarine Cables (lines) */}
             <Mapbox.LineLayer
-              id={`mbtiles-cblsub-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-cblsub-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'CBLSUB']}
               style={{
@@ -1725,8 +1658,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* PIPARE outline */}
             <Mapbox.LineLayer
-              id={`mbtiles-pipare-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-pipare-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'PIPARE']}
               style={{
@@ -1739,8 +1672,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* RESARE outline - Restricted Areas */}
             <Mapbox.LineLayer
-              id={`mbtiles-resare-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-resare-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'RESARE']}
               style={{
@@ -1763,8 +1696,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* CTNARE outline - Caution Areas */}
             <Mapbox.LineLayer
-              id={`mbtiles-ctnare-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-ctnare-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'CTNARE']}
               style={{
@@ -1777,8 +1710,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* MIPARE outline - Military Practice Areas */}
             <Mapbox.LineLayer
-              id={`mbtiles-mipare-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-mipare-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'MIPARE']}
               style={{
@@ -1791,8 +1724,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* ACHARE outline - Anchorage Areas */}
             <Mapbox.LineLayer
-              id={`mbtiles-achare-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-achare-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'ACHARE']}
               style={{
@@ -1805,8 +1738,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* MARCUL outline - Marine Farm/Culture */}
             <Mapbox.LineLayer
-              id={`mbtiles-marcul-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-marcul-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'MARCUL']}
               style={{
@@ -1819,8 +1752,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* PIPSOL - Pipelines (lines) */}
             <Mapbox.LineLayer
-              id={`mbtiles-pipsol-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-pipsol-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'PIPSOL']}
               style={{
@@ -1836,8 +1769,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* DEPCNT Labels */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-depcnt-labels-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-depcnt-labels-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={Math.max(chartMinZoom, 12)}
               filter={[
                 'all',
@@ -1866,8 +1799,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* SBDARE - Seabed composition (text only per S-52) */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-sbdare-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-sbdare-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'SBDARE'],
@@ -1902,8 +1835,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* SOUNDG - Soundings */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-soundg-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-soundg-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               maxZoomLevel={22}
               filter={[
@@ -1930,8 +1863,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* Cable/Pipeline labels */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-cblsub-label-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-cblsub-label-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={12}
               filter={['==', ['get', '_layer'], 'CBLSUB']}
               style={{
@@ -1947,8 +1880,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             <Mapbox.SymbolLayer
-              id={`mbtiles-pipsol-label-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-pipsol-label-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={12}
               filter={['==', ['get', '_layer'], 'PIPSOL']}
               style={{
@@ -1974,8 +1907,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* WRECKS - Hazards */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-wrecks-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-wrecks-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'WRECKS'],
@@ -1999,8 +1932,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* UWTROC - Underwater Rocks */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-uwtroc-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-uwtroc-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'UWTROC'],
@@ -2019,8 +1952,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             <Mapbox.SymbolLayer
-              id={`mbtiles-uwtroc-label-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-uwtroc-label-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={12}
               filter={['all',
                 ['==', ['get', '_layer'], 'UWTROC'],
@@ -2040,8 +1973,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* OBSTRN - Obstructions */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-obstrn-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-obstrn-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'OBSTRN'],
@@ -2062,8 +1995,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* ACHBRT - Anchor Berths (specific anchorage positions) */}
             {/* Available at all zoom levels for route planning */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-achbrt-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-achbrt-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'ACHBRT']}
               style={{
@@ -2074,8 +2007,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             <Mapbox.SymbolLayer
-              id={`mbtiles-achbrt-label-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-achbrt-label-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={10}
               filter={['==', ['get', '_layer'], 'ACHBRT']}
               style={{
@@ -2093,8 +2026,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* All Buoys */}
             {/* BOYSHP: 1=conical, 2=can, 3=spherical, 4=pillar, 5=spar, 6=barrel, 7=super-buoy */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-buoys-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-buoys-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['any',
                 ['==', ['get', '_layer'], 'BOYLAT'],
@@ -2130,8 +2063,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* All Beacons - S-52 symbols based on BCNSHP (beacon shape) */}
             {/* BCNSHP: 1=stake/pole, 2=withy, 3=tower, 4=lattice, 5=cairn, 6=buoyant */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-beacons-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-beacons-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['any',
                 ['==', ['get', '_layer'], 'BCNLAT'],
@@ -2166,8 +2099,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* Light Sector arcs - background outline (BEFORE symbols) */}
             <Mapbox.LineLayer
-              id={`mbtiles-lights-sector-outline-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-lights-sector-outline-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               maxZoomLevel={22}
               filter={['==', ['get', '_layer'], 'LIGHTS_SECTOR']}
@@ -2181,8 +2114,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* Colored sector arcs (rendered on top of outline) */}
             <Mapbox.LineLayer
-              id={`mbtiles-lights-sector-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-lights-sector-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               maxZoomLevel={22}
               filter={['==', ['get', '_layer'], 'LIGHTS_SECTOR']}
@@ -2205,8 +2138,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             
             {/* LIGHTS - Navigation Light symbols (ON TOP of sector arcs) */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-lights-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-lights-${chartId}`}
+              sourceLayerID={chartId}
               filter={['==', ['get', '_layer'], 'LIGHTS']}
               minZoomLevel={chartMinZoom}
               maxZoomLevel={22}
@@ -2256,8 +2189,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/*         13=statue, 14=cross, 15=dome, 16=radar scanner, 17=tower, 18=windmill, */}
             {/*         19=windmotor, 20=spire/minaret, 21=large rock/boulder */}
             <Mapbox.SymbolLayer
-              id={`mbtiles-lndmrk-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-lndmrk-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'LNDMRK'],
@@ -2293,8 +2226,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             <Mapbox.SymbolLayer
-              id={`mbtiles-lndmrk-label-${chart.chartId}`}
-              sourceLayerID={chart.chartId}
+              id={`mbtiles-lndmrk-label-${chartId}`}
+              sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'LNDMRK'],
@@ -2706,6 +2639,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 // Clear all chart state
                 console.log('Clearing state...');
                 setMbtilesCharts([]);
+                setChartsToRender([]);
+                setLoadingPhase('us1');
                 setRasterCharts([]);
                 setCharts([]);
                 setGnisAvailable(false);
