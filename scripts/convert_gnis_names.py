@@ -7,10 +7,12 @@ Input: Pipe-delimited text file from USGS (DomesticNames_XX.txt)
 Output: GeoJSON file and MBTiles vector tiles
 
 Usage:
-    python convert_gnis_names.py <input_file> <output_dir>
+    python convert_gnis_names.py <input_file> [output_dir]
     
 Example:
-    python convert_gnis_names.py "charts/US Domestic Names/Alaska/DomesticNames_AK.txt" assets/Maps
+    python convert_gnis_names.py "charts/US Domestic Names/Alaska/DomesticNames_AK.txt"
+    
+If output_dir is not specified, outputs to the same directory as the input file.
 """
 
 import json
@@ -225,13 +227,15 @@ def convert_to_mbtiles(geojson_path: str, mbtiles_path: str, name: str = 'gnis_n
 
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python convert_gnis_names.py <input_file> <output_dir>")
-        print("Example: python convert_gnis_names.py 'charts/US Domestic Names/Alaska/DomesticNames_AK.txt' assets/Maps")
+    if len(sys.argv) < 2:
+        print("Usage: python convert_gnis_names.py <input_file> [output_dir]")
+        print("Example: python convert_gnis_names.py 'charts/US Domestic Names/Alaska/DomesticNames_AK.txt'")
+        print("\nIf output_dir is not specified, outputs to the same directory as input file.")
         sys.exit(1)
     
     input_file = sys.argv[1]
-    output_dir = sys.argv[2]
+    # Default output_dir to the same directory as the input file
+    output_dir = sys.argv[2] if len(sys.argv) >= 3 else str(Path(input_file).parent)
     
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)

@@ -173,14 +173,30 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showControls, setShowControls] = useState(false);
   
   // Map style options
-  type MapStyleOption = 'light' | 'dark' | 'satellite' | 'outdoors';
+  type MapStyleOption = 'light' | 'dark' | 'satellite' | 'outdoors' | 'local';
   const [mapStyle, setMapStyle] = useState<MapStyleOption>('light');
+  const [hasLocalBasemap, setHasLocalBasemap] = useState(false);
   
-  const mapStyleUrls: Record<MapStyleOption, string> = {
+  // Minimal offline style - land colored background, water rendered on top
+  const localOfflineStyle = {
+    version: 8,
+    name: 'Local Offline',
+    sources: {},
+    layers: [
+      {
+        id: 'background',
+        type: 'background',
+        paint: { 'background-color': '#f0ede9' } // Light tan/beige for land
+      }
+    ]
+  };
+  
+  const mapStyleUrls: Record<MapStyleOption, string | object> = {
     light: Mapbox.StyleURL.Light,
     dark: Mapbox.StyleURL.Dark,
     satellite: Mapbox.StyleURL.Satellite,
     outdoors: Mapbox.StyleURL.Outdoors,
+    local: localOfflineStyle, // Inline style object for offline mode
   };
 
   // Debug state
@@ -264,9 +280,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [followGPS, gpsData.latitude, gpsData.longitude]);
 
   const loadCharts = async () => {
+    const totalLoadStart = Date.now();
     try {
       setLoading(true);
-      console.log('=== CHART LOADING DEBUG START ===');
+      console.log('=== CHART LOADING START ===');
+      console.log(`Timestamp: ${new Date().toISOString()}`);
       
       await chartCacheService.initializeCache();
       
@@ -372,6 +390,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const loadedMbtiles: LoadedMBTilesChart[] = [];
       const loadedRasters: LoadedRasterChart[] = [];
       let gnisFound = false;
+      let basemapFound = false;
+      
+      console.log('=== PROCESSING FILES ===');
+      const processStart = Date.now();
+      let processedCount = 0;
       
       for (const filename of filesInDir) {
         if (filename.endsWith('.mbtiles') && !filename.startsWith('._')) {
@@ -381,25 +404,40 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           
           // GNIS place names - reference data layer
           if (chartId.startsWith('gnis_names_')) {
-            console.log(`Found GNIS place names: ${chartId} at ${path}`);
+            console.log(`✓ Found GNIS file: ${chartId}`);
             gnisFound = true;
-            // Don't add to loadedMbtiles - handled separately
+          }
+          // Local basemap - vector base map tiles
+          else if (chartId.startsWith('basemap_')) {
+            console.log(`✓ Found local basemap: ${chartId}`);
+            basemapFound = true;
           }
           // BATHY_* files are raster (bathymetric) charts
           else if (chartId.startsWith('BATHY_')) {
-            console.log(`Found Raster (bathymetry) file: ${chartId} at ${path}`);
             loadedRasters.push({ chartId, path });
           } else {
-            console.log(`Found MBTiles file: ${chartId} at ${path}`);
             loadedMbtiles.push({ chartId, path });
+          }
+          
+          processedCount++;
+          // Log progress every 100 files
+          if (processedCount % 100 === 0) {
+            console.log(`  Processed ${processedCount} files...`);
           }
         }
       }
+      console.log(`File processing complete: ${processedCount} files in ${Date.now() - processStart}ms`);
       
       // Set GNIS availability
       setGnisAvailable(gnisFound);
       if (gnisFound) {
         console.log('GNIS place names layer available');
+      }
+      
+      // Set local basemap availability
+      setHasLocalBasemap(basemapFound);
+      if (basemapFound) {
+        console.log('Local offline basemap available');
       }
       
       // Also check the registered downloads (legacy)
@@ -421,6 +459,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       // Sort charts by scale for proper quilting (less detailed first, more detailed on top)
       // US chart naming: US3* = General (small scale), US4* = Harbor, US5* = Approach (large scale)
       // Higher number = more detail = should render LAST (on top)
+      console.log('=== SORTING CHARTS ===');
+      const sortStart = Date.now();
       loadedMbtiles.sort((a, b) => {
         // Extract the scale digit (e.g., "3" from "US3AK12M", "4" from "US4AK4PH", "5" from "US5AK5SI")
         const getScaleNum = (chartId: string) => {
@@ -429,56 +469,93 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         };
         return getScaleNum(a.chartId) - getScaleNum(b.chartId);
       });
-      console.log('Charts sorted for quilting:', loadedMbtiles.map(m => m.chartId).join(' → '));
-      console.log(`Total Raster charts found: ${loadedRasters.length}`);
+      
+      // Count charts by tier
+      const tierCounts: Record<string, number> = {};
+      for (const m of loadedMbtiles) {
+        const tier = m.chartId.substring(0, 3);
+        tierCounts[tier] = (tierCounts[tier] || 0) + 1;
+      }
+      console.log(`Sorted ${loadedMbtiles.length} charts in ${Date.now() - sortStart}ms`);
+      console.log('Charts by tier:', tierCounts);
+      console.log(`Total Raster charts: ${loadedRasters.length}`);
       
       setMbtilesCharts(loadedMbtiles);
       setRasterCharts(loadedRasters);
       
-      // Calculate storage used by MBTiles files
+      // Calculate storage used by MBTiles files (skip for large collections to avoid slowdown)
+      console.log('=== CALCULATING STORAGE ===');
+      const storageStart = Date.now();
       let vectorSize = 0;
       let rasterSize = 0;
-      for (const chart of loadedMbtiles) {
-        try {
-          const info = await FileSystem.getInfoAsync(chart.path);
-          if (info.exists && 'size' in info) {
-            vectorSize += info.size || 0;
+      
+      const totalCharts = loadedMbtiles.length + loadedRasters.length;
+      if (totalCharts > 200) {
+        // Skip individual file size checks for large collections - too slow
+        console.log(`Skipping size calculation for ${totalCharts} files (too many)`);
+        setStorageUsed({ total: 0, vector: 0, raster: 0 });
+      } else {
+        for (const chart of loadedMbtiles) {
+          try {
+            const info = await FileSystem.getInfoAsync(chart.path);
+            if (info.exists && 'size' in info) {
+              vectorSize += info.size || 0;
+            }
+          } catch (e) {
+            // Silently skip
           }
-        } catch (e) {
-          console.log(`Could not get size for ${chart.chartId}:`, e);
         }
-      }
-      for (const chart of loadedRasters) {
-        try {
-          const info = await FileSystem.getInfoAsync(chart.path);
-          if (info.exists && 'size' in info) {
-            rasterSize += info.size || 0;
+        for (const chart of loadedRasters) {
+          try {
+            const info = await FileSystem.getInfoAsync(chart.path);
+            if (info.exists && 'size' in info) {
+              rasterSize += info.size || 0;
+            }
+          } catch (e) {
+            // Silently skip
           }
-        } catch (e) {
-          console.log(`Could not get size for ${chart.chartId}:`, e);
         }
+        setStorageUsed({ total: vectorSize + rasterSize, vector: vectorSize, raster: rasterSize });
+        console.log(`Storage: ${((vectorSize + rasterSize) / 1024 / 1024).toFixed(1)} MB (${Date.now() - storageStart}ms)`);
       }
-      setStorageUsed({ total: vectorSize + rasterSize, vector: vectorSize, raster: rasterSize });
-      console.log(`Storage used: ${((vectorSize + rasterSize) / 1024 / 1024).toFixed(1)} MB total`);
       
       // Start tile server if we have MBTiles or raster charts
       if (loadedMbtiles.length > 0 || loadedRasters.length > 0) {
+        console.log('=== STARTING TILE SERVER ===');
+        const serverStart = Date.now();
         console.log(`Starting local tile server with dir: ${mbtilesDir}`);
-        const serverUrl = await tileServer.startTileServer({ mbtilesDir });
-        if (serverUrl) {
-          console.log('Tile server started at:', serverUrl);
-          // Pre-load databases for faster tile serving (both vector and raster)
-          const allChartIds = [...loadedMbtiles.map(m => m.chartId), ...loadedRasters.map(r => r.chartId)];
-          await tileServer.preloadDatabases(allChartIds);
-          setTileServerReady(true);
+        
+        try {
+          const serverUrl = await tileServer.startTileServer({ mbtilesDir });
+          console.log(`Tile server started in ${Date.now() - serverStart}ms at: ${serverUrl}`);
           
-          // Set debug info
-          const tileUrls = loadedMbtiles.map(m => tileServer.getTileUrlTemplate(m.chartId));
-          const rasterUrls = loadedRasters.map(r => tileServer.getRasterTileUrlTemplate(r.chartId));
-          setDebugInfo(`Server: ${serverUrl}\nMBTiles: ${loadedMbtiles.map(m => m.chartId).join(', ')}\nRaster: ${loadedRasters.map(r => r.chartId).join(', ')}\nDir: ${mbtilesDir}\nURLs:\n${tileUrls.join('\n')}\n${rasterUrls.join('\n')}`);
-        } else {
-          console.warn('Failed to start tile server');
-          setDebugInfo(`Failed to start tile server\nDir: ${mbtilesDir}`);
+          if (serverUrl) {
+            // Pre-load databases - limit to Tier 1 charts (US1/US2/US3) to avoid overload
+            const tier1Charts = loadedMbtiles
+              .filter(m => m.chartId.match(/^US[123]/))
+              .map(m => m.chartId);
+            
+            console.log(`=== PRELOADING DATABASES ===`);
+            console.log(`Preloading ${tier1Charts.length} Tier 1 charts (skipping ${loadedMbtiles.length - tier1Charts.length} Tier 2 charts)`);
+            const preloadStart = Date.now();
+            
+            if (tier1Charts.length > 0) {
+              await tileServer.preloadDatabases(tier1Charts);
+            }
+            console.log(`Preload complete in ${Date.now() - preloadStart}ms`);
+            
+            setTileServerReady(true);
+            
+            // Set debug info (summarized for large collections)
+            const chartSummary = `${loadedMbtiles.length} vector charts, ${loadedRasters.length} raster charts`;
+            setDebugInfo(`Server: ${serverUrl}\nCharts: ${chartSummary}\nDir: ${mbtilesDir}`);
+          } else {
+            console.warn('Failed to start tile server - no URL returned');
+            setDebugInfo(`Failed to start tile server\nDir: ${mbtilesDir}`);
+          }
+        } catch (e) {
+          console.error('Tile server error:', e);
+          setDebugInfo(`Tile server error: ${e}`);
         }
       } else {
         setDebugInfo(`No MBTiles files found.\n\nPut .mbtiles files in:\n${mbtilesDir}\n\nOr download via Charts screen.`);
@@ -521,8 +598,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       console.log(`Total GeoJSON charts loaded: ${loadedCharts.length}`);
       console.log(`Total MBTiles charts loaded: ${loadedMbtiles.length}`);
       setCharts(loadedCharts);
+      
+      console.log('=== CHART LOADING COMPLETE ===');
+      console.log(`Total load time: ${Date.now() - totalLoadStart}ms`);
+      console.log(`MBTiles: ${loadedMbtiles.length}, GeoJSON: ${loadedCharts.length}`);
+      if (loadedMbtiles.length > 100) {
+        console.warn(`⚠️ Only rendering first 100 of ${loadedMbtiles.length} charts for performance`);
+      }
     } catch (error) {
-      console.error('Error loading charts:', error);
+      console.error('=== CHART LOADING ERROR ===');
+      console.error('Error:', error);
       Alert.alert('Error', 'Failed to load cached charts');
     } finally {
       setLoading(false);
@@ -653,8 +738,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         ids.push(`mbtiles-${layerType}-${chart.chartId}`);
       }
     }
-    console.log(`[MapPress] Built ${ids.length} queryable layer IDs for ${mbtilesCharts.length} charts`);
-    return ids;
+    // Limit queryable layers to match rendered charts (max 100)
+    const renderedChartCount = Math.min(mbtilesCharts.length, 100);
+    console.log(`[MapPress] Built ${ids.length} queryable layer IDs for ${renderedChartCount} rendered charts`);
+    if (mbtilesCharts.length > 100) {
+      console.warn(`[MapPress] ⚠️ ${mbtilesCharts.length - 100} charts not rendered (performance limit)`);
+    }
+    return ids.slice(0, renderedChartCount * layerTypes.length);
   }, [mbtilesCharts]);
 
   // Handle map press - query features at tap location from MBTiles vector layers
@@ -905,7 +995,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       <Mapbox.MapView
         ref={mapRef}
         style={styles.map}
-        styleURL={mapStyleUrls[mapStyle]}
+        styleURL={typeof mapStyleUrls[mapStyle] === 'string' ? mapStyleUrls[mapStyle] : undefined}
+        styleJSON={typeof mapStyleUrls[mapStyle] === 'object' ? JSON.stringify(mapStyleUrls[mapStyle]) : undefined}
         onMapIdle={handleMapIdle}
         onCameraChanged={handleCameraChanged}
         onPress={handleMapPress}
@@ -947,8 +1038,359 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           );
         })}
 
+        {/* Local Offline Basemap - OpenMapTiles vector tiles */}
+        {mapStyle === 'local' && tileServerReady && hasLocalBasemap && (
+          <Mapbox.VectorSource
+            id="local-basemap-source"
+            tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/basemap_alaska/{z}/{x}/{y}.pbf`]}
+            minZoomLevel={0}
+            maxZoomLevel={14}
+          >
+            {/* === WATER (renders on top of tan background = land) === */}
+            <Mapbox.FillLayer
+              id="basemap-water"
+              sourceLayerID="water"
+              style={{
+                fillColor: '#a0cfe8',
+                fillOpacity: 1,
+              }}
+            />
+            
+            {/* Rivers and streams */}
+            <Mapbox.LineLayer
+              id="basemap-waterway"
+              sourceLayerID="waterway"
+              style={{
+                lineColor: '#a0cfe8',
+                lineWidth: [
+                  'interpolate', ['linear'], ['zoom'],
+                  8, 0.5,
+                  12, 1.5,
+                  14, 3,
+                ],
+              }}
+            />
+            
+            {/* === LAND COVER === */}
+            <Mapbox.FillLayer
+              id="basemap-landcover-ice"
+              sourceLayerID="landcover"
+              filter={['==', ['get', 'class'], 'ice']}
+              style={{
+                fillColor: '#ffffff',
+                fillOpacity: 0.9,
+              }}
+            />
+            <Mapbox.FillLayer
+              id="basemap-landcover-grass"
+              sourceLayerID="landcover"
+              filter={['==', ['get', 'class'], 'grass']}
+              style={{
+                fillColor: '#d8e8c8',
+                fillOpacity: 0.6,
+              }}
+            />
+            <Mapbox.FillLayer
+              id="basemap-landcover-wood"
+              sourceLayerID="landcover"
+              filter={['any', ['==', ['get', 'class'], 'wood'], ['==', ['get', 'class'], 'forest']]}
+              style={{
+                fillColor: '#c5ddb0',
+                fillOpacity: 0.6,
+              }}
+            />
+            <Mapbox.FillLayer
+              id="basemap-landcover-wetland"
+              sourceLayerID="landcover"
+              filter={['==', ['get', 'class'], 'wetland']}
+              style={{
+                fillColor: '#d0e8d8',
+                fillOpacity: 0.5,
+              }}
+            />
+            
+            {/* === LAND USE === */}
+            <Mapbox.FillLayer
+              id="basemap-landuse-residential"
+              sourceLayerID="landuse"
+              filter={['==', ['get', 'class'], 'residential']}
+              minZoomLevel={10}
+              style={{
+                fillColor: '#e8e0d8',
+                fillOpacity: 0.5,
+              }}
+            />
+            <Mapbox.FillLayer
+              id="basemap-landuse-industrial"
+              sourceLayerID="landuse"
+              filter={['any', ['==', ['get', 'class'], 'industrial'], ['==', ['get', 'class'], 'commercial']]}
+              minZoomLevel={10}
+              style={{
+                fillColor: '#ddd8d0',
+                fillOpacity: 0.4,
+              }}
+            />
+            
+            {/* === PARKS & PROTECTED AREAS === */}
+            <Mapbox.FillLayer
+              id="basemap-park"
+              sourceLayerID="park"
+              style={{
+                fillColor: '#c8e6c9',
+                fillOpacity: 0.4,
+              }}
+            />
+            
+            {/* === BUILDINGS (high zoom) === */}
+            <Mapbox.FillLayer
+              id="basemap-building"
+              sourceLayerID="building"
+              minZoomLevel={13}
+              style={{
+                fillColor: '#d9d0c9',
+                fillOpacity: 0.8,
+              }}
+            />
+            
+            {/* === BOUNDARIES === */}
+            <Mapbox.LineLayer
+              id="basemap-boundary-state"
+              sourceLayerID="boundary"
+              filter={['==', ['get', 'admin_level'], 4]}
+              style={{
+                lineColor: '#9e9cab',
+                lineWidth: 1,
+                lineDasharray: [3, 2],
+                lineOpacity: 0.6,
+              }}
+            />
+            
+            {/* === TRANSPORTATION === */}
+            <Mapbox.LineLayer
+              id="basemap-roads-motorway-casing"
+              sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'motorway']}
+              style={{
+                lineColor: '#e07850',
+                lineWidth: [
+                  'interpolate', ['linear'], ['zoom'],
+                  6, 1,
+                  10, 3,
+                  14, 6,
+                ],
+              }}
+            />
+            <Mapbox.LineLayer
+              id="basemap-roads-motorway"
+              sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'motorway']}
+              style={{
+                lineColor: '#ffa060',
+                lineWidth: [
+                  'interpolate', ['linear'], ['zoom'],
+                  6, 0.5,
+                  10, 2,
+                  14, 4,
+                ],
+              }}
+            />
+            <Mapbox.LineLayer
+              id="basemap-roads-trunk-casing"
+              sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'trunk']}
+              style={{
+                lineColor: '#d09050',
+                lineWidth: [
+                  'interpolate', ['linear'], ['zoom'],
+                  6, 0.8,
+                  10, 2.5,
+                  14, 5,
+                ],
+              }}
+            />
+            <Mapbox.LineLayer
+              id="basemap-roads-trunk"
+              sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'trunk']}
+              style={{
+                lineColor: '#f9d29c',
+                lineWidth: [
+                  'interpolate', ['linear'], ['zoom'],
+                  6, 0.4,
+                  10, 1.5,
+                  14, 3,
+                ],
+              }}
+            />
+            <Mapbox.LineLayer
+              id="basemap-roads-primary"
+              sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'primary']}
+              style={{
+                lineColor: '#ffeebb',
+                lineWidth: [
+                  'interpolate', ['linear'], ['zoom'],
+                  6, 0.3,
+                  10, 1,
+                  14, 2.5,
+                ],
+              }}
+            />
+            <Mapbox.LineLayer
+              id="basemap-roads-secondary"
+              sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'secondary']}
+              minZoomLevel={9}
+              style={{
+                lineColor: '#ffffff',
+                lineWidth: [
+                  'interpolate', ['linear'], ['zoom'],
+                  9, 0.5,
+                  14, 2,
+                ],
+              }}
+            />
+            <Mapbox.LineLayer
+              id="basemap-roads-tertiary"
+              sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'tertiary']}
+              minZoomLevel={11}
+              style={{
+                lineColor: '#ffffff',
+                lineWidth: [
+                  'interpolate', ['linear'], ['zoom'],
+                  11, 0.4,
+                  14, 1.5,
+                ],
+              }}
+            />
+            <Mapbox.LineLayer
+              id="basemap-roads-minor"
+              sourceLayerID="transportation"
+              filter={['any', ['==', ['get', 'class'], 'minor'], ['==', ['get', 'class'], 'service']]}
+              minZoomLevel={13}
+              style={{
+                lineColor: '#ffffff',
+                lineWidth: 1,
+                lineOpacity: 0.8,
+              }}
+            />
+            
+            {/* === AIRPORTS === */}
+            <Mapbox.FillLayer
+              id="basemap-aeroway-area"
+              sourceLayerID="aeroway"
+              filter={['==', ['geometry-type'], 'Polygon']}
+              minZoomLevel={10}
+              style={{
+                fillColor: '#e0dce0',
+                fillOpacity: 0.7,
+              }}
+            />
+            <Mapbox.LineLayer
+              id="basemap-aeroway-runway"
+              sourceLayerID="aeroway"
+              filter={['==', ['get', 'class'], 'runway']}
+              minZoomLevel={10}
+              style={{
+                lineColor: '#bdbdbd',
+                lineWidth: [
+                  'interpolate', ['linear'], ['zoom'],
+                  10, 2,
+                  14, 8,
+                ],
+              }}
+            />
+            
+            {/* === LABELS === */}
+            <Mapbox.SymbolLayer
+              id="basemap-place-city"
+              sourceLayerID="place"
+              filter={['==', ['get', 'class'], 'city']}
+              style={{
+                textField: ['get', 'name'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  4, 12,
+                  10, 20,
+                ],
+                textColor: '#333333',
+                textHaloColor: '#ffffff',
+                textHaloWidth: 2,
+                textFont: ['Open Sans Bold', 'Arial Unicode MS Bold'],
+                textTransform: 'uppercase',
+                textLetterSpacing: 0.1,
+              }}
+            />
+            <Mapbox.SymbolLayer
+              id="basemap-place-town"
+              sourceLayerID="place"
+              filter={['==', ['get', 'class'], 'town']}
+              minZoomLevel={6}
+              style={{
+                textField: ['get', 'name'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  6, 10,
+                  12, 14,
+                ],
+                textColor: '#444444',
+                textHaloColor: '#ffffff',
+                textHaloWidth: 1.5,
+                textFont: ['Open Sans Bold', 'Arial Unicode MS Bold'],
+              }}
+            />
+            <Mapbox.SymbolLayer
+              id="basemap-place-village"
+              sourceLayerID="place"
+              filter={['==', ['get', 'class'], 'village']}
+              minZoomLevel={9}
+              style={{
+                textField: ['get', 'name'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  9, 9,
+                  14, 12,
+                ],
+                textColor: '#555555',
+                textHaloColor: '#ffffff',
+                textHaloWidth: 1,
+                textFont: ['Open Sans Regular', 'Arial Unicode MS Regular'],
+              }}
+            />
+            <Mapbox.SymbolLayer
+              id="basemap-water-name"
+              sourceLayerID="water_name"
+              minZoomLevel={8}
+              style={{
+                textField: ['get', 'name'],
+                textSize: 11,
+                textColor: '#5d8cae',
+                textHaloColor: '#ffffff',
+                textHaloWidth: 1,
+                textFont: ['Open Sans Italic', 'Arial Unicode MS Regular'],
+              }}
+            />
+            <Mapbox.SymbolLayer
+              id="basemap-road-label"
+              sourceLayerID="transportation_name"
+              minZoomLevel={12}
+              style={{
+                textField: ['get', 'name'],
+                textSize: 10,
+                symbolPlacement: 'line',
+                textColor: '#555555',
+                textHaloColor: '#ffffff',
+                textHaloWidth: 1,
+                textFont: ['Open Sans Regular', 'Arial Unicode MS Regular'],
+              }}
+            />
+          </Mapbox.VectorSource>
+        )}
+
         {/* MBTiles Vector Sources - Chart quilting with zoom-based visibility */}
-        {useMBTiles && tileServerReady && mbtilesCharts.map((chart) => {
+        {/* PERFORMANCE: Limit to 100 charts max to prevent Mapbox overload */}
+        {useMBTiles && tileServerReady && mbtilesCharts.slice(0, 100).map((chart) => {
           const tileUrl = tileServer.getTileUrlTemplate(chart.chartId);
           
           // Determine minZoomLevel based on chart scale for proper quilting
@@ -2257,16 +2699,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <TouchableOpacity 
               style={styles.debugActionBtn}
               onPress={async () => {
+                console.log('=== CLEAR CACHE & RELOAD ===');
                 // Stop tile server (closes all database connections)
+                console.log('Stopping tile server...');
                 await tileServer.stopTileServer();
-                // Clear MBTiles state
+                // Clear all chart state
+                console.log('Clearing state...');
                 setMbtilesCharts([]);
+                setRasterCharts([]);
+                setCharts([]);
+                setGnisAvailable(false);
+                setHasLocalBasemap(false);
                 setTileServerReady(false);
                 // Increment cache buster to force Mapbox to re-fetch tiles
                 setCacheBuster(prev => prev + 1);
                 // Small delay to ensure cleanup
+                console.log('Waiting for cleanup...');
                 await new Promise(r => setTimeout(r, 500));
                 // Reload everything fresh
+                console.log('Reloading charts...');
                 loadCharts();
               }}
             >
@@ -2335,6 +2786,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               >
                 <Text style={[styles.mapStyleBtnText, mapStyle === 'outdoors' && styles.mapStyleBtnTextActive]}>Outdoors</Text>
               </TouchableOpacity>
+              {hasLocalBasemap && (
+                <TouchableOpacity
+                  style={[styles.mapStyleBtn, mapStyle === 'local' && styles.mapStyleBtnActive]}
+                  onPress={() => setMapStyle('local')}
+                >
+                  <Text style={[styles.mapStyleBtnText, mapStyle === 'local' && styles.mapStyleBtnTextActive]}>Offline</Text>
+                </TouchableOpacity>
+              )}
             </View>
             
             {/* Data Sources - toggle entire chart types on/off */}

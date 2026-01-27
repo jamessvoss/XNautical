@@ -137,7 +137,6 @@ const Tab = createBottomTabNavigator();
 // Tab icon component
 function TabIcon({ name, focused }: { name: string; focused: boolean }) {
   const icons: Record<string, string> = {
-    Charts: '📊',
     Viewer: '🗺️',
     Settings: '⚙️',
   };
@@ -240,6 +239,7 @@ function AppContent() {
     <SafeAreaProvider>
       <NavigationContainer>
         <Tab.Navigator
+          initialRouteName="Viewer"
           screenOptions={({ route }) => ({
             headerShown: false,
             tabBarIcon: ({ focused }) => (
@@ -259,11 +259,6 @@ function AppContent() {
             tabBarHideOnKeyboard: true,
           })}
         >
-          <Tab.Screen 
-            name="Charts" 
-            component={ChartsTab}
-            options={{ tabBarLabel: 'Charts' }}
-          />
           <Tab.Screen 
             name="Viewer" 
             component={ViewerTab}

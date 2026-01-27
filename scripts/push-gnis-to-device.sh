@@ -12,13 +12,29 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-GNIS_FILE="$PROJECT_DIR/assets/Maps/gnis_names_ak.mbtiles"
+# Check multiple locations for the GNIS file
+GNIS_LOCATIONS=(
+    "$PROJECT_DIR/charts/US Domestic Names/Alaska/gnis_names_ak.mbtiles"
+    "$PROJECT_DIR/assets/Maps/gnis_names_ak.mbtiles"
+)
+
+GNIS_FILE=""
+for loc in "${GNIS_LOCATIONS[@]}"; do
+    if [ -f "$loc" ]; then
+        GNIS_FILE="$loc"
+        break
+    fi
+done
 
 # Check if file exists
-if [ ! -f "$GNIS_FILE" ]; then
-    echo "Error: GNIS file not found at $GNIS_FILE"
+if [ -z "$GNIS_FILE" ]; then
+    echo "Error: GNIS file not found. Checked:"
+    for loc in "${GNIS_LOCATIONS[@]}"; do
+        echo "  - $loc"
+    done
+    echo ""
     echo "Run the conversion script first:"
-    echo "  python scripts/convert_gnis_names.py 'charts/US Domestic Names/Alaska/DomesticNames_AK.txt' assets/Maps"
+    echo "  python scripts/convert_gnis_names.py 'charts/US Domestic Names/Alaska/DomesticNames_AK.txt'"
     exit 1
 fi
 
@@ -79,17 +95,17 @@ elif [ "$PLATFORM" = "android" ]; then
         exit 1
     fi
     
-    # The mbtiles directory on Android
-    # For Expo apps: /data/data/com.xnautical.app/files/mbtiles/
-    # or external: /storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles/
-    
-    ANDROID_PATH="/data/data/com.xnautical.app/files/mbtiles"
+    # The mbtiles directory on Android (external app storage - accessible via adb)
+    ANDROID_PATH="/storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles"
     
     # Create directory
-    adb shell "mkdir -p $ANDROID_PATH" 2>/dev/null || true
+    adb shell "mkdir -p '$ANDROID_PATH'" 2>/dev/null || true
     
     # Push file
     adb push "$GNIS_FILE" "$ANDROID_PATH/gnis_names_ak.mbtiles"
+    
+    # Fix permissions
+    adb shell "chmod 775 '$ANDROID_PATH/gnis_names_ak.mbtiles'" 2>/dev/null || true
     
     echo "✓ Copied gnis_names_ak.mbtiles to Android device"
     echo ""
