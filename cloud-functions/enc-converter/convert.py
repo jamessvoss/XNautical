@@ -156,6 +156,16 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
         'WRECKS', 'UWTROC', 'OBSTRN',  # Hazards also important
     }
     
+    # Safety areas that should be visible at all zoom levels for route planning
+    SAFETY_AREAS = {
+        'RESARE',  # Restricted areas (no-go zones, nature reserves)
+        'CTNARE',  # Caution areas
+        'MIPARE',  # Military practice areas
+        'ACHARE',  # Anchorage areas
+        'ACHBRT',  # Anchor berths
+        'MARCUL',  # Marine farms/aquaculture
+    }
+    
     for layer in layers:
         layer_output = output_dir / f"{layer}.geojson"
         
@@ -180,8 +190,8 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
                     for feature in features:
                         if feature.get('geometry') is not None:
                             feature['properties']['_layer'] = layer
-                            # Force navigation aids to appear at all zoom levels
-                            if layer in NAVIGATION_AIDS:
+                            # Force navigation aids and safety areas to appear at all zoom levels
+                            if layer in NAVIGATION_AIDS or layer in SAFETY_AREAS:
                                 feature['tippecanoe'] = {'minzoom': 0, 'maxzoom': 17}
                             
                             # For LIGHTS, calculate orientation and generate sector arcs
@@ -415,6 +425,21 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
         ])
 
 
+def check_geojson_has_safety_areas(geojson_path: str) -> bool:
+    """Check if GeoJSON contains any safety area features (RESARE, MIPARE, etc.)."""
+    SAFETY_AREAS = {'RESARE', 'CTNARE', 'MIPARE', 'ACHARE', 'ACHBRT', 'MARCUL'}
+    try:
+        with open(geojson_path, 'r') as f:
+            data = json.load(f)
+        for feature in data.get('features', []):
+            layer = feature.get('properties', {}).get('_layer', '')
+            if layer in SAFETY_AREAS:
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def convert_geojson_to_mbtiles(geojson_path: str, output_path: str, chart_id: str) -> str:
     """Convert GeoJSON to MBTiles using tippecanoe with scale-appropriate settings."""
     
@@ -424,6 +449,13 @@ def convert_geojson_to_mbtiles(geojson_path: str, output_path: str, chart_id: st
     
     # Get scale-appropriate settings
     max_zoom, min_zoom, additional_flags = get_tippecanoe_settings(chart_id)
+    
+    # If the chart has safety areas (MIPARE, RESARE, etc.), we need to generate tiles
+    # at lower zoom levels so these large areas are visible when zoomed out
+    has_safety_areas = check_geojson_has_safety_areas(geojson_path)
+    if has_safety_areas and min_zoom > 0:
+        print(f"  Chart has safety areas - extending min zoom from {min_zoom} to 0")
+        min_zoom = 0
     
     print(f"Converting to MBTiles: {chart_id}")
     print(f"  Scale settings: z{min_zoom}-{max_zoom} ({chart_id[:3]} scale)")

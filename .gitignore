@@ -74,3 +74,10 @@ assets/Maps/
 
 # Generated output
 output/
+
+# Chart source data (large files)
+charts/
+
+# Python cache
+__pycache__/
+*.pyc

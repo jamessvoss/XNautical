@@ -145,6 +145,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showSeabed, setShowSeabed] = useState(true);
   const [showPipelines, setShowPipelines] = useState(true);
   const [showBathymetry, setShowBathymetry] = useState(true);
+  const [showRestrictedAreas, setShowRestrictedAreas] = useState(true);
+  const [showCautionAreas, setShowCautionAreas] = useState(true);
+  const [showMilitaryAreas, setShowMilitaryAreas] = useState(true);
+  const [showAnchorages, setShowAnchorages] = useState(true);
+  const [showAnchorBerths, setShowAnchorBerths] = useState(true);
+  const [showMarineFarms, setShowMarineFarms] = useState(true);
+  
+  // GNIS Place Names layer toggles
+  const [gnisAvailable, setGnisAvailable] = useState(false);
+  const [showPlaceNames, setShowPlaceNames] = useState(true);
+  const [showWaterNames, setShowWaterNames] = useState(true);      // Bays, channels, sounds
+  const [showCoastalNames, setShowCoastalNames] = useState(true);  // Capes, islands, beaches
+  const [showLandmarkNames, setShowLandmarkNames] = useState(true); // Summits, glaciers
+  const [showPopulatedNames, setShowPopulatedNames] = useState(true); // Towns, ports
+  const [showStreamNames, setShowStreamNames] = useState(false);    // Rivers, creeks (off by default - too many)
+  const [showLakeNames, setShowLakeNames] = useState(false);        // Lakes (off by default)
+  const [showTerrainNames, setShowTerrainNames] = useState(false);  // Valleys, basins (off by default)
   
   // UI state
   const [currentZoom, setCurrentZoom] = useState(10);
@@ -243,16 +260,24 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         console.log('Could not read mbtiles directory:', e);
       }
       
-      // Load any .mbtiles files found - separate vector charts from raster charts
+      // Load any .mbtiles files found - separate vector charts from raster charts and reference data
       const loadedMbtiles: LoadedMBTilesChart[] = [];
       const loadedRasters: LoadedRasterChart[] = [];
+      let gnisFound = false;
+      
       for (const filename of filesInDir) {
         if (filename.endsWith('.mbtiles')) {
           const chartId = filename.replace('.mbtiles', '');
           const path = `${mbtilesDir}/${filename}`;
           
+          // GNIS place names - reference data layer
+          if (chartId.startsWith('gnis_names_')) {
+            console.log(`Found GNIS place names: ${chartId} at ${path}`);
+            gnisFound = true;
+            // Don't add to loadedMbtiles - handled separately
+          }
           // BATHY_* files are raster (bathymetric) charts
-          if (chartId.startsWith('BATHY_')) {
+          else if (chartId.startsWith('BATHY_')) {
             console.log(`Found Raster (bathymetry) file: ${chartId} at ${path}`);
             loadedRasters.push({ chartId, path });
           } else {
@@ -260,6 +285,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             loadedMbtiles.push({ chartId, path });
           }
         }
+      }
+      
+      // Set GNIS availability
+      setGnisAvailable(gnisFound);
+      if (gnisFound) {
+        console.log('GNIS place names layer available');
       }
       
       // Also check the registered downloads (legacy)
@@ -498,6 +529,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       'sbdare', 'drgare', 'drgare-outline',
       'fairwy', 'fairwy-outline',
       'lndare', 'lndare-outline', 'coalne',
+      // Restricted/caution areas and anchorages
+      'resare', 'resare-outline',
+      'ctnare', 'ctnare-outline',
+      'mipare', 'mipare-outline',
+      'achare', 'achare-outline',
+      'achbrt', 'achbrt-label',
+      'marcul', 'marcul-outline',
     ];
     
     const ids: string[] = [];
@@ -565,6 +603,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           'BOYLAT', 'BOYCAR', 'BOYSAW', 'BOYSPP', 'BOYISD',
           'BCNLAT', 'BCNSPP', 'BCNCAR', 'BCNISD', 'BCNSAW',
           'WRECKS', 'UWTROC', 'OBSTRN',
+          'RESARE', 'CTNARE', 'MIPARE',  // Restricted/caution areas
+          'ACHARE', 'ACHBRT', 'MARCUL',   // Anchorages and aquaculture
           'LNDMRK', 'CBLSUB', 'CBLARE', 'PIPSOL', 'PIPARE',
           'SOUNDG', 'DEPARE', 'DEPCNT', 'SBDARE',
           'DRGARE', 'FAIRWY',
@@ -633,6 +673,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             'FAIRWY': 'Fairway',
             'COALNE': 'Coastline',
             'LNDARE': 'Land Area',
+            'RESARE': 'Restricted Area',
+            'CTNARE': 'Caution Area',
+            'MIPARE': 'Military Practice Area',
+            'ACHARE': 'Anchorage Area',
+            'ACHBRT': 'Anchor Berth',
+            'MARCUL': 'Marine Farm/Aquaculture',
           };
           
           console.log(`[MapPress] Selected feature: ${layer}`);
@@ -923,6 +969,89 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
+            {/* RESARE - Restricted Areas (no-go zones, nature reserves, etc.) */}
+            {/* CATREA: 1=offshore safety, 4=nature reserve, 7=bird sanctuary, 8=game reserve, */}
+            {/*         9=seal sanctuary, 12=degaussing range, 14=military, 17=historic wreck, */}
+            {/*         22=no wake, 24=swinging area, 27=water skiing */}
+            {/* Available at all zoom levels for route planning */}
+            <Mapbox.FillLayer
+              id={`mbtiles-resare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'RESARE']}
+              style={{
+                fillColor: [
+                  'match',
+                  ['get', 'CATREA'],
+                  14, '#FF0000',    // Military - red
+                  12, '#FF0000',    // Degaussing - red
+                  4, '#00AA00',     // Nature reserve - green
+                  7, '#00AA00',     // Bird sanctuary - green
+                  8, '#00AA00',     // Game reserve - green
+                  9, '#00AA00',     // Seal sanctuary - green
+                  '#FF00FF',        // Default - magenta
+                ],
+                fillOpacity: 0.2,
+                visibility: showRestrictedAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* CTNARE - Caution Areas (areas requiring special attention) */}
+            {/* Available at all zoom levels for route planning */}
+            <Mapbox.FillLayer
+              id={`mbtiles-ctnare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'CTNARE']}
+              style={{
+                fillColor: '#FFA500',  // Orange for caution
+                fillOpacity: 0.2,
+                visibility: showCautionAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MIPARE - Military Practice Areas */}
+            {/* Available at all zoom levels for route planning */}
+            <Mapbox.FillLayer
+              id={`mbtiles-mipare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'MIPARE']}
+              style={{
+                fillColor: '#FF0000',  // Red for military/danger
+                fillOpacity: 0.2,
+                visibility: showMilitaryAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* ACHARE - Anchorage Areas */}
+            {/* Available at all zoom levels for route planning */}
+            <Mapbox.FillLayer
+              id={`mbtiles-achare-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'ACHARE']}
+              style={{
+                fillColor: '#9400D3',  // Dark violet for anchorage
+                fillOpacity: 0.15,
+                visibility: showAnchorages ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MARCUL - Marine Farm/Culture (aquaculture) */}
+            {/* Available at all zoom levels for route planning */}
+            <Mapbox.FillLayer
+              id={`mbtiles-marcul-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'MARCUL']}
+              style={{
+                fillColor: '#8B4513',  // Brown for aquaculture
+                fillOpacity: 0.2,
+                visibility: showMarineFarms ? 'visible' : 'none',
+              }}
+            />
+            
             {/* === SECTION 4: LINES === */}
             
             {/* DEPCNT - Depth Contours */}
@@ -1054,6 +1183,86 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 lineWidth: 1.5,
                 lineDasharray: [6, 3],
                 visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* RESARE outline - Restricted Areas */}
+            <Mapbox.LineLayer
+              id={`mbtiles-resare-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'RESARE']}
+              style={{
+                lineColor: [
+                  'match',
+                  ['get', 'CATREA'],
+                  14, '#FF0000',    // Military - red
+                  12, '#FF0000',    // Degaussing - red
+                  4, '#00AA00',     // Nature reserve - green
+                  7, '#00AA00',     // Bird sanctuary - green
+                  8, '#00AA00',     // Game reserve - green
+                  9, '#00AA00',     // Seal sanctuary - green
+                  '#FF00FF',        // Default - magenta
+                ],
+                lineWidth: 2,
+                lineDasharray: [6, 3],
+                visibility: showRestrictedAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* CTNARE outline - Caution Areas */}
+            <Mapbox.LineLayer
+              id={`mbtiles-ctnare-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'CTNARE']}
+              style={{
+                lineColor: '#FFA500',
+                lineWidth: 2,
+                lineDasharray: [6, 3],
+                visibility: showCautionAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MIPARE outline - Military Practice Areas */}
+            <Mapbox.LineLayer
+              id={`mbtiles-mipare-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'MIPARE']}
+              style={{
+                lineColor: '#FF0000',
+                lineWidth: 2,
+                lineDasharray: [4, 2],
+                visibility: showMilitaryAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* ACHARE outline - Anchorage Areas */}
+            <Mapbox.LineLayer
+              id={`mbtiles-achare-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'ACHARE']}
+              style={{
+                lineColor: '#9400D3',
+                lineWidth: 2,
+                lineDasharray: [8, 4],
+                visibility: showAnchorages ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MARCUL outline - Marine Farm/Culture */}
+            <Mapbox.LineLayer
+              id={`mbtiles-marcul-outline-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'MARCUL']}
+              style={{
+                lineColor: '#8B4513',
+                lineWidth: 2,
+                lineDasharray: [4, 2],
+                visibility: showMarineFarms ? 'visible' : 'none',
               }}
             />
             
@@ -1299,6 +1508,37 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
+            {/* ACHBRT - Anchor Berths (specific anchorage positions) */}
+            {/* Available at all zoom levels for route planning */}
+            <Mapbox.SymbolLayer
+              id={`mbtiles-achbrt-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={0}
+              filter={['==', ['get', '_layer'], 'ACHBRT']}
+              style={{
+                iconImage: 'anchor',
+                iconSize: ['interpolate', ['linear'], ['zoom'], 4, 0.2, 8, 0.3, 12, 0.5, 16, 0.7],
+                iconAllowOverlap: true,
+                visibility: showAnchorBerths ? 'visible' : 'none',
+              }}
+            />
+            <Mapbox.SymbolLayer
+              id={`mbtiles-achbrt-label-${chart.chartId}`}
+              sourceLayerID={chart.chartId}
+              minZoomLevel={10}
+              filter={['==', ['get', '_layer'], 'ACHBRT']}
+              style={{
+                textField: ['coalesce', ['get', 'OBJNAM'], 'Anchorage'],
+                textSize: 10,
+                textColor: '#9400D3',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textOffset: [0, 1.5],
+                textAllowOverlap: false,
+                visibility: showAnchorBerths ? 'visible' : 'none',
+              }}
+            />
+            
             {/* All Buoys */}
             {/* BOYSHP: 1=conical, 2=can, 3=spherical, 4=pillar, 5=spar, 6=barrel, 7=super-buoy */}
             <Mapbox.SymbolLayer
@@ -1533,9 +1773,202 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 visibility: showLandmarks ? 'visible' : 'none',
               }}
             />
-          </Mapbox.VectorSource>
+            </Mapbox.VectorSource>
         );
         })}
+
+        {/* GNIS Place Names Layer - Reference data from USGS */}
+        {tileServerReady && gnisAvailable && showPlaceNames && (
+          <Mapbox.VectorSource
+            id="gnis-names-source"
+            tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/gnis_names_ak/{z}/{x}/{y}.pbf`]}
+          >
+            {/* Water features - Bays, channels, sounds (highest priority) */}
+            <Mapbox.SymbolLayer
+              id="gnis-water-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'water']}
+              minZoomLevel={7}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  7, 10,
+                  10, 12,
+                  14, 14,
+                ],
+                textColor: '#0066CC',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 8,
+                visibility: showWaterNames ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Coastal features - Capes, islands, beaches */}
+            <Mapbox.SymbolLayer
+              id="gnis-coastal-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'coastal']}
+              minZoomLevel={8}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  8, 9,
+                  12, 11,
+                  14, 13,
+                ],
+                textColor: '#996633',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 8,
+                visibility: showCoastalNames ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Landmark features - Summits, glaciers, cliffs */}
+            <Mapbox.SymbolLayer
+              id="gnis-landmark-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'landmark']}
+              minZoomLevel={9}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['DIN Pro Italic', 'Arial Unicode MS Regular'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  9, 9,
+                  14, 12,
+                ],
+                textColor: '#666666',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 8,
+                visibility: showLandmarkNames ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Populated places - Towns, ports */}
+            <Mapbox.SymbolLayer
+              id="gnis-populated-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'populated']}
+              minZoomLevel={7}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  7, 10,
+                  10, 12,
+                  14, 14,
+                ],
+                textColor: '#CC0000',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 2,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 8,
+                visibility: showPopulatedNames ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Stream names - Rivers, creeks (off by default) */}
+            <Mapbox.SymbolLayer
+              id="gnis-stream-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'stream']}
+              minZoomLevel={10}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['DIN Pro Italic', 'Arial Unicode MS Regular'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  10, 8,
+                  14, 10,
+                ],
+                textColor: '#3399FF',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 8,
+                visibility: showStreamNames ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Lake names (off by default) */}
+            <Mapbox.SymbolLayer
+              id="gnis-lake-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'lake']}
+              minZoomLevel={10}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['DIN Pro Italic', 'Arial Unicode MS Regular'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  10, 8,
+                  14, 10,
+                ],
+                textColor: '#66CCFF',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 8,
+                visibility: showLakeNames ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Terrain features - Valleys, basins (off by default) */}
+            <Mapbox.SymbolLayer
+              id="gnis-terrain-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'terrain']}
+              minZoomLevel={11}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['DIN Pro Regular', 'Arial Unicode MS Regular'],
+                textSize: [
+                  'interpolate', ['linear'], ['zoom'],
+                  11, 8,
+                  14, 10,
+                ],
+                textColor: '#999966',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 8,
+                visibility: showTerrainNames ? 'visible' : 'none',
+              }}
+            />
+          </Mapbox.VectorSource>
+        )}
 
       </Mapbox.MapView>
 
@@ -1731,6 +2164,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               <Toggle label={`Bathymetry (${rasterCharts.length})`} value={showBathymetry} onToggle={setShowBathymetry} />
             )}
             
+            {/* GNIS Place Names - Reference Data */}
+            {gnisAvailable && (
+              <>
+                <Text style={styles.controlSectionTitle}>Place Names (GNIS)</Text>
+                <Toggle label="Show Place Names" value={showPlaceNames} onToggle={setShowPlaceNames} />
+                {showPlaceNames && (
+                  <>
+                    <Toggle label="Water (bays, channels)" value={showWaterNames} onToggle={setShowWaterNames} />
+                    <Toggle label="Coastal (capes, islands)" value={showCoastalNames} onToggle={setShowCoastalNames} />
+                    <Toggle label="Landmarks (summits, glaciers)" value={showLandmarkNames} onToggle={setShowLandmarkNames} />
+                    <Toggle label="Towns & Ports" value={showPopulatedNames} onToggle={setShowPopulatedNames} />
+                    <Toggle label="Rivers & Streams" value={showStreamNames} onToggle={setShowStreamNames} />
+                    <Toggle label="Lakes" value={showLakeNames} onToggle={setShowLakeNames} />
+                    <Toggle label="Terrain (valleys, basins)" value={showTerrainNames} onToggle={setShowTerrainNames} />
+                  </>
+                )}
+              </>
+            )}
+            
             {/* Zoom Settings */}
             <Text style={styles.controlSectionTitle}>Zoom</Text>
             <Toggle 
@@ -1740,6 +2192,62 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             <Text style={styles.controlSectionTitle}>Chart Layers</Text>
+            <View style={styles.allToggleRow}>
+              <TouchableOpacity 
+                style={styles.allToggleBtn} 
+                onPress={() => {
+                  setShowDepthAreas(true);
+                  setShowDepthContours(true);
+                  setShowSoundings(true);
+                  setShowLand(true);
+                  setShowCoastline(true);
+                  setShowLights(true);
+                  setShowSectors(true);
+                  setShowBuoys(true);
+                  setShowBeacons(true);
+                  setShowLandmarks(true);
+                  setShowHazards(true);
+                  setShowCables(true);
+                  setShowSeabed(true);
+                  setShowPipelines(true);
+                  setShowRestrictedAreas(true);
+                  setShowCautionAreas(true);
+                  setShowMilitaryAreas(true);
+                  setShowAnchorages(true);
+                  setShowAnchorBerths(true);
+                  setShowMarineFarms(true);
+                }}
+              >
+                <Text style={styles.allToggleBtnText}>All On</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.allToggleBtn} 
+                onPress={() => {
+                  setShowDepthAreas(false);
+                  setShowDepthContours(false);
+                  setShowSoundings(false);
+                  setShowLand(false);
+                  setShowCoastline(false);
+                  setShowLights(false);
+                  setShowSectors(false);
+                  setShowBuoys(false);
+                  setShowBeacons(false);
+                  setShowLandmarks(false);
+                  setShowHazards(false);
+                  setShowCables(false);
+                  setShowSeabed(false);
+                  setShowPipelines(false);
+                  setShowRestrictedAreas(false);
+                  setShowCautionAreas(false);
+                  setShowMilitaryAreas(false);
+                  setShowAnchorages(false);
+                  setShowAnchorBerths(false);
+                  setShowMarineFarms(false);
+                }}
+              >
+                <Text style={styles.allToggleBtnText}>All Off</Text>
+              </TouchableOpacity>
+            </View>
             <Toggle label="Depth Areas" value={showDepthAreas} onToggle={setShowDepthAreas} />
             <Toggle label="Depth Contours" value={showDepthContours} onToggle={setShowDepthContours} />
             <Toggle label="Soundings" value={showSoundings} onToggle={setShowSoundings} />
@@ -1754,6 +2262,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Toggle label="Cables" value={showCables} onToggle={setShowCables} />
             <Toggle label="Seabed" value={showSeabed} onToggle={setShowSeabed} />
             <Toggle label="Pipelines" value={showPipelines} onToggle={setShowPipelines} />
+            <Toggle label="Restricted Areas" value={showRestrictedAreas} onToggle={setShowRestrictedAreas} />
+            <Toggle label="Caution Areas" value={showCautionAreas} onToggle={setShowCautionAreas} />
+            <Toggle label="Military Areas" value={showMilitaryAreas} onToggle={setShowMilitaryAreas} />
+            <Toggle label="Anchorages" value={showAnchorages} onToggle={setShowAnchorages} />
+            <Toggle label="Anchor Berths" value={showAnchorBerths} onToggle={setShowAnchorBerths} />
+            <Toggle label="Marine Farms" value={showMarineFarms} onToggle={setShowMarineFarms} />
           </ScrollView>
           <TouchableOpacity style={styles.closeBtn} onPress={() => setShowControls(false)}>
             <Text style={styles.closeBtnText}>Close</Text>
@@ -1884,6 +2398,22 @@ function formatFeatureProperties(feature: FeatureInfo): Record<string, string> {
       }
       return formatted;
     
+    case 'Restricted Area':
+      return { ...formatted, ...formatRestrictedAreaInfo(props) };
+    
+    case 'Caution Area':
+      return { ...formatted, ...formatCautionAreaInfo(props) };
+    
+    case 'Military Practice Area':
+      return { ...formatted, ...formatMilitaryAreaInfo(props) };
+    
+    case 'Anchorage Area':
+    case 'Anchor Berth':
+      return { ...formatted, ...formatAnchorageInfo(props) };
+    
+    case 'Marine Farm/Aquaculture':
+      return { ...formatted, ...formatMarineFarmInfo(props) };
+    
     default:
       // Show raw properties for other types
       for (const [key, value] of Object.entries(props)) {
@@ -2007,6 +2537,175 @@ function formatPipelineInfo(props: Record<string, unknown>): Record<string, stri
   // BURDEP - Buried depth
   if (props.BURDEP !== undefined) {
     result['Buried depth'] = `${props.BURDEP}m`;
+  }
+  
+  return result;
+}
+
+// Format restricted area info
+function formatRestrictedAreaInfo(props: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = {};
+  
+  // CATREA - Category of restricted area
+  const catrea = props.CATREA as number | undefined;
+  if (catrea !== undefined) {
+    const categories: Record<number, string> = {
+      1: 'Offshore safety zone',
+      4: 'Nature reserve',
+      5: 'Bird sanctuary',
+      6: 'Game reserve',
+      7: 'Seal sanctuary',
+      8: 'Degaussing range',
+      9: 'Military area',
+      12: 'Historic wreck area',
+      14: 'Research area',
+      17: 'Explosives dumping',
+      18: 'Spoil ground',
+      19: 'No anchoring',
+      20: 'No diving',
+      21: 'No fishing',
+      22: 'No trawling',
+      23: 'No wake zone',
+      24: 'Swinging area',
+      25: 'Water skiing area',
+      26: 'Environmentally sensitive',
+      27: 'To be avoided',
+    };
+    result['Category'] = categories[catrea] || `Code ${catrea}`;
+  }
+  
+  // RESTRN - Restrictions
+  const restrn = props.RESTRN;
+  if (restrn) {
+    const restrictions: Record<number, string> = {
+      1: 'Anchoring prohibited',
+      2: 'Anchoring restricted',
+      3: 'Fishing prohibited',
+      4: 'Fishing restricted',
+      5: 'Trawling prohibited',
+      6: 'Trawling restricted',
+      7: 'Entry prohibited',
+      8: 'Entry restricted',
+      9: 'Dredging prohibited',
+      10: 'Dredging restricted',
+      11: 'Diving prohibited',
+      12: 'Diving restricted',
+      13: 'No wake',
+      14: 'To be avoided',
+    };
+    const codes = Array.isArray(restrn) ? restrn : [restrn];
+    const names = codes.map((c: number) => restrictions[c] || `Code ${c}`);
+    result['Restrictions'] = names.join(', ');
+  }
+  
+  // INFORM - Information
+  if (props.INFORM) {
+    result['Info'] = String(props.INFORM);
+  }
+  
+  return result;
+}
+
+// Format caution area info
+function formatCautionAreaInfo(props: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = {};
+  
+  // INFORM - Information about the caution
+  if (props.INFORM) {
+    result['Info'] = String(props.INFORM);
+  }
+  
+  // TXTDSC - Text description
+  if (props.TXTDSC) {
+    result['Description'] = String(props.TXTDSC);
+  }
+  
+  return result;
+}
+
+// Format military practice area info
+function formatMilitaryAreaInfo(props: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = {};
+  
+  // CATMPA - Category of military practice area
+  const catmpa = props.CATMPA as number | undefined;
+  if (catmpa !== undefined) {
+    const categories: Record<number, string> = {
+      1: 'Torpedo exercise area',
+      2: 'Submarine exercise area',
+      3: 'Firing danger area',
+      4: 'Mine-laying practice area',
+      5: 'Small arms firing range',
+    };
+    result['Category'] = categories[catmpa] || `Code ${catmpa}`;
+  }
+  
+  // INFORM - Information
+  if (props.INFORM) {
+    result['Info'] = String(props.INFORM);
+  }
+  
+  return result;
+}
+
+// Format anchorage info
+function formatAnchorageInfo(props: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = {};
+  
+  // CATACH - Category of anchorage
+  const catach = props.CATACH as number | undefined;
+  if (catach !== undefined) {
+    const categories: Record<number, string> = {
+      1: 'Unrestricted anchorage',
+      2: 'Deep water anchorage',
+      3: 'Tanker anchorage',
+      4: 'Explosives anchorage',
+      5: 'Quarantine anchorage',
+      6: 'Sea-plane anchorage',
+      7: 'Small craft anchorage',
+      8: '24-hour anchorage',
+      9: 'Limited period anchorage',
+    };
+    result['Category'] = categories[catach] || `Code ${catach}`;
+  }
+  
+  // PEREND/PERSTA - Period of validity
+  if (props.PEREND || props.PERSTA) {
+    const start = props.PERSTA ? String(props.PERSTA) : '';
+    const end = props.PEREND ? String(props.PEREND) : '';
+    if (start || end) {
+      result['Period'] = `${start} - ${end}`.trim();
+    }
+  }
+  
+  // INFORM - Information
+  if (props.INFORM) {
+    result['Info'] = String(props.INFORM);
+  }
+  
+  return result;
+}
+
+// Format marine farm/aquaculture info
+function formatMarineFarmInfo(props: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = {};
+  
+  // CATMFA - Category of marine farm/culture
+  const catmfa = props.CATMFA as number | undefined;
+  if (catmfa !== undefined) {
+    const categories: Record<number, string> = {
+      1: 'Crustaceans',
+      2: 'Oysters/mussels',
+      3: 'Fish',
+      4: 'Seaweed',
+      5: 'Pearl culture',
+    };
+    result['Type'] = categories[catmfa] || `Code ${catmfa}`;
+  }
+  
+  // INFORM - Information
+  if (props.INFORM) {
+    result['Info'] = String(props.INFORM);
   }
   
   return result;
@@ -2296,6 +2995,25 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 8,
     marginTop: 4,
+  },
+  allToggleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    gap: 8,
+  },
+  allToggleBtn: {
+    flex: 1,
+    backgroundColor: '#007AFF',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  allToggleBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
   },
   mapStyleRow: {
     flexDirection: 'row',
