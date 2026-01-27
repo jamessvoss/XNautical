@@ -36,6 +36,9 @@ import {
   formatDepthInfo,
 } from '../utils/chartRendering';
 import ChartDebugOverlay from './ChartDebugOverlay';
+import GPSInfoPanel from './GPSInfoPanel';
+import CompassOverlay from './CompassOverlay';
+import { useGPS } from '../hooks/useGPS';
 
 Mapbox.setAccessToken(process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN || '');
 
@@ -185,6 +188,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showDebug, setShowDebug] = useState(false);
   const [showChartDebug, setShowChartDebug] = useState(false);
   
+  // GPS and Navigation state
+  const [showGPSPanel, setShowGPSPanel] = useState(false);
+  const [showCompass, setShowCompass] = useState(false);
+  const [followGPS, setFollowGPS] = useState(false); // Follow mode - center map on position
+  const { gpsData, startTracking, stopTracking, toggleTracking } = useGPS();
+  
   // Zoom limiting - constrain zoom to available chart detail
   const [limitZoomToCharts, setLimitZoomToCharts] = useState(true);
   const [isAtMaxZoom, setIsAtMaxZoom] = useState(false);
@@ -235,30 +244,129 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
   }, []);
   
+  // Start/stop GPS tracking when panel is shown/hidden
+  useEffect(() => {
+    if (showGPSPanel || showCompass) {
+      startTracking();
+    } else {
+      stopTracking();
+    }
+  }, [showGPSPanel, showCompass]);
+  
+  // Follow GPS position when enabled
+  useEffect(() => {
+    if (followGPS && gpsData.latitude !== null && gpsData.longitude !== null) {
+      cameraRef.current?.setCamera({
+        centerCoordinate: [gpsData.longitude, gpsData.latitude],
+        animationDuration: 500,
+      });
+    }
+  }, [followGPS, gpsData.latitude, gpsData.longitude]);
 
   const loadCharts = async () => {
     try {
       setLoading(true);
+      console.log('=== CHART LOADING DEBUG START ===');
+      
       await chartCacheService.initializeCache();
       
-      // HARDCODED TEST CHARTS - scan mbtiles directory directly
       const FileSystem = require('expo-file-system/legacy');
-      const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
       
-      // Ensure directory exists
-      const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
-      if (!dirInfo.exists) {
-        await FileSystem.makeDirectoryAsync(mbtilesDir, { intermediates: true });
-      }
+      console.log('FileSystem.documentDirectory:', FileSystem.documentDirectory);
       
-      // Scan for any .mbtiles files in the directory
+      // Check multiple locations for mbtiles files
+      // Priority: 1) App's internal storage, 2) App's external files dir (dev - survives reinstall)
+      const appDir = `${FileSystem.documentDirectory}mbtiles`;
+      // App's external files directory - accessible without permissions, writable via adb
+      // Note: expo-file-system needs file:// prefix for paths
+      const externalAppDir = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
+      // Also try the old Download location in case permissions work
+      const downloadDir = 'file:///sdcard/Download/xnautical_charts';
+      
+      console.log('Checking directories:');
+      console.log('  1. App internal:', appDir);
+      console.log('  2. App external:', externalAppDir);
+      console.log('  3. Download folder:', downloadDir);
+      
+      let mbtilesDir = appDir;
       let filesInDir: string[] = [];
-      try {
-        filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
-        console.log('Files in mbtiles directory:', filesInDir);
-      } catch (e) {
-        console.log('Could not read mbtiles directory:', e);
+      
+      // Ensure app directory exists
+      const appDirInfo = await FileSystem.getInfoAsync(appDir);
+      console.log('App dir exists:', appDirInfo.exists);
+      if (!appDirInfo.exists) {
+        await FileSystem.makeDirectoryAsync(appDir, { intermediates: true });
+        console.log('Created app dir');
       }
+      
+      // Try app's internal storage first (production location)
+      try {
+        const appFiles = await FileSystem.readDirectoryAsync(appDir);
+        console.log(`App internal dir files (${appFiles.length}):`, appFiles.slice(0, 5));
+        const mbtilesCount = appFiles.filter((f: string) => f.endsWith('.mbtiles')).length;
+        if (mbtilesCount > 0) {
+          console.log(`✓ Found ${mbtilesCount} mbtiles in app storage: ${appDir}`);
+          filesInDir = appFiles;
+        } else {
+          console.log('✗ No mbtiles in app internal storage');
+        }
+      } catch (e) {
+        console.log('✗ Could not read app mbtiles directory:', e);
+      }
+      
+      // Fallback to app's external files directory (development: accessible via adb push)
+      if (filesInDir.length === 0) {
+        console.log('Trying app external dir...');
+        try {
+          const externalInfo = await FileSystem.getInfoAsync(externalAppDir);
+          console.log('App external dir exists:', externalInfo.exists);
+          if (externalInfo.exists) {
+            const externalFiles = await FileSystem.readDirectoryAsync(externalAppDir);
+            console.log(`App external dir files (${externalFiles.length}):`, externalFiles.slice(0, 5));
+            const mbtilesCount = externalFiles.filter((f: string) => f.endsWith('.mbtiles')).length;
+            if (mbtilesCount > 0) {
+              console.log(`✓ [DEV MODE] Found ${mbtilesCount} mbtiles in app external dir`);
+              mbtilesDir = externalAppDir;
+              filesInDir = externalFiles;
+            } else {
+              console.log('✗ No mbtiles in app external dir');
+            }
+          } else {
+            console.log('✗ App external dir does not exist');
+          }
+        } catch (e) {
+          console.log('✗ App external dir error:', e);
+        }
+      }
+      
+      // Fallback to Download folder (may need permissions)
+      if (filesInDir.length === 0) {
+        console.log('Trying Download folder...');
+        try {
+          const downloadInfo = await FileSystem.getInfoAsync(downloadDir);
+          console.log('Download dir exists:', downloadInfo.exists);
+          if (downloadInfo.exists) {
+            const downloadFiles = await FileSystem.readDirectoryAsync(downloadDir);
+            console.log(`Download dir files (${downloadFiles.length}):`, downloadFiles.slice(0, 5));
+            const mbtilesCount = downloadFiles.filter((f: string) => f.endsWith('.mbtiles')).length;
+            if (mbtilesCount > 0) {
+              console.log(`✓ Found ${mbtilesCount} mbtiles in Download folder`);
+              mbtilesDir = downloadDir;
+              filesInDir = downloadFiles;
+            } else {
+              console.log('✗ No mbtiles in Download folder');
+            }
+          } else {
+            console.log('✗ Download dir does not exist or not accessible');
+          }
+        } catch (e) {
+          console.log('✗ Download folder error:', e);
+        }
+      }
+      
+      console.log('=== FINAL RESULT ===');
+      console.log(`Using mbtiles directory: ${mbtilesDir}`);
+      console.log(`Total files found: ${filesInDir.length}`);
       
       // Load any .mbtiles files found - separate vector charts from raster charts and reference data
       const loadedMbtiles: LoadedMBTilesChart[] = [];
@@ -266,7 +374,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       let gnisFound = false;
       
       for (const filename of filesInDir) {
-        if (filename.endsWith('.mbtiles')) {
+        if (filename.endsWith('.mbtiles') && !filename.startsWith('._')) {
+          // Skip macOS resource fork files (._*)
           const chartId = filename.replace('.mbtiles', '');
           const path = `${mbtilesDir}/${filename}`;
           
@@ -354,8 +463,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       
       // Start tile server if we have MBTiles or raster charts
       if (loadedMbtiles.length > 0 || loadedRasters.length > 0) {
-        console.log('Starting local tile server...');
-        const serverUrl = await tileServer.startTileServer();
+        console.log(`Starting local tile server with dir: ${mbtilesDir}`);
+        const serverUrl = await tileServer.startTileServer({ mbtilesDir });
         if (serverUrl) {
           console.log('Tile server started at:', serverUrl);
           // Pre-load databases for faster tile serving (both vector and raster)
@@ -1970,6 +2079,39 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </Mapbox.VectorSource>
         )}
 
+        {/* GPS Ship Position Marker */}
+        {(showGPSPanel || showCompass) && gpsData.latitude !== null && gpsData.longitude !== null && (
+          <Mapbox.PointAnnotation
+            id="gps-ship-position"
+            coordinate={[gpsData.longitude, gpsData.latitude]}
+          >
+            <View style={styles.shipMarker}>
+              <View 
+                style={[
+                  styles.shipIcon,
+                  gpsData.heading !== null && { 
+                    transform: [{ rotate: `${gpsData.heading}deg` }] 
+                  }
+                ]}
+              >
+                <View style={styles.shipBow} />
+                <View style={styles.shipBody} />
+              </View>
+              {/* Accuracy circle indicator */}
+              {gpsData.accuracy !== null && gpsData.accuracy > 10 && (
+                <View style={[
+                  styles.accuracyRing,
+                  { 
+                    width: Math.min(gpsData.accuracy * 2, 100),
+                    height: Math.min(gpsData.accuracy * 2, 100),
+                    borderRadius: Math.min(gpsData.accuracy, 50),
+                  }
+                ]} />
+              )}
+            </View>
+          </Mapbox.PointAnnotation>
+        )}
+
       </Mapbox.MapView>
 
       {/* Layers button - positioned in safe area */}
@@ -1999,6 +2141,44 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       >
         <Text style={styles.debugBtnText}>🔧</Text>
       </TouchableOpacity>
+
+      {/* GPS Panel toggle button */}
+      <TouchableOpacity 
+        style={[
+          styles.debugBtn, 
+          { top: insets.top + 12, left: 104 },
+          showGPSPanel && styles.activeToggleBtn,
+        ]}
+        onPress={() => setShowGPSPanel(!showGPSPanel)}
+      >
+        <Text style={styles.debugBtnText}>📡</Text>
+      </TouchableOpacity>
+
+      {/* Compass toggle button */}
+      <TouchableOpacity 
+        style={[
+          styles.debugBtn, 
+          { top: insets.top + 12, left: 150 },
+          showCompass && styles.activeToggleBtn,
+        ]}
+        onPress={() => setShowCompass(!showCompass)}
+      >
+        <Text style={styles.debugBtnText}>🧭</Text>
+      </TouchableOpacity>
+
+      {/* Follow GPS toggle button (only when GPS is on) */}
+      {(showGPSPanel || showCompass) && gpsData.isTracking && (
+        <TouchableOpacity 
+          style={[
+            styles.debugBtn, 
+            { top: insets.top + 12, left: 196 },
+            followGPS && styles.activeToggleBtn,
+          ]}
+          onPress={() => setFollowGPS(!followGPS)}
+        >
+          <Text style={styles.debugBtnText}>{followGPS ? '🎯' : '📌'}</Text>
+        </TouchableOpacity>
+      )}
 
       {/* Chart Debug Overlay - Shows active chart based on zoom */}
       <ChartDebugOverlay
@@ -2297,6 +2477,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </ScrollView>
         </View>
       )}
+
+      {/* Compass Overlay - Full viewport HUD */}
+      <CompassOverlay
+        heading={gpsData.heading}
+        course={gpsData.course}
+        visible={showCompass}
+      />
+
+      {/* GPS Info Panel */}
+      <GPSInfoPanel
+        gpsData={gpsData}
+        visible={showGPSPanel}
+      />
 
     </View>
   );
@@ -3095,4 +3288,46 @@ const styles = StyleSheet.create({
   inspectorRow: { flexDirection: 'row', paddingVertical: 3 },
   inspectorKey: { flex: 1, fontSize: 12, color: '#666' },
   inspectorValue: { flex: 2, fontSize: 12, color: '#333' },
+  
+  // GPS and Compass styles
+  activeToggleBtn: {
+    backgroundColor: 'rgba(33, 150, 243, 0.9)',
+    borderWidth: 2,
+    borderColor: '#1976d2',
+  },
+  shipMarker: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shipIcon: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shipBow: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderBottomWidth: 12,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: '#4FC3F7',
+  },
+  shipBody: {
+    width: 16,
+    height: 20,
+    backgroundColor: '#4FC3F7',
+    borderBottomLeftRadius: 4,
+    borderBottomRightRadius: 4,
+    marginTop: -2,
+    borderWidth: 2,
+    borderColor: '#0288D1',
+    borderTopWidth: 0,
+  },
+  accuracyRing: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderColor: 'rgba(33, 150, 243, 0.4)',
+    backgroundColor: 'rgba(33, 150, 243, 0.1)',
+  },
 });
