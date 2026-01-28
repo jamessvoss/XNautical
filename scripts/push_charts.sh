@@ -8,7 +8,10 @@ set -e
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-SOURCE_DIR="$PROJECT_DIR/charts/flat_mbtiles"
+# Use nested directory structure (mbtiles next to .000 source files)
+SOURCE_DIR="$PROJECT_DIR/charts/All_Alaska_ENC_ROOT"
+# Flat directory for chart_index.json and other metadata
+FLAT_DIR="$PROJECT_DIR/charts/flat_mbtiles"
 DEVICE_DIR="/storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles"
 ARCHIVE_DIR="/tmp/xnautical_archives"
 
@@ -186,13 +189,16 @@ PUSH_ITEMS=""
 echo "${CYAN}▶${NC} Pushing: ${BOLD}${PUSH_ITEMS}${NC}"
 
 # Scan chart files (only if tiers selected)
+# Files are in nested structure: All_Alaska_ENC_ROOT/US1AK90M/US1AK90M.mbtiles
 if [ ${#TIERS[@]} -gt 0 ]; then
     echo ""
     echo "${BOLD}Scanning chart files...${NC}"
     for tier in "${TIERS[@]}"; do
-        count=$(ls "$SOURCE_DIR"/${tier}*.mbtiles 2>/dev/null | wc -l | tr -d ' ')
+        # Find mbtiles recursively in nested directories
+        files=$(find "$SOURCE_DIR" -name "${tier}*.mbtiles" -type f 2>/dev/null)
+        count=$(echo "$files" | grep -c . 2>/dev/null || echo 0)
         if [ "$count" -gt 0 ]; then
-            size=$(stat -f%z "$SOURCE_DIR"/${tier}*.mbtiles 2>/dev/null | awk '{s+=$1} END {print s}')
+            size=$(echo "$files" | xargs stat -f%z 2>/dev/null | awk '{s+=$1} END {print s}')
             TOTAL_FILES=$((TOTAL_FILES + count))
             TOTAL_SIZE=$((TOTAL_SIZE + size))
             printf "  %-4s: %4d files, %s\n" "$tier" "$count" "$(format_size $size)"
@@ -226,23 +232,35 @@ echo ""
 
 push_tier() {
     local tier=$1
-    local count=$(ls "$SOURCE_DIR"/${tier}*.mbtiles 2>/dev/null | wc -l | tr -d ' ')
+    # Find mbtiles recursively in nested directories
+    local files=$(find "$SOURCE_DIR" -name "${tier}*.mbtiles" -type f 2>/dev/null)
+    local count=$(echo "$files" | grep -c . 2>/dev/null || echo 0)
     
     if [ "$count" -eq 0 ]; then
         return
     fi
     
-    local size=$(stat -f%z "$SOURCE_DIR"/${tier}*.mbtiles 2>/dev/null | awk '{s+=$1} END {print s}')
+    local size=$(echo "$files" | xargs stat -f%z 2>/dev/null | awk '{s+=$1} END {print s}')
     local archive="$ARCHIVE_DIR/${tier}_charts.tar.gz"
     local tier_start=$(date +%s)
     
     echo "${CYAN}━━━ $tier: $count files, $(format_size $size) ━━━${NC}"
     
-    # Create archive
+    # Create archive from nested structure - flatten into archive
     echo "  Creating archive..."
-    cd "$SOURCE_DIR"
+    # Create temp dir for flattened files
+    local temp_dir="$ARCHIVE_DIR/${tier}_temp"
+    mkdir -p "$temp_dir"
+    
+    # Copy mbtiles to temp dir (flattening the structure)
+    echo "$files" | while read -r f; do
+        [ -f "$f" ] && cp "$f" "$temp_dir/"
+    done
+    
+    # Create archive from temp dir
+    cd "$temp_dir"
     # Exclude macOS resource fork files (._*)
-    tar -czf "$archive" --exclude='._*' ${tier}*.mbtiles 2>/dev/null
+    tar -czf "$archive" --exclude='._*' *.mbtiles 2>/dev/null
     local archive_size=$(stat -f%z "$archive" 2>/dev/null)
     echo "  Archive: $(format_size $archive_size) compressed"
     
@@ -268,6 +286,8 @@ push_tier() {
         echo "  ${YELLOW}⚠ Expected $count, found $device_files${NC}"
     fi
     
+    # Cleanup
+    rm -rf "$temp_dir"
     rm -f "$archive"
     echo ""
 }
@@ -332,11 +352,13 @@ fi
 # Push chart index (if any charts were pushed)
 if [ ${#TIERS[@]} -gt 0 ]; then
     echo "${CYAN}━━━ Chart Index ━━━${NC}"
-    if [ -f "$SOURCE_DIR/chart_index.json" ]; then
-        adb push "$SOURCE_DIR/chart_index.json" "$DEVICE_DIR/chart_index.json"
+    # Chart index is in flat_mbtiles directory
+    if [ -f "$FLAT_DIR/chart_index.json" ]; then
+        adb push "$FLAT_DIR/chart_index.json" "$DEVICE_DIR/chart_index.json"
+        echo "  ${GREEN}✓ Chart index pushed${NC}"
         echo ""
     else
-        echo "  ${YELLOW}⚠ chart_index.json not found${NC}"
+        echo "  ${YELLOW}⚠ chart_index.json not found in $FLAT_DIR${NC}"
         echo ""
     fi
 fi

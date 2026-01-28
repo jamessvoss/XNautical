@@ -273,7 +273,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   
   // Composite tile mode - when enabled, uses single VectorSource with server-side quilting
   // Requires mbtiles files converted with common layer name "charts"
-  // Enabled by default since mbtiles have been re-converted
+  // Enabled - mbtiles in All_Alaska_ENC_ROOT have correct layer name
   const [useCompositeTiles, setUseCompositeTiles] = useState(true);
   
   // Layer visibility - consolidated into single reducer for performance (fewer re-renders)
@@ -1966,16 +1966,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             maxZoomLevel={22}
             onPress={(e) => console.log('[COMPOSITE] Source press:', e)}
           >
-            {/* TEST LAYER - No filter, should trigger tile requests */}
-            <Mapbox.FillLayer
-              id="composite-test"
-              sourceLayerID="charts"
-              style={{
-                fillColor: '#ff0000',
-                fillOpacity: 0.5,
-              }}
-            />
-            
             {/* DEPARE - Depth Areas */}
             <Mapbox.FillLayer
               id="composite-depare"
