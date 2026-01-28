@@ -685,26 +685,31 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       }
       console.log(`[PERF] Directory resolved: ${mbtilesDir} (${Date.now() - dirStart}ms)`);
       
-      // === PHASE 2: Load chart index ===
+      // === PHASE 2: Load regions.json (tiered loading index) ===
       const indexStart = Date.now();
-      const index = await loadChartIndex(`${mbtilesDir}/chart_index.json`);
+      let regionsIndex: { regions: Record<string, { filename: string; bounds: number[]; minZoom: number; maxZoom: number; sizeBytes: number }> } | null = null;
+      let regionalPacks: string[] = [];
+      
+      try {
+        const regionsPath = `${mbtilesDir}/regions.json`;
+        const regionsInfo = await FileSystem.getInfoAsync(regionsPath);
+        if (regionsInfo.exists) {
+          const content = await FileSystem.readAsStringAsync(regionsPath);
+          regionsIndex = JSON.parse(content);
+          regionalPacks = Object.keys(regionsIndex?.regions || {});
+          console.log(`[PERF] Loaded regions.json with ${regionalPacks.length} regional packs`);
+        } else {
+          console.log('[PERF] No regions.json found - will scan directory');
+        }
+      } catch (e) {
+        console.log('[PERF] Error loading regions.json:', e);
+      }
       console.log(`[PERF] Index load: ${Date.now() - indexStart}ms`);
       
+      // Legacy variables kept for compatibility (not used with tiered loading)
       let tier1ChartIds: string[] = [];
       let tier2ChartIds: string[] = [];
-      let totalChartCount = 0;
-      
-      if (index) {
-        // Progressive loading: US1 first, then US2+US3, then US4 up to 100
-        tier1ChartIds = index.tier1Charts; // All Tier 1 (81 charts)
-        tier2ChartIds = index.tier2Charts; // Tier 2 (1135 charts)
-        totalChartCount = index.stats.totalCharts;
-        
-        const us1Charts = tier1ChartIds.filter(id => id.startsWith('US1'));
-        console.log(`[PERF] Index: ${us1Charts.length} US1, ${tier1ChartIds.length} Tier1, ${tier2ChartIds.length} Tier2`);
-      } else {
-        console.log('[PERF] No index available - will use legacy scanning');
-      }
+      let totalChartCount = regionalPacks.length;
       
       // === PHASE 3: Check for special files (GNIS, basemap) ===
       const specialStart = Date.now();
@@ -721,57 +726,41 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       
       console.log(`[PERF] Special files check: ${Date.now() - specialStart}ms (GNIS: ${gnisFound}, Basemap: ${basemapFound})`);
       
-      // === PHASE 4: Build chart list from index or legacy scan ===
+      // === PHASE 4: Build chart list from regions.json or directory scan ===
       const buildStart = Date.now();
       const loadedMbtiles: LoadedMBTilesChart[] = [];
       const loadedRasters: LoadedRasterChart[] = [];
       
-      if (index && tier1ChartIds.length > 0) {
-        // Scan directory once to get actual files (fast single I/O operation)
-        let existingFiles: Set<string> = new Set();
+      if (regionsIndex && regionalPacks.length > 0) {
+        // Using regions.json for tiered loading
+        console.log(`[PERF] Using regions.json with ${regionalPacks.length} regional packs`);
+        
+        // Add regional packs to loaded list (tile server handles the actual quilting)
+        for (const regionId of regionalPacks) {
+          const region = regionsIndex.regions[regionId];
+          if (region) {
+            const filename = region.filename || `${regionId}.mbtiles`;
+            loadedMbtiles.push({ 
+              chartId: regionId, 
+              path: `${mbtilesDir}/${filename}` 
+            });
+          }
+        }
+        
+        // Also scan for raster files
         try {
           const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
-          existingFiles = new Set(
-            filesInDir
-              .filter((f: string) => f.endsWith('.mbtiles'))
-              .map((f: string) => f.replace('.mbtiles', ''))
-          );
-          console.log(`[PERF] Found ${existingFiles.size} actual mbtiles files`);
+          for (const filename of filesInDir) {
+            if (filename.startsWith('BATHY_') && filename.endsWith('.mbtiles')) {
+              const chartId = filename.replace('.mbtiles', '');
+              loadedRasters.push({ chartId, path: `${mbtilesDir}/${filename}` });
+            }
+          }
         } catch (e) {
-          console.log('[PERF] Could not scan directory for verification, using index as-is');
+          // Ignore scan errors for raster files
         }
         
-        // Use index but verify file existence
-        const verifyExists = existingFiles.size > 0;
-        let skippedCount = 0;
-        
-        for (const chartId of tier1ChartIds) {
-          if (!verifyExists || existingFiles.has(chartId)) {
-            loadedMbtiles.push({ chartId, path: `${mbtilesDir}/${chartId}.mbtiles` });
-          } else {
-            skippedCount++;
-          }
-        }
-        // Also add tier2 to the list (for reference count display)
-        for (const chartId of tier2ChartIds) {
-          if (!verifyExists || existingFiles.has(chartId)) {
-            loadedMbtiles.push({ chartId, path: `${mbtilesDir}/${chartId}.mbtiles` });
-          } else {
-            skippedCount++;
-          }
-        }
-        
-        // Also check for raster files
-        for (const filename of existingFiles) {
-          if (filename.startsWith('BATHY_')) {
-            loadedRasters.push({ chartId: filename, path: `${mbtilesDir}/${filename}.mbtiles` });
-          }
-        }
-        
-        if (skippedCount > 0) {
-          console.log(`[PERF] Skipped ${skippedCount} charts (files not found)`);
-        }
-        console.log(`[PERF] Built chart list from index: ${Date.now() - buildStart}ms (${loadedMbtiles.length} verified)`);
+        console.log(`[PERF] Built chart list from regions.json: ${Date.now() - buildStart}ms (${loadedMbtiles.length} packs)`);
       } else {
         // Legacy: scan directory (slower)
         console.log('[PERF] Falling back to directory scan...');
@@ -814,26 +803,45 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         console.log(`[PERF] Directory scan: ${Date.now() - scanStart}ms (${loadedMbtiles.length} charts)`);
       }
       
-      // Count charts by tier for detailed logging
-      const tierCounts: Record<string, number> = { US1: 0, US2: 0, US3: 0, US4: 0, US5: 0, US6: 0 };
-      for (const m of loadedMbtiles) {
-        const tier = m.chartId.substring(0, 3);
-        tierCounts[tier] = (tierCounts[tier] || 0) + 1;
-      }
+      // Log chart/pack inventory
       console.log(`[CHARTS] ========== CHART INVENTORY ==========`);
-      console.log(`[CHARTS] Total verified charts: ${loadedMbtiles.length}`);
-      console.log(`[CHARTS] By scale: US1=${tierCounts.US1} US2=${tierCounts.US2} US3=${tierCounts.US3} US4=${tierCounts.US4} US5=${tierCounts.US5} US6=${tierCounts.US6}`);
-      console.log(`[CHARTS] Tier 1 (memory): ${tierCounts.US1 + tierCounts.US2 + tierCounts.US3} charts`);
-      console.log(`[CHARTS] Tier 2 (dynamic): ${tierCounts.US4 + tierCounts.US5 + tierCounts.US6} charts`);
+      if (regionsIndex && regionalPacks.length > 0) {
+        // Regional pack mode
+        console.log(`[CHARTS] Mode: Regional Packs (tiered loading)`);
+        console.log(`[CHARTS] Regional packs: ${regionalPacks.length}`);
+        for (const packId of regionalPacks) {
+          const pack = regionsIndex.regions[packId];
+          const sizeMB = pack?.sizeBytes ? Math.round(pack.sizeBytes / 1024 / 1024) : 0;
+          const zoomRange = pack ? `z${pack.minZoom}-${pack.maxZoom}` : '';
+          console.log(`[CHARTS]   - ${packId}: ${sizeMB}MB ${zoomRange}`);
+        }
+      } else {
+        // Legacy individual chart mode
+        const tierCounts: Record<string, number> = { US1: 0, US2: 0, US3: 0, US4: 0, US5: 0, US6: 0 };
+        for (const m of loadedMbtiles) {
+          const tier = m.chartId.substring(0, 3);
+          tierCounts[tier] = (tierCounts[tier] || 0) + 1;
+        }
+        console.log(`[CHARTS] Mode: Individual Charts (legacy)`);
+        console.log(`[CHARTS] Total charts: ${loadedMbtiles.length}`);
+        console.log(`[CHARTS] By scale: US1=${tierCounts.US1} US2=${tierCounts.US2} US3=${tierCounts.US3} US4=${tierCounts.US4} US5=${tierCounts.US5} US6=${tierCounts.US6}`);
+      }
       console.log(`[CHARTS] =======================================`);
       
       setMbtilesCharts(loadedMbtiles);
       
-      // Progressive loading: Start with US1 only for fast initial render
-      const us1Only = loadedMbtiles.filter(m => m.chartId.startsWith('US1')).map(m => m.chartId);
-      setChartsToRender(us1Only);
-      setLoadingPhase('us1');
-      console.log(`[PROGRESSIVE] Phase 1: Rendering ${us1Only.length} US1 charts`);
+      // With regional packs, no progressive loading needed - tile server handles everything
+      if (regionsIndex && regionalPacks.length > 0) {
+        setChartsToRender(regionalPacks);
+        setLoadingPhase('complete');
+        console.log(`[CHARTS] Regional pack mode - tile server handles all rendering`);
+      } else {
+        // Legacy: Progressive loading for individual charts
+        const us1Only = loadedMbtiles.filter(m => m.chartId.startsWith('US1')).map(m => m.chartId);
+        setChartsToRender(us1Only);
+        setLoadingPhase('us1');
+        console.log(`[PROGRESSIVE] Phase 1: Rendering ${us1Only.length} US1 charts`);
+      }
       
       setRasterCharts(loadedRasters);
       
@@ -853,7 +861,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           if (serverUrl) {
             setTileServerReady(true);
             
-            const chartSummary = `${tier1ChartIds.length} Tier1, ${tier2ChartIds.length} Tier2`;
+            const chartSummary = regionsIndex 
+              ? `${regionalPacks.length} regional packs` 
+              : `${loadedMbtiles.length} charts`;
             setDebugInfo(`Server: ${serverUrl}\nCharts: ${chartSummary}\nDir: ${mbtilesDir}`);
           } else {
             console.warn('[PERF] Failed to start tile server');
@@ -2267,22 +2277,77 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             {/* SOUNDG - Soundings */}
+            {/* SCAMIN varies wildly: overview ~3M, regionals 30K-500K */}
+            {/* Just show all soundings at z8+ since density is handled by textAllowOverlap */}
             <Mapbox.SymbolLayer
               id="composite-soundg"
               sourceLayerID="charts"
-              minZoomLevel={10}
+              minZoomLevel={8}
               filter={['all',
                 ['==', ['get', '_layer'], 'SOUNDG'],
-                ['==', ['geometry-type'], 'Point']
+                ['==', ['geometry-type'], 'Point'],
+                ['has', 'SCAMIN']  // Only require SCAMIN exists (filters bad data)
               ]}
               style={{
                 textField: ['to-string', ['round', ['get', 'DEPTH']]],
-                textSize: ['interpolate', ['linear'], ['zoom'], 10, 8, 14, 11, 18, 14],
+                textSize: ['interpolate', ['linear'], ['zoom'], 
+                  6, 7,      // Small at z6
+                  8, 7,      // Keep small at z8
+                  10, 8,     // Still small at z10
+                  11, 9,     // Start growing at z11
+                  14, 11,    // Larger at z14
+                  18, 14     // Full size at z18
+                ],
                 textColor: '#000080',
                 textHaloColor: '#FFFFFF',
                 textHaloWidth: 1,
-                textAllowOverlap: false,
+                textAllowOverlap: false,  // Key: Mapbox auto-thins at low zoom
+                symbolSpacing: ['interpolate', ['linear'], ['zoom'],
+                  6, 120,    // Sparse at z6
+                  7, 120,    // Sparse at z7
+                  8, 250,    // Very sparse at z8
+                  9, 250,    // Very sparse at z9
+                  10, 250,   // Very sparse at z10
+                  11, 50,    // Tighter at z11
+                  14, 20     // Dense at z14
+                ],
                 visibility: showSoundings ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* SBDARE - Seabed composition (text only per S-52) */}
+            <Mapbox.SymbolLayer
+              id="composite-sbdare"
+              sourceLayerID="charts"
+              minZoomLevel={10}
+              filter={['all',
+                ['==', ['get', '_layer'], 'SBDARE'],
+                ['==', ['geometry-type'], 'Point'],
+                ['has', 'NATSUR']
+              ]}
+              style={{
+                textField: [
+                  'case',
+                  ['in', '11', ['to-string', ['get', 'NATSUR']]], 'Co',  // Coral
+                  ['in', '14', ['to-string', ['get', 'NATSUR']]], 'Sh',  // Shells
+                  ['in', '"1"', ['to-string', ['get', 'NATSUR']]], 'M',  // Mud
+                  ['in', '"2"', ['to-string', ['get', 'NATSUR']]], 'Cy', // Clay
+                  ['in', '"3"', ['to-string', ['get', 'NATSUR']]], 'Si', // Silt
+                  ['in', '"4"', ['to-string', ['get', 'NATSUR']]], 'S',  // Sand
+                  ['in', '"5"', ['to-string', ['get', 'NATSUR']]], 'St', // Stone
+                  ['in', '"6"', ['to-string', ['get', 'NATSUR']]], 'G',  // Gravel
+                  ['in', '"7"', ['to-string', ['get', 'NATSUR']]], 'P',  // Pebbles
+                  ['in', '"8"', ['to-string', ['get', 'NATSUR']]], 'Cb', // Cobbles
+                  ['in', '"9"', ['to-string', ['get', 'NATSUR']]], 'R',  // Rock
+                  '',
+                ],
+                textSize: 10,
+                textColor: '#6B4423',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textFont: ['Open Sans Italic'],
+                textAllowOverlap: false,
+                visibility: showSeabed ? 'visible' : 'none',
               }}
             />
             
@@ -2411,7 +2476,50 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
-            {/* LIGHTS */}
+            {/* Light Sector arcs - background outline (renders BEFORE light symbols) */}
+            <Mapbox.LineLayer
+              id="composite-lights-sector-outline"
+              sourceLayerID="charts"
+              minZoomLevel={10}
+              filter={['all',
+                ['==', ['get', '_layer'], 'LIGHTS_SECTOR'],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#000000',
+                lineWidth: 7,
+                lineOpacity: 0.7,
+                visibility: showLights ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Colored sector arcs (on top of outline) */}
+            <Mapbox.LineLayer
+              id="composite-lights-sector"
+              sourceLayerID="charts"
+              minZoomLevel={10}
+              filter={['all',
+                ['==', ['get', '_layer'], 'LIGHTS_SECTOR'],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: [
+                  'match',
+                  ['to-string', ['get', 'COLOUR']],
+                  '1', '#FFFFFF',        // White
+                  '3', '#FF0000',        // Red
+                  '4', '#00FF00',        // Green
+                  '6', '#FFFF00',        // Yellow
+                  '11', '#FFA500',       // Orange
+                  '#FF00FF',             // Default magenta (makes missing obvious)
+                ],
+                lineWidth: 4,
+                lineOpacity: 1.0,
+                visibility: showLights ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* LIGHTS - symbols (on top of sector arcs) */}
             <Mapbox.SymbolLayer
               id="composite-lights"
               sourceLayerID="charts"

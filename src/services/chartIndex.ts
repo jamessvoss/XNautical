@@ -70,7 +70,8 @@ export async function loadChartIndex(indexPath?: string): Promise<ChartIndex | n
   try {
     const fileInfo = await FileSystem.getInfoAsync(path);
     if (!fileInfo.exists) {
-      console.warn('[ChartIndex] Index file not found:', path);
+      // Not a warning - chart_index.json is optional when using regions.json for tiered loading
+      console.log('[ChartIndex] Index file not found (OK if using regions.json):', path);
       return null;
     }
 
