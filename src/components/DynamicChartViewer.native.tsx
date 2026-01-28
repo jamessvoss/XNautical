@@ -1954,11 +1954,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Uses ~20 layers instead of 3000+ for massive performance improvement */}
         {/* Requires mbtiles converted with sourceLayerID="charts" */}
         {/* ================================================================== */}
-        {useMBTiles && tileServerReady && useCompositeTiles && (
+        {useMBTiles && tileServerReady && useCompositeTiles && (() => {
+          const compositeUrl = tileServer.getCompositeTileUrl();
+          console.log('[COMPOSITE] Using tile URL:', compositeUrl);
+          return (
           <Mapbox.VectorSource
             key={`composite-charts-${cacheBuster}`}
             id="composite-charts"
-            tileUrlTemplates={[tileServer.getCompositeTileUrl()]}
+            tileUrlTemplates={[compositeUrl]}
             maxZoomLevel={22}
           >
             {/* DEPARE - Depth Areas */}
@@ -2384,7 +2387,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
           </Mapbox.VectorSource>
-        )}
+          );
+        })()}
 
         {/* ================================================================== */}
         {/* PER-CHART MODE - Original VectorSource per chart (legacy)         */}
