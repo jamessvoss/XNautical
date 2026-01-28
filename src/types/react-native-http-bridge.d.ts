@@ -57,6 +57,25 @@ interface LocalTileServerModule {
    * @returns URL template like "http://127.0.0.1:8765/tiles/{chartId}/{z}/{x}/{y}.pbf"
    */
   getTileUrlTemplate(chartId: string): Promise<string>;
+
+  /**
+   * Get the raster tile URL template for a chart
+   * @param chartId The chart ID
+   * @returns URL template like "http://127.0.0.1:8765/tiles/{chartId}/{z}/{x}/{y}.png"
+   */
+  getRasterTileUrlTemplate(chartId: string): Promise<string>;
+
+  /**
+   * Get the composite tile URL (no chartId - server does quilting)
+   * @returns URL template like "http://127.0.0.1:8765/tiles/{z}/{x}/{y}.pbf"
+   */
+  getCompositeTileUrl(): Promise<string>;
+
+  /**
+   * Clear cached database connections
+   * @returns Number of connections closed
+   */
+  clearCache(): Promise<number>;
 }
 
 declare module 'react-native' {

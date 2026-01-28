@@ -147,6 +147,33 @@ export function getTileUrlTemplate(chartId: string): string {
 }
 
 /**
+ * Get the composite tile URL template (no chartId - server does quilting)
+ * Returns a URL template suitable for use with a single Mapbox VectorSource
+ * The native server automatically selects the best chart for each tile request
+ * 
+ * @returns URL template like "http://127.0.0.1:8765/tiles/{z}/{x}/{y}.pbf"
+ */
+export function getCompositeTileUrl(): string {
+  return `${getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf`;
+}
+
+/**
+ * Get the composite tile URL template asynchronously from native module
+ */
+export async function getCompositeTileUrlAsync(): Promise<string> {
+  if (Platform.OS === 'web' || !LocalTileServer) {
+    return getCompositeTileUrl();
+  }
+
+  try {
+    return await LocalTileServer.getCompositeTileUrl();
+  } catch (error) {
+    console.error('[TileServer] Error getting composite tile URL:', error);
+    return getCompositeTileUrl();
+  }
+}
+
+/**
  * Get the tile URL template asynchronously from native module
  * This ensures the URL uses the correct port even if it was auto-assigned
  */
@@ -279,6 +306,8 @@ export default {
   getTileUrlTemplateAsync,
   getRasterTileUrlTemplate,
   getRasterTileUrlTemplateAsync,
+  getCompositeTileUrl,
+  getCompositeTileUrlAsync,
   preloadDatabases,
   clearCache,
   getMetadata,

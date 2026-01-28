@@ -271,6 +271,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Data source toggles
   const [useMBTiles, setUseMBTiles] = useState(true);
   
+  // Composite tile mode - when enabled, uses single VectorSource with server-side quilting
+  // Requires mbtiles files converted with common layer name "charts"
+  // Set to true once all mbtiles are re-converted
+  const [useCompositeTiles, setUseCompositeTiles] = useState(false);
+  
   // Layer visibility - consolidated into single reducer for performance (fewer re-renders)
   const [layers, dispatchLayers] = useReducer(layerVisibilityReducer, initialLayerVisibility);
   
@@ -1936,9 +1941,450 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           );
         })()}
 
+        {/* ================================================================== */}
+        {/* COMPOSITE TILE MODE - Single VectorSource with server-side quilting */}
+        {/* Uses ~20 layers instead of 3000+ for massive performance improvement */}
+        {/* Requires mbtiles converted with sourceLayerID="charts" */}
+        {/* ================================================================== */}
+        {useMBTiles && tileServerReady && useCompositeTiles && (
+          <Mapbox.VectorSource
+            key={`composite-charts-${cacheBuster}`}
+            id="composite-charts"
+            tileUrlTemplates={[tileServer.getCompositeTileUrl()]}
+            maxZoomLevel={22}
+          >
+            {/* DEPARE - Depth Areas */}
+            <Mapbox.FillLayer
+              id="composite-depare"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'DEPARE']}
+              style={{
+                fillColor: [
+                  'step',
+                  ['coalesce', ['get', 'DRVAL1'], 0],
+                  '#C8D6A3', 0,
+                  '#B5E3F0', 2,
+                  '#9DD5E8', 5,
+                  '#7EC8E3', 10,
+                  '#5BB4D6', 20,
+                  '#3A9FC9', 50,
+                  '#2185B5',
+                ],
+                fillOpacity: mapStyle === 'satellite' ? 0.6 : 1.0,
+                visibility: showDepthAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* DRGARE - Dredged Areas */}
+            <Mapbox.FillLayer
+              id="composite-drgare"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'DRGARE']}
+              style={{
+                fillColor: '#87CEEB',
+                fillOpacity: 0.4,
+              }}
+            />
+            
+            {/* FAIRWY - Fairways */}
+            <Mapbox.FillLayer
+              id="composite-fairwy"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'FAIRWY']}
+              style={{
+                fillColor: '#E6E6FA',
+                fillOpacity: 0.3,
+              }}
+            />
+            
+            {/* LNDARE - Land Areas */}
+            <Mapbox.FillLayer
+              id="composite-lndare"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'LNDARE']}
+              style={{
+                fillColor: '#F5DEB3',
+                fillOpacity: mapStyle === 'satellite' ? 0.3 : 1,
+                visibility: showLand ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* CBLARE - Cable Areas */}
+            <Mapbox.FillLayer
+              id="composite-cblare"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'CBLARE']}
+              style={{
+                fillColor: '#800080',
+                fillOpacity: 0.15,
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* PIPARE - Pipeline Areas */}
+            <Mapbox.FillLayer
+              id="composite-pipare"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'PIPARE']}
+              style={{
+                fillColor: '#008000',
+                fillOpacity: 0.15,
+                visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* RESARE - Restricted Areas */}
+            <Mapbox.FillLayer
+              id="composite-resare"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'RESARE']}
+              style={{
+                fillColor: [
+                  'match',
+                  ['get', 'CATREA'],
+                  14, '#FF0000',
+                  12, '#FF0000',
+                  4, '#00AA00',
+                  7, '#00AA00',
+                  8, '#00AA00',
+                  9, '#00AA00',
+                  '#FF00FF',
+                ],
+                fillOpacity: 0.2,
+                visibility: showRestrictedAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* CTNARE - Caution Areas */}
+            <Mapbox.FillLayer
+              id="composite-ctnare"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'CTNARE']}
+              style={{
+                fillColor: '#FFD700',
+                fillOpacity: 0.2,
+                visibility: showCautionAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MIPARE - Military Practice Areas */}
+            <Mapbox.FillLayer
+              id="composite-mipare"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'MIPARE']}
+              style={{
+                fillColor: '#FF0000',
+                fillOpacity: 0.15,
+                visibility: showMilitaryAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* ACHARE - Anchorage Areas */}
+            <Mapbox.FillLayer
+              id="composite-achare"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'ACHARE']}
+              style={{
+                fillColor: '#4169E1',
+                fillOpacity: 0.15,
+                visibility: showAnchorages ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MARCUL - Marine Farms */}
+            <Mapbox.FillLayer
+              id="composite-marcul"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'MARCUL']}
+              style={{
+                fillColor: '#228B22',
+                fillOpacity: 0.2,
+                visibility: showMarineFarms ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* DEPCNT - Depth Contours */}
+            <Mapbox.LineLayer
+              id="composite-depcnt"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'DEPCNT']}
+              style={{
+                lineColor: '#4A90D9',
+                lineWidth: ['interpolate', ['linear'], ['zoom'], 8, 0.3, 12, 0.7, 16, 1.0],
+                lineOpacity: 0.7,
+                visibility: showDepthContours ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* COALNE - Coastline */}
+            <Mapbox.LineLayer
+              id="composite-coalne"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'COALNE']}
+              style={{
+                lineColor: '#8B4513',
+                lineWidth: ['interpolate', ['linear'], ['zoom'], 8, 0.5, 12, 1.0, 16, 1.5],
+              }}
+            />
+            
+            {/* CBLSUB/CBLOHD - Cables */}
+            <Mapbox.LineLayer
+              id="composite-cables"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['any',
+                ['==', ['get', '_layer'], 'CBLSUB'],
+                ['==', ['get', '_layer'], 'CBLOHD']
+              ]}
+              style={{
+                lineColor: '#800080',
+                lineWidth: 1.5,
+                lineDasharray: [3, 2],
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* PIPSOL - Pipelines */}
+            <Mapbox.LineLayer
+              id="composite-pipsol"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              filter={['==', ['get', '_layer'], 'PIPSOL']}
+              style={{
+                lineColor: '#008000',
+                lineWidth: 2,
+                lineDasharray: [5, 3],
+                visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* SOUNDG - Soundings */}
+            <Mapbox.SymbolLayer
+              id="composite-soundg"
+              sourceLayerID="charts"
+              belowLayerID="chart-top-marker"
+              minZoomLevel={10}
+              filter={['all',
+                ['==', ['get', '_layer'], 'SOUNDG'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                textField: ['to-string', ['round', ['get', 'DEPTH']]],
+                textSize: ['interpolate', ['linear'], ['zoom'], 10, 8, 14, 11, 18, 14],
+                textColor: '#000080',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1,
+                textAllowOverlap: false,
+                visibility: showSoundings ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* UWTROC - Underwater Rocks */}
+            <Mapbox.SymbolLayer
+              id="composite-uwtroc"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', '_layer'], 'UWTROC'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'WATLEV'],
+                  3, 'rock-awash',
+                  4, 'rock-submerged',
+                  5, 'rock-above-water',
+                  7, 'rock-uncovers',
+                  'rock-submerged',
+                ],
+                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.4, 16, 0.6],
+                iconAllowOverlap: true,
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* WRECKS - Wrecks */}
+            <Mapbox.SymbolLayer
+              id="composite-wrecks"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', '_layer'], 'WRECKS'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'CATWRK'],
+                  1, 'wreck-danger',
+                  2, 'wreck-submerged',
+                  3, 'wreck-hull',
+                  4, 'wreck-safe',
+                  5, 'wreck-uncovers',
+                  'wreck-submerged',
+                ],
+                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.3, 12, 0.5, 16, 0.7],
+                iconAllowOverlap: true,
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* OBSTRN - Obstructions */}
+            <Mapbox.SymbolLayer
+              id="composite-obstrn"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', '_layer'], 'OBSTRN'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: 'obstruction',
+                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.4, 16, 0.6],
+                iconAllowOverlap: true,
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Buoys - BOYLAT, BOYCAR, etc. */}
+            <Mapbox.SymbolLayer
+              id="composite-buoys"
+              sourceLayerID="charts"
+              filter={['any',
+                ['==', ['get', '_layer'], 'BOYLAT'],
+                ['==', ['get', '_layer'], 'BOYCAR'],
+                ['==', ['get', '_layer'], 'BOYSAW'],
+                ['==', ['get', '_layer'], 'BOYSPP'],
+                ['==', ['get', '_layer'], 'BOYISD'],
+                ['==', ['get', '_layer'], 'BOYINB']
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'BOYSHP'],
+                  1, 'buoy-conical',
+                  2, 'buoy-can',
+                  3, 'buoy-spherical',
+                  4, 'buoy-pillar',
+                  5, 'buoy-spar',
+                  6, 'buoy-barrel',
+                  7, 'buoy-super',
+                  'buoy-pillar',
+                ],
+                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.4, 16, 0.6],
+                iconAllowOverlap: true,
+                visibility: showBuoys ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Beacons - BCNLAT, BCNCAR, etc. */}
+            <Mapbox.SymbolLayer
+              id="composite-beacons"
+              sourceLayerID="charts"
+              filter={['any',
+                ['==', ['get', '_layer'], 'BCNLAT'],
+                ['==', ['get', '_layer'], 'BCNCAR'],
+                ['==', ['get', '_layer'], 'BCNSAW'],
+                ['==', ['get', '_layer'], 'BCNSPP'],
+                ['==', ['get', '_layer'], 'BCNISD']
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'BCNSHP'],
+                  1, 'beacon-stake',
+                  2, 'beacon-withy',
+                  3, 'beacon-tower',
+                  4, 'beacon-lattice',
+                  5, 'beacon-cairn',
+                  'beacon-generic',
+                ],
+                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.3, 12, 0.5, 16, 0.7],
+                iconAllowOverlap: true,
+                visibility: showBeacons ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* LIGHTS */}
+            <Mapbox.SymbolLayer
+              id="composite-lights"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', '_layer'], 'LIGHTS'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'COLOUR'],
+                  1, 'light-white',
+                  3, 'light-red',
+                  4, 'light-green',
+                  'light-major',
+                ],
+                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.3, 12, 0.5, 16, 0.8],
+                iconRotate: ['coalesce', ['get', '_ORIENT'], 135],
+                iconRotationAlignment: 'map',
+                iconAnchor: 'bottom',
+                iconAllowOverlap: true,
+                iconIgnorePlacement: true,
+                visibility: showLights ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* LNDMRK - Landmarks */}
+            <Mapbox.SymbolLayer
+              id="composite-lndmrk"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', '_layer'], 'LNDMRK'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'CATLMK'],
+                  3, 'landmark-chimney',
+                  5, 'landmark-flagpole',
+                  7, 'landmark-mast',
+                  9, 'landmark-monument',
+                  10, 'landmark-monument',
+                  12, 'landmark-monument',
+                  13, 'landmark-monument',
+                  14, 'landmark-church',
+                  17, 'landmark-tower',
+                  18, 'landmark-windmill',
+                  19, 'landmark-windmill',
+                  20, 'landmark-church',
+                  28, 'landmark-radio-tower',
+                  'landmark-tower',
+                ],
+                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.45, 16, 0.7],
+                iconAllowOverlap: true,
+                visibility: showLandmarks ? 'visible' : 'none',
+              }}
+            />
+          </Mapbox.VectorSource>
+        )}
+
+        {/* ================================================================== */}
+        {/* PER-CHART MODE - Original VectorSource per chart (legacy)         */}
+        {/* Kept for backward compatibility until all mbtiles are re-converted */}
+        {/* ================================================================== */}
         {/* MBTiles Vector Sources - Chart quilting with zoom-based visibility */}
         {/* PERFORMANCE: Progressive loading + viewport-based dynamic loading */}
-        {useMBTiles && tileServerReady && allChartsToRender.map((chartId) => {
+        {useMBTiles && tileServerReady && !useCompositeTiles && allChartsToRender.map((chartId) => {
           const tileUrl = tileServer.getTileUrlTemplate(chartId);
           
           // Determine minZoomLevel and maxZoomLevel based on chart scale for proper quilting
@@ -3434,6 +3880,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Text style={styles.debugText}>
               Status: {tileServerReady ? '✅ Running' : '❌ Not running'}
             </Text>
+            <Text style={styles.debugText}>
+              Mode: {useCompositeTiles ? '🚀 Composite (1 source)' : `📦 Per-chart (${allChartsToRender.length} sources)`}
+            </Text>
             <View style={styles.debugDivider} />
             
             <Text style={styles.debugSectionTitle}>Storage</Text>
@@ -3648,6 +4097,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <ScrollView style={styles.ffLayersColumnRight}>
               <Text style={styles.ffLayersSectionTitle}>Data Sources</Text>
               <FFToggle label={`ENC Charts (${allChartsToRender.length})`} value={useMBTiles} onToggle={setUseMBTiles} />
+              <FFToggle 
+                label={`Composite Mode ${useCompositeTiles ? '(1 src)' : '(' + allChartsToRender.length + ' srcs)'}`} 
+                value={useCompositeTiles} 
+                onToggle={setUseCompositeTiles} 
+                indent 
+              />
               {rasterCharts.length > 0 && (
                 <FFToggle label={`Bathymetry (${rasterCharts.length})`} value={showBathymetry} onToggle={() => toggleLayer('bathymetry')} />
               )}

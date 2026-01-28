@@ -48,9 +48,19 @@ GoogleService-Info.plist
 # Compiled JS files in src/ (TypeScript source files only)
 src/**/*.js
 
-# generated native folders
+# generated native folders (except custom native modules)
 /ios
+!/ios/XNautical/
+/ios/XNautical/*
+!/ios/XNautical/LocalTileServer.swift
+!/ios/XNautical/LocalTileServer.m
 /android
+!/android/app/src/main/java/com/xnautical/
+/android/app/src/main/java/com/xnautical/*
+!/android/app/src/main/java/com/xnautical/app/
+/android/app/src/main/java/com/xnautical/app/*
+!/android/app/src/main/java/com/xnautical/app/LocalTileServerModule.java
+!/android/app/src/main/java/com/xnautical/app/LocalTileServerPackage.java
 
 # Large binary files (map tiles)
 *.mbtiles

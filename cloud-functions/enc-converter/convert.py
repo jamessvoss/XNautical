@@ -190,6 +190,7 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
                     for feature in features:
                         if feature.get('geometry') is not None:
                             feature['properties']['_layer'] = layer
+                            feature['properties']['_chartId'] = chart_id  # Track source chart for compositing
                             # Force navigation aids and safety areas to appear at all zoom levels
                             if layer in NAVIGATION_AIDS or layer in SAFETY_AREAS:
                                 feature['tippecanoe'] = {'minzoom': 0, 'maxzoom': 17}
@@ -467,13 +468,15 @@ def convert_geojson_to_mbtiles(geojson_path: str, output_path: str, chart_id: st
     print(f"  Scale settings: z{min_zoom}-{max_zoom} ({chart_id[:3]} scale)")
     
     # Build tippecanoe command
+    # Use common layer name "charts" for all charts to enable server-side compositing
+    # Individual chart ID is stored in _chartId property on each feature
     cmd = [
         "tippecanoe",
         "-o", output_path,
         "-z", str(max_zoom),
         "-Z", str(min_zoom),
         "--force",
-        "-l", chart_id,
+        "-l", "charts",  # Common layer name for compositing
         "--attribution", "NOAA ENC",
         "--name", chart_id,
         "--description", f"Vector tiles for {chart_id}",
