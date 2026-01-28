@@ -58,6 +58,12 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     private final ConcurrentHashMap<String, ChartInfo> chartIndex = new ConcurrentHashMap<>();
     private boolean chartIndexLoaded = false;
     
+    // Track chart changes for logging
+    private volatile String lastSelectedChart = null;
+    private volatile int lastZoom = -1;
+    private volatile long tileRequestCount = 0;
+    private volatile long chartSwitchCount = 0;
+    
     /**
      * Chart metadata for quilting decisions
      */
@@ -368,6 +374,7 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
      */
     private String findBestChartForTile(int z, int x, int y) {
         if (!chartIndexLoaded || chartIndex.isEmpty()) {
+            Log.w(TAG, "[QUILT] Chart index not loaded or empty!");
             return null;
         }
         
@@ -385,6 +392,8 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         }
         
         if (candidates.isEmpty()) {
+            Log.d(TAG, "[QUILT] No charts cover tile " + z + "/" + x + "/" + y + " at lon=" + 
+                String.format("%.3f", centerLon) + ", lat=" + String.format("%.3f", centerLat));
             return null;
         }
         
@@ -396,8 +405,20 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             }
         });
         
-        // Return the most detailed chart
-        return candidates.get(0).chartId;
+        // Log candidates for debugging
+        StringBuilder candidateList = new StringBuilder();
+        for (int i = 0; i < Math.min(candidates.size(), 5); i++) {
+            ChartInfo c = candidates.get(i);
+            if (i > 0) candidateList.append(", ");
+            candidateList.append(c.chartId).append("(L").append(c.level).append(")");
+        }
+        if (candidates.size() > 5) candidateList.append("...");
+        
+        String selected = candidates.get(0).chartId;
+        Log.i(TAG, "[QUILT] z" + z + " tile " + x + "/" + y + " → " + selected + 
+            " (from " + candidates.size() + " candidates: " + candidateList + ")");
+        
+        return selected;
     }
 
     /**
@@ -645,6 +666,7 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 
                 // Find the best chart for this tile using quilting logic
                 String bestChart = findBestChartForTile(z, x, y);
+                tileRequestCount++;
                 
                 if (bestChart == null) {
                     // No chart covers this tile
@@ -654,6 +676,23 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                     addVectorTileHeaders(response);
                     return response;
                 }
+                
+                // Track chart switches with prominent logging
+                boolean chartChanged = !bestChart.equals(lastSelectedChart);
+                boolean zoomChanged = z != lastZoom;
+                
+                if (chartChanged) {
+                    chartSwitchCount++;
+                    Log.i(TAG, "════════════════════════════════════════════════════════════");
+                    Log.i(TAG, "[CHART SWITCH] " + lastSelectedChart + " → " + bestChart);
+                    Log.i(TAG, "[CHART SWITCH] Zoom: z" + lastZoom + " → z" + z);
+                    Log.i(TAG, "[CHART SWITCH] Total switches: " + chartSwitchCount + " / " + tileRequestCount + " requests");
+                    Log.i(TAG, "════════════════════════════════════════════════════════════");
+                    lastSelectedChart = bestChart;
+                } else if (zoomChanged) {
+                    Log.i(TAG, "[ZOOM] z" + lastZoom + " → z" + z + " (still using " + bestChart + ")");
+                }
+                lastZoom = z;
                 
                 // Get tile from the best chart
                 byte[] tileData = getTile(bestChart, z, x, y);
@@ -668,7 +707,7 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                     return response;
                 }
                 
-                // Log hit with chart selection info
+                // Log hit (verbose - use Log.d for less noise)
                 Log.d(TAG, "Composite hit: " + z + "/" + x + "/" + y + " -> " + bestChart + 
                     " (" + tileData.length + " bytes, " + queryTime + "ms)");
                 
