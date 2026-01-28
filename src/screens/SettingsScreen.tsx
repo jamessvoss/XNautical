@@ -160,6 +160,17 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* Developer Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Developer</Text>
+          <View style={styles.card}>
+            <View style={[styles.row, { borderBottomWidth: 0 }]}>
+              <Text style={styles.label}>Technical Debug</Text>
+              <Text style={styles.valueSmall}>Available in Layers menu{'\n'}under "Show Active Chart"</Text>
+            </View>
+          </View>
+        </View>
+
         {/* Refresh Cache Info */}
         <TouchableOpacity style={styles.refreshButton} onPress={loadCacheInfo}>
           <Text style={styles.refreshButtonText}>Refresh Cache Info</Text>
@@ -225,6 +236,11 @@ const styles = StyleSheet.create({
   value: {
     fontSize: 16,
     color: '#666',
+  },
+  valueSmall: {
+    fontSize: 12,
+    color: '#999',
+    textAlign: 'right',
   },
   logoutButton: {
     marginTop: 16,

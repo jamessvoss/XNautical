@@ -45,6 +45,9 @@ GoogleService-Info.plist
 # typescript
 *.tsbuildinfo
 
+# Compiled JS files in src/ (TypeScript source files only)
+src/**/*.js
+
 # generated native folders
 /ios
 /android

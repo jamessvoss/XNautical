@@ -21,16 +21,64 @@ interface MBTilesDatabase {
   db: SQLite.SQLiteDatabase;
   chartId: string;
   metadata: Record<string, string>;
+  lastAccess: number;
+  accessCount: number;
+  dbPath: string;
 }
 
+// Configuration for LRU eviction
+const MAX_OPEN_DATABASES = 20;
 const openDatabases: Map<string, MBTilesDatabase> = new Map();
+
+// Statistics
+let stats = {
+  hits: 0,
+  misses: 0,
+  evictions: 0,
+};
+
+/**
+ * Evict the least recently used database to make room
+ */
+async function evictLRU(): Promise<void> {
+  if (openDatabases.size === 0) return;
+  
+  // Find LRU entry
+  let lruChartId: string | null = null;
+  let lruTime = Infinity;
+  
+  for (const [chartId, entry] of openDatabases) {
+    if (entry.lastAccess < lruTime) {
+      lruTime = entry.lastAccess;
+      lruChartId = chartId;
+    }
+  }
+  
+  if (lruChartId) {
+    console.log(`[MBTilesReader] Evicting LRU database: ${lruChartId}`);
+    await closeDatabase(lruChartId);
+    stats.evictions++;
+  }
+}
 
 /**
  * Open an MBTiles database
  */
 export async function openDatabase(chartId: string): Promise<MBTilesDatabase | null> {
-  if (openDatabases.has(chartId)) {
-    return openDatabases.get(chartId)!;
+  // Check if already open - update access time and return
+  const existing = openDatabases.get(chartId);
+  if (existing) {
+    existing.lastAccess = Date.now();
+    existing.accessCount++;
+    stats.hits++;
+    return existing;
+  }
+
+  stats.misses++;
+  
+  // Evict LRU if at capacity
+  if (openDatabases.size >= MAX_OPEN_DATABASES) {
+    await evictLRU();
   }
 
   try {
@@ -43,7 +91,7 @@ export async function openDatabase(chartId: string): Promise<MBTilesDatabase | n
       return null;
     }
 
-    console.log(`Opening MBTiles: ${mbtilesPath}`);
+    console.log(`[MBTilesReader] Opening MBTiles: ${mbtilesPath}`);
 
     // Open the database
     // expo-sqlite needs special handling for arbitrary file paths
@@ -63,7 +111,7 @@ export async function openDatabase(chartId: string): Promise<MBTilesDatabase | n
     // Copy MBTiles to SQLite directory if not already there
     const dbFileInfo = await FileSystem.getInfoAsync(dbPath);
     if (!dbFileInfo.exists) {
-      console.log(`Copying MBTiles to SQLite directory: ${dbPath}`);
+      console.log(`[MBTilesReader] Copying MBTiles to SQLite directory: ${dbPath}`);
       await FileSystem.copyAsync({ from: mbtilesPath, to: dbPath });
     }
 
@@ -83,10 +131,17 @@ export async function openDatabase(chartId: string): Promise<MBTilesDatabase | n
       console.warn('Could not read metadata:', e);
     }
 
-    const mbtilesDb: MBTilesDatabase = { db, chartId, metadata };
+    const mbtilesDb: MBTilesDatabase = {
+      db,
+      chartId,
+      metadata,
+      lastAccess: Date.now(),
+      accessCount: 1,
+      dbPath,
+    };
     openDatabases.set(chartId, mbtilesDb);
     
-    console.log(`Opened MBTiles for ${chartId}, metadata:`, metadata);
+    console.log(`[MBTilesReader] Opened ${chartId} (pool size: ${openDatabases.size})`);
     return mbtilesDb;
   } catch (error) {
     console.error(`Error opening MBTiles for ${chartId}:`, error);
@@ -95,18 +150,56 @@ export async function openDatabase(chartId: string): Promise<MBTilesDatabase | n
 }
 
 /**
- * Close a database
+ * Close a database and clean up
  */
 export async function closeDatabase(chartId: string): Promise<void> {
   const mbtilesDb = openDatabases.get(chartId);
   if (mbtilesDb) {
     try {
       await mbtilesDb.db.closeAsync();
-      openDatabases.delete(chartId);
+      // Clean up the copied file
+      await FileSystem.deleteAsync(mbtilesDb.dbPath, { idempotent: true });
     } catch (e) {
       console.error(`Error closing database for ${chartId}:`, e);
     }
+    openDatabases.delete(chartId);
   }
+}
+
+/**
+ * Close all open databases
+ */
+export async function closeAllDatabases(): Promise<void> {
+  console.log(`[MBTilesReader] Closing all databases (${openDatabases.size})...`);
+  const chartIds = Array.from(openDatabases.keys());
+  for (const chartId of chartIds) {
+    await closeDatabase(chartId);
+  }
+  stats = { hits: 0, misses: 0, evictions: 0 };
+}
+
+/**
+ * Get reader statistics
+ */
+export function getReaderStats(): {
+  openDatabases: number;
+  maxDatabases: number;
+  hits: number;
+  misses: number;
+  hitRate: number;
+  evictions: number;
+  chartIds: string[];
+} {
+  const total = stats.hits + stats.misses;
+  return {
+    openDatabases: openDatabases.size,
+    maxDatabases: MAX_OPEN_DATABASES,
+    hits: stats.hits,
+    misses: stats.misses,
+    hitRate: total > 0 ? stats.hits / total : 0,
+    evictions: stats.evictions,
+    chartIds: Array.from(openDatabases.keys()),
+  };
 }
 
 /**

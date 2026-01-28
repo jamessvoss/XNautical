@@ -134,17 +134,31 @@ const errorStyles = StyleSheet.create({
 
 const Tab = createBottomTabNavigator();
 
-// Tab icon component
+// Tab icon component - ForeFlight style with dark translucent background
 function TabIcon({ name, focused }: { name: string; focused: boolean }) {
-  const icons: Record<string, string> = {
-    Viewer: '🗺️',
-    Settings: '⚙️',
+  // Icon mappings - use simple text icons for now, can replace with SVG later
+  const getIcon = () => {
+    switch (name) {
+      case 'Viewer':
+        return '🗺️';
+      case 'Charts':
+        return '📥';
+      case 'Settings':
+        return '⚙️';
+      default:
+        return '📄';
+    }
   };
   
   return (
-    <Text style={{ fontSize: focused ? 26 : 24, opacity: focused ? 1 : 0.6 }}>
-      {icons[name] || '📄'}
-    </Text>
+    <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <Text style={{ 
+        fontSize: 22, 
+        opacity: focused ? 1 : 0.6,
+      }}>
+        {getIcon()}
+      </Text>
+    </View>
   );
 }
 
@@ -245,24 +259,34 @@ function AppContent() {
             tabBarIcon: ({ focused }) => (
               <TabIcon name={route.name} focused={focused} />
             ),
-            tabBarActiveTintColor: '#007AFF',
-            tabBarInactiveTintColor: '#8e8e93',
+            tabBarActiveTintColor: '#4FC3F7',
+            tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.5)',
             tabBarStyle: {
-              backgroundColor: '#fff',
-              borderTopColor: '#e0e0e0',
+              backgroundColor: 'rgba(20, 25, 35, 0.92)',
+              borderTopColor: 'rgba(255, 255, 255, 0.1)',
+              borderTopWidth: 0.5,
+              paddingBottom: 6,
+            },
+            tabBarItemStyle: {
+              paddingTop: 2,
+              paddingBottom: 2,
             },
             tabBarLabelStyle: {
-              fontSize: 12,
+              fontSize: 11,
               fontWeight: '600',
             },
-            // Let React Navigation handle safe area automatically
             tabBarHideOnKeyboard: true,
           })}
         >
           <Tab.Screen 
             name="Viewer" 
             component={ViewerTab}
-            options={{ tabBarLabel: 'Viewer' }}
+            options={{ tabBarLabel: 'Maps' }}
+          />
+          <Tab.Screen 
+            name="Charts" 
+            component={ChartsTab}
+            options={{ tabBarLabel: 'Documents' }}
           />
           <Tab.Screen 
             name="Settings" 
@@ -271,7 +295,7 @@ function AppContent() {
           />
         </Tab.Navigator>
       </NavigationContainer>
-      <StatusBar style="dark" />
+      <StatusBar style="light" />
     </SafeAreaProvider>
   );
 }

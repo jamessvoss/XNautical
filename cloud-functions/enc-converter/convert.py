@@ -367,22 +367,28 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
     - US3: Coastal charts - z13 max (stop line simplification)
     - US4: Approach charts - z16 max (high precision)
     - US5: Harbor charts - z18 max (maximum detail)
+    
+    Note: We avoid --simplify-only-low-zooms for all chart types as it
+    can cause significant polygon distortion (e.g., caution areas appearing
+    way larger than they should be at low zoom levels).
     """
     
     # Detect chart scale from ID prefix
     if chart_id.startswith('US1'):
         # Overview charts: minimize file size, reasonable for overview
+        # Use --no-line-simplification to preserve polygon shapes
         return (8, 0, [
             '--drop-densest-as-needed',
-            '--simplify-only-low-zooms',
+            '--no-line-simplification',
             '-r2.5'
         ])
     
     elif chart_id.startswith('US2'):
         # General charts: prevent GB-sized files, optimize for regional view
+        # Use --no-line-simplification to preserve polygon shapes
         return (10, 8, [
             '--drop-densest-as-needed',
-            '--simplify-only-low-zooms',
+            '--no-line-simplification',
             '-r1'
         ])
     

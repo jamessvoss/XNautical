@@ -2,7 +2,7 @@
  * Hierarchy Selection Screen - Drill-down chart selection based on NOAA hierarchy
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -214,8 +214,8 @@ export default function HierarchySelectionScreen({ onNavigateToViewer }: Props) 
     return { downloaded, total: allIds.length };
   };
 
-  // Generate GeoJSON for current nodes
-  const nodesGeoJSON: GeoJSON.FeatureCollection = {
+  // Generate GeoJSON for current nodes - memoized to prevent recalculation on every render
+  const nodesGeoJSON: GeoJSON.FeatureCollection = useMemo(() => ({
     type: 'FeatureCollection',
     features: currentNodes
       .filter(node => node.chart.bounds)
@@ -224,7 +224,7 @@ export default function HierarchySelectionScreen({ onNavigateToViewer }: Props) 
         const isFullyDownloaded = status.downloaded === status.total;
         
         return {
-          type: 'Feature',
+          type: 'Feature' as const,
           properties: {
             id: node.chart.chartId,
             level: node.level,
@@ -233,7 +233,7 @@ export default function HierarchySelectionScreen({ onNavigateToViewer }: Props) 
             hasChildren: node.children.length > 0,
           },
           geometry: {
-            type: 'Polygon',
+            type: 'Polygon' as const,
             coordinates: [[
               [node.chart.bounds![0], node.chart.bounds![1]],
               [node.chart.bounds![2], node.chart.bounds![1]],
@@ -244,9 +244,9 @@ export default function HierarchySelectionScreen({ onNavigateToViewer }: Props) 
           },
         };
       }),
-  };
+  }), [currentNodes, downloadedChartIds]);
 
-  const renderNodeItem = ({ item }: { item: ChartNode }) => {
+  const renderNodeItem = useCallback(({ item }: { item: ChartNode }) => {
     const status = getNodeDownloadStatus(item);
     const isFullyDownloaded = status.downloaded === status.total;
     const isDownloading = downloading === item.chart.chartId;
@@ -301,7 +301,7 @@ export default function HierarchySelectionScreen({ onNavigateToViewer }: Props) 
         </TouchableOpacity>
       </View>
     );
-  };
+  }, [downloading, downloadProgress, downloadedChartIds, drillDown, downloadNode]);
 
   if (loading) {
     return (
@@ -408,6 +408,12 @@ export default function HierarchySelectionScreen({ onNavigateToViewer }: Props) 
         ListEmptyComponent={
           <Text style={styles.emptyText}>No charts at this level</Text>
         }
+        // Performance optimizations
+        removeClippedSubviews={true}
+        maxToRenderPerBatch={10}
+        updateCellsBatchingPeriod={50}
+        initialNumToRender={10}
+        windowSize={5}
       />
     </SafeAreaView>
   );

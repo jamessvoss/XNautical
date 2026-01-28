@@ -17,6 +17,7 @@ import {
   TouchableOpacity,
   ScrollView,
 } from 'react-native';
+import { isPointInChart } from '../services/chartIndex';
 
 // Chart scale definitions matching convert.py and DynamicChartViewer
 const CHART_SCALES = [
@@ -48,6 +49,8 @@ interface Props {
   tileServerReady: boolean;
   // Position from top (should account for safe area + button height)
   topOffset?: number;
+  // Position from left
+  leftOffset?: number;
   // Optional callbacks for additional data
   onRequestTileStats?: () => Promise<TileStats | null>;
 }
@@ -122,6 +125,7 @@ export default function ChartDebugOverlay({
   mbtilesCharts,
   tileServerReady,
   topOffset = 60,
+  leftOffset = 10,
   onRequestTileStats,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
@@ -165,44 +169,87 @@ export default function ChartDebugOverlay({
 
   if (!visible) return null;
 
-  // Determine which charts are active at current zoom
-  const activeCharts = mbtilesCharts.filter(chart => {
-    const match = chart.chartId.match(/^US(\d)/);
-    if (!match) return currentZoom >= 0; // Non-US charts always show
-    
-    const scaleNum = parseInt(match[1], 10);
-    const scaleInfo = CHART_SCALES.find(s => s.prefix === `US${scaleNum}`);
-    if (!scaleInfo) return false;
-    
-    return currentZoom >= scaleInfo.minZoom;
+  // Determine which charts cover the current viewport
+  const [lon, lat] = centerCoord;
+  const coveringCharts = mbtilesCharts.filter(chart => {
+    return isPointInChart(chart.chartId, lon, lat);
   });
 
-  // Find the most detailed (primary) chart
-  const primaryChart = activeCharts.length > 0 
-    ? activeCharts.reduce((best, chart) => {
-        const bestNum = parseInt(best.chartId.match(/^US(\d)/)?.[1] || '0', 10);
-        const chartNum = parseInt(chart.chartId.match(/^US(\d)/)?.[1] || '0', 10);
-        return chartNum > bestNum ? chart : best;
-      })
-    : null;
+  // Helper to get chart scale info
+  const getChartScaleInfo = (chartId: string) => {
+    const match = chartId.match(/^US(\d)/);
+    if (!match) return null;
+    const scaleNum = parseInt(match[1], 10);
+    return CHART_SCALES.find(s => s.prefix === `US${scaleNum}`) || null;
+  };
+
+  // Find the chart that BEST matches the current zoom level
+  // Priority: chart whose zoom range contains currentZoom, preferring most detailed
+  // If none contain it, pick the closest match (for overzoom/underzoom)
+  const primaryChart = (() => {
+    if (coveringCharts.length === 0) return null;
+    
+    // Score each chart by how well it matches current zoom
+    // Higher score = better match
+    const scored = coveringCharts.map(chart => {
+      const scaleInfo = getChartScaleInfo(chart.chartId);
+      if (!scaleInfo) return { chart, score: -1000, inRange: false };
+      
+      const { minZoom, maxZoom } = scaleInfo;
+      const inRange = currentZoom >= minZoom && currentZoom <= maxZoom;
+      const scaleNum = parseInt(chart.chartId.match(/^US(\d)/)?.[1] || '0', 10);
+      
+      if (inRange) {
+        // In range: prefer more detailed charts (higher scale number)
+        return { chart, score: 1000 + scaleNum, inRange: true };
+      } else if (currentZoom > maxZoom) {
+        // Overzoomed past this chart: score by how close we are to maxZoom
+        // More detailed charts score higher for overzoom
+        return { chart, score: 500 + scaleNum - (currentZoom - maxZoom), inRange: false };
+      } else {
+        // Underzoomed: this chart isn't rendering yet
+        // Lower score, but still track for "upcoming" info
+        return { chart, score: -100 - (minZoom - currentZoom), inRange: false };
+      }
+    });
+    
+    // Sort by score descending
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0]?.chart || null;
+  })();
+
+  // Get charts that are actively rendering at this zoom (for "also covering" display)
+  const activeCharts = coveringCharts.filter(chart => {
+    const scaleInfo = getChartScaleInfo(chart.chartId);
+    if (!scaleInfo) return false;
+    // Chart is "active" if we're within or above its zoom range (overzoom counts)
+    return currentZoom >= scaleInfo.minZoom;
+  });
+  
+  // Check what chart SHOULD be available at this zoom (for "no coverage" warning)
+  const expectedScale = CHART_SCALES.find(s => currentZoom >= s.minZoom && currentZoom <= s.maxZoom);
+  const hasCoverageGap = !primaryChart && currentZoom >= 0;
+  
+  // Check if we're overzooming the primary chart
+  const primaryScaleInfo = primaryChart ? getChartScaleInfo(primaryChart.chartId) : null;
+  const isOverzoom = primaryScaleInfo && currentZoom > primaryScaleInfo.maxZoom;
 
   const category = getChartCategory(currentZoom);
   const scale = zoomToScale(currentZoom);
   const bounds = getViewportBounds(centerCoord, currentZoom);
 
-  // Compact view
+  // Compact view - just shows chart ID
   if (!expanded) {
     return (
       <TouchableOpacity 
-        style={[styles.compactContainer, { top: topOffset }]}
+        style={[styles.compactContainer, { top: topOffset, left: leftOffset }]}
         onPress={() => setExpanded(true)}
       >
         <View style={styles.compactRow}>
-          <View style={[styles.categoryDot, { backgroundColor: category.color }]} />
-          <Text style={styles.compactChartId}>
-            {primaryChart?.chartId || 'No chart'}
+          <View style={[styles.categoryDot, { backgroundColor: hasCoverageGap ? '#888' : isOverzoom ? '#FF9800' : category.color }]} />
+          <Text style={[styles.compactChartId, hasCoverageGap && styles.noCoverageText, isOverzoom && styles.overzoomText]}>
+            {primaryChart?.chartId || 'No coverage'}{isOverzoom ? ' ⬆' : ''}
           </Text>
-          <Text style={styles.compactZoom}>z{currentZoom.toFixed(1)}</Text>
         </View>
       </TouchableOpacity>
     );
@@ -211,7 +258,7 @@ export default function ChartDebugOverlay({
   // Expanded view
   return (
     <TouchableOpacity 
-      style={[styles.container, { top: topOffset }]}
+      style={[styles.container, { top: topOffset, left: leftOffset }]}
       onPress={() => setExpanded(false)}
       activeOpacity={0.95}
     >
@@ -220,19 +267,37 @@ export default function ChartDebugOverlay({
         
         {/* Active Chart */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>ACTIVE CHART</Text>
+          <Text style={styles.sectionTitle}>CHART DRIVING DISPLAY</Text>
           <View style={styles.row}>
-            <View style={[styles.categoryBadge, { backgroundColor: category.color }]}>
-              <Text style={styles.categoryText}>{category.name}</Text>
+            <View style={[styles.categoryBadge, { backgroundColor: hasCoverageGap ? '#888' : isOverzoom ? '#FF9800' : category.color }]}>
+              <Text style={styles.categoryText}>
+                {hasCoverageGap ? 'None' : isOverzoom ? 'Overzoom' : category.name}
+              </Text>
             </View>
-            <Text style={styles.primaryChartId}>
-              {primaryChart?.chartId || 'None'}
+            <Text style={[styles.primaryChartId, hasCoverageGap && styles.noCoverageText, isOverzoom && styles.overzoomText]}>
+              {primaryChart?.chartId || 'No coverage'}
             </Text>
           </View>
           
+          {isOverzoom && primaryScaleInfo && (
+            <View style={styles.subRow}>
+              <Text style={styles.warningText}>
+                ⬆ Overzoomed past {primaryScaleInfo.prefix} max (z{primaryScaleInfo.maxZoom})
+              </Text>
+            </View>
+          )}
+          
+          {hasCoverageGap && expectedScale && (
+            <View style={styles.subRow}>
+              <Text style={styles.warningText}>
+                ⚠ No {expectedScale.prefix} chart covers this location
+              </Text>
+            </View>
+          )}
+          
           {activeCharts.length > 1 && (
             <View style={styles.subRow}>
-              <Text style={styles.subLabel}>Also visible:</Text>
+              <Text style={styles.subLabel}>Also covering:</Text>
               <Text style={styles.subValue}>
                 {activeCharts
                   .filter(c => c.chartId !== primaryChart?.chartId)
@@ -363,7 +428,6 @@ export default function ChartDebugOverlay({
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    left: 10,
     backgroundColor: 'rgba(0, 0, 0, 0.9)',
     padding: 12,
     borderRadius: 10,
@@ -376,31 +440,42 @@ const styles = StyleSheet.create({
   },
   compactContainer: {
     position: 'absolute',
-    left: 10,
-    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
+    paddingVertical: 5,
+    borderRadius: 4,
     zIndex: 9999,
   },
   compactRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   categoryDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   compactChartId: {
     color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 11,
+    fontWeight: '500',
     fontFamily: 'monospace',
   },
+  noCoverageText: {
+    color: '#ff9800',
+    fontStyle: 'italic',
+  },
+  overzoomText: {
+    color: '#FF9800',
+  },
+  warningText: {
+    color: '#ff9800',
+    fontSize: 11,
+    marginTop: 4,
+  },
   compactZoom: {
-    color: '#888',
+    color: '#aaa',
     fontSize: 11,
     fontFamily: 'monospace',
   },

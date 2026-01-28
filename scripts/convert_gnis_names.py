@@ -29,7 +29,9 @@ FEATURE_CATEGORIES = {
     'water': ['Bay', 'Channel', 'Gut', 'Sea', 'Harbor', 'Inlet', 'Sound', 'Strait'],
     
     # Coastal features - high nautical relevance  
-    'coastal': ['Cape', 'Island', 'Beach', 'Bar', 'Isthmus', 'Pillar', 'Arch'],
+    # Includes reefs, rocks, shoals - critical for navigation safety
+    'coastal': ['Cape', 'Island', 'Beach', 'Bar', 'Isthmus', 'Pillar', 'Arch',
+                'Reef', 'Rock', 'Rocks', 'Shoal', 'Ledge', 'Spit', 'Point'],
     
     # Navigational landmarks - visible from sea
     'landmark': ['Summit', 'Glacier', 'Cliff', 'Range', 'Ridge', 'Falls'],
@@ -210,6 +212,10 @@ def convert_to_mbtiles(geojson_path: str, mbtiles_path: str, name: str = 'gnis_n
         '-B', '6',
         # Sort by priority for rendering order
         '--order-by', 'PRIORITY',
+        # CRITICAL: Maximum buffer for text labels extending beyond tile boundaries
+        # Default is only 5 units - 127 is the max tippecanoe allows
+        # This helps but may not fully solve cross-tile label clipping
+        '--buffer', '127',
         # Force overwrite
         '--force',
         geojson_path

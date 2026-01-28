@@ -3,7 +3,7 @@
  * Enhanced with nautical styling and scale differentiation
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -244,8 +244,8 @@ export default function MapSelectionScreen() {
     return downloadedCount > 0 && downloadedCount < allIds.length;
   };
 
-  // Generate GeoJSON for regions with enhanced styling
-  const regionsGeoJSON: GeoJSON.FeatureCollection = {
+  // Generate GeoJSON for regions with enhanced styling - memoized to prevent recalculation on every render
+  const regionsGeoJSON: GeoJSON.FeatureCollection = useMemo(() => ({
     type: 'FeatureCollection',
     features: currentNodes
       .filter(node => node.chart.bounds)
@@ -282,10 +282,10 @@ export default function MapSelectionScreen() {
           },
         };
       }),
-  };
+  }), [currentNodes, selectedChartIds, downloadedChartIds]);
 
-  // Generate checkbox markers
-  const checkboxMarkersGeoJSON: GeoJSON.FeatureCollection = {
+  // Generate checkbox markers - memoized
+  const checkboxMarkersGeoJSON: GeoJSON.FeatureCollection = useMemo(() => ({
     type: 'FeatureCollection',
     features: currentNodes
       .filter(node => node.chart.bounds)
@@ -306,10 +306,10 @@ export default function MapSelectionScreen() {
           },
         };
       }),
-  };
+  }), [currentNodes, selectedChartIds, downloadedChartIds]);
 
-  // Generate labels with chart name and scale info
-  const labelsGeoJSON: GeoJSON.FeatureCollection = {
+  // Generate labels with chart name and scale info - memoized
+  const labelsGeoJSON: GeoJSON.FeatureCollection = useMemo(() => ({
     type: 'FeatureCollection',
     features: currentNodes
       .filter(node => node.chart.bounds)
@@ -337,7 +337,7 @@ export default function MapSelectionScreen() {
           },
         };
       }),
-  };
+  }), [currentNodes, downloadedChartIds]);
 
   // Handle map press
   const handleMapPress = (e: any) => {

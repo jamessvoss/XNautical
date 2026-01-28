@@ -1,0 +1,41 @@
+High Priority - Core Navigation Features
+Priority	Feature	Description
+1	GPS Position & Tracking	Show user's position, heading, speed on chart; follow mode
+2	Route Planning	Create waypoints, routes, measure distance/bearing
+3	Search	Find places by name (leverage GNIS data), find chart features
+4	Offline Base Maps	Cache Mapbox tiles for fully offline operation
+Medium Priority - Data & Coverage
+Priority	Feature	Description
+5	Expand Chart Coverage	Add more Alaska regions, Pacific Northwest, etc.
+6	Tide Stations	Show tide predictions at NOAA tide stations
+7	Current Data	Display tidal current predictions
+8	Weather Overlay	NOAA marine weather, wind, waves
+Lower Priority - Polish & Infrastructure
+Priority	Feature	Description
+9	Firebase Cloud Sync	Download charts from cloud instead of manual push
+10	Automatic NOAA Updates	Check for and apply chart updates
+11	Night Mode	Red-tinted display for night bridge use
+12	Bookmarks/Favorites	Save locations for quick access
+13	iOS Build & Testing	Test and deploy on iOS
+
+
+ Data Layers to Add
+Priority	Layer	Data Source	Description
+1	Tide Stations	NOAA CO-OPS	Show tide station locations with predictions
+2	Current Stations	NOAA CO-OPS	Tidal current predictions at stations
+3	Weather Buoys	NDBC	Real-time wind, waves, temperature
+4	AIS Vessel Traffic	AIS feeds	Live ship positions (requires data subscription)
+5	Traffic Separation Schemes	S-57 TSSLPT/TSEZNE	Shipping lanes already in ENC data
+6	Ice Coverage	NWS/NIC	Sea ice extent (important for Alaska)
+7	Marine Sanctuaries	NOAA	National marine sanctuary boundaries
+8	Fishing Closures	NOAA Fisheries	Seasonal/area fishing restrictions
+S-57 Layers Not Yet Displayed
+These are already in the ENC data but not rendered:
+Layer	S-57 Code	Description
+Fog Signals	FOGSIG	Fog horns, bells, whistles
+Pilot Boarding	PILBOP	Pilot pickup areas
+Recommended Tracks	RECTRC	Suggested navigation routes
+Two-Way Routes	TWRTPT	Traffic separation
+Offshore Platforms	OFSPLF	Oil rigs, platforms
+Mooring Facilities	MORFAC	Mooring buoys, dolphins
+

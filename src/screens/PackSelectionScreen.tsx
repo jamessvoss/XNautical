@@ -2,7 +2,7 @@
  * Pack Selection Screen - Map-based interface for selecting chart packs to download
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -238,8 +238,8 @@ export default function PackSelectionScreen({ onNavigateToViewer }: Props) {
     );
   };
 
-  // Generate GeoJSON for pack regions
-  const packRegionsGeoJSON: GeoJSON.FeatureCollection = {
+  // Generate GeoJSON for pack regions - memoized to prevent recalculation on every render
+  const packRegionsGeoJSON: GeoJSON.FeatureCollection = useMemo(() => ({
     type: 'FeatureCollection',
     features: CHART_PACKS.map(pack => {
       const packWithCharts = buildPackWithCharts(pack);
@@ -247,7 +247,7 @@ export default function PackSelectionScreen({ onNavigateToViewer }: Props) {
       const isPartiallyDownloaded = packWithCharts.downloadedCount > 0;
       
       return {
-        type: 'Feature',
+        type: 'Feature' as const,
         properties: {
           id: pack.id,
           name: pack.name,
@@ -258,7 +258,7 @@ export default function PackSelectionScreen({ onNavigateToViewer }: Props) {
           isPartiallyDownloaded,
         },
         geometry: {
-          type: 'Polygon',
+          type: 'Polygon' as const,
           coordinates: [[
             [pack.bounds[0], pack.bounds[1]], // SW
             [pack.bounds[2], pack.bounds[1]], // SE
@@ -269,23 +269,23 @@ export default function PackSelectionScreen({ onNavigateToViewer }: Props) {
         },
       };
     }),
-  };
+  }), [allCharts, downloadedChartIds, buildPackWithCharts]);
 
-  // Pack labels GeoJSON
-  const packLabelsGeoJSON: GeoJSON.FeatureCollection = {
+  // Pack labels GeoJSON - memoized (static data, only depends on CHART_PACKS)
+  const packLabelsGeoJSON: GeoJSON.FeatureCollection = useMemo(() => ({
     type: 'FeatureCollection',
     features: CHART_PACKS.map(pack => ({
-      type: 'Feature',
+      type: 'Feature' as const,
       properties: {
         id: pack.id,
         name: pack.name,
       },
       geometry: {
-        type: 'Point',
+        type: 'Point' as const,
         coordinates: pack.center,
       },
     })),
-  };
+  }), []);
 
   if (loading) {
     return (

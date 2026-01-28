@@ -177,14 +177,15 @@ export default function GPSInfoPanel({
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    bottom: 0,
+    bottom: 70, // Sit above the bottom nav bar (ForeFlight style)
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    backgroundColor: 'rgba(20, 25, 35, 0.95)',
     paddingTop: 12,
     paddingHorizontal: 16,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderRadius: 0,
+    borderTopWidth: 0.5,
+    borderTopColor: 'rgba(255, 255, 255, 0.1)',
   },
   primaryRow: {
     flexDirection: 'row',

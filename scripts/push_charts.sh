@@ -9,7 +9,6 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SOURCE_DIR="$PROJECT_DIR/charts/flat_mbtiles"
-# App's external files directory - readable by app without permissions, writable via adb
 DEVICE_DIR="/storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles"
 ARCHIVE_DIR="/tmp/xnautical_archives"
 
@@ -216,7 +215,10 @@ fi
 
 # Setup
 mkdir -p "$ARCHIVE_DIR"
-adb shell "mkdir -p '$DEVICE_DIR'" 2>/dev/null
+
+# Create device directory with correct ownership using run-as
+adb shell "run-as com.xnautical.app mkdir -p /storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles" 2>/dev/null || \
+    adb shell "mkdir -p '$DEVICE_DIR'" 2>/dev/null
 
 echo ""
 echo "${BOLD}Pushing files...${NC}"
@@ -286,7 +288,6 @@ if [ "$PUSH_BASEMAP" = true ]; then
         echo "  File: basemap_alaska.mbtiles ($(format_size $BASEMAP_SIZE))"
         echo "  Pushing to device..."
         adb push "$BASEMAP_FILE" "$DEVICE_DIR/basemap_alaska.mbtiles"
-        adb shell "chmod 775 '$DEVICE_DIR/basemap_alaska.mbtiles'" 2>/dev/null || true
         echo "  ${GREEN}✓ Basemap pushed${NC}"
         echo ""
         TOTAL_SIZE=$((TOTAL_SIZE + BASEMAP_SIZE))
@@ -318,7 +319,6 @@ if [ "$PUSH_GNIS" = true ]; then
         echo "  File: gnis_names_ak.mbtiles ($(format_size $GNIS_SIZE))"
         echo "  Pushing to device..."
         adb push "$GNIS_FILE" "$DEVICE_DIR/gnis_names_ak.mbtiles"
-        adb shell "chmod 775 '$DEVICE_DIR/gnis_names_ak.mbtiles'" 2>/dev/null || true
         echo "  ${GREEN}✓ GNIS pushed${NC}"
         echo ""
         TOTAL_SIZE=$((TOTAL_SIZE + GNIS_SIZE))

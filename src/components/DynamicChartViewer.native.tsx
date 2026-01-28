@@ -3,7 +3,7 @@
  * Full-featured viewer with all navigation layers
  */
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect, useReducer, startTransition, memo } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  InteractionManager,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,7 +24,7 @@ import {
 } from '../types/chart';
 import * as chartCacheService from '../services/chartCacheService';
 import * as tileServer from '../services/tileServer';
-import { loadChartIndex, ChartIndex } from '../services/chartIndex';
+import { loadChartIndex, ChartIndex, findChartsForViewport, getChartInfo } from '../services/chartIndex';
 import {
   DEPTH_COLORS,
   SECTOR_COLOURS,
@@ -92,6 +93,58 @@ const NAV_SYMBOLS: Record<string, any> = {
   'landmark-church': require('../../assets/symbols/png/landmark-church.png'),
 };
 
+// Feature lookup optimization constants (moved outside component for performance)
+// Priority map for O(1) lookup instead of O(n) indexOf
+const NAUTICAL_LAYER_PRIORITIES: Map<string, number> = new Map([
+  ['LIGHTS', 100], ['LIGHTS_SECTOR', 99],
+  ['BOYLAT', 98], ['BOYCAR', 97], ['BOYSAW', 96], ['BOYSPP', 95], ['BOYISD', 94],
+  ['BCNLAT', 93], ['BCNSPP', 92], ['BCNCAR', 91], ['BCNISD', 90], ['BCNSAW', 89],
+  ['WRECKS', 88], ['UWTROC', 87], ['OBSTRN', 86],
+  ['RESARE', 85], ['CTNARE', 84], ['MIPARE', 83],
+  ['ACHARE', 82], ['ACHBRT', 81], ['MARCUL', 80],
+  ['LNDMRK', 79], ['CBLSUB', 78], ['CBLARE', 77], ['PIPSOL', 76], ['PIPARE', 75],
+  ['SOUNDG', 74], ['DEPARE', 73], ['DEPCNT', 72], ['SBDARE', 71],
+  ['DRGARE', 70], ['FAIRWY', 69],
+]);
+
+// Layer name to friendly display name mapping
+const LAYER_DISPLAY_NAMES: Record<string, string> = {
+  'LIGHTS': 'Light',
+  'LIGHTS_SECTOR': 'Light Sector',
+  'BOYLAT': 'Lateral Buoy',
+  'BOYCAR': 'Cardinal Buoy',
+  'BOYSAW': 'Safe Water Buoy',
+  'BOYSPP': 'Special Purpose Buoy',
+  'BOYISD': 'Isolated Danger Buoy',
+  'BCNLAT': 'Lateral Beacon',
+  'BCNSPP': 'Special Purpose Beacon',
+  'BCNCAR': 'Cardinal Beacon',
+  'BCNISD': 'Isolated Danger Beacon',
+  'BCNSAW': 'Safe Water Beacon',
+  'WRECKS': 'Wreck',
+  'UWTROC': 'Underwater Rock',
+  'OBSTRN': 'Obstruction',
+  'LNDMRK': 'Landmark',
+  'CBLSUB': 'Submarine Cable',
+  'CBLARE': 'Cable Area',
+  'PIPSOL': 'Pipeline',
+  'PIPARE': 'Pipeline Area',
+  'SOUNDG': 'Sounding',
+  'DEPARE': 'Depth Area',
+  'DEPCNT': 'Depth Contour',
+  'SBDARE': 'Seabed Area',
+  'DRGARE': 'Dredged Area',
+  'FAIRWY': 'Fairway',
+  'COALNE': 'Coastline',
+  'LNDARE': 'Land Area',
+  'RESARE': 'Restricted Area',
+  'CTNARE': 'Caution Area',
+  'MIPARE': 'Military Practice Area',
+  'ACHARE': 'Anchorage Area',
+  'ACHBRT': 'Anchor Berth',
+  'MARCUL': 'Marine Farm/Aquaculture',
+};
+
 interface Props {
   onNavigateToDownloads?: () => void;
 }
@@ -116,11 +169,91 @@ interface LoadedRasterChart {
   path: string;
 }
 
+// Layer visibility state - consolidated for performance
+interface LayerVisibility {
+  depthAreas: boolean;
+  depthContours: boolean;
+  soundings: boolean;
+  land: boolean;
+  coastline: boolean;
+  lights: boolean;
+  buoys: boolean;
+  beacons: boolean;
+  landmarks: boolean;
+  hazards: boolean;
+  sectors: boolean;
+  cables: boolean;
+  seabed: boolean;
+  pipelines: boolean;
+  bathymetry: boolean;
+  restrictedAreas: boolean;
+  cautionAreas: boolean;
+  militaryAreas: boolean;
+  anchorages: boolean;
+  anchorBerths: boolean;
+  marineFarms: boolean;
+}
+
+type LayerVisibilityAction = 
+  | { type: 'TOGGLE'; layer: keyof LayerVisibility }
+  | { type: 'SET'; layer: keyof LayerVisibility; value: boolean }
+  | { type: 'SET_ALL'; value: boolean };
+
+const initialLayerVisibility: LayerVisibility = {
+  depthAreas: true,
+  depthContours: true,
+  soundings: true,
+  land: false,
+  coastline: true,
+  lights: true,
+  buoys: true,
+  beacons: true,
+  landmarks: true,
+  hazards: true,
+  sectors: true,
+  cables: true,
+  seabed: true,
+  pipelines: true,
+  bathymetry: true,
+  restrictedAreas: true,
+  cautionAreas: true,
+  militaryAreas: true,
+  anchorages: true,
+  anchorBerths: true,
+  marineFarms: true,
+};
+
+function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityAction): LayerVisibility {
+  switch (action.type) {
+    case 'TOGGLE':
+      return { ...state, [action.layer]: !state[action.layer] };
+    case 'SET':
+      return { ...state, [action.layer]: action.value };
+    case 'SET_ALL':
+      const newState: LayerVisibility = {} as LayerVisibility;
+      for (const key of Object.keys(state) as (keyof LayerVisibility)[]) {
+        newState[key] = action.value;
+      }
+      return newState;
+    default:
+      return state;
+  }
+}
+
 export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<Mapbox.MapView>(null);
   const cameraRef = useRef<Mapbox.Camera>(null);
+  
+  // === STYLE SWITCH: Track render count ===
+  const renderCountRef = useRef<number>(0);
+  renderCountRef.current++;
+  
+  // Throttle refs for camera change handler (100ms throttle)
+  const lastCameraUpdateRef = useRef<number>(0);
+  const pendingCameraStateRef = useRef<any>(null);
+  const throttleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Loaded chart data
   const [loading, setLoading] = useState(true);
@@ -128,6 +261,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [mbtilesCharts, setMbtilesCharts] = useState<LoadedMBTilesChart[]>([]);
   const [chartsToRender, setChartsToRender] = useState<string[]>([]); // Chart IDs to render (progressive loading)
   const [loadingPhase, setLoadingPhase] = useState<'us1' | 'tier1' | 'complete'>('us1');
+  const [chartLoadingProgress, setChartLoadingProgress] = useState<{ current: number; total: number; phase: string } | null>(null);
+  const [dynamicCharts, setDynamicCharts] = useState<string[]>([]); // Viewport-loaded US4/US5 charts
+  const [lastDynamicCheck, setLastDynamicCheck] = useState<{lon: number, lat: number, zoom: number} | null>(null);
   const [rasterCharts, setRasterCharts] = useState<LoadedRasterChart[]>([]);
   const [tileServerReady, setTileServerReady] = useState(false);
   const [storageUsed, setStorageUsed] = useState<{ total: number; vector: number; raster: number }>({ total: 0, vector: 0, raster: 0 });
@@ -135,28 +271,43 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Data source toggles
   const [useMBTiles, setUseMBTiles] = useState(true);
   
-  // Layer toggles
-  const [showDepthAreas, setShowDepthAreas] = useState(true);
-  const [showDepthContours, setShowDepthContours] = useState(true);
-  const [showSoundings, setShowSoundings] = useState(true);
-  const [showLand, setShowLand] = useState(true);
-  const [showCoastline, setShowCoastline] = useState(true);
-  const [showLights, setShowLights] = useState(true);
-  const [showBuoys, setShowBuoys] = useState(true);
-  const [showBeacons, setShowBeacons] = useState(true);
-  const [showLandmarks, setShowLandmarks] = useState(true);
-  const [showHazards, setShowHazards] = useState(true);
-  const [showSectors, setShowSectors] = useState(true);
-  const [showCables, setShowCables] = useState(true);
-  const [showSeabed, setShowSeabed] = useState(true);
-  const [showPipelines, setShowPipelines] = useState(true);
-  const [showBathymetry, setShowBathymetry] = useState(true);
-  const [showRestrictedAreas, setShowRestrictedAreas] = useState(true);
-  const [showCautionAreas, setShowCautionAreas] = useState(true);
-  const [showMilitaryAreas, setShowMilitaryAreas] = useState(true);
-  const [showAnchorages, setShowAnchorages] = useState(true);
-  const [showAnchorBerths, setShowAnchorBerths] = useState(true);
-  const [showMarineFarms, setShowMarineFarms] = useState(true);
+  // Layer visibility - consolidated into single reducer for performance (fewer re-renders)
+  const [layers, dispatchLayers] = useReducer(layerVisibilityReducer, initialLayerVisibility);
+  
+  // Helper function for toggle callbacks
+  const toggleLayer = useCallback((layer: keyof LayerVisibility) => {
+    dispatchLayers({ type: 'TOGGLE', layer });
+  }, []);
+  
+  // Memoized callback for closing feature inspector
+  const closeFeatureInspector = useCallback(() => {
+    setSelectedFeature(null);
+  }, []);
+  
+  // Destructure for backward compatibility with existing code
+  const {
+    depthAreas: showDepthAreas,
+    depthContours: showDepthContours,
+    soundings: showSoundings,
+    land: showLand,
+    coastline: showCoastline,
+    lights: showLights,
+    buoys: showBuoys,
+    beacons: showBeacons,
+    landmarks: showLandmarks,
+    hazards: showHazards,
+    sectors: showSectors,
+    cables: showCables,
+    seabed: showSeabed,
+    pipelines: showPipelines,
+    bathymetry: showBathymetry,
+    restrictedAreas: showRestrictedAreas,
+    cautionAreas: showCautionAreas,
+    militaryAreas: showMilitaryAreas,
+    anchorages: showAnchorages,
+    anchorBerths: showAnchorBerths,
+    marineFarms: showMarineFarms,
+  } = layers;
   
   // GNIS Place Names layer toggles
   const [gnisAvailable, setGnisAvailable] = useState(false);
@@ -175,10 +326,38 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [selectedFeature, setSelectedFeature] = useState<FeatureInfo | null>(null);
   const [showControls, setShowControls] = useState(false);
   
+  // Track tap start time for end-to-end performance measurement
+  const tapStartTimeRef = useRef<number>(0);
+  
+  // === STYLE SWITCH PERFORMANCE TRACKING ===
+  const styleSwitchStartRef = useRef<number>(0);
+  const styleSwitchFromRef = useRef<string>('');
+  const styleSwitchToRef = useRef<string>('');
+  const styleSwitchRenderCountRef = useRef<number>(0);
+  
   // Map style options
   type MapStyleOption = 'light' | 'dark' | 'satellite' | 'outdoors' | 'local';
-  const [mapStyle, setMapStyle] = useState<MapStyleOption>('light');
+  const [mapStyle, setMapStyleInternal] = useState<MapStyleOption>('light');
   const [hasLocalBasemap, setHasLocalBasemap] = useState(false);
+  
+  // Wrapper for setMapStyle with timing logs
+  const setMapStyle = useCallback((newStyle: MapStyleOption) => {
+    const now = Date.now();
+    console.log('='.repeat(60));
+    console.log('[STYLE-SWITCH] === BASEMAP SWITCH INITIATED ===');
+    console.log(`[STYLE-SWITCH] From: "${mapStyle}" → To: "${newStyle}"`);
+    console.log(`[STYLE-SWITCH] Start time: ${new Date(now).toISOString()}`);
+    
+    styleSwitchStartRef.current = now;
+    styleSwitchFromRef.current = mapStyle;
+    styleSwitchToRef.current = newStyle;
+    styleSwitchRenderCountRef.current = 0;
+    
+    console.log(`[STYLE-SWITCH] Calling setMapStyleInternal...`);
+    const stateStart = Date.now();
+    setMapStyleInternal(newStyle);
+    console.log(`[STYLE-SWITCH] setMapStyleInternal returned: ${Date.now() - stateStart}ms`);
+  }, [mapStyle]);
   
   // Minimal offline style - land colored background, water rendered on top
   const localOfflineStyle = {
@@ -206,6 +385,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [debugInfo, setDebugInfo] = useState<string>('');
   const [showDebug, setShowDebug] = useState(false);
   const [showChartDebug, setShowChartDebug] = useState(false);
+  const [showCoords, setShowCoords] = useState(true);
+  const [showZoomLevel, setShowZoomLevel] = useState(true);
   
   // GPS and Navigation state
   const [showGPSPanel, setShowGPSPanel] = useState(false);
@@ -263,57 +444,145 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
   }, []);
   
+  // === STYLE SWITCH TRACKING: Log when mapStyle state actually updates ===
+  useEffect(() => {
+    if (styleSwitchStartRef.current > 0) {
+      const elapsed = Date.now() - styleSwitchStartRef.current;
+      console.log(`[STYLE-SWITCH] React state updated to "${mapStyle}" - elapsed: ${elapsed}ms`);
+      console.log(`[STYLE-SWITCH] styleURL will be: ${typeof mapStyleUrls[mapStyle] === 'string' ? mapStyleUrls[mapStyle] : 'inline JSON (local)'}`);
+      console.log(`[STYLE-SWITCH] Component render count: ${renderCountRef.current}`);
+      console.log(`[STYLE-SWITCH] Render phase starting - React will now reconcile JSX...`);
+    }
+  }, [mapStyle]);
+  
+  // === STYLE SWITCH TRACKING: Log when React commits the render (useLayoutEffect runs sync after DOM mutations) ===
+  useLayoutEffect(() => {
+    if (styleSwitchStartRef.current > 0) {
+      const elapsed = Date.now() - styleSwitchStartRef.current;
+      console.log(`[STYLE-SWITCH] useLayoutEffect (render committed) - elapsed: ${elapsed}ms`);
+      console.log(`[STYLE-SWITCH] React has finished reconciling, native views being updated...`);
+    }
+  }, [mapStyle]);
+  
+  // Ref to track if progressive loading is in progress (prevents duplicate runs)
+  const progressiveLoadingRef = useRef<boolean>(false);
+  
+  // Helper: Add charts in batches with yields to keep UI responsive
+  const addChartsBatched = useCallback(async (
+    currentCharts: string[],
+    newCharts: string[],
+    batchSize: number = 8,
+    phaseName: string
+  ): Promise<string[]> => {
+    let accumulated = [...currentCharts];
+    const total = newCharts.length;
+    
+    for (let i = 0; i < newCharts.length; i += batchSize) {
+      const batch = newCharts.slice(i, i + batchSize);
+      accumulated = [...accumulated, ...batch];
+      
+      // Update progress indicator
+      setChartLoadingProgress({
+        current: Math.min(i + batchSize, total),
+        total,
+        phase: phaseName,
+      });
+      
+      // Use startTransition to mark this as a non-urgent update
+      startTransition(() => {
+        setChartsToRender([...accumulated]);
+      });
+      
+      // Yield to main thread between batches - allows UI to stay responsive
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    
+    return accumulated;
+  }, []);
+  
   // Progressive loading: Add more charts after initial render
+  // Uses InteractionManager, batching, and startTransition for responsiveness
   useEffect(() => {
     // DEBUG: Log every time this effect runs
     console.log(`[PROGRESSIVE] Effect triggered - phase=${loadingPhase}, tileServerReady=${tileServerReady}, mbtilesCharts=${mbtilesCharts.length}, chartsToRender=${chartsToRender.length}`);
     
     if (loadingPhase === 'us1' && tileServerReady && mbtilesCharts.length > 0) {
+      // Prevent duplicate runs
+      if (progressiveLoadingRef.current) {
+        console.log(`[PROGRESSIVE] Already loading, skipping`);
+        return;
+      }
+      progressiveLoadingRef.current = true;
+      
       console.log(`[PROGRESSIVE] Scheduling Phase 2...`);
-      // Phase 2: Add US2+US3 after a short delay to let UI settle
-      const timer = setTimeout(() => {
-        console.log(`[PROGRESSIVE] Phase 2 timer fired`);
-        const tier1All = mbtilesCharts
-          .filter(m => m.chartId.match(/^US[123]/))
+      
+      // Wait for any pending interactions/animations to complete
+      const interactionHandle = InteractionManager.runAfterInteractions(async () => {
+        console.log(`[PROGRESSIVE] Phase 2 starting after interactions`);
+        
+        // Get US1 charts (already rendered)
+        const us1Charts = mbtilesCharts
+          .filter(m => m.chartId.startsWith('US1'))
           .map(m => m.chartId);
         
-        console.log(`[PERF] Phase 2: Adding US2+US3, total ${tier1All.length} Tier1 charts`);
-        setChartsToRender(tier1All);
-        setLoadingPhase('tier1');
-      }, 100); // Small delay to ensure initial render completes
-      
-      return () => {
-        console.log(`[PROGRESSIVE] Phase 2 timer cleanup`);
-        clearTimeout(timer);
-      };
-    }
-    
-    if (loadingPhase === 'tier1' && chartsToRender.length > 0) {
-      console.log(`[PROGRESSIVE] Scheduling Phase 3...`);
-      // Phase 3: Add some US4 charts to reach ~100 total (like before)
-      const timer = setTimeout(() => {
-        console.log(`[PROGRESSIVE] Phase 3 timer fired`);
-        const us4Charts = mbtilesCharts
-          .filter(m => m.chartId.startsWith('US4'))
-          .map(m => m.chartId)
-          .slice(0, 100 - chartsToRender.length); // Fill up to 100
+        // Get US2+US3 charts to add
+        const us2us3Charts = mbtilesCharts
+          .filter(m => m.chartId.match(/^US[23]/))
+          .map(m => m.chartId);
         
-        if (us4Charts.length > 0) {
-          const allCharts = [...chartsToRender, ...us4Charts];
-          console.log(`[PERF] Phase 3: Adding ${us4Charts.length} US4 charts, total ${allCharts.length}`);
-          setChartsToRender(allCharts);
-        }
-        setLoadingPhase('complete');
-      }, 500); // Longer delay for phase 3
+        console.log(`[PERF] Phase 2: Adding ${us2us3Charts.length} US2+US3 charts in batches`);
+        
+        // Add US2+US3 charts in batches
+        const tier1All = await addChartsBatched(us1Charts, us2us3Charts, 8, 'Loading coastal charts');
+        
+        // Clear progress and move to next phase
+        setChartLoadingProgress(null);
+        setLoadingPhase('tier1');
+        
+        // Phase 3: Add US4 charts after a brief delay
+        setTimeout(async () => {
+          const us4Charts = mbtilesCharts
+            .filter(m => m.chartId.startsWith('US4'))
+            .map(m => m.chartId)
+            .slice(0, 100 - tier1All.length); // Fill up to 100
+          
+          let phase3Total = tier1All;
+          if (us4Charts.length > 0) {
+            console.log(`[PERF] Phase 3: Adding ${us4Charts.length} US4 charts in batches`);
+            phase3Total = await addChartsBatched(tier1All, us4Charts, 10, 'Loading approach charts');
+          }
+          
+          setChartLoadingProgress(null);
+          
+          // Phase 4: Add US5/US6 charts (harbor/berthing detail)
+          setTimeout(async () => {
+            const us5us6Charts = mbtilesCharts
+              .filter(m => m.chartId.match(/^US[56]/))
+              .map(m => m.chartId)
+              .slice(0, 150 - phase3Total.length); // Fill up to 150 total
+            
+            if (us5us6Charts.length > 0) {
+              console.log(`[PERF] Phase 4: Adding ${us5us6Charts.length} US5/US6 charts in batches`);
+              await addChartsBatched(phase3Total, us5us6Charts, 15, 'Loading harbor charts');
+            }
+            
+            setChartLoadingProgress(null);
+            setLoadingPhase('complete');
+            progressiveLoadingRef.current = false;
+            console.log(`[PROGRESSIVE] All phases complete`);
+          }, 150);
+        }, 200);
+      });
       
       return () => {
-        console.log(`[PROGRESSIVE] Phase 3 timer cleanup`);
-        clearTimeout(timer);
+        console.log(`[PROGRESSIVE] Cleanup - cancelling interaction handle`);
+        interactionHandle.cancel();
+        progressiveLoadingRef.current = false;
       };
     }
     
     console.log(`[PROGRESSIVE] No action taken this run`);
-  }, [loadingPhase, tileServerReady, mbtilesCharts, chartsToRender]);
+  }, [loadingPhase, tileServerReady, mbtilesCharts, addChartsBatched]);
   
   // Start/stop GPS tracking when panel is shown/hidden
   useEffect(() => {
@@ -345,32 +614,60 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const FileSystem = require('expo-file-system/legacy');
       
       // === PHASE 1: Find mbtiles directory ===
+      // Check external storage first (for dev - manual file pushing via ADB/OpenMTP)
+      // Fall back to internal documentDirectory (for production - Firebase downloads)
       const dirStart = Date.now();
-      const appDir = `${FileSystem.documentDirectory}mbtiles`;
-      const externalAppDir = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
+      const internalDir = `${FileSystem.documentDirectory}mbtiles`;
+      const externalDir = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
       
-      let mbtilesDir = appDir;
+      let mbtilesDir = internalDir;
       
-      // Ensure app directory exists
-      const appDirInfo = await FileSystem.getInfoAsync(appDir);
-      if (!appDirInfo.exists) {
-        await FileSystem.makeDirectoryAsync(appDir, { intermediates: true });
+      // Ensure both directories exist (external for dev, internal for production)
+      // Creating external dir here ensures it has correct ownership for ADB push
+      try {
+        const externalDirInfo = await FileSystem.getInfoAsync(externalDir);
+        if (!externalDirInfo.exists) {
+          await FileSystem.makeDirectoryAsync(externalDir, { intermediates: true });
+          console.log('[PERF] Created external mbtiles directory');
+        }
+      } catch (e) {
+        console.log('[PERF] Could not create external directory (normal on some devices)');
       }
       
-      // Check if external dir has chart_index.json (dev mode)
-      const externalIndexInfo = await FileSystem.getInfoAsync(`${externalAppDir}/chart_index.json`);
-      if (externalIndexInfo.exists) {
-        mbtilesDir = externalAppDir;
-        console.log('[PERF] Using external app dir (dev mode)');
-      } else {
-        // Check internal dir for chart_index.json
-        const internalIndexInfo = await FileSystem.getInfoAsync(`${appDir}/chart_index.json`);
-        if (!internalIndexInfo.exists) {
-          // No index found anywhere - fall back to legacy scanning
-          console.log('[PERF] No chart_index.json found, using legacy loading');
+      const internalInfo = await FileSystem.getInfoAsync(internalDir);
+      if (!internalInfo.exists) {
+        await FileSystem.makeDirectoryAsync(internalDir, { intermediates: true });
+      }
+      
+      // Check if external dir has chart_index.json or mbtiles files (dev mode)
+      try {
+        const externalIndexInfo = await FileSystem.getInfoAsync(`${externalDir}/chart_index.json`);
+        if (externalIndexInfo.exists) {
+          mbtilesDir = externalDir;
+          console.log('[PERF] Using external storage (has chart index)');
+        } else {
+          // No index - check if external has any mbtiles files
+          const externalDirInfo = await FileSystem.getInfoAsync(externalDir);
+          if (externalDirInfo.exists) {
+            const externalFiles = await FileSystem.readDirectoryAsync(externalDir);
+            if (externalFiles.some((f: string) => f.endsWith('.mbtiles'))) {
+              mbtilesDir = externalDir;
+              console.log('[PERF] Using external storage (has mbtiles files)');
+            }
+          }
+        }
+      } catch (e) {
+        console.log('[PERF] External storage not accessible, using internal');
+      }
+      
+      // Check internal for chart_index.json (if not already using external)
+      if (mbtilesDir === internalDir) {
+        const internalIndexInfo = await FileSystem.getInfoAsync(`${internalDir}/chart_index.json`);
+        if (internalIndexInfo.exists) {
+          console.log('[PERF] Using internal storage');
         }
       }
-      console.log(`[PERF] Directory check: ${Date.now() - dirStart}ms`);
+      console.log(`[PERF] Directory resolved: ${mbtilesDir} (${Date.now() - dirStart}ms)`);
       
       // === PHASE 2: Load chart index ===
       const indexStart = Date.now();
@@ -414,15 +711,51 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const loadedRasters: LoadedRasterChart[] = [];
       
       if (index && tier1ChartIds.length > 0) {
-        // Use index - much faster, charts are pre-sorted
+        // Scan directory once to get actual files (fast single I/O operation)
+        let existingFiles: Set<string> = new Set();
+        try {
+          const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
+          existingFiles = new Set(
+            filesInDir
+              .filter((f: string) => f.endsWith('.mbtiles'))
+              .map((f: string) => f.replace('.mbtiles', ''))
+          );
+          console.log(`[PERF] Found ${existingFiles.size} actual mbtiles files`);
+        } catch (e) {
+          console.log('[PERF] Could not scan directory for verification, using index as-is');
+        }
+        
+        // Use index but verify file existence
+        const verifyExists = existingFiles.size > 0;
+        let skippedCount = 0;
+        
         for (const chartId of tier1ChartIds) {
-          loadedMbtiles.push({ chartId, path: `${mbtilesDir}/${chartId}.mbtiles` });
+          if (!verifyExists || existingFiles.has(chartId)) {
+            loadedMbtiles.push({ chartId, path: `${mbtilesDir}/${chartId}.mbtiles` });
+          } else {
+            skippedCount++;
+          }
         }
         // Also add tier2 to the list (for reference count display)
         for (const chartId of tier2ChartIds) {
-          loadedMbtiles.push({ chartId, path: `${mbtilesDir}/${chartId}.mbtiles` });
+          if (!verifyExists || existingFiles.has(chartId)) {
+            loadedMbtiles.push({ chartId, path: `${mbtilesDir}/${chartId}.mbtiles` });
+          } else {
+            skippedCount++;
+          }
         }
-        console.log(`[PERF] Built chart list from index: ${Date.now() - buildStart}ms`);
+        
+        // Also check for raster files
+        for (const filename of existingFiles) {
+          if (filename.startsWith('BATHY_')) {
+            loadedRasters.push({ chartId: filename, path: `${mbtilesDir}/${filename}.mbtiles` });
+          }
+        }
+        
+        if (skippedCount > 0) {
+          console.log(`[PERF] Skipped ${skippedCount} charts (files not found)`);
+        }
+        console.log(`[PERF] Built chart list from index: ${Date.now() - buildStart}ms (${loadedMbtiles.length} verified)`);
       } else {
         // Legacy: scan directory (slower)
         console.log('[PERF] Falling back to directory scan...');
@@ -465,21 +798,26 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         console.log(`[PERF] Directory scan: ${Date.now() - scanStart}ms (${loadedMbtiles.length} charts)`);
       }
       
-      // Count charts by tier for logging
-      const tierCounts: Record<string, number> = {};
+      // Count charts by tier for detailed logging
+      const tierCounts: Record<string, number> = { US1: 0, US2: 0, US3: 0, US4: 0, US5: 0, US6: 0 };
       for (const m of loadedMbtiles) {
         const tier = m.chartId.substring(0, 3);
         tierCounts[tier] = (tierCounts[tier] || 0) + 1;
       }
-      console.log(`[PERF] Charts by tier:`, tierCounts);
+      console.log(`[CHARTS] ========== CHART INVENTORY ==========`);
+      console.log(`[CHARTS] Total verified charts: ${loadedMbtiles.length}`);
+      console.log(`[CHARTS] By scale: US1=${tierCounts.US1} US2=${tierCounts.US2} US3=${tierCounts.US3} US4=${tierCounts.US4} US5=${tierCounts.US5} US6=${tierCounts.US6}`);
+      console.log(`[CHARTS] Tier 1 (memory): ${tierCounts.US1 + tierCounts.US2 + tierCounts.US3} charts`);
+      console.log(`[CHARTS] Tier 2 (dynamic): ${tierCounts.US4 + tierCounts.US5 + tierCounts.US6} charts`);
+      console.log(`[CHARTS] =======================================`);
       
       setMbtilesCharts(loadedMbtiles);
       
       // Progressive loading: Start with US1 only for fast initial render
-      const us1Only = tier1ChartIds.filter(id => id.startsWith('US1'));
+      const us1Only = loadedMbtiles.filter(m => m.chartId.startsWith('US1')).map(m => m.chartId);
       setChartsToRender(us1Only);
       setLoadingPhase('us1');
-      console.log(`[PERF] Phase 1: Rendering ${us1Only.length} US1 charts`);
+      console.log(`[PROGRESSIVE] Phase 1: Rendering ${us1Only.length} US1 charts`);
       
       setRasterCharts(loadedRasters);
       
@@ -612,20 +950,99 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     return polygons.length > 0 ? { type: 'FeatureCollection' as const, features: polygons } : null;
   }, [combinedFeatures.lndare]);
 
+  // Track if we've done the query warm-up
+  const queryWarmupDoneRef = useRef(false);
+  
   // Handle map events
   const handleMapIdle = useCallback((state: any) => {
+    // === STYLE SWITCH: Log map idle during style switch ===
+    if (styleSwitchStartRef.current > 0) {
+      const elapsed = Date.now() - styleSwitchStartRef.current;
+      console.log(`[STYLE-SWITCH] onMapIdle fired - elapsed: ${elapsed}ms`);
+      console.log(`[STYLE-SWITCH] Map is now idle after switching to "${styleSwitchToRef.current}"`);
+      console.log(`[STYLE-SWITCH] === BASEMAP SWITCH COMPLETE ===`);
+      console.log(`[STYLE-SWITCH] Total time: ${elapsed}ms`);
+      console.log('='.repeat(60));
+      // Reset tracking
+      styleSwitchStartRef.current = 0;
+    }
+    
     if (state?.properties?.zoom !== undefined) {
       setCurrentZoom(Math.round(state.properties.zoom * 10) / 10);
     }
     if (state?.properties?.center) {
       setCenterCoord(state.properties.center);
     }
+    
+    // Warm up the query cache on first idle (makes first tap fast)
+    if (!queryWarmupDoneRef.current && mapRef.current) {
+      queryWarmupDoneRef.current = true;
+      // Run a small query in the background to warm up Mapbox's spatial index
+      console.log('[PERF] Warming up query cache...');
+      const warmupStart = Date.now();
+      mapRef.current.queryRenderedFeaturesAtPoint([100, 100], undefined, [])
+        .then(() => {
+          console.log(`[PERF] Query cache warmed up in ${Date.now() - warmupStart}ms`);
+        })
+        .catch(() => {
+          // Ignore errors - this is just a warmup
+        });
+    }
   }, []);
 
-  // Handle camera changes (fires continuously during pan/zoom)
-  const handleCameraChanged = useCallback((state: any) => {
+  // Build a set of verified chart IDs for fast lookup
+  const verifiedChartIds = useMemo(() => {
+    return new Set(mbtilesCharts.map(m => m.chartId));
+  }, [mbtilesCharts]);
+  
+  // Update dynamic charts based on viewport (for US4/US5/US6 loading)
+  const updateDynamicCharts = useCallback((lon: number, lat: number, zoom: number) => {
+    // Only load dynamic charts at zoom >= 10 (US4 starts at z11, US5 at z13)
+    // Start a bit early to preload before they're fully visible
+    if (zoom < 10) return;
+    
+    // Check if we've moved enough to warrant a check
+    // ~0.2 degree movement or 1.0 zoom levels (more responsive)
+    if (lastDynamicCheck) {
+      const lonDiff = Math.abs(lon - lastDynamicCheck.lon);
+      const latDiff = Math.abs(lat - lastDynamicCheck.lat);
+      const zoomDiff = Math.abs(zoom - lastDynamicCheck.zoom);
+      
+      if (lonDiff < 0.2 && latDiff < 0.2 && zoomDiff < 1.0) {
+        return; // Not enough movement
+      }
+    }
+    
+    // Find charts for this viewport
+    const { tier2 } = findChartsForViewport(lon, lat, zoom);
+    
+    // Filter to only new charts that:
+    // 1. Are not already loaded
+    // 2. Actually exist on device (in verifiedChartIds)
+    const alreadyLoaded = new Set([...chartsToRender, ...dynamicCharts]);
+    const newCharts = tier2.filter(id => 
+      !alreadyLoaded.has(id) && verifiedChartIds.has(id)
+    );
+    
+    if (newCharts.length > 0) {
+      // Add new charts, cap total dynamic at 50
+      const updated = [...dynamicCharts, ...newCharts].slice(-50);
+      setDynamicCharts(updated);
+      console.log(`[DYNAMIC] Added ${newCharts.length} charts at z${zoom.toFixed(1)}: ${newCharts.join(', ')}`);
+    }
+    
+    setLastDynamicCheck({ lon, lat, zoom });
+  }, [lastDynamicCheck, chartsToRender, dynamicCharts, verifiedChartIds]);
+
+  // Process camera state updates (extracted for throttling)
+  const processCameraState = useCallback((state: any) => {
     if (state?.properties?.center) {
       setCenterCoord(state.properties.center);
+      
+      // Check for dynamic chart loading
+      const [lon, lat] = state.properties.center;
+      const zoom = state?.properties?.zoom ?? currentZoom;
+      updateDynamicCharts(lon, lat, zoom);
     }
     if (state?.properties?.zoom !== undefined) {
       const zoom = Math.round(state.properties.zoom * 10) / 10;
@@ -633,7 +1050,49 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       // Check if we're at the max zoom limit
       setIsAtMaxZoom(limitZoomToCharts && zoom >= effectiveMaxZoom - 0.1);
     }
-  }, [limitZoomToCharts, effectiveMaxZoom]);
+  }, [limitZoomToCharts, effectiveMaxZoom, currentZoom, updateDynamicCharts]);
+
+  // Handle camera changes - throttled to max once per 100ms to reduce re-renders during pan/zoom
+  const handleCameraChanged = useCallback((state: any) => {
+    const THROTTLE_MS = 100;
+    const now = Date.now();
+    
+    // Always store the latest state
+    pendingCameraStateRef.current = state;
+    
+    // If enough time has passed, process immediately
+    if (now - lastCameraUpdateRef.current >= THROTTLE_MS) {
+      lastCameraUpdateRef.current = now;
+      processCameraState(state);
+      pendingCameraStateRef.current = null;
+      
+      // Clear any pending timeout since we just processed
+      if (throttleTimeoutRef.current) {
+        clearTimeout(throttleTimeoutRef.current);
+        throttleTimeoutRef.current = null;
+      }
+    } else if (!throttleTimeoutRef.current) {
+      // Schedule a trailing call to ensure we don't miss the final state
+      const remainingTime = THROTTLE_MS - (now - lastCameraUpdateRef.current);
+      throttleTimeoutRef.current = setTimeout(() => {
+        if (pendingCameraStateRef.current) {
+          lastCameraUpdateRef.current = Date.now();
+          processCameraState(pendingCameraStateRef.current);
+          pendingCameraStateRef.current = null;
+        }
+        throttleTimeoutRef.current = null;
+      }, remainingTime);
+    }
+  }, [processCameraState]);
+  
+  // Cleanup throttle timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (throttleTimeoutRef.current) {
+        clearTimeout(throttleTimeoutRef.current);
+      }
+    };
+  }, []);
   
 
   const handleFeaturePress = useCallback((layerType: string) => (e: any) => {
@@ -646,62 +1105,114 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }
   }, []);
 
+  // Combine static (progressive) and dynamic (viewport-based) charts
+  // Use Set to deduplicate - a chart may be in both lists if added progressively
+  // and also discovered via viewport-based dynamic loading
+  const allChartsToRender = useMemo(() => {
+    const combined = [...chartsToRender, ...dynamicCharts];
+    return [...new Set(combined)]; // Remove duplicates
+  }, [chartsToRender, dynamicCharts]);
+
   // Build list of queryable layer IDs from loaded charts
+  // OPTIMIZED: Only query tappable features at current zoom level
+  // Skip large background fills, labels, and charts not rendered at this zoom
   const queryableLayerIds = useMemo(() => {
-    // All layer types from our MBTiles rendering (must match actual layer IDs)
-    const layerTypes = [
-      'depare', 'depcnt', 'depcnt-labels', 'soundg',
-      'lights', 'lights-sector', 'lights-sector-outline',
-      'buoys', 'beacons',
-      'wrecks', 'uwtroc', 'uwtroc-label', 'obstrn',
-      'lndmrk', 'lndmrk-label',
-      'cblsub', 'cblsub-label', 'cblare', 'cblare-outline',
-      'pipsol', 'pipsol-label', 'pipare', 'pipare-outline',
-      'sbdare', 'drgare', 'drgare-outline',
-      'fairwy', 'fairwy-outline',
-      'lndare', 'lndare-outline', 'coalne',
-      // Restricted/caution areas and anchorages
-      'resare', 'resare-outline',
-      'ctnare', 'ctnare-outline',
-      'mipare', 'mipare-outline',
-      'achare', 'achare-outline',
-      'achbrt', 'achbrt-label',
-      'marcul', 'marcul-outline',
+    // Helper to check if a chart is rendered at current zoom
+    // Returns true if chart's zoom range overlaps with current view
+    const isChartVisibleAtZoom = (chartId: string, zoom: number): boolean => {
+      const match = chartId.match(/^US(\d)/);
+      if (!match) return true; // Include unknown charts
+      const scale = parseInt(match[1], 10);
+      
+      // Chart zoom ranges (from tippecanoe settings)
+      // US1: z0-8, US2: z8-10, US3: z10-13, US4: z11-16, US5: z13-18
+      // Include charts within ±2 zoom levels for overzoom tolerance
+      switch (scale) {
+        case 1: return zoom <= 10;  // US1: visible up to z10 (overzoom from z8)
+        case 2: return zoom >= 6 && zoom <= 12;  // US2: z8-10 ± buffer
+        case 3: return zoom >= 8 && zoom <= 15;  // US3: z10-13 ± buffer
+        case 4: return zoom >= 9;   // US4: z11-16, visible at high zooms
+        case 5: return zoom >= 11;  // US5: z13-18, visible at high zooms
+        default: return zoom >= 11; // US6+: high zoom only
+      }
+    };
+    
+    // Only include layers that are useful to tap on
+    // Exclude: large fills (depare, lndare, fairwy, drgare), labels, outlines
+    const layerTypes: { type: string; visible: boolean }[] = [
+      // Point features - always useful to identify
+      { type: 'lights', visible: showLights },
+      { type: 'buoys', visible: showBuoys },
+      { type: 'beacons', visible: showBeacons },
+      { type: 'wrecks', visible: showHazards },
+      { type: 'uwtroc', visible: showHazards },
+      { type: 'obstrn', visible: showHazards },
+      { type: 'lndmrk', visible: showLandmarks },
+      { type: 'soundg', visible: showSoundings },
+      // Line features - useful for identification
+      { type: 'cblsub', visible: showCables },
+      { type: 'pipsol', visible: showPipelines },
+      { type: 'depcnt', visible: showDepthContours },
+      { type: 'coalne', visible: showCoastline },
+      // Area features - smaller/important areas worth tapping
+      { type: 'resare', visible: showRestrictedAreas },
+      { type: 'ctnare', visible: showCautionAreas },
+      { type: 'mipare', visible: showMilitaryAreas },
+      { type: 'achare', visible: showAnchorages },
+      { type: 'achbrt', visible: showAnchorages },
+      { type: 'marcul', visible: showMarineFarms },
+      { type: 'cblare', visible: showCables },
+      { type: 'pipare', visible: showPipelines },
+      { type: 'sbdare', visible: showSeabed },
     ];
     
     const ids: string[] = [];
-    // Build layer IDs for currently rendered charts
-    for (const chartId of chartsToRender) {
-      for (const layerType of layerTypes) {
+    // Only include visible layers
+    const visibleTypes = layerTypes.filter(l => l.visible).map(l => l.type);
+    
+    // Filter charts by zoom level, then build layer IDs
+    const chartsAtZoom = allChartsToRender.filter(chartId => isChartVisibleAtZoom(chartId, currentZoom));
+    
+    for (const chartId of chartsAtZoom) {
+      for (const layerType of visibleTypes) {
         ids.push(`mbtiles-${layerType}-${chartId}`);
       }
     }
-    console.log(`[MapPress] Built ${ids.length} queryable layer IDs for ${chartsToRender.length} charts`);
+    console.log(`[MapPress] Built ${ids.length} queryable layer IDs for ${chartsAtZoom.length}/${allChartsToRender.length} charts at z${currentZoom.toFixed(1)} (${visibleTypes.length} layer types)`);
     return ids;
-  }, [chartsToRender]);
+  }, [allChartsToRender, chartsToRender.length, dynamicCharts.length, currentZoom,
+      showLights, showBuoys, showBeacons, showHazards, showLandmarks, showSoundings,
+      showCables, showPipelines, showDepthContours, showCoastline,
+      showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
+      showMarineFarms, showSeabed]);
 
   // Handle map press - query features at tap location from MBTiles vector layers
+  // Optimized: uses constant Maps for O(1) lookups, minimal logging
   const handleMapPress = useCallback(async (e: any) => {
-    console.log('[MapPress] Event received');
+    const perfStart = Date.now();
+    tapStartTimeRef.current = perfStart;  // Track for end-to-end timing
+    console.log('[PERF:MapPress] === TAP EVENT START ===');
     
     if (!mapRef.current) {
-      console.log('[MapPress] No map ref');
+      console.log('[PERF:MapPress] No map ref, aborting');
       return;
     }
     
     const { geometry } = e;
     if (!geometry?.coordinates) {
-      console.log('[MapPress] No geometry coordinates');
+      console.log('[PERF:MapPress] No coordinates, aborting');
       return;
     }
     
     const [longitude, latitude] = geometry.coordinates;
-    console.log(`[MapPress] Tap at: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+    console.log(`[PERF:MapPress] Tap at: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
     
     // Round screen coordinates to integers
     const screenX = Math.round(e.properties?.screenPointX || 0);
     const screenY = Math.round(e.properties?.screenPointY || 0);
-    console.log(`[MapPress] Screen point: ${screenX}, ${screenY}`);
+    
+    const coordsTime = Date.now();
+    console.log(`[PERF:MapPress] Coordinate extraction: ${coordsTime - perfStart}ms`);
     
     try {
       // Query features in a rectangle around the tap point (22px tolerance for finger taps)
@@ -712,37 +1223,42 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         screenY + tolerance,  // bottom
         screenX - tolerance,  // left
       ];
-      console.log(`[MapPress] Querying ${queryableLayerIds.length} layers in ${tolerance}px radius`);
       
-      const features = await mapRef.current.queryRenderedFeaturesInRect(
+      // Query ALL rendered features (no layer filter) - faster than specifying 1000+ layer IDs
+      console.log(`[PERF:MapPress] Querying all layers (filter in JS)...`);
+      const queryStart = Date.now();
+      
+      const allFeatures = await mapRef.current.queryRenderedFeaturesInRect(
         bbox,
-        null,  // No filter expression
-        queryableLayerIds  // Specific layer IDs to query
+        undefined,  // No filter expression
+        []     // Empty array = query all layers (much faster than specifying 1000+ IDs)
       );
       
-      console.log(`[MapPress] Query returned ${features?.features?.length || 0} features`);
+      const queryEnd = Date.now();
+      console.log(`[PERF:MapPress] queryRenderedFeaturesInRect: ${queryEnd - queryStart}ms (found ${allFeatures?.features?.length || 0} raw features)`);
       
-      if (features && features.features && features.features.length > 0) {
-        // Log what we found
-        console.log('[MapPress] Features found:');
-        features.features.slice(0, 5).forEach((f: any, i: number) => {
-          console.log(`  [${i}] layer: ${f.properties?._layer || f.sourceLayer || 'unknown'}, type: ${f.geometry?.type}`);
-        });
-        
-        // Prioritize nautical features over base map features
-        const nauticalLayers = [
-          'LIGHTS', 'LIGHTS_SECTOR',
-          'BOYLAT', 'BOYCAR', 'BOYSAW', 'BOYSPP', 'BOYISD',
-          'BCNLAT', 'BCNSPP', 'BCNCAR', 'BCNISD', 'BCNSAW',
-          'WRECKS', 'UWTROC', 'OBSTRN',
-          'RESARE', 'CTNARE', 'MIPARE',  // Restricted/caution areas
-          'ACHARE', 'ACHBRT', 'MARCUL',   // Anchorages and aquaculture
-          'LNDMRK', 'CBLSUB', 'CBLARE', 'PIPSOL', 'PIPARE',
-          'SOUNDG', 'DEPARE', 'DEPCNT', 'SBDARE',
-          'DRGARE', 'FAIRWY',
-        ];
-        
+      // Filter to nautical layers in JavaScript (O(n) but n is small)
+      const filterStart = Date.now();
+      const nauticalLayers = new Set([
+        'LIGHTS', 'BOYLAT', 'BOYCAR', 'BOYSAW', 'BOYSPP', 'BOYISD',
+        'BCNLAT', 'BCNSPP', 'BCNCAR', 'BCNISD', 'BCNSAW',
+        'WRECKS', 'UWTROC', 'OBSTRN', 'LNDMRK', 'SOUNDG',
+        'CBLSUB', 'CBLARE', 'PIPSOL', 'PIPARE', 'DEPCNT', 'COALNE',
+        'RESARE', 'CTNARE', 'MIPARE', 'ACHARE', 'ACHBRT', 'MARCUL', 'SBDARE',
+      ]);
+      const features = {
+        features: (allFeatures?.features || []).filter((f: any) => {
+          const layer = f.properties?._layer || '';
+          return nauticalLayers.has(layer);
+        })
+      };
+      const filterEnd = Date.now();
+      console.log(`[PERF:MapPress] JS filter: ${filterEnd - filterStart}ms (${features.features.length} nautical features)`);
+      
+      if (features?.features?.length > 0) {
         // Find the best feature to display (prioritize point features and nautical data)
+        // Uses O(1) Map lookup instead of O(n) indexOf
+        const priorityStart = Date.now();
         let bestFeature = null;
         let bestPriority = -1;
         
@@ -753,12 +1269,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           // Skip meta layers
           if (layer.startsWith('M_')) continue;
           
-          // Calculate priority
-          let priority = 0;
-          const layerIndex = nauticalLayers.indexOf(layer);
-          if (layerIndex >= 0) {
-            priority = 100 - layerIndex; // Higher priority for layers earlier in the list
-          }
+          // Calculate priority using Map for O(1) lookup
+          let priority = NAUTICAL_LAYER_PRIORITIES.get(layer) || 0;
           
           // Boost point features (more likely what user tapped on)
           if (feature.geometry?.type === 'Point') {
@@ -771,65 +1283,40 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           }
         }
         
+        const priorityEnd = Date.now();
+        console.log(`[PERF:MapPress] Priority sorting (${features.features.length} features): ${priorityEnd - priorityStart}ms`);
+        
         if (bestFeature) {
           const props = bestFeature.properties || {};
           const layer = props._layer || 'Unknown';
           
-          // Map layer names to friendly display names
-          const layerNames: Record<string, string> = {
-            'LIGHTS': 'Light',
-            'LIGHTS_SECTOR': 'Light Sector',
-            'BOYLAT': 'Lateral Buoy',
-            'BOYCAR': 'Cardinal Buoy',
-            'BOYSAW': 'Safe Water Buoy',
-            'BOYSPP': 'Special Purpose Buoy',
-            'BOYISD': 'Isolated Danger Buoy',
-            'BCNLAT': 'Lateral Beacon',
-            'BCNSPP': 'Special Purpose Beacon',
-            'BCNCAR': 'Cardinal Beacon',
-            'BCNISD': 'Isolated Danger Beacon',
-            'BCNSAW': 'Safe Water Beacon',
-            'WRECKS': 'Wreck',
-            'UWTROC': 'Underwater Rock',
-            'OBSTRN': 'Obstruction',
-            'LNDMRK': 'Landmark',
-            'CBLSUB': 'Submarine Cable',
-            'CBLARE': 'Cable Area',
-            'PIPSOL': 'Pipeline',
-            'PIPARE': 'Pipeline Area',
-            'SOUNDG': 'Sounding',
-            'DEPARE': 'Depth Area',
-            'DEPCNT': 'Depth Contour',
-            'SBDARE': 'Seabed Area',
-            'DRGARE': 'Dredged Area',
-            'FAIRWY': 'Fairway',
-            'COALNE': 'Coastline',
-            'LNDARE': 'Land Area',
-            'RESARE': 'Restricted Area',
-            'CTNARE': 'Caution Area',
-            'MIPARE': 'Military Practice Area',
-            'ACHARE': 'Anchorage Area',
-            'ACHBRT': 'Anchor Berth',
-            'MARCUL': 'Marine Farm/Aquaculture',
-          };
+          console.log(`[PERF:MapPress] Selected feature: ${layer} (priority: ${bestPriority})`);
           
-          console.log(`[MapPress] Selected feature: ${layer}`);
-          setSelectedFeature({
-            type: layerNames[layer] || layer,
-            properties: {
-              ...props,
-              _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
-            },
+          const stateStart = Date.now();
+          // Use startTransition to make this non-blocking - allows UI to stay responsive
+          startTransition(() => {
+            setSelectedFeature({
+              type: LAYER_DISPLAY_NAMES[layer] || layer,
+              properties: {
+                ...props,
+                _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
+              },
+            });
           });
+          const stateEnd = Date.now();
+          console.log(`[PERF:MapPress] setSelectedFeature (startTransition): ${stateEnd - stateStart}ms`);
         } else {
-          console.log('[MapPress] No best feature found after filtering');
+          console.log('[PERF:MapPress] No suitable feature found after priority filtering');
         }
       } else {
-        console.log('[MapPress] No features returned from query');
+        console.log('[PERF:MapPress] No features found at tap location');
       }
     } catch (error) {
-      console.log('[MapPress] Error querying features:', error);
+      console.log('[PERF:MapPress] Error querying features:', error);
     }
+    
+    const perfEnd = Date.now();
+    console.log(`[PERF:MapPress] === TOTAL TIME: ${perfEnd - perfStart}ms ===`);
   }, [queryableLayerIds]);
 
   // Calculate initial center from loaded charts (prefer MBTiles if available)
@@ -889,6 +1376,91 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     return [-152, 61] as [number, number];
   }, [charts, mbtilesCharts]);
 
+  // Memoize formatted feature properties to avoid recalculation on every render
+  // NOTE: Must be before early returns to comply with Rules of Hooks
+  const formattedFeatureProps = useMemo(() => {
+    if (!selectedFeature) return null;
+    const formatStart = Date.now();
+    console.log(`[PERF:Format] Starting formatFeatureProperties for: ${selectedFeature.type}`);
+    const result = formatFeatureProperties(selectedFeature);
+    const formatEnd = Date.now();
+    console.log(`[PERF:Format] formatFeatureProperties: ${formatEnd - formatStart}ms`);
+    const entriesStart = Date.now();
+    const entries = Object.entries(result);
+    const entriesEnd = Date.now();
+    console.log(`[PERF:Format] Object.entries (${entries.length} props): ${entriesEnd - entriesStart}ms`);
+    console.log(`[PERF:Format] Total useMemo: ${entriesEnd - formatStart}ms`);
+    // Log end-to-end time from tap to info box ready
+    if (tapStartTimeRef.current > 0) {
+      console.log(`[PERF:InfoBox] === TAP TO INFO BOX READY: ${entriesEnd - tapStartTimeRef.current}ms ===`);
+    }
+    return entries;
+  }, [selectedFeature]);
+  
+  // Log when info box actually renders (after React commit phase)
+  useEffect(() => {
+    if (selectedFeature && tapStartTimeRef.current > 0) {
+      const renderTime = Date.now() - tapStartTimeRef.current;
+      console.log(`[PERF:InfoBox] === TAP TO RENDER COMPLETE: ${renderTime}ms ===`);
+      tapStartTimeRef.current = 0; // Reset for next tap
+    }
+  }, [selectedFeature]);
+
+  // === STYLE SWITCH: Additional Mapbox event handlers for detailed timing ===
+  // NOTE: These must be BEFORE early returns to comply with Rules of Hooks
+  const handleWillStartLoadingMap = useCallback(() => {
+    if (styleSwitchStartRef.current > 0) {
+      const elapsed = Date.now() - styleSwitchStartRef.current;
+      console.log(`[STYLE-SWITCH] onWillStartLoadingMap - elapsed: ${elapsed}ms`);
+    }
+  }, []);
+  
+  const handleDidFinishLoadingMap = useCallback(() => {
+    if (styleSwitchStartRef.current > 0) {
+      const elapsed = Date.now() - styleSwitchStartRef.current;
+      console.log(`[STYLE-SWITCH] onDidFinishLoadingMap - elapsed: ${elapsed}ms`);
+    }
+  }, []);
+  
+  const handleDidFailLoadingMap = useCallback((error: any) => {
+    if (styleSwitchStartRef.current > 0) {
+      const elapsed = Date.now() - styleSwitchStartRef.current;
+      console.log(`[STYLE-SWITCH] onDidFailLoadingMap - elapsed: ${elapsed}ms, error:`, error);
+    }
+  }, []);
+  
+  const handleDidFinishLoadingStyle = useCallback(() => {
+    if (styleSwitchStartRef.current > 0) {
+      const elapsed = Date.now() - styleSwitchStartRef.current;
+      console.log(`[STYLE-SWITCH] onDidFinishLoadingStyle - elapsed: ${elapsed}ms`);
+      console.log(`[STYLE-SWITCH] Style "${styleSwitchToRef.current}" has finished loading`);
+    }
+  }, []);
+  
+  // Track first render frame after style switch
+  const styleRenderFrameCountRef = useRef<number>(0);
+  const handleDidFinishRenderingFrame = useCallback((state: any) => {
+    if (styleSwitchStartRef.current > 0) {
+      styleRenderFrameCountRef.current++;
+      // Only log first few frames to avoid spam
+      if (styleRenderFrameCountRef.current <= 3) {
+        const elapsed = Date.now() - styleSwitchStartRef.current;
+        const fullyRendered = state?.properties?.renderMode === 'full';
+        console.log(`[STYLE-SWITCH] onDidFinishRenderingFrame #${styleRenderFrameCountRef.current} - elapsed: ${elapsed}ms, fullyRendered: ${fullyRendered}`);
+      }
+    }
+  }, []);
+  
+  const handleDidFinishRenderingFrameFully = useCallback(() => {
+    if (styleSwitchStartRef.current > 0) {
+      const elapsed = Date.now() - styleSwitchStartRef.current;
+      console.log(`[STYLE-SWITCH] onDidFinishRenderingFrameFully - elapsed: ${elapsed}ms`);
+      console.log(`[STYLE-SWITCH] Map fully rendered with new style`);
+      // Reset frame counter
+      styleRenderFrameCountRef.current = 0;
+    }
+  }, []);
+
   if (loading) {
     return (
       <View style={styles.container}>
@@ -933,8 +1505,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         onMapIdle={handleMapIdle}
         onCameraChanged={handleCameraChanged}
         onPress={handleMapPress}
+        onWillStartLoadingMap={handleWillStartLoadingMap}
+        onDidFinishLoadingMap={handleDidFinishLoadingMap}
+        onDidFailLoadingMap={handleDidFailLoadingMap}
+        onDidFinishLoadingStyle={handleDidFinishLoadingStyle}
+        onDidFinishRenderingFrame={handleDidFinishRenderingFrame}
+        onDidFinishRenderingFrameFully={handleDidFinishRenderingFrameFully}
         scaleBarEnabled={true}
         scaleBarPosition={{ bottom: 16, right: 70 }}
+        logoEnabled={false}
+        attributionEnabled={false}
       >
         <Mapbox.Camera
           ref={cameraRef}
@@ -972,7 +1552,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         })}
 
         {/* Local Offline Basemap - OpenMapTiles vector tiles */}
-        {mapStyle === 'local' && tileServerReady && hasLocalBasemap && (
+        {/* PERF: Always mounted when available, visibility toggled for instant switching */}
+        {tileServerReady && hasLocalBasemap && (() => {
+          const basemapVisible = mapStyle === 'local' ? 'visible' : 'none';
+          // === STYLE SWITCH: Log basemap visibility during render ===
+          if (styleSwitchStartRef.current > 0) {
+            const elapsed = Date.now() - styleSwitchStartRef.current;
+            console.log(`[STYLE-SWITCH] Rendering local basemap with visibility="${basemapVisible}" - elapsed: ${elapsed}ms`);
+          }
+          return (
           <Mapbox.VectorSource
             id="local-basemap-source"
             tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/basemap_alaska/{z}/{x}/{y}.pbf`]}
@@ -986,6 +1574,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#a0cfe8',
                 fillOpacity: 1,
+                visibility: basemapVisible,
               }}
             />
             
@@ -1001,6 +1590,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   12, 1.5,
                   14, 3,
                 ],
+                visibility: basemapVisible,
               }}
             />
             
@@ -1012,6 +1602,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#ffffff',
                 fillOpacity: 0.9,
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.FillLayer
@@ -1021,6 +1612,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#d8e8c8',
                 fillOpacity: 0.6,
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.FillLayer
@@ -1030,6 +1622,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#c5ddb0',
                 fillOpacity: 0.6,
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.FillLayer
@@ -1039,6 +1632,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#d0e8d8',
                 fillOpacity: 0.5,
+                visibility: basemapVisible,
               }}
             />
             
@@ -1051,6 +1645,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#e8e0d8',
                 fillOpacity: 0.5,
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.FillLayer
@@ -1061,6 +1656,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#ddd8d0',
                 fillOpacity: 0.4,
+                visibility: basemapVisible,
               }}
             />
             
@@ -1071,6 +1667,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#c8e6c9',
                 fillOpacity: 0.4,
+                visibility: basemapVisible,
               }}
             />
             
@@ -1082,6 +1679,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#d9d0c9',
                 fillOpacity: 0.8,
+                visibility: basemapVisible,
               }}
             />
             
@@ -1095,6 +1693,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 lineWidth: 1,
                 lineDasharray: [3, 2],
                 lineOpacity: 0.6,
+                visibility: basemapVisible,
               }}
             />
             
@@ -1111,6 +1710,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   10, 3,
                   14, 6,
                 ],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.LineLayer
@@ -1125,6 +1725,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   10, 2,
                   14, 4,
                 ],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.LineLayer
@@ -1139,6 +1740,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   10, 2.5,
                   14, 5,
                 ],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.LineLayer
@@ -1153,6 +1755,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   10, 1.5,
                   14, 3,
                 ],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.LineLayer
@@ -1167,6 +1770,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   10, 1,
                   14, 2.5,
                 ],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.LineLayer
@@ -1181,6 +1785,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   9, 0.5,
                   14, 2,
                 ],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.LineLayer
@@ -1195,6 +1800,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   11, 0.4,
                   14, 1.5,
                 ],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.LineLayer
@@ -1206,6 +1812,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 lineColor: '#ffffff',
                 lineWidth: 1,
                 lineOpacity: 0.8,
+                visibility: basemapVisible,
               }}
             />
             
@@ -1218,6 +1825,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 fillColor: '#e0dce0',
                 fillOpacity: 0.7,
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.LineLayer
@@ -1232,6 +1840,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   10, 2,
                   14, 8,
                 ],
+                visibility: basemapVisible,
               }}
             />
             
@@ -1253,6 +1862,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textFont: ['Open Sans Bold', 'Arial Unicode MS Bold'],
                 textTransform: 'uppercase',
                 textLetterSpacing: 0.1,
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.SymbolLayer
@@ -1271,6 +1881,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textHaloColor: '#ffffff',
                 textHaloWidth: 1.5,
                 textFont: ['Open Sans Bold', 'Arial Unicode MS Bold'],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.SymbolLayer
@@ -1289,6 +1900,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textHaloColor: '#ffffff',
                 textHaloWidth: 1,
                 textFont: ['Open Sans Regular', 'Arial Unicode MS Regular'],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.SymbolLayer
@@ -1302,6 +1914,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textHaloColor: '#ffffff',
                 textHaloWidth: 1,
                 textFont: ['Open Sans Italic', 'Arial Unicode MS Regular'],
+                visibility: basemapVisible,
               }}
             />
             <Mapbox.SymbolLayer
@@ -1316,40 +1929,60 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textHaloColor: '#ffffff',
                 textHaloWidth: 1,
                 textFont: ['Open Sans Regular', 'Arial Unicode MS Regular'],
+                visibility: basemapVisible,
               }}
             />
           </Mapbox.VectorSource>
-        )}
+          );
+        })()}
 
         {/* MBTiles Vector Sources - Chart quilting with zoom-based visibility */}
-        {/* PERFORMANCE: Progressive loading - US1 first, then US2+US3, then US4 */}
-        {useMBTiles && tileServerReady && chartsToRender.map((chartId) => {
+        {/* PERFORMANCE: Progressive loading + viewport-based dynamic loading */}
+        {useMBTiles && tileServerReady && allChartsToRender.map((chartId) => {
           const tileUrl = tileServer.getTileUrlTemplate(chartId);
           
-          // Determine minZoomLevel based on chart scale for proper quilting
-          // Matches the tippecanoe min zoom settings from convert.py
-          // US1: z0, US2: z8, US3: z10, US4: z11, US5: z13
+          // Determine minZoomLevel and maxZoomLevel based on chart scale for proper quilting
+          // When zoomed in past maxZoom, lower-resolution charts hide and higher-res ones take over
+          // US1: z0-9, US2: z8-11, US3: z10-13, US4: z11-15, US5: z13+
           const getChartMinZoom = (chartId: string): number => {
             const match = chartId.match(/^US(\d)/);
             if (!match) return 0;
             const scaleNum = parseInt(match[1], 10);
             
-            // Match the scale-based conversion settings
-            if (scaleNum === 1) return 0;   // US1 Overview: z0-8
-            if (scaleNum === 2) return 8;   // US2 General: z8-10
-            if (scaleNum === 3) return 10;  // US3 Coastal: z10-13
-            if (scaleNum === 4) return 11;  // US4 Approach: z11-16
-            if (scaleNum === 5) return 13;  // US5 Harbor: z13-18
-            if (scaleNum >= 6) return 13;   // US6+ (if any)
+            if (scaleNum === 1) return 0;   // US1 Overview
+            if (scaleNum === 2) return 8;   // US2 General
+            if (scaleNum === 3) return 10;  // US3 Coastal
+            if (scaleNum === 4) return 11;  // US4 Approach
+            if (scaleNum === 5) return 13;  // US5 Harbor
+            if (scaleNum >= 6) return 13;
             return 0;
           };
+          
+          const getChartMaxZoom = (chartId: string): number => {
+            const match = chartId.match(/^US(\d)/);
+            if (!match) return 22;
+            const scaleNum = parseInt(match[1], 10);
+            
+            // Lower-res charts fade out when higher-res ones become available
+            // Small overlap allows smooth transitions
+            if (scaleNum === 1) return 9;   // US1 hides at z10 when US3 available
+            if (scaleNum === 2) return 11;  // US2 hides at z12 when US4 available  
+            if (scaleNum === 3) return 13;  // US3 hides at z14 when US5 available
+            if (scaleNum === 4) return 15;  // US4 hides at z16
+            if (scaleNum === 5) return 22;  // US5 stays visible at all high zooms
+            if (scaleNum >= 6) return 22;
+            return 22;
+          };
+          
           const chartMinZoom = getChartMinZoom(chartId);
+          const chartMaxZoom = getChartMaxZoom(chartId);
           
           return (
           <Mapbox.VectorSource
             key={`mbtiles-src-${chartId}-${cacheBuster}`}
             id={`mbtiles-src-${chartId}`}
             tileUrlTemplates={[tileUrl]}
+            maxZoomLevel={22}
           >
             {/* ============================================================ */}
             {/* LAYER ORDER - S-52 Compliant (bottom to top)                 */}
@@ -1364,15 +1997,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* === SECTION 1: WATER/DEPTH BACKGROUNDS === */}
             
             {/* DEPARE - Depth Areas with proper depth-based coloring */}
+            {/* belowLayerID ensures depth fills stay below GNIS labels */}
+            {/* maxZoomLevel hides lower-res charts when higher-res available */}
             <Mapbox.FillLayer
               id={`mbtiles-depare-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['==', ['get', '_layer'], 'DEPARE']}
               style={{
                 fillColor: [
                   'step',
-                  ['get', 'DRVAL1'],
+                  ['coalesce', ['get', 'DRVAL1'], 0], // Handle null/undefined DRVAL1
                   '#C8D6A3', 0,      // Drying/intertidal - tan/green
                   '#B5E3F0', 2,      // 0-2m - very light blue (danger)
                   '#9DD5E8', 5,      // 2-5m - light blue
@@ -1390,7 +2027,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id={`mbtiles-drgare-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['==', ['get', '_layer'], 'DRGARE']}
               style={{
                 fillColor: '#87CEEB',
@@ -1402,7 +2041,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id={`mbtiles-fairwy-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['==', ['get', '_layer'], 'FAIRWY']}
               style={{
                 fillColor: '#E6E6FA',
@@ -1416,7 +2057,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id={`mbtiles-lndare-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['==', ['get', '_layer'], 'LNDARE']}
               style={{
                 fillColor: '#F5DEB3',
@@ -1426,11 +2069,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             {/* === SECTION 3: AREA OVERLAYS (on top of land/water) === */}
+            {/* All fill layers use belowLayerID to stay below GNIS labels */}
             
             {/* CBLARE - Cable Areas (fill only, outline later) */}
             <Mapbox.FillLayer
               id={`mbtiles-cblare-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'CBLARE']}
               style={{
@@ -1444,6 +2089,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id={`mbtiles-pipare-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={chartMinZoom}
               filter={['==', ['get', '_layer'], 'PIPARE']}
               style={{
@@ -1461,6 +2107,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id={`mbtiles-resare-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'RESARE']}
               style={{
@@ -1485,6 +2132,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id={`mbtiles-ctnare-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'CTNARE']}
               style={{
@@ -1499,6 +2147,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id={`mbtiles-mipare-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'MIPARE']}
               style={{
@@ -1513,6 +2162,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id={`mbtiles-achare-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'ACHARE']}
               style={{
@@ -1527,6 +2177,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id={`mbtiles-marcul-${chartId}`}
               sourceLayerID={chartId}
+              belowLayerID="chart-top-marker"
               minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'MARCUL']}
               style={{
@@ -1539,10 +2190,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* === SECTION 4: LINES === */}
             
             {/* DEPCNT - Depth Contours */}
+            {/* maxZoomLevel prevents crossing contours from overlapping chart scales */}
             <Mapbox.LineLayer
               id={`mbtiles-depcnt-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={[
                 'all',
                 ['==', ['get', '_layer'], 'DEPCNT'],
@@ -1559,13 +2212,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 lineColor: [
                   'step',
                   ['coalesce', ['get', 'VALDCO'], 0],
-                  '#000000', 0.1, '#1E3A5F', 2, '#2E5984', 5,
-                  '#4A7BA7', 10, '#6B9BC3', 20, '#8FBCD9', 50, '#B0D4E8',
+                  '#1E3A5F', 2,      // 0-2m - dark blue (shallow, important)
+                  '#2E5984', 5,      // 2-5m
+                  '#4A7BA7', 10,     // 5-10m
+                  '#6B9BC3', 20,     // 10-20m
+                  '#8FBCD9', 50,     // 20-50m
+                  '#B0D4E8',         // 50m+ - light blue
                 ],
                 lineWidth: [
                   'step',
                   ['coalesce', ['get', 'VALDCO'], 0],
-                  2.0, 0.1, 1.5, 5, 1.0, 20, 0.7, 50, 0.5,
+                  1.5, 5, 1.0, 20, 0.7, 50, 0.5, // Simplified - no 0.1 threshold
                 ],
                 lineCap: 'round',
                 lineJoin: 'round',
@@ -1578,6 +2235,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-coalne-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['==', ['get', '_layer'], 'COALNE']}
               style={{
                 lineColor: '#000000',
@@ -1593,6 +2251,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-lndare-outline-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['==', ['get', '_layer'], 'LNDARE']}
               style={{
                 lineColor: '#8B7355',
@@ -1834,11 +2493,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             {/* SOUNDG - Soundings */}
+            {/* maxZoomLevel prevents duplicate soundings from overlapping chart scales */}
             <Mapbox.SymbolLayer
               id={`mbtiles-soundg-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
-              maxZoomLevel={22}
+              maxZoomLevel={chartMaxZoom}
               filter={[
                 'all',
                 ['==', ['get', '_layer'], 'SOUNDG'],
@@ -1855,8 +2515,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textColor: '#000080',
                 textHaloColor: '#FFFFFF',
                 textHaloWidth: 1.5,
-                textAllowOverlap: true,
-                textIgnorePlacement: true,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
                 visibility: showSoundings ? 'visible' : 'none',
               }}
             />
@@ -1910,9 +2570,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-wrecks-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'WRECKS'],
-                ['==', ['geometry-type'], 'Point']
+                ['==', ['geometry-type'], 'Point'],
+                ['any',
+                  ['!', ['has', 'SCAMIN']],
+                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
+                ]
               ]}
               style={{
                 iconImage: [
@@ -1935,9 +2600,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-uwtroc-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'UWTROC'],
-                ['==', ['geometry-type'], 'Point']
+                ['==', ['geometry-type'], 'Point'],
+                ['any',
+                  ['!', ['has', 'SCAMIN']],
+                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
+                ]
               ]}
               style={{
                 iconImage: [
@@ -1976,9 +2646,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-obstrn-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'OBSTRN'],
-                ['==', ['geometry-type'], 'Point']
+                ['==', ['geometry-type'], 'Point'],
+                ['any',
+                  ['!', ['has', 'SCAMIN']],
+                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
+                ]
               ]}
               style={{
                 iconImage: [
@@ -2029,12 +2704,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-buoys-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
-              filter={['any',
-                ['==', ['get', '_layer'], 'BOYLAT'],
-                ['==', ['get', '_layer'], 'BOYCAR'],
-                ['==', ['get', '_layer'], 'BOYSAW'],
-                ['==', ['get', '_layer'], 'BOYSPP'],
-                ['==', ['get', '_layer'], 'BOYISD'],
+              maxZoomLevel={chartMaxZoom}
+              filter={['all',
+                ['any',
+                  ['==', ['get', '_layer'], 'BOYLAT'],
+                  ['==', ['get', '_layer'], 'BOYCAR'],
+                  ['==', ['get', '_layer'], 'BOYSAW'],
+                  ['==', ['get', '_layer'], 'BOYSPP'],
+                  ['==', ['get', '_layer'], 'BOYISD'],
+                ],
+                ['any',
+                  ['!', ['has', 'SCAMIN']],
+                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
+                ]
               ]}
               style={{
                 iconImage: [
@@ -2066,12 +2748,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-beacons-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
-              filter={['any',
-                ['==', ['get', '_layer'], 'BCNLAT'],
-                ['==', ['get', '_layer'], 'BCNSPP'],
-                ['==', ['get', '_layer'], 'BCNCAR'],
-                ['==', ['get', '_layer'], 'BCNISD'],
-                ['==', ['get', '_layer'], 'BCNSAW'],
+              maxZoomLevel={chartMaxZoom}
+              filter={['all',
+                ['any',
+                  ['==', ['get', '_layer'], 'BCNLAT'],
+                  ['==', ['get', '_layer'], 'BCNSPP'],
+                  ['==', ['get', '_layer'], 'BCNCAR'],
+                  ['==', ['get', '_layer'], 'BCNISD'],
+                  ['==', ['get', '_layer'], 'BCNSAW'],
+                ],
+                ['any',
+                  ['!', ['has', 'SCAMIN']],
+                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
+                ]
               ]}
               style={{
                 iconImage: [
@@ -2102,8 +2791,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-lights-sector-outline-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
-              maxZoomLevel={22}
-              filter={['==', ['get', '_layer'], 'LIGHTS_SECTOR']}
+              maxZoomLevel={chartMaxZoom}
+              filter={['all',
+                ['==', ['get', '_layer'], 'LIGHTS_SECTOR'],
+                ['any',
+                  ['!', ['has', 'SCAMIN']],
+                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
+                ]
+              ]}
               style={{
                 lineColor: '#000000',
                 lineWidth: 7,
@@ -2117,8 +2812,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-lights-sector-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
-              maxZoomLevel={22}
-              filter={['==', ['get', '_layer'], 'LIGHTS_SECTOR']}
+              maxZoomLevel={chartMaxZoom}
+              filter={['all',
+                ['==', ['get', '_layer'], 'LIGHTS_SECTOR'],
+                ['any',
+                  ['!', ['has', 'SCAMIN']],
+                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
+                ]
+              ]}
               style={{
                 lineColor: [
                   'match',
@@ -2140,9 +2841,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.SymbolLayer
               id={`mbtiles-lights-${chartId}`}
               sourceLayerID={chartId}
-              filter={['==', ['get', '_layer'], 'LIGHTS']}
+              filter={['all',
+                ['==', ['get', '_layer'], 'LIGHTS'],
+                ['any',
+                  ['!', ['has', 'SCAMIN']],
+                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
+                ]
+              ]}
               minZoomLevel={chartMinZoom}
-              maxZoomLevel={22}
+              maxZoomLevel={chartMaxZoom}
               style={{
                 iconImage: [
                   'case',
@@ -2192,9 +2899,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-lndmrk-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
+              maxZoomLevel={chartMaxZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'LNDMRK'],
-                ['==', ['geometry-type'], 'Point']
+                ['==', ['geometry-type'], 'Point'],
+                ['any',
+                  ['!', ['has', 'SCAMIN']],
+                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
+                ]
               ]}
               style={{
                 iconImage: [
@@ -2228,7 +2940,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.SymbolLayer
               id={`mbtiles-lndmrk-label-${chartId}`}
               sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
               filter={['all',
                 ['==', ['get', '_layer'], 'LNDMRK'],
                 ['==', ['geometry-type'], 'Point']
@@ -2261,62 +2972,86 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         );
         })}
 
+        {/* Marker layer to establish z-order boundary between charts and labels */}
+        {/* Uses an empty ShapeSource with a CircleLayer as the anchor point */}
+        {/* GNIS layers reference this to ensure they render above ALL chart content */}
+        {tileServerReady && (
+          <Mapbox.ShapeSource
+            id="layer-order-marker-source"
+            shape={{ type: 'FeatureCollection', features: [] }}
+          >
+            <Mapbox.CircleLayer
+              id="chart-top-marker"
+              style={{ circleRadius: 0, circleOpacity: 0 }}
+            />
+          </Mapbox.ShapeSource>
+        )}
+
         {/* GNIS Place Names Layer - Reference data from USGS */}
+        {/* IMPORTANT: maxZoomLevel must match tippecanoe --maximum-zoom (14) */}
+        {/* to prevent overzoom rendering issues */}
+        {/* NOTE: These layers use aboveLayerID to ensure they appear above all chart content */}
         {tileServerReady && gnisAvailable && showPlaceNames && (
           <Mapbox.VectorSource
             id="gnis-names-source"
             tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/gnis_names_ak/{z}/{x}/{y}.pbf`]}
+            maxZoomLevel={14}
           >
             {/* Water features - Bays, channels, sounds (highest priority) */}
+            {/* textAllowOverlap: true ensures GNIS shows regardless of chart symbols */}
             <Mapbox.SymbolLayer
               id="gnis-water-names"
               sourceLayerID="gnis_names"
               filter={['==', ['get', 'CATEGORY'], 'water']}
-              minZoomLevel={7}
+              minZoomLevel={6}
               style={{
                 textField: ['get', 'NAME'],
                 textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
                 textSize: [
                   'interpolate', ['linear'], ['zoom'],
+                  6, 9,
                   7, 10,
                   10, 12,
                   14, 14,
                 ],
                 textColor: '#0066CC',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                textAllowOverlap: false,
-                textIgnorePlacement: false,
+                textHaloWidth: 2,
+                textAllowOverlap: false,  // Declutter - don't overlap other labels
+                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
                 textAnchor: 'center',
-                textMaxWidth: 8,
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],  // Use GNIS priority field
                 visibility: showWaterNames ? 'visible' : 'none',
               }}
             />
             
-            {/* Coastal features - Capes, islands, beaches */}
+            {/* Coastal features - Capes, islands, beaches, rocks, reefs */}
             <Mapbox.SymbolLayer
               id="gnis-coastal-names"
               sourceLayerID="gnis_names"
               filter={['==', ['get', 'CATEGORY'], 'coastal']}
-              minZoomLevel={8}
+              minZoomLevel={6}
               style={{
                 textField: ['get', 'NAME'],
                 textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
                 textSize: [
                   'interpolate', ['linear'], ['zoom'],
-                  8, 9,
-                  12, 11,
+                  6, 8,
+                  7, 9,
+                  10, 11,
                   14, 13,
                 ],
                 textColor: '#996633',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                textAllowOverlap: false,
-                textIgnorePlacement: false,
+                textHaloWidth: 2,
+                textAllowOverlap: false,  // Declutter - don't overlap other labels
+                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
                 textAnchor: 'center',
-                textMaxWidth: 8,
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
                 visibility: showCoastalNames ? 'visible' : 'none',
               }}
             />
@@ -2326,23 +3061,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id="gnis-landmark-names"
               sourceLayerID="gnis_names"
               filter={['==', ['get', 'CATEGORY'], 'landmark']}
-              minZoomLevel={9}
+              minZoomLevel={8}
               style={{
                 textField: ['get', 'NAME'],
                 textFont: ['DIN Pro Italic', 'Arial Unicode MS Regular'],
                 textSize: [
                   'interpolate', ['linear'], ['zoom'],
+                  8, 8,
                   9, 9,
                   14, 12,
                 ],
                 textColor: '#666666',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                textAllowOverlap: false,
-                textIgnorePlacement: false,
+                textHaloWidth: 2,
+                textAllowOverlap: false,  // Declutter - don't overlap other labels
+                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
                 textAnchor: 'center',
-                textMaxWidth: 8,
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
                 visibility: showLandmarkNames ? 'visible' : 'none',
               }}
             />
@@ -2352,12 +3089,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id="gnis-populated-names"
               sourceLayerID="gnis_names"
               filter={['==', ['get', 'CATEGORY'], 'populated']}
-              minZoomLevel={7}
+              minZoomLevel={6}
               style={{
                 textField: ['get', 'NAME'],
                 textFont: ['DIN Pro Bold', 'Arial Unicode MS Bold'],
                 textSize: [
                   'interpolate', ['linear'], ['zoom'],
+                  6, 9,
                   7, 10,
                   10, 12,
                   14, 14,
@@ -2365,11 +3103,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textColor: '#CC0000',
                 textHaloColor: '#FFFFFF',
                 textHaloWidth: 2,
-                textAllowOverlap: false,
-                textIgnorePlacement: false,
+                textAllowOverlap: false,  // Declutter - don't overlap other labels
+                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
                 textAnchor: 'center',
-                textMaxWidth: 8,
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
                 visibility: showPopulatedNames ? 'visible' : 'none',
               }}
             />
@@ -2379,23 +3118,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id="gnis-stream-names"
               sourceLayerID="gnis_names"
               filter={['==', ['get', 'CATEGORY'], 'stream']}
-              minZoomLevel={10}
+              minZoomLevel={9}
               style={{
                 textField: ['get', 'NAME'],
                 textFont: ['DIN Pro Italic', 'Arial Unicode MS Regular'],
                 textSize: [
                   'interpolate', ['linear'], ['zoom'],
+                  9, 8,
                   10, 8,
                   14, 10,
                 ],
                 textColor: '#3399FF',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
-                textAllowOverlap: false,
-                textIgnorePlacement: false,
+                textHaloWidth: 1.5,
+                textAllowOverlap: false,  // Declutter - don't overlap other labels
+                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
                 textAnchor: 'center',
-                textMaxWidth: 8,
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
                 visibility: showStreamNames ? 'visible' : 'none',
               }}
             />
@@ -2405,23 +3146,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id="gnis-lake-names"
               sourceLayerID="gnis_names"
               filter={['==', ['get', 'CATEGORY'], 'lake']}
-              minZoomLevel={10}
+              minZoomLevel={9}
               style={{
                 textField: ['get', 'NAME'],
                 textFont: ['DIN Pro Italic', 'Arial Unicode MS Regular'],
                 textSize: [
                   'interpolate', ['linear'], ['zoom'],
+                  9, 8,
                   10, 8,
                   14, 10,
                 ],
                 textColor: '#66CCFF',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
-                textAllowOverlap: false,
-                textIgnorePlacement: false,
+                textHaloWidth: 1.5,
+                textAllowOverlap: false,  // Declutter - don't overlap other labels
+                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
                 textAnchor: 'center',
-                textMaxWidth: 8,
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
                 visibility: showLakeNames ? 'visible' : 'none',
               }}
             />
@@ -2431,23 +3174,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id="gnis-terrain-names"
               sourceLayerID="gnis_names"
               filter={['==', ['get', 'CATEGORY'], 'terrain']}
-              minZoomLevel={11}
+              minZoomLevel={10}
               style={{
                 textField: ['get', 'NAME'],
                 textFont: ['DIN Pro Regular', 'Arial Unicode MS Regular'],
                 textSize: [
                   'interpolate', ['linear'], ['zoom'],
+                  10, 8,
                   11, 8,
                   14, 10,
                 ],
                 textColor: '#999966',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
-                textAllowOverlap: false,
-                textIgnorePlacement: false,
+                textHaloWidth: 1.5,
+                textAllowOverlap: false,  // Declutter - don't overlap other labels
+                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
                 textAnchor: 'center',
-                textMaxWidth: 8,
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
                 visibility: showTerrainNames ? 'visible' : 'none',
               }}
             />
@@ -2489,80 +3234,182 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
       </Mapbox.MapView>
 
-      {/* Layers button - positioned in safe area */}
-      <TouchableOpacity 
-        style={[styles.layersBtn, { top: insets.top + 12, right: 12 }]}
-        onPress={() => setShowControls(!showControls)}
-      >
-        <View style={styles.layersIcon}>
-          <View style={[styles.layersSquare, styles.layersSquare1]} />
-          <View style={[styles.layersSquare, styles.layersSquare2]} />
-          <View style={[styles.layersSquare, styles.layersSquare3]} />
+      {/* Chart Loading Progress Indicator - shows during background chart loading */}
+      {chartLoadingProgress && (
+        <View style={styles.chartLoadingOverlay}>
+          <View style={styles.chartLoadingContainer}>
+            <ActivityIndicator size="small" color="#007AFF" />
+            <Text style={styles.chartLoadingText}>
+              {chartLoadingProgress.phase}
+            </Text>
+            <Text style={styles.chartLoadingProgress}>
+              {chartLoadingProgress.current} / {chartLoadingProgress.total}
+            </Text>
+          </View>
         </View>
-      </TouchableOpacity>
-
-      {/* Chart debug button - shows active chart info */}
-      <TouchableOpacity 
-        style={[styles.debugBtn, { top: insets.top + 12, left: 12 }]}
-        onPress={() => setShowChartDebug(!showChartDebug)}
-      >
-        <Text style={styles.debugBtnText}>📍</Text>
-      </TouchableOpacity>
-
-      {/* Technical debug button */}
-      <TouchableOpacity 
-        style={[styles.debugBtn, { top: insets.top + 12, left: 58 }]}
-        onPress={() => setShowDebug(!showDebug)}
-      >
-        <Text style={styles.debugBtnText}>🔧</Text>
-      </TouchableOpacity>
-
-      {/* GPS Panel toggle button */}
-      <TouchableOpacity 
-        style={[
-          styles.debugBtn, 
-          { top: insets.top + 12, left: 104 },
-          showGPSPanel && styles.activeToggleBtn,
-        ]}
-        onPress={() => setShowGPSPanel(!showGPSPanel)}
-      >
-        <Text style={styles.debugBtnText}>📡</Text>
-      </TouchableOpacity>
-
-      {/* Compass toggle button */}
-      <TouchableOpacity 
-        style={[
-          styles.debugBtn, 
-          { top: insets.top + 12, left: 150 },
-          showCompass && styles.activeToggleBtn,
-        ]}
-        onPress={() => setShowCompass(!showCompass)}
-      >
-        <Text style={styles.debugBtnText}>🧭</Text>
-      </TouchableOpacity>
-
-      {/* Follow GPS toggle button (only when GPS is on) */}
-      {(showGPSPanel || showCompass) && gpsData.isTracking && (
-        <TouchableOpacity 
-          style={[
-            styles.debugBtn, 
-            { top: insets.top + 12, left: 196 },
-            followGPS && styles.activeToggleBtn,
-          ]}
-          onPress={() => setFollowGPS(!followGPS)}
-        >
-          <Text style={styles.debugBtnText}>{followGPS ? '🎯' : '📌'}</Text>
-        </TouchableOpacity>
       )}
 
-      {/* Chart Debug Overlay - Shows active chart based on zoom */}
+      {/* ===== FOREFLIGHT-STYLE UI LAYOUT ===== */}
+      
+      {/* Top Menu Bar - horizontal strip with main controls */}
+      <View style={[styles.topMenuBar, { top: insets.top + 8 }]}>
+        {/* Layers button */}
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, showControls && styles.topMenuBtnActive]}
+          onPress={() => setShowControls(!showControls)}
+        >
+          <View style={styles.layerStackIcon}>
+            <View style={[styles.layerStackLine, { top: 0, left: 0 }]} />
+            <View style={[styles.layerStackLine, { top: 7, left: 2 }]} />
+            <View style={[styles.layerStackLine, { top: 14, left: 4 }]} />
+          </View>
+        </TouchableOpacity>
+        <View style={styles.topMenuDivider} />
+        
+        {/* Compass button */}
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, showCompass && styles.topMenuBtnActive]}
+          onPress={() => setShowCompass(!showCompass)}
+        >
+          <Text style={styles.topMenuBtnText}>🧭</Text>
+        </TouchableOpacity>
+        <View style={styles.topMenuDivider} />
+        
+        {/* Telemetry button */}
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, showGPSPanel && styles.topMenuBtnActive]}
+          onPress={() => setShowGPSPanel(!showGPSPanel)}
+        >
+          <Text style={styles.topMenuBtnText}>⏱</Text>
+        </TouchableOpacity>
+        <View style={styles.topMenuDivider} />
+        
+        {/* GPS Coordinates toggle */}
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, showCoords && styles.topMenuBtnActive]}
+          onPress={() => setShowCoords(!showCoords)}
+        >
+          <Text style={styles.topMenuBtnText}>🌐</Text>
+        </TouchableOpacity>
+        <View style={styles.topMenuDivider} />
+        
+        {/* Zoom Level toggle */}
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, showZoomLevel && styles.topMenuBtnActive]}
+          onPress={() => setShowZoomLevel(!showZoomLevel)}
+        >
+          <Text style={[styles.topMenuBtnText, { fontSize: 18, fontWeight: '700' }]}>N°</Text>
+        </TouchableOpacity>
+        <View style={styles.topMenuDivider} />
+        
+        {/* Chart Info toggle */}
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, showChartDebug && styles.topMenuBtnActive]}
+          onPress={() => setShowChartDebug(!showChartDebug)}
+        >
+          <Text style={styles.topMenuBtnText}>#</Text>
+        </TouchableOpacity>
+      </View>
+      
+      {/* Center on location button - upper right (same style as other controls) */}
+      <View style={[styles.centerBtnContainer, { top: insets.top + 8, right: 12 }]}>
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, followGPS && styles.topMenuBtnActive]}
+          onPress={() => {
+            if (gpsData.latitude !== null && gpsData.longitude !== null) {
+              cameraRef.current?.setCamera({
+                centerCoordinate: [gpsData.longitude, gpsData.latitude],
+                animationDuration: 500,
+              });
+            }
+            setFollowGPS(!followGPS);
+            if (!showGPSPanel && !showCompass) {
+              startTracking();
+            }
+          }}
+        >
+          <Text style={styles.centerBtnText}>⌖</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Quick Toggles Strip - bottom left of map (minimalist style) */}
+      <View style={[styles.quickTogglesStrip, { bottom: showGPSPanel ? 210 : 90 }]}>
+        {/* Layer toggles first */}
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showDepthAreas && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('depthAreas')}
+        >
+          <Text style={styles.quickToggleBtnText}>DEP</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showDepthContours && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('depthContours')}
+        >
+          <Text style={styles.quickToggleBtnText}>CNT</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showSoundings && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('soundings')}
+        >
+          <Text style={styles.quickToggleBtnText}>SND</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showLights && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('lights')}
+        >
+          <Text style={styles.quickToggleBtnText}>LTS</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showSectors && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('sectors')}
+        >
+          <Text style={styles.quickToggleBtnText}>SEC</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showSeabed && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('seabed')}
+        >
+          <Text style={styles.quickToggleBtnText}>SBD</Text>
+        </TouchableOpacity>
+        
+        {/* Zoom controls at bottom */}
+        <View style={styles.quickToggleDividerThick} />
+        <TouchableOpacity 
+          style={styles.quickToggleBtn}
+          onPress={() => {
+            const newZoom = Math.min(currentZoom + 0.25, effectiveMaxZoom);
+            cameraRef.current?.setCamera({ zoomLevel: newZoom, animationDuration: 200 });
+          }}
+        >
+          <Text style={[styles.quickToggleBtnText, styles.quickToggleBtnTextLarge]}>+</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={styles.quickToggleBtn}
+          onPress={() => {
+            const newZoom = Math.max(currentZoom - 0.25, 0);
+            cameraRef.current?.setCamera({ zoomLevel: newZoom, animationDuration: 200 });
+          }}
+        >
+          <Text style={[styles.quickToggleBtnText, styles.quickToggleBtnTextLarge]}>−</Text>
+        </TouchableOpacity>
+      </View>
+
+
+      {/* Chart Debug Overlay - Shows active chart based on zoom, right of lat/long */}
       <ChartDebugOverlay
         visible={showChartDebug}
         currentZoom={currentZoom}
         centerCoord={centerCoord}
         mbtilesCharts={mbtilesCharts}
         tileServerReady={tileServerReady}
-        topOffset={insets.top + 60}
+        topOffset={insets.top + 52}
+        leftOffset={showCoords ? 200 : 12}
       />
 
       {/* Technical Debug Info Panel */}
@@ -2614,13 +3461,55 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             )}
             <View style={styles.debugDivider} />
             
-            <Text style={styles.debugSectionTitle}>Loaded Charts ({mbtilesCharts.length})</Text>
+            <Text style={styles.debugSectionTitle}>Chart Inventory ({mbtilesCharts.length} available)</Text>
+            <View style={styles.debugStorageRow}>
+              <Text style={styles.debugStorageLabel}>Tier 1 (US1-3):</Text>
+              <Text style={styles.debugStorageValueSmall}>
+                {mbtilesCharts.filter(m => m.chartId.match(/^US[123]/)).length} charts
+              </Text>
+            </View>
+            <View style={styles.debugStorageRow}>
+              <Text style={styles.debugStorageLabel}>Tier 2 (US4-6):</Text>
+              <Text style={styles.debugStorageValueSmall}>
+                {mbtilesCharts.filter(m => m.chartId.match(/^US[456]/)).length} charts
+              </Text>
+            </View>
+            <View style={styles.debugDivider} />
+            
+            <Text style={styles.debugSectionTitle}>Rendering ({allChartsToRender.length} active)</Text>
+            <View style={styles.debugStorageRow}>
+              <Text style={styles.debugStorageLabel}>Static (progressive):</Text>
+              <Text style={styles.debugStorageValueSmall}>{chartsToRender.length}</Text>
+            </View>
+            <View style={styles.debugStorageRow}>
+              <Text style={styles.debugStorageLabel}>Dynamic (viewport):</Text>
+              <Text style={styles.debugStorageValueSmall}>{dynamicCharts.length}</Text>
+            </View>
+            {dynamicCharts.length > 0 && (
+              <Text style={[styles.debugText, { fontSize: 10, marginTop: 4 }]}>
+                Dynamic: {dynamicCharts.slice(0, 5).join(', ')}{dynamicCharts.length > 5 ? '...' : ''}
+              </Text>
+            )}
+            <View style={styles.debugDivider} />
+            
+            <Text style={styles.debugSectionTitle}>All Charts</Text>
             <View style={styles.debugChartList}>
-              {mbtilesCharts.map((chart, idx) => (
-                <Text key={chart.chartId} style={styles.debugChartItem}>
-                  {chart.chartId}
-                </Text>
-              ))}
+              {mbtilesCharts.map((chart, idx) => {
+                const isRendering = allChartsToRender.includes(chart.chartId);
+                const isDynamic = dynamicCharts.includes(chart.chartId);
+                return (
+                  <Text 
+                    key={chart.chartId} 
+                    style={[
+                      styles.debugChartItem,
+                      isRendering && { color: '#4CAF50' },
+                      isDynamic && { color: '#2196F3' }
+                    ]}
+                  >
+                    {chart.chartId}{isDynamic ? ' (D)' : isRendering ? ' (S)' : ''}
+                  </Text>
+                );
+              })}
             </View>
             <View style={styles.debugDivider} />
             
@@ -2640,6 +3529,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 console.log('Clearing state...');
                 setMbtilesCharts([]);
                 setChartsToRender([]);
+                setDynamicCharts([]);
+                setLastDynamicCheck(null);
                 setLoadingPhase('us1');
                 setRasterCharts([]);
                 setCharts([]);
@@ -2668,18 +3559,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </View>
       )}
 
-      {/* Coordinates and Zoom indicator - bottom right */}
-      <View style={[styles.coordBadge, { bottom: 40, right: 12 }]}>
-        <Text style={styles.coordText}>
-          {Math.abs(centerCoord[1]).toFixed(4)}°{centerCoord[1] >= 0 ? 'N' : 'S'}{' '}
-          {Math.abs(centerCoord[0]).toFixed(4)}°{centerCoord[0] >= 0 ? 'E' : 'W'}
-        </Text>
-      </View>
-      <View style={[styles.zoomBadge, { bottom: 16, right: 12 }, isAtMaxZoom && styles.zoomBadgeAtMax]}>
-        <Text style={[styles.zoomText, isAtMaxZoom && styles.zoomTextAtMax]}>
-          {currentZoom.toFixed(1)}x{isAtMaxZoom ? ' MAX' : ''}
-        </Text>
-      </View>
+      {/* Coordinates - under top menu bar (upper left) */}
+      {showCoords && (
+        <View style={[styles.coordBadge, { top: insets.top + 52, left: 12 }]}>
+          <Text style={styles.coordText}>
+            {Math.abs(centerCoord[1]).toFixed(4)}°{centerCoord[1] >= 0 ? 'N' : 'S'}{' '}
+            {Math.abs(centerCoord[0]).toFixed(4)}°{centerCoord[0] >= 0 ? 'E' : 'W'}
+          </Text>
+        </View>
+      )}
+      {/* Zoom indicator - under center button (upper right) */}
+      {showZoomLevel && (
+        <View style={[styles.zoomBadge, { top: insets.top + 52, right: 12 }, isAtMaxZoom && styles.zoomBadgeAtMax]}>
+          <Text style={[styles.zoomText, isAtMaxZoom && styles.zoomTextAtMax]}>
+            {currentZoom.toFixed(1)}x{isAtMaxZoom ? ' MAX' : ''}
+          </Text>
+        </View>
+      )}
       
       {/* Max zoom indicator - shows when limited and near max */}
       {limitZoomToCharts && currentZoom >= maxAvailableZoom - 2 && (
@@ -2690,186 +3586,142 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </View>
       )}
 
-      {/* Layer Controls */}
+      {/* Layer Controls - ForeFlight style two-column dark translucent panel */}
       {showControls && (
-        <View style={[styles.controls, { top: insets.top + 56 }]}>
-          <ScrollView style={styles.controlsScroll}>
-            {/* Map Style Selector */}
-            <Text style={styles.controlSectionTitle}>Base Map</Text>
-            <View style={styles.mapStyleRow}>
+        <View style={[styles.ffLayersPanel, { top: insets.top + 56 }]}>
+          <View style={styles.ffLayersPanelHeader}>
+            <Text style={styles.ffLayersPanelTitle}>Map Layers</Text>
+            <TouchableOpacity onPress={() => setShowControls(false)}>
+              <Text style={styles.ffLayersPanelClose}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          
+          <View style={styles.ffLayersColumns}>
+            {/* Left Column - Basemap */}
+            <View style={styles.ffLayersColumnLeft}>
+              <Text style={styles.ffLayersSectionTitle}>Base Map</Text>
               <TouchableOpacity
-                style={[styles.mapStyleBtn, mapStyle === 'light' && styles.mapStyleBtnActive]}
+                style={[styles.ffLayerOption, mapStyle === 'light' && styles.ffLayerOptionActive]}
                 onPress={() => setMapStyle('light')}
               >
-                <Text style={[styles.mapStyleBtnText, mapStyle === 'light' && styles.mapStyleBtnTextActive]}>Light</Text>
+                <Text style={[styles.ffLayerOptionText, mapStyle === 'light' && styles.ffLayerOptionTextActive]}>Light</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.mapStyleBtn, mapStyle === 'dark' && styles.mapStyleBtnActive]}
+                style={[styles.ffLayerOption, mapStyle === 'dark' && styles.ffLayerOptionActive]}
                 onPress={() => setMapStyle('dark')}
               >
-                <Text style={[styles.mapStyleBtnText, mapStyle === 'dark' && styles.mapStyleBtnTextActive]}>Dark</Text>
+                <Text style={[styles.ffLayerOptionText, mapStyle === 'dark' && styles.ffLayerOptionTextActive]}>Dark</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.mapStyleBtn, mapStyle === 'satellite' && styles.mapStyleBtnActive]}
+                style={[styles.ffLayerOption, mapStyle === 'satellite' && styles.ffLayerOptionActive]}
                 onPress={() => setMapStyle('satellite')}
               >
-                <Text style={[styles.mapStyleBtnText, mapStyle === 'satellite' && styles.mapStyleBtnTextActive]}>Satellite</Text>
+                <Text style={[styles.ffLayerOptionText, mapStyle === 'satellite' && styles.ffLayerOptionTextActive]}>Satellite</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.mapStyleBtn, mapStyle === 'outdoors' && styles.mapStyleBtnActive]}
+                style={[styles.ffLayerOption, mapStyle === 'outdoors' && styles.ffLayerOptionActive]}
                 onPress={() => setMapStyle('outdoors')}
               >
-                <Text style={[styles.mapStyleBtnText, mapStyle === 'outdoors' && styles.mapStyleBtnTextActive]}>Outdoors</Text>
+                <Text style={[styles.ffLayerOptionText, mapStyle === 'outdoors' && styles.ffLayerOptionTextActive]}>Outdoors</Text>
               </TouchableOpacity>
               {hasLocalBasemap && (
                 <TouchableOpacity
-                  style={[styles.mapStyleBtn, mapStyle === 'local' && styles.mapStyleBtnActive]}
+                  style={[styles.ffLayerOption, mapStyle === 'local' && styles.ffLayerOptionActive]}
                   onPress={() => setMapStyle('local')}
                 >
-                  <Text style={[styles.mapStyleBtnText, mapStyle === 'local' && styles.mapStyleBtnTextActive]}>Offline</Text>
+                  <Text style={[styles.ffLayerOptionText, mapStyle === 'local' && styles.ffLayerOptionTextActive]}>Offline</Text>
                 </TouchableOpacity>
               )}
-            </View>
-            
-            {/* Data Sources - toggle entire chart types on/off */}
-            <Text style={styles.controlSectionTitle}>Data Sources</Text>
-            <Toggle label={`ENC Charts (${mbtilesCharts.length})`} value={useMBTiles} onToggle={setUseMBTiles} />
-            {rasterCharts.length > 0 && (
-              <Toggle label={`Bathymetry (${rasterCharts.length})`} value={showBathymetry} onToggle={setShowBathymetry} />
-            )}
-            
-            {/* GNIS Place Names - Reference Data */}
-            {gnisAvailable && (
-              <>
-                <Text style={styles.controlSectionTitle}>Place Names (GNIS)</Text>
-                <Toggle label="Show Place Names" value={showPlaceNames} onToggle={setShowPlaceNames} />
-                {showPlaceNames && (
-                  <>
-                    <Toggle label="Water (bays, channels)" value={showWaterNames} onToggle={setShowWaterNames} />
-                    <Toggle label="Coastal (capes, islands)" value={showCoastalNames} onToggle={setShowCoastalNames} />
-                    <Toggle label="Landmarks (summits, glaciers)" value={showLandmarkNames} onToggle={setShowLandmarkNames} />
-                    <Toggle label="Towns & Ports" value={showPopulatedNames} onToggle={setShowPopulatedNames} />
-                    <Toggle label="Rivers & Streams" value={showStreamNames} onToggle={setShowStreamNames} />
-                    <Toggle label="Lakes" value={showLakeNames} onToggle={setShowLakeNames} />
-                    <Toggle label="Terrain (valleys, basins)" value={showTerrainNames} onToggle={setShowTerrainNames} />
-                  </>
-                )}
-              </>
-            )}
-            
-            {/* Zoom Settings */}
-            <Text style={styles.controlSectionTitle}>Zoom</Text>
-            <Toggle 
-              label={`Limit to chart detail (max z${maxAvailableZoom})`} 
-              value={limitZoomToCharts} 
-              onToggle={setLimitZoomToCharts} 
-            />
-            
-            <Text style={styles.controlSectionTitle}>Chart Layers</Text>
-            <View style={styles.allToggleRow}>
-              <TouchableOpacity 
-                style={styles.allToggleBtn} 
-                onPress={() => {
-                  setShowDepthAreas(true);
-                  setShowDepthContours(true);
-                  setShowSoundings(true);
-                  setShowLand(true);
-                  setShowCoastline(true);
-                  setShowLights(true);
-                  setShowSectors(true);
-                  setShowBuoys(true);
-                  setShowBeacons(true);
-                  setShowLandmarks(true);
-                  setShowHazards(true);
-                  setShowCables(true);
-                  setShowSeabed(true);
-                  setShowPipelines(true);
-                  setShowRestrictedAreas(true);
-                  setShowCautionAreas(true);
-                  setShowMilitaryAreas(true);
-                  setShowAnchorages(true);
-                  setShowAnchorBerths(true);
-                  setShowMarineFarms(true);
-                }}
+              
+              {/* Chart Info (moved from debug button) */}
+              <View style={styles.ffLayersDivider} />
+              <Text style={styles.ffLayersSectionTitle}>Chart Info</Text>
+              <TouchableOpacity
+                style={[styles.ffLayerOption, showChartDebug && styles.ffLayerOptionActive]}
+                onPress={() => setShowChartDebug(!showChartDebug)}
               >
-                <Text style={styles.allToggleBtnText}>All On</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.allToggleBtn} 
-                onPress={() => {
-                  setShowDepthAreas(false);
-                  setShowDepthContours(false);
-                  setShowSoundings(false);
-                  setShowLand(false);
-                  setShowCoastline(false);
-                  setShowLights(false);
-                  setShowSectors(false);
-                  setShowBuoys(false);
-                  setShowBeacons(false);
-                  setShowLandmarks(false);
-                  setShowHazards(false);
-                  setShowCables(false);
-                  setShowSeabed(false);
-                  setShowPipelines(false);
-                  setShowRestrictedAreas(false);
-                  setShowCautionAreas(false);
-                  setShowMilitaryAreas(false);
-                  setShowAnchorages(false);
-                  setShowAnchorBerths(false);
-                  setShowMarineFarms(false);
-                }}
-              >
-                <Text style={styles.allToggleBtnText}>All Off</Text>
+                <Text style={[styles.ffLayerOptionText, showChartDebug && styles.ffLayerOptionTextActive]}>Show Active Chart</Text>
               </TouchableOpacity>
             </View>
-            <Toggle label="Depth Areas" value={showDepthAreas} onToggle={setShowDepthAreas} />
-            <Toggle label="Depth Contours" value={showDepthContours} onToggle={setShowDepthContours} />
-            <Toggle label="Soundings" value={showSoundings} onToggle={setShowSoundings} />
-            <Toggle label="Land" value={showLand} onToggle={setShowLand} />
-            <Toggle label="Coastline" value={showCoastline} onToggle={setShowCoastline} />
-            <Toggle label="Lights" value={showLights} onToggle={setShowLights} />
-            <Toggle label="Light Sectors" value={showSectors} onToggle={setShowSectors} />
-            <Toggle label="Buoys" value={showBuoys} onToggle={setShowBuoys} />
-            <Toggle label="Beacons" value={showBeacons} onToggle={setShowBeacons} />
-            <Toggle label="Landmarks" value={showLandmarks} onToggle={setShowLandmarks} />
-            <Toggle label="Hazards" value={showHazards} onToggle={setShowHazards} />
-            <Toggle label="Cables" value={showCables} onToggle={setShowCables} />
-            <Toggle label="Seabed" value={showSeabed} onToggle={setShowSeabed} />
-            <Toggle label="Pipelines" value={showPipelines} onToggle={setShowPipelines} />
-            <Toggle label="Restricted Areas" value={showRestrictedAreas} onToggle={setShowRestrictedAreas} />
-            <Toggle label="Caution Areas" value={showCautionAreas} onToggle={setShowCautionAreas} />
-            <Toggle label="Military Areas" value={showMilitaryAreas} onToggle={setShowMilitaryAreas} />
-            <Toggle label="Anchorages" value={showAnchorages} onToggle={setShowAnchorages} />
-            <Toggle label="Anchor Berths" value={showAnchorBerths} onToggle={setShowAnchorBerths} />
-            <Toggle label="Marine Farms" value={showMarineFarms} onToggle={setShowMarineFarms} />
-          </ScrollView>
-          <TouchableOpacity style={styles.closeBtn} onPress={() => setShowControls(false)}>
-            <Text style={styles.closeBtnText}>Close</Text>
-          </TouchableOpacity>
+            
+            {/* Right Column - Data Sources & Layers */}
+            <ScrollView style={styles.ffLayersColumnRight}>
+              <Text style={styles.ffLayersSectionTitle}>Data Sources</Text>
+              <FFToggle label={`ENC Charts (${allChartsToRender.length})`} value={useMBTiles} onToggle={setUseMBTiles} />
+              {rasterCharts.length > 0 && (
+                <FFToggle label={`Bathymetry (${rasterCharts.length})`} value={showBathymetry} onToggle={() => toggleLayer('bathymetry')} />
+              )}
+              
+              {/* GNIS Place Names */}
+              {gnisAvailable && (
+                <>
+                  <View style={styles.ffLayersDivider} />
+                  <Text style={styles.ffLayersSectionTitle}>Place Names</Text>
+                  <FFToggle label="Show Names" value={showPlaceNames} onToggle={setShowPlaceNames} />
+                  {showPlaceNames && (
+                    <>
+                      <FFToggle label="Water" value={showWaterNames} onToggle={setShowWaterNames} indent />
+                      <FFToggle label="Coastal" value={showCoastalNames} onToggle={setShowCoastalNames} indent />
+                      <FFToggle label="Landmarks" value={showLandmarkNames} onToggle={setShowLandmarkNames} indent />
+                      <FFToggle label="Towns" value={showPopulatedNames} onToggle={setShowPopulatedNames} indent />
+                      <FFToggle label="Rivers" value={showStreamNames} onToggle={setShowStreamNames} indent />
+                      <FFToggle label="Lakes" value={showLakeNames} onToggle={setShowLakeNames} indent />
+                      <FFToggle label="Terrain" value={showTerrainNames} onToggle={setShowTerrainNames} indent />
+                    </>
+                  )}
+                </>
+              )}
+              
+              <View style={styles.ffLayersDivider} />
+              <Text style={styles.ffLayersSectionTitle}>Chart Layers</Text>
+              <View style={styles.ffAllToggleRow}>
+                <TouchableOpacity 
+                  style={styles.ffAllToggleBtn} 
+                  onPress={() => dispatchLayers({ type: 'SET_ALL', value: true })}
+                >
+                  <Text style={styles.ffAllToggleBtnText}>All On</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.ffAllToggleBtn} 
+                  onPress={() => dispatchLayers({ type: 'SET_ALL', value: false })}
+                >
+                  <Text style={styles.ffAllToggleBtnText}>All Off</Text>
+                </TouchableOpacity>
+              </View>
+              <FFToggle label="Land" value={showLand} onToggle={() => toggleLayer('land')} />
+              <FFToggle label="Coastline" value={showCoastline} onToggle={() => toggleLayer('coastline')} />
+              <FFToggle label="Buoys" value={showBuoys} onToggle={() => toggleLayer('buoys')} />
+              <FFToggle label="Beacons" value={showBeacons} onToggle={() => toggleLayer('beacons')} />
+              <FFToggle label="Landmarks" value={showLandmarks} onToggle={() => toggleLayer('landmarks')} />
+              <FFToggle label="Hazards" value={showHazards} onToggle={() => toggleLayer('hazards')} />
+              <FFToggle label="Cables" value={showCables} onToggle={() => toggleLayer('cables')} />
+              <FFToggle label="Pipelines" value={showPipelines} onToggle={() => toggleLayer('pipelines')} />
+              <FFToggle label="Restricted Areas" value={showRestrictedAreas} onToggle={() => toggleLayer('restrictedAreas')} />
+              <FFToggle label="Caution Areas" value={showCautionAreas} onToggle={() => toggleLayer('cautionAreas')} />
+              <FFToggle label="Military Areas" value={showMilitaryAreas} onToggle={() => toggleLayer('militaryAreas')} />
+              <FFToggle label="Anchorages" value={showAnchorages} onToggle={() => toggleLayer('anchorages')} />
+              <FFToggle label="Anchor Berths" value={showAnchorBerths} onToggle={() => toggleLayer('anchorBerths')} />
+              <FFToggle label="Marine Farms" value={showMarineFarms} onToggle={() => toggleLayer('marineFarms')} />
+              
+              <View style={styles.ffLayersDivider} />
+              <Text style={styles.ffLayersSectionTitle}>Settings</Text>
+              <FFToggle 
+                label={`Limit zoom (max z${maxAvailableZoom})`} 
+                value={limitZoomToCharts} 
+                onToggle={setLimitZoomToCharts} 
+              />
+            </ScrollView>
+          </View>
         </View>
       )}
 
-      {/* Feature Inspector */}
+      {/* Feature Inspector - Memoized component for better performance */}
       {selectedFeature && (
-        <View style={styles.inspector}>
-          <View style={styles.inspectorHeader}>
-            <View style={styles.inspectorTitleRow}>
-              <Text style={styles.inspectorType}>{selectedFeature.type}</Text>
-              <Text style={styles.inspectorId}>{getFeatureId(selectedFeature)}</Text>
-            </View>
-            <TouchableOpacity onPress={() => setSelectedFeature(null)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Text style={styles.inspectorClose}>✕</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView style={styles.inspectorContent}>
-            {Object.entries(formatFeatureProperties(selectedFeature)).map(([key, value]) => (
-              <View key={key} style={styles.inspectorRow}>
-                <Text style={styles.inspectorKey}>{key}</Text>
-                <Text style={styles.inspectorValue}>{String(value)}</Text>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
+        <FeatureInspector 
+          feature={selectedFeature} 
+          formattedProps={formattedFeatureProps}
+          onClose={closeFeatureInspector}
+        />
       )}
 
       {/* Compass Overlay - Full viewport HUD */}
@@ -3298,7 +4150,45 @@ function formatMarineFarmInfo(props: Record<string, unknown>): Record<string, st
   return result;
 }
 
-// Toggle component
+// Memoized Feature Inspector - prevents full component tree re-render
+const FeatureInspector = memo(function FeatureInspector({ 
+  feature, 
+  formattedProps, 
+  onClose 
+}: { 
+  feature: FeatureInfo; 
+  formattedProps: [string, string][] | null;
+  onClose: () => void;
+}) {
+  const renderStart = Date.now();
+  
+  const content = (
+    <View style={styles.inspector}>
+      <View style={styles.inspectorHeader}>
+        <View style={styles.inspectorTitleRow}>
+          <Text style={styles.inspectorType}>{feature.type}</Text>
+          <Text style={styles.inspectorId}>{getFeatureId(feature)}</Text>
+        </View>
+        <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <Text style={styles.inspectorClose}>✕</Text>
+        </TouchableOpacity>
+      </View>
+      <ScrollView style={styles.inspectorContent}>
+        {formattedProps?.map(([key, value]) => (
+          <View key={key} style={styles.inspectorRow}>
+            <Text style={styles.inspectorKey}>{key}</Text>
+            <Text style={styles.inspectorValue}>{String(value)}</Text>
+          </View>
+        ))}
+      </ScrollView>
+    </View>
+  );
+  
+  console.log(`[PERF:FeatureInspector] Render: ${Date.now() - renderStart}ms`);
+  return content;
+});
+
+// Toggle component (legacy)
 function Toggle({ label, value, onToggle }: { label: string; value: boolean; onToggle: (v: boolean) => void }) {
   return (
     <TouchableOpacity style={styles.toggle} onPress={() => onToggle(!value)}>
@@ -3306,6 +4196,21 @@ function Toggle({ label, value, onToggle }: { label: string; value: boolean; onT
         {value && <Text style={styles.toggleCheck}>✓</Text>}
       </View>
       <Text style={styles.toggleLabel}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+// ForeFlight-style Toggle component for dark translucent panels
+function FFToggle({ label, value, onToggle, indent = false }: { label: string; value: boolean; onToggle: (v: boolean) => void; indent?: boolean }) {
+  return (
+    <TouchableOpacity 
+      style={[styles.ffToggle, indent && styles.ffToggleIndent]} 
+      onPress={() => onToggle(!value)}
+    >
+      <View style={[styles.ffToggleBox, value && styles.ffToggleBoxActive]}>
+        {value && <Text style={styles.ffToggleCheck}>✓</Text>}
+      </View>
+      <Text style={styles.ffToggleLabel}>{label}</Text>
     </TouchableOpacity>
   );
 }
@@ -3320,6 +4225,39 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
   },
   loadingText: { marginTop: 16, fontSize: 16, color: '#666' },
+  // Chart loading progress overlay (non-blocking background loading indicator)
+  chartLoadingOverlay: {
+    position: 'absolute',
+    bottom: 100,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    pointerEvents: 'none', // Don't block touch events
+  },
+  chartLoadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  chartLoadingText: {
+    marginLeft: 10,
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '500',
+  },
+  chartLoadingProgress: {
+    marginLeft: 8,
+    fontSize: 13,
+    color: '#666',
+  },
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -3343,7 +4281,7 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 4,
   },
-  zoomText: { fontSize: 12, color: '#fff', fontWeight: '500' },
+  zoomText: { fontSize: 11, color: '#fff', fontWeight: '500', fontFamily: 'monospace' },
   zoomBadgeAtMax: {
     backgroundColor: 'rgba(244, 67, 54, 0.8)',
     borderWidth: 1,
@@ -3723,5 +4661,231 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'rgba(33, 150, 243, 0.4)',
     backgroundColor: 'rgba(33, 150, 243, 0.1)',
+  },
+  
+  // ========== ForeFlight-style UI Styles ==========
+  
+  // Top menu bar - horizontal strip (same button size as vertical quick toggles)
+  topMenuBar: {
+    position: 'absolute',
+    left: 12,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  topMenuBtn: {
+    width: 44,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topMenuBtnActive: {
+    backgroundColor: 'rgba(79, 195, 247, 0.4)',
+  },
+  topMenuBtnText: {
+    fontSize: 24,
+    color: '#fff',
+  },
+  topMenuBtnTextSmall: {
+    fontSize: 11,
+    color: '#fff',
+    fontWeight: '600',
+  },
+  topMenuDivider: {
+    width: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    marginVertical: 6,
+  },
+  
+  // 3D layer stack icon (bigger)
+  layerStackIcon: {
+    width: 24,
+    height: 20,
+    position: 'relative',
+  },
+  layerStackLine: {
+    position: 'absolute',
+    width: 18,
+    height: 4,
+    backgroundColor: '#fff',
+    borderRadius: 1,
+  },
+  
+  // Center button container - upper right (same style as other controls)
+  centerBtnContainer: {
+    position: 'absolute',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  centerBtnText: {
+    fontSize: 28,
+    color: '#fff',
+  },
+  
+  // Quick toggles strip - minimalist style, bottom left
+  quickTogglesStrip: {
+    position: 'absolute',
+    left: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  quickToggleBtn: {
+    width: 44,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickToggleBtnActive: {
+    backgroundColor: 'rgba(79, 195, 247, 0.4)',
+  },
+  quickToggleBtnText: {
+    fontSize: 11,
+    color: '#fff',
+    fontWeight: '600',
+  },
+  quickToggleBtnTextLarge: {
+    fontSize: 22,
+    fontWeight: '400',
+  },
+  quickToggleDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    marginHorizontal: 8,
+  },
+  quickToggleDividerThick: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    marginVertical: 4,
+  },
+  
+  
+  // Layers panel - dark translucent two-column
+  ffLayersPanel: {
+    position: 'absolute',
+    left: 12,
+    backgroundColor: 'rgba(20, 25, 35, 0.95)',
+    borderRadius: 12,
+    maxHeight: 500,
+    width: 340,
+    overflow: 'hidden',
+  },
+  ffLayersPanelHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  ffLayersPanelTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  ffLayersPanelClose: {
+    fontSize: 18,
+    color: 'rgba(255, 255, 255, 0.6)',
+    padding: 4,
+  },
+  ffLayersColumns: {
+    flexDirection: 'row',
+    maxHeight: 440,
+  },
+  ffLayersColumnLeft: {
+    width: 130,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRightWidth: 1,
+    borderRightColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  ffLayersColumnRight: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  ffLayersSectionTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.5)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  ffLayersDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    marginVertical: 12,
+  },
+  ffLayerOption: {
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    marginBottom: 2,
+  },
+  ffLayerOptionActive: {
+    backgroundColor: 'rgba(79, 195, 247, 0.2)',
+  },
+  ffLayerOptionText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.8)',
+  },
+  ffLayerOptionTextActive: {
+    color: '#4FC3F7',
+    fontWeight: '600',
+  },
+  
+  // ForeFlight-style toggles
+  ffToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  ffToggleIndent: {
+    paddingLeft: 16,
+  },
+  ffToggleBox: {
+    width: 18,
+    height: 18,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.4)',
+    borderRadius: 4,
+    marginRight: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ffToggleBoxActive: {
+    backgroundColor: '#4FC3F7',
+    borderColor: '#4FC3F7',
+  },
+  ffToggleCheck: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+  ffToggleLabel: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.85)',
+  },
+  ffAllToggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  ffAllToggleBtn: {
+    flex: 1,
+    backgroundColor: 'rgba(79, 195, 247, 0.2)',
+    paddingVertical: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  ffAllToggleBtnText: {
+    color: '#4FC3F7',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

@@ -2,7 +2,7 @@
  * Chart Download Screen - Browse and download nautical charts by region
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -89,7 +89,7 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
     setRefreshing(false);
   }, []);
 
-  const loadChartsForRegion = async (regionId: RegionId) => {
+  const loadChartsForRegion = useCallback(async (regionId: RegionId) => {
     try {
       setLoading(true);
       const chartsData = await chartService.getChartsByRegion(regionId);
@@ -102,7 +102,7 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   const downloadChart = async (chart: ChartMetadata) => {
     if (downloadProgress) {
@@ -258,11 +258,7 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
     );
   };
 
-  const renderRegionItem = ({ item }: { item: ChartRegion }) => {
-    const downloadedInRegion = downloadedChartIds.filter(id => 
-      charts.find(c => c.chartId === id && c.region === item.id)
-    ).length;
-
+  const renderRegionItem = useCallback(({ item }: { item: ChartRegion }) => {
     return (
       <TouchableOpacity
         style={styles.listItem}
@@ -278,9 +274,9 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
         <Text style={styles.chevron}>›</Text>
       </TouchableOpacity>
     );
-  };
+  }, [loadChartsForRegion]);
 
-  const renderChartItem = ({ item }: { item: ChartMetadata }) => {
+  const renderChartItem = useCallback(({ item }: { item: ChartMetadata }) => {
     const isDownloadedGeoJSON = downloadedChartIds.includes(item.chartId);
     const isDownloadedMBTiles = downloadedMBTilesIds.includes(item.chartId);
     const isDownloaded = isDownloadedGeoJSON || isDownloadedMBTiles;
@@ -336,7 +332,7 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
         )}
       </View>
     );
-  };
+  }, [downloadedChartIds, downloadedMBTilesIds, downloadProgress, downloadChart, deleteChart]);
 
   if (loading && regions.length === 0) {
     return (
@@ -417,6 +413,12 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
           contentContainerStyle={styles.listContent}
+          // Performance optimizations
+          removeClippedSubviews={true}
+          maxToRenderPerBatch={10}
+          updateCellsBatchingPeriod={50}
+          initialNumToRender={10}
+          windowSize={5}
         />
       ) : (
         <FlatList
@@ -432,6 +434,12 @@ export default function ChartDownloadScreen({ onNavigateToViewer }: Props) {
               <Text style={styles.emptyText}>No charts available</Text>
             </View>
           }
+          // Performance optimizations
+          removeClippedSubviews={true}
+          maxToRenderPerBatch={10}
+          updateCellsBatchingPeriod={50}
+          initialNumToRender={10}
+          windowSize={5}
         />
       )}
     </SafeAreaView>

@@ -1,6 +1,10 @@
 /**
  * Chart Hierarchy Utilities
  * Builds a tree structure from chart metadata based on geographic containment
+ * 
+ * Performance optimizations:
+ * - Grid-based spatial index for O(1) average parent lookups instead of O(n)
+ * - Cached chart level extraction
  */
 
 import { ChartMetadata } from '../types/chart';
@@ -13,15 +17,77 @@ export interface ChartNode {
   totalSizeBytes: number; // Total size including all descendants
 }
 
+// Cache for chart level extraction to avoid repeated regex
+const levelCache: Map<string, number> = new Map();
+
+/**
+ * Simple grid-based spatial index for faster parent lookups
+ * Divides the world into grid cells and tracks which charts are in each cell
+ */
+interface SpatialIndex {
+  cellSize: number;
+  cells: Map<string, ChartMetadata[]>;
+}
+
+function createSpatialIndex(charts: ChartMetadata[], cellSize: number = 5): SpatialIndex {
+  const cells: Map<string, ChartMetadata[]> = new Map();
+  
+  for (const chart of charts) {
+    if (!chart.bounds) continue;
+    
+    const [west, south, east, north] = chart.bounds;
+    
+    // Get all cells this chart overlaps
+    const minCellX = Math.floor(west / cellSize);
+    const maxCellX = Math.floor(east / cellSize);
+    const minCellY = Math.floor(south / cellSize);
+    const maxCellY = Math.floor(north / cellSize);
+    
+    for (let cx = minCellX; cx <= maxCellX; cx++) {
+      for (let cy = minCellY; cy <= maxCellY; cy++) {
+        const key = `${cx},${cy}`;
+        if (!cells.has(key)) {
+          cells.set(key, []);
+        }
+        cells.get(key)!.push(chart);
+      }
+    }
+  }
+  
+  return { cellSize, cells };
+}
+
+function querySpatialIndex(index: SpatialIndex, bounds: [number, number, number, number]): ChartMetadata[] {
+  const [west, south, east, north] = bounds;
+  const { cellSize, cells } = index;
+  
+  // Get center cell
+  const centerX = (west + east) / 2;
+  const centerY = (south + north) / 2;
+  const cellX = Math.floor(centerX / cellSize);
+  const cellY = Math.floor(centerY / cellSize);
+  
+  const key = `${cellX},${cellY}`;
+  return cells.get(key) || [];
+}
+
 /**
  * Extract the scale level from a chart ID (US1 = 1, US2 = 2, etc.)
+ * Uses caching to avoid repeated regex operations
  */
 export function getChartLevel(chartId: string): number {
-  const match = chartId.match(/^US(\d)/);
-  if (match) {
-    return parseInt(match[1], 10);
+  // Check cache first
+  const cached = levelCache.get(chartId);
+  if (cached !== undefined) {
+    return cached;
   }
-  return 5; // Default to most detailed
+  
+  const match = chartId.match(/^US(\d)/);
+  const level = match ? parseInt(match[1], 10) : 5;
+  
+  // Cache the result
+  levelCache.set(chartId, level);
+  return level;
 }
 
 /**
@@ -80,6 +146,7 @@ function boundsOverlap(
 
 /**
  * Build a hierarchical tree from flat chart list
+ * Optimized with spatial indexing for O(1) average parent lookups instead of O(n)
  */
 export function buildChartHierarchy(charts: ChartMetadata[]): ChartNode[] {
   // Group charts by level
@@ -113,7 +180,16 @@ export function buildChartHierarchy(charts: ChartMetadata[]): ChartNode[] {
     });
   }
   
-  // Build parent-child relationships
+  // Pre-calculate parent areas for score calculation
+  const parentAreas: Map<string, number> = new Map();
+  for (const chart of charts) {
+    if (chart.bounds) {
+      const [w, s, e, n] = chart.bounds;
+      parentAreas.set(chart.chartId, (e - w) * (n - s));
+    }
+  }
+  
+  // Build parent-child relationships using spatial index
   // For each level (starting from most detailed), find parent at next level up
   for (let i = levels.length - 1; i > 0; i--) {
     const childLevel = levels[i];
@@ -122,27 +198,34 @@ export function buildChartHierarchy(charts: ChartMetadata[]): ChartNode[] {
     const children = byLevel.get(childLevel) || [];
     const parents = byLevel.get(parentLevel) || [];
     
+    // Create spatial index for parent level for O(1) average lookups
+    const parentIndex = createSpatialIndex(parents);
+    
     for (const child of children) {
+      if (!child.bounds) continue;
+      
       const childNode = nodeMap.get(child.chartId)!;
       
-      // Find best parent (most specific one that contains this chart)
-      let bestParent: ChartNode | null = null;
-      let bestOverlap = 0;
+      // Query spatial index for candidate parents (O(1) average)
+      const candidates = querySpatialIndex(parentIndex, child.bounds);
       
-      for (const parent of parents) {
+      // Find best parent among candidates
+      let bestParent: ChartNode | null = null;
+      let bestScore = 0;
+      
+      for (const parent of candidates) {
         if (boundsContain(parent.bounds, child.bounds) || 
             boundsOverlap(parent.bounds, child.bounds, 0.5)) {
           const parentNode = nodeMap.get(parent.chartId)!;
           
-          // Calculate overlap score
-          if (parent.bounds && child.bounds) {
-            const [pW, pS, pE, pN] = parent.bounds;
-            const parentArea = (pE - pW) * (pN - pS);
+          // Use pre-calculated area for score
+          const parentArea = parentAreas.get(parent.chartId);
+          if (parentArea) {
             // Prefer smaller parents (more specific)
             const score = 1 / parentArea;
             
-            if (score > bestOverlap) {
-              bestOverlap = score;
+            if (score > bestScore) {
+              bestScore = score;
               bestParent = parentNode;
             }
           } else if (!bestParent) {
@@ -213,7 +296,7 @@ export function getAllChartIds(node: ChartNode): string[] {
 
 /**
  * Get all ancestor chart IDs by walking UP the hierarchy
- * Uses the same containment logic as buildChartHierarchy but in reverse
+ * Uses spatial indexing for O(1) average lookups instead of O(n)
  */
 export function getAncestorChartIds(
   chartId: string,
@@ -226,20 +309,34 @@ export function getAncestorChartIds(
   let currentLevel = getChartLevel(chartId);
   let currentBounds = chart.bounds;
 
+  // Group charts by level once
+  const byLevel: Map<number, ChartMetadata[]> = new Map();
+  for (const c of allCharts) {
+    const level = getChartLevel(c.chartId);
+    if (!byLevel.has(level)) {
+      byLevel.set(level, []);
+    }
+    byLevel.get(level)!.push(c);
+  }
+
   // Walk UP the levels: 5 → 4 → 3 → 2 → 1
   while (currentLevel > 1) {
     const parentLevel = currentLevel - 1;
     
-    // Find charts at parent level
-    const parentCandidates = allCharts.filter(c => 
-      getChartLevel(c.chartId) === parentLevel && c.bounds
-    );
+    // Get charts at parent level
+    const parentCharts = byLevel.get(parentLevel) || [];
     
-    // Find best parent (smallest one that contains current bounds)
+    // Create spatial index for this level
+    const parentIndex = createSpatialIndex(parentCharts);
+    
+    // Query for candidates using spatial index (O(1) average)
+    const candidates = querySpatialIndex(parentIndex, currentBounds);
+    
+    // Find best parent among candidates
     let bestParent: ChartMetadata | null = null;
     let bestScore = 0;
     
-    for (const candidate of parentCandidates) {
+    for (const candidate of candidates) {
       if (boundsContain(candidate.bounds, currentBounds)) {
         // Prefer smaller (more specific) parents
         const [w, s, e, n] = candidate.bounds!;

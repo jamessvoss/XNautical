@@ -28,6 +28,10 @@ const pool: Map<string, PooledDatabase> = new Map();
 let poolSize = DEFAULT_POOL_SIZE;
 let mbtilesDir = '';
 
+// LRU order tracking - oldest at front, newest at back
+// This allows O(1) eviction instead of O(n) scan
+let lruOrder: string[] = [];
+
 // Statistics
 let stats = {
   hits: 0,
@@ -35,6 +39,20 @@ let stats = {
   evictions: 0,
   errors: 0,
 };
+
+/**
+ * Update LRU order when a chart is accessed
+ * Moves the chart to the back of the queue (most recently used)
+ */
+function updateLruOrder(chartId: string): void {
+  // Remove from current position if exists
+  const index = lruOrder.indexOf(chartId);
+  if (index > -1) {
+    lruOrder.splice(index, 1);
+  }
+  // Add to back (most recently used)
+  lruOrder.push(chartId);
+}
 
 /**
  * Initialize the database pool
@@ -58,6 +76,7 @@ async function getDatabase(chartId: string): Promise<PooledDatabase | null> {
   if (existing) {
     existing.lastAccess = Date.now();
     existing.accessCount++;
+    updateLruOrder(chartId); // Update LRU order on access
     stats.hits++;
     return existing;
   }
@@ -109,6 +128,7 @@ async function getDatabase(chartId: string): Promise<PooledDatabase | null> {
     };
     
     pool.set(chartId, pooledDb);
+    updateLruOrder(chartId); // Add to LRU order
     console.log(`[DatabasePool] Opened ${chartId} (pool size: ${pool.size})`);
     
     return pooledDb;
@@ -121,25 +141,22 @@ async function getDatabase(chartId: string): Promise<PooledDatabase | null> {
 
 /**
  * Evict the least recently used database
+ * O(1) eviction using maintained LRU order
  */
 async function evictLRU(): Promise<void> {
-  if (pool.size === 0) return;
+  if (pool.size === 0 || lruOrder.length === 0) return;
   
-  // Find LRU entry
-  let lruChartId: string | null = null;
-  let lruTime = Infinity;
+  // Get LRU entry from front of the order array
+  const lruChartId = lruOrder[0];
   
-  for (const [chartId, entry] of pool) {
-    if (entry.lastAccess < lruTime) {
-      lruTime = entry.lastAccess;
-      lruChartId = chartId;
-    }
-  }
-  
-  if (lruChartId) {
+  if (lruChartId && pool.has(lruChartId)) {
     await closeDatabase(lruChartId);
     stats.evictions++;
     console.log(`[DatabasePool] Evicted ${lruChartId}`);
+  } else if (lruOrder.length > 0) {
+    // If first entry is stale, remove it and try again
+    lruOrder.shift();
+    await evictLRU();
   }
 }
 
@@ -159,6 +176,12 @@ async function closeDatabase(chartId: string): Promise<void> {
   }
   
   pool.delete(chartId);
+  
+  // Remove from LRU order
+  const index = lruOrder.indexOf(chartId);
+  if (index > -1) {
+    lruOrder.splice(index, 1);
+  }
 }
 
 /**
@@ -173,6 +196,23 @@ function tmsToStandardY(z: number, tmsY: number): number {
  */
 function standardToTmsY(z: number, y: number): number {
   return (1 << z) - 1 - y;
+}
+
+/**
+ * Efficiently convert Uint8Array to base64 string
+ * Uses chunked processing to avoid call stack limits and reduce string concatenation overhead
+ */
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  // Process in chunks to avoid call stack overflow for large arrays
+  const CHUNK_SIZE = 0x8000; // 32KB chunks
+  const chunks: string[] = [];
+  
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const chunk = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
+    chunks.push(String.fromCharCode.apply(null, chunk as unknown as number[]));
+  }
+  
+  return btoa(chunks.join(''));
 }
 
 /**
@@ -201,14 +241,9 @@ export async function getTile(
       return null;
     }
     
-    // Convert to base64
+    // Convert to base64 using efficient chunked conversion
     const bytes = new Uint8Array(result.tile_data);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    
-    return btoa(binary);
+    return uint8ArrayToBase64(bytes);
   } catch (error) {
     console.error(`[DatabasePool] Error getting tile ${chartId}/${z}/${x}/${y}:`, error);
     return null;
@@ -298,6 +333,7 @@ export async function clearPool(): Promise<void> {
   }
   
   pool.clear();
+  lruOrder = []; // Reset LRU order
   stats = { hits: 0, misses: 0, evictions: 0, errors: 0 };
 }
 
