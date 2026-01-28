@@ -147,30 +147,79 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
             
             String url = "http://127.0.0.1:" + port;
-            Log.i(TAG, "======================================");
-            Log.i(TAG, "Tile Server Started");
+            Log.i(TAG, "════════════════════════════════════════════════════════════");
+            Log.i(TAG, "           TILE SERVER STARTUP                              ");
+            Log.i(TAG, "════════════════════════════════════════════════════════════");
             Log.i(TAG, "  URL: " + url);
             Log.i(TAG, "  Port: " + port);
             Log.i(TAG, "  MBTiles dir: " + mbtilesDir);
             
-            // List available MBTiles files (reuse dir variable from above)
+            // Count and categorize MBTiles files
+            int us1Count = 0, us2Count = 0, us3Count = 0, us4Count = 0, us5Count = 0, us6Count = 0, otherCount = 0;
+            long totalSize = 0;
+            
             if (dir.exists() && dir.isDirectory()) {
                 String[] files = dir.list();
                 if (files != null && files.length > 0) {
-                    Log.i(TAG, "  Available MBTiles files:");
+                    Log.i(TAG, "────────────────────────────────────────────────────────────");
+                    Log.i(TAG, "  MBTILES FILES ON DEVICE:");
                     for (String f : files) {
                         if (f.endsWith(".mbtiles")) {
                             File mbt = new File(dir, f);
-                            Log.i(TAG, "    - " + f + " (" + mbt.length() / 1024 + " KB)");
+                            long sizeKB = mbt.length() / 1024;
+                            totalSize += sizeKB;
+                            
+                            // Categorize by scale
+                            if (f.startsWith("US1")) us1Count++;
+                            else if (f.startsWith("US2")) us2Count++;
+                            else if (f.startsWith("US3")) us3Count++;
+                            else if (f.startsWith("US4")) us4Count++;
+                            else if (f.startsWith("US5")) us5Count++;
+                            else if (f.startsWith("US6")) us6Count++;
+                            else otherCount++;
+                            
+                            Log.i(TAG, "    " + f + " (" + sizeKB + " KB)");
                         }
                     }
+                    Log.i(TAG, "────────────────────────────────────────────────────────────");
+                    Log.i(TAG, "  SUMMARY:");
+                    Log.i(TAG, "    US1 (Overview):  " + us1Count + " charts");
+                    Log.i(TAG, "    US2 (General):   " + us2Count + " charts");
+                    Log.i(TAG, "    US3 (Coastal):   " + us3Count + " charts");
+                    Log.i(TAG, "    US4 (Approach):  " + us4Count + " charts");
+                    Log.i(TAG, "    US5 (Harbor):    " + us5Count + " charts");
+                    Log.i(TAG, "    US6 (Berthing):  " + us6Count + " charts");
+                    if (otherCount > 0) Log.i(TAG, "    Other:           " + otherCount + " files");
+                    Log.i(TAG, "    TOTAL:           " + (us1Count + us2Count + us3Count + us4Count + us5Count + us6Count + otherCount) + " files");
+                    Log.i(TAG, "    Total size:      " + (totalSize / 1024) + " MB");
                 } else {
-                    Log.w(TAG, "  No MBTiles files found in directory");
+                    Log.w(TAG, "  ⚠ No MBTiles files found in directory!");
                 }
             } else {
-                Log.w(TAG, "  MBTiles directory does not exist or is not a directory");
+                Log.w(TAG, "  ⚠ MBTiles directory does not exist or is not a directory!");
             }
-            Log.i(TAG, "======================================");
+            
+            // Log chart index status
+            Log.i(TAG, "────────────────────────────────────────────────────────────");
+            Log.i(TAG, "  CHART INDEX STATUS:");
+            Log.i(TAG, "    Loaded: " + (chartIndexLoaded ? "YES ✓" : "NO ✗"));
+            Log.i(TAG, "    Charts in index: " + chartIndex.size());
+            if (chartIndexLoaded && !chartIndex.isEmpty()) {
+                // Count by level
+                int l1 = 0, l2 = 0, l3 = 0, l4 = 0, l5 = 0, l6 = 0;
+                for (ChartInfo info : chartIndex.values()) {
+                    switch (info.level) {
+                        case 1: l1++; break;
+                        case 2: l2++; break;
+                        case 3: l3++; break;
+                        case 4: l4++; break;
+                        case 5: l5++; break;
+                        case 6: l6++; break;
+                    }
+                }
+                Log.i(TAG, "    By level: L1=" + l1 + " L2=" + l2 + " L3=" + l3 + " L4=" + l4 + " L5=" + l5 + " L6=" + l6);
+            }
+            Log.i(TAG, "════════════════════════════════════════════════════════════");
             
             promise.resolve(url);
         } catch (IOException e) {
@@ -286,6 +335,7 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
      * Load the chart index from chart_index.json
      */
     private void loadChartIndex() {
+        Log.i(TAG, "[INDEX] Loading chart index...");
         chartIndex.clear();
         chartIndexLoaded = false;
         
@@ -293,9 +343,12 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         File indexFile = new File(indexPath);
         
         if (!indexFile.exists()) {
-            Log.w(TAG, "Chart index not found: " + indexPath);
+            Log.w(TAG, "[INDEX] ⚠ Chart index NOT FOUND: " + indexPath);
+            Log.w(TAG, "[INDEX] Composite tile mode will NOT work without chart_index.json!");
             return;
         }
+        
+        Log.i(TAG, "[INDEX] Found chart_index.json (" + (indexFile.length() / 1024) + " KB)");
         
         try {
             // Read file
@@ -312,13 +365,18 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             JSONObject charts = root.optJSONObject("charts");
             
             if (charts == null) {
-                Log.w(TAG, "No 'charts' object in index");
+                Log.w(TAG, "[INDEX] ⚠ No 'charts' object in index file!");
                 return;
             }
+            
+            int totalInIndex = 0;
+            int loadedCount = 0;
+            int missingCount = 0;
             
             // Iterate through charts
             java.util.Iterator<String> keys = charts.keys();
             while (keys.hasNext()) {
+                totalInIndex++;
                 String chartId = keys.next();
                 JSONObject chartJson = charts.optJSONObject(chartId);
                 if (chartJson == null) continue;
@@ -345,14 +403,26 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 File mbtFile = new File(mbtilesDir + "/" + chartId + ".mbtiles");
                 if (mbtFile.exists()) {
                     chartIndex.put(chartId, info);
+                    loadedCount++;
+                    Log.d(TAG, "[INDEX] ✓ " + chartId + " L" + info.level + 
+                        " z" + info.minZoom + "-" + info.maxZoom +
+                        " bounds=[" + String.format("%.2f,%.2f,%.2f,%.2f", info.west, info.south, info.east, info.north) + "]");
+                } else {
+                    missingCount++;
+                    Log.w(TAG, "[INDEX] ✗ " + chartId + " - mbtiles file NOT FOUND");
                 }
             }
             
             chartIndexLoaded = true;
-            Log.i(TAG, "Chart index loaded: " + chartIndex.size() + " charts with mbtiles files");
+            Log.i(TAG, "[INDEX] ════════════════════════════════════════════════════");
+            Log.i(TAG, "[INDEX] Chart index loaded successfully!");
+            Log.i(TAG, "[INDEX]   Total in index: " + totalInIndex);
+            Log.i(TAG, "[INDEX]   Loaded (have mbtiles): " + loadedCount);
+            Log.i(TAG, "[INDEX]   Missing (no mbtiles): " + missingCount);
+            Log.i(TAG, "[INDEX] ════════════════════════════════════════════════════");
             
         } catch (Exception e) {
-            Log.e(TAG, "Failed to load chart index", e);
+            Log.e(TAG, "[INDEX] ✗ FAILED to load chart index!", e);
         }
     }
 
