@@ -85,6 +85,7 @@ const NAV_SYMBOLS: Record<string, any> = {
   // Other hazards
   'obstruction': require('../../assets/symbols/png/obstruction.png'),
   'foul-ground': require('../../assets/symbols/png/foul-ground.png'),
+  'tide-rips': require('../../assets/symbols/png/riptide.png'),
   // Landmarks
   'landmark-tower': require('../../assets/symbols/png/landmark-tower.png'),
   'landmark-chimney': require('../../assets/symbols/png/landmark-chimney.png'),
@@ -127,6 +128,7 @@ const LAYER_DISPLAY_NAMES: Record<string, string> = {
   'WRECKS': 'Wreck',
   'UWTROC': 'Underwater Rock',
   'OBSTRN': 'Obstruction',
+  'WATTUR': 'Water Turbulence',
   'LNDMRK': 'Landmark',
   'CBLSUB': 'Submarine Cable',
   'CBLARE': 'Cable Area',
@@ -2412,6 +2414,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 iconImage: 'obstruction',
                 iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.4, 16, 0.6],
+                iconAllowOverlap: true,
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* WATTUR - Water Turbulence (breakers, eddies, overfalls, rips) */}
+            <Mapbox.SymbolLayer
+              id="composite-wattur"
+              sourceLayerID="charts"
+              minZoomLevel={8}
+              filter={['all',
+                ['==', ['get', '_layer'], 'WATTUR'],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: 'tide-rips',
+                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.15, 10, 0.2, 12, 0.3, 16, 0.5],
                 iconAllowOverlap: true,
                 visibility: showHazards ? 'visible' : 'none',
               }}
