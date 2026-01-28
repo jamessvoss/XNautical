@@ -259,10 +259,10 @@ def generate_chart_index(mbtiles_dir: str, output_path: str) -> Dict:
         metadata = get_mbtiles_metadata(filepath)
         level = get_chart_level(chart_id)
         
-        # Get zoom range - use mbtiles metadata if available, otherwise use level-based defaults
-        default_min, default_max = get_default_zoom_range(level)
-        min_zoom = metadata['minzoom'] if metadata['minzoom'] is not None else default_min
-        max_zoom = metadata['maxzoom'] if metadata['maxzoom'] is not None else default_max
+        # ALWAYS use level-based zoom ranges for quilting logic
+        # The mbtiles minzoom/maxzoom are tippecanoe's tile generation range,
+        # not the "preferred viewing" range for quilting chart selection
+        min_zoom, max_zoom = get_default_zoom_range(level)
         
         charts[chart_id] = {
             'bounds': metadata['bounds'],
