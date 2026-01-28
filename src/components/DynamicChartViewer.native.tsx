@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Mapbox from '@rnmapbox/maps';
+import Mapbox, { Logger } from '@rnmapbox/maps';
 import {
   FeatureType,
   GeoJSONFeatureCollection,
@@ -43,6 +43,9 @@ import CompassOverlay from './CompassOverlay';
 import { useGPS } from '../hooks/useGPS';
 
 Mapbox.setAccessToken(process.env.EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN || '');
+
+// Enable verbose Mapbox logging to debug tile requests
+Logger.setLogLevel('verbose');
 
 // Symbol images for navigation features
 const NAV_SYMBOLS: Record<string, any> = {
@@ -1250,6 +1253,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const queryEnd = Date.now();
       console.log(`[PERF:MapPress] queryRenderedFeaturesInRect: ${queryEnd - queryStart}ms (found ${allFeatures?.features?.length || 0} raw features)`);
       
+      // Debug: Log first 3 raw features to see what we're getting
+      if (allFeatures?.features?.length > 0) {
+        console.log('[PERF:MapPress] Raw feature samples:');
+        for (let i = 0; i < Math.min(3, allFeatures.features.length); i++) {
+          const f = allFeatures.features[i];
+          console.log(`  [${i}] layer=${f.sourceLayerID || 'N/A'}, _layer=${f.properties?._layer || 'N/A'}, props=${JSON.stringify(f.properties || {}).substring(0, 200)}`);
+        }
+      }
+      
       // Filter to nautical layers in JavaScript (O(n) but n is small)
       const filterStart = Date.now();
       const nauticalLayers = new Set([
@@ -1258,6 +1270,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         'WRECKS', 'UWTROC', 'OBSTRN', 'LNDMRK', 'SOUNDG',
         'CBLSUB', 'CBLARE', 'PIPSOL', 'PIPARE', 'DEPCNT', 'COALNE',
         'RESARE', 'CTNARE', 'MIPARE', 'ACHARE', 'ACHBRT', 'MARCUL', 'SBDARE',
+        'DEPARE', 'LNDARE', 'SEAARE',  // Add more common layers
       ]);
       const features = {
         features: (allFeatures?.features || []).filter((f: any) => {
@@ -1955,17 +1968,101 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Requires mbtiles converted with sourceLayerID="charts" */}
         {/* ================================================================== */}
         {useMBTiles && tileServerReady && useCompositeTiles && (() => {
-          const compositeUrl = tileServer.getCompositeTileUrl();
-          console.log('[COMPOSITE] Using tile URL:', compositeUrl);
+          // Use tile URL templates - add v=1 cache buster param
+          const tileUrl = `${tileServer.getCompositeTileUrl()}?v=3`;
+          console.log('[COMPOSITE] Using tile URL template:', tileUrl);
           return (
           <Mapbox.VectorSource
-            key={`composite-charts-${cacheBuster}`}
+            key="composite-charts"
             id="composite-charts"
-            tileUrlTemplates={[compositeUrl]}
+            tileUrlTemplates={[tileUrl]}
             minZoomLevel={0}
-            maxZoomLevel={22}
-            onPress={(e) => console.log('[COMPOSITE] Source press:', e)}
+            maxZoomLevel={18}
+            onPress={(e) => {
+              console.log('[COMPOSITE] Source press - processing features...');
+              const features = e.features || [];
+              console.log(`[COMPOSITE] Found ${features.length} features at tap`);
+              
+              if (features.length === 0) return;
+              
+              // Priority map for nautical layers
+              const layerPriorities: Record<string, number> = {
+                'LIGHTS': 100, 'BOYLAT': 95, 'BOYCAR': 95, 'BOYSAW': 95, 'BOYSPP': 95, 'BOYISD': 95,
+                'BCNLAT': 90, 'BCNSPP': 90, 'BCNCAR': 90, 'BCNISD': 90, 'BCNSAW': 90,
+                'WRECKS': 85, 'UWTROC': 85, 'OBSTRN': 85,
+                'LNDMRK': 80, 'SOUNDG': 75,
+                'CBLSUB': 70, 'CBLARE': 70, 'PIPSOL': 70, 'PIPARE': 70,
+                'RESARE': 60, 'CTNARE': 60, 'MIPARE': 60, 'ACHARE': 60, 'ACHBRT': 60, 'MARCUL': 60,
+                'DEPCNT': 50, 'COALNE': 50, 'SBDARE': 45,
+                'DEPARE': 30, 'LNDARE': 20, 'SEAARE': 20,
+              };
+              
+              // Find best feature
+              let bestFeature = null;
+              let bestPriority = -1;
+              
+              for (const feature of features) {
+                const layer = feature.properties?._layer || '';
+                let priority = layerPriorities[layer] || 0;
+                
+                // Boost point features
+                if (feature.geometry?.type === 'Point') {
+                  priority += 50;
+                }
+                
+                console.log(`[COMPOSITE]   ${layer}: priority=${priority}`);
+                
+                if (priority > bestPriority) {
+                  bestPriority = priority;
+                  bestFeature = feature;
+                }
+              }
+              
+              if (bestFeature) {
+                const layer = bestFeature.properties?._layer || 'Unknown';
+                console.log(`[COMPOSITE] Selected: ${layer} (priority ${bestPriority})`);
+                
+                // Display names for layers
+                const displayNames: Record<string, string> = {
+                  'LIGHTS': 'Light', 'BOYLAT': 'Lateral Buoy', 'BOYCAR': 'Cardinal Buoy',
+                  'BOYSAW': 'Safe Water Buoy', 'BOYSPP': 'Special Buoy', 'BOYISD': 'Isolated Danger Buoy',
+                  'BCNLAT': 'Lateral Beacon', 'BCNSPP': 'Special Beacon', 'BCNCAR': 'Cardinal Beacon',
+                  'BCNISD': 'Isolated Danger Beacon', 'BCNSAW': 'Safe Water Beacon',
+                  'WRECKS': 'Wreck', 'UWTROC': 'Underwater Rock', 'OBSTRN': 'Obstruction',
+                  'LNDMRK': 'Landmark', 'SOUNDG': 'Sounding',
+                  'CBLSUB': 'Submarine Cable', 'CBLARE': 'Cable Area', 'PIPSOL': 'Pipeline', 'PIPARE': 'Pipeline Area',
+                  'RESARE': 'Restricted Area', 'CTNARE': 'Caution Area', 'MIPARE': 'Military Area',
+                  'ACHARE': 'Anchorage', 'ACHBRT': 'Anchor Berth', 'MARCUL': 'Marine Farm',
+                  'DEPCNT': 'Depth Contour', 'COALNE': 'Coastline', 'SBDARE': 'Seabed Area',
+                  'DEPARE': 'Depth Area', 'LNDARE': 'Land Area', 'SEAARE': 'Sea Area',
+                };
+                
+                setSelectedFeature({
+                  type: displayNames[layer] || layer,
+                  properties: {
+                    ...bestFeature.properties,
+                    _tapCoordinates: `${e.coordinates?.latitude?.toFixed(5) || '?'}°, ${e.coordinates?.longitude?.toFixed(5) || '?'}°`,
+                  },
+                });
+              }
+            }}
+            // @ts-ignore - undocumented but useful for debugging
+            onMapboxError={(e: any) => console.error('[COMPOSITE] VectorSource error:', e)}
           >
+            {/* DEBUG: Test layer - shows ALL features in red at ALL zoom levels */}
+            {/* DISABLED - was causing confusing red blocks where only non-DEPARE features exist
+            <Mapbox.FillLayer
+              id="composite-test-all"
+              sourceLayerID="charts"
+              minZoomLevel={0}
+              maxZoomLevel={22}
+              style={{
+                fillColor: '#ff0000',
+                fillOpacity: 0.3,
+              }}
+            />
+            */}
+            
             {/* DEPARE - Depth Areas */}
             <Mapbox.FillLayer
               id="composite-depare"
@@ -1993,7 +2090,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-drgare"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'DRGARE']}
               style={{
                 fillColor: '#87CEEB',
@@ -2005,7 +2101,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-fairwy"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'FAIRWY']}
               style={{
                 fillColor: '#E6E6FA',
@@ -2017,7 +2112,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-lndare"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'LNDARE']}
               style={{
                 fillColor: '#F5DEB3',
@@ -2030,7 +2124,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-cblare"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'CBLARE']}
               style={{
                 fillColor: '#800080',
@@ -2043,7 +2136,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-pipare"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'PIPARE']}
               style={{
                 fillColor: '#008000',
@@ -2056,7 +2148,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-resare"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'RESARE']}
               style={{
                 fillColor: [
@@ -2079,7 +2170,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-ctnare"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'CTNARE']}
               style={{
                 fillColor: '#FFD700',
@@ -2092,7 +2182,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-mipare"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'MIPARE']}
               style={{
                 fillColor: '#FF0000',
@@ -2105,7 +2194,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-achare"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'ACHARE']}
               style={{
                 fillColor: '#4169E1',
@@ -2118,7 +2206,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.FillLayer
               id="composite-marcul"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'MARCUL']}
               style={{
                 fillColor: '#228B22',
@@ -2131,7 +2218,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.LineLayer
               id="composite-depcnt"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'DEPCNT']}
               style={{
                 lineColor: '#4A90D9',
@@ -2145,7 +2231,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.LineLayer
               id="composite-coalne"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'COALNE']}
               style={{
                 lineColor: '#8B4513',
@@ -2157,7 +2242,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.LineLayer
               id="composite-cables"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['any',
                 ['==', ['get', '_layer'], 'CBLSUB'],
                 ['==', ['get', '_layer'], 'CBLOHD']
@@ -2174,7 +2258,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.LineLayer
               id="composite-pipsol"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               filter={['==', ['get', '_layer'], 'PIPSOL']}
               style={{
                 lineColor: '#008000',
@@ -2188,7 +2271,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <Mapbox.SymbolLayer
               id="composite-soundg"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
               minZoomLevel={10}
               filter={['all',
                 ['==', ['get', '_layer'], 'SOUNDG'],
@@ -2205,7 +2287,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
-            {/* UWTROC - Underwater Rocks */}
+            {/* UWTROC - Underwater Rocks 
+                WATLEV values: 1=partly submerged, 2=always dry, 3=always submerged, 
+                4=covers/uncovers, 5=awash, 6=flooding, 7=floating */}
             <Mapbox.SymbolLayer
               id="composite-uwtroc"
               sourceLayerID="charts"
@@ -2215,13 +2299,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               ]}
               style={{
                 iconImage: [
-                  'match',
-                  ['get', 'WATLEV'],
-                  3, 'rock-awash',
-                  4, 'rock-submerged',
-                  5, 'rock-above-water',
-                  7, 'rock-uncovers',
-                  'rock-submerged',
+                  'case',
+                  ['==', ['coalesce', ['get', 'WATLEV'], 3], 2], 'rock-above-water',  // Always dry
+                  ['==', ['coalesce', ['get', 'WATLEV'], 3], 3], 'rock-submerged',    // Always submerged
+                  ['==', ['coalesce', ['get', 'WATLEV'], 3], 4], 'rock-uncovers',     // Covers and uncovers
+                  ['==', ['coalesce', ['get', 'WATLEV'], 3], 5], 'rock-awash',        // Awash
+                  'rock-submerged',  // Default for any other value (including 1, 6, 7, null)
                 ],
                 iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.4, 16, 0.6],
                 iconAllowOverlap: true,

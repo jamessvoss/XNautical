@@ -54,9 +54,19 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     // Cache of open database connections
     private final ConcurrentHashMap<String, SQLiteDatabase> databases = new ConcurrentHashMap<>();
     
-    // Chart index for composite tile serving
+    // Chart index for composite tile serving (legacy)
     private final ConcurrentHashMap<String, ChartInfo> chartIndex = new ConcurrentHashMap<>();
     private boolean chartIndexLoaded = false;
+    
+    // Regional pack index for tiered loading
+    private final ConcurrentHashMap<String, RegionInfo> regionIndex = new ConcurrentHashMap<>();
+    private boolean regionIndexLoaded = false;
+    private static final String OVERVIEW_REGION = "alaska_overview";
+    
+    // Zoom thresholds for tiered loading
+    private static final int OVERVIEW_ONLY_MAX_ZOOM = 7;      // z0-7: only overview
+    private static final int OVERVIEW_TRANSITION_MAX_ZOOM = 10; // z8-10: overview + regional
+    // z11+: only regional packs
     
     // Track chart changes for logging
     private volatile String lastSelectedChart = null;
@@ -95,6 +105,53 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         
         boolean isVisibleAtZoom(int zoom) {
             return zoom >= minZoom && zoom <= maxZoom;
+        }
+    }
+    
+    /**
+     * Regional pack metadata for tiered loading
+     */
+    private static class RegionInfo {
+        String regionId;
+        String filename;
+        double west, south, east, north;  // Bounds
+        int minZoom, maxZoom;              // Zoom range
+        long sizeBytes;
+        boolean isOverview;                // Is this the overview pack?
+        
+        RegionInfo(String regionId) {
+            this.regionId = regionId;
+            this.filename = regionId + ".mbtiles";
+            this.west = -180;
+            this.south = -90;
+            this.east = 180;
+            this.north = 90;
+            this.minZoom = 0;
+            this.maxZoom = 22;
+            this.sizeBytes = 0;
+            this.isOverview = false;
+        }
+        
+        boolean intersectsTileBounds(double tileWest, double tileSouth, double tileEast, double tileNorth) {
+            // Handle antimeridian crossing (bounds that span 180/-180)
+            if (west > east) {
+                // Region crosses antimeridian - check both sides
+                return (tileEast >= west || tileWest <= east) && 
+                       !(north < tileSouth || south > tileNorth);
+            }
+            // Normal case
+            return !(east < tileWest || west > tileEast || north < tileSouth || south > tileNorth);
+        }
+        
+        boolean isVisibleAtZoom(int zoom) {
+            return zoom >= minZoom && zoom <= maxZoom;
+        }
+        
+        /**
+         * Get the mbtiles filename without path
+         */
+        String getMbtilesFilename() {
+            return filename;
         }
     }
     
@@ -140,8 +197,11 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 dir.mkdirs();
             }
             
-            // Load chart index for composite tile serving
+            // Load chart index for composite tile serving (legacy)
             loadChartIndex();
+            
+            // Load regional pack index for tiered loading (preferred)
+            loadRegionsIndex();
             
             server = new TileServer(port);
             server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
@@ -199,13 +259,33 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 Log.w(TAG, "  ⚠ MBTiles directory does not exist or is not a directory!");
             }
             
-            // Log chart index status
+            // Log regional pack status (preferred mode)
             Log.i(TAG, "────────────────────────────────────────────────────────────");
-            Log.i(TAG, "  CHART INDEX STATUS:");
+            Log.i(TAG, "  REGIONAL PACK STATUS:");
+            Log.i(TAG, "    Loaded: " + (regionIndexLoaded ? "YES ✓ (TIERED LOADING ACTIVE)" : "NO ✗"));
+            Log.i(TAG, "    Regional packs: " + regionIndex.size());
+            if (regionIndexLoaded && !regionIndex.isEmpty()) {
+                long regionTotalSize = 0;
+                for (RegionInfo info : regionIndex.values()) {
+                    regionTotalSize += info.sizeBytes;
+                    String type = info.isOverview ? "OVERVIEW" : "REGIONAL";
+                    Log.i(TAG, "      " + info.regionId + " (" + type + "): " + 
+                        (info.sizeBytes / 1024 / 1024) + " MB, z" + info.minZoom + "-" + info.maxZoom);
+                }
+                Log.i(TAG, "    Total pack size: " + (regionTotalSize / 1024 / 1024) + " MB");
+                Log.i(TAG, "    Tiered strategy:");
+                Log.i(TAG, "      z0-" + OVERVIEW_ONLY_MAX_ZOOM + ": Overview only");
+                Log.i(TAG, "      z" + (OVERVIEW_ONLY_MAX_ZOOM + 1) + "-" + OVERVIEW_TRANSITION_MAX_ZOOM + ": Overview + Regional");
+                Log.i(TAG, "      z" + (OVERVIEW_TRANSITION_MAX_ZOOM + 1) + "+: Regional only");
+            }
+            
+            // Log chart index status (legacy mode fallback)
+            Log.i(TAG, "────────────────────────────────────────────────────────────");
+            Log.i(TAG, "  CHART INDEX STATUS (legacy fallback):");
             Log.i(TAG, "    Loaded: " + (chartIndexLoaded ? "YES ✓" : "NO ✗"));
             Log.i(TAG, "    Charts in index: " + chartIndex.size());
-            if (chartIndexLoaded && !chartIndex.isEmpty()) {
-                // Count by level
+            if (chartIndexLoaded && !chartIndex.isEmpty() && !regionIndexLoaded) {
+                // Count by level (only show if legacy mode is active)
                 int l1 = 0, l2 = 0, l3 = 0, l4 = 0, l5 = 0, l6 = 0;
                 for (ChartInfo info : chartIndex.values()) {
                     switch (info.level) {
@@ -427,6 +507,113 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     }
 
     /**
+     * Load the regional pack index from regions.json
+     * This enables tiered loading where overview packs serve low zoom
+     * and regional packs serve high zoom based on viewport.
+     */
+    private void loadRegionsIndex() {
+        Log.i(TAG, "[REGIONS] Loading regional pack index...");
+        regionIndex.clear();
+        regionIndexLoaded = false;
+        
+        String indexPath = mbtilesDir + "/regions.json";
+        File indexFile = new File(indexPath);
+        
+        if (!indexFile.exists()) {
+            Log.w(TAG, "[REGIONS] ⚠ Regional index NOT FOUND: " + indexPath);
+            Log.w(TAG, "[REGIONS] Falling back to chart_index.json mode");
+            return;
+        }
+        
+        Log.i(TAG, "[REGIONS] Found regions.json (" + (indexFile.length() / 1024) + " KB)");
+        
+        try {
+            // Read file
+            StringBuilder content = new StringBuilder();
+            BufferedReader reader = new BufferedReader(new FileReader(indexFile));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                content.append(line);
+            }
+            reader.close();
+            
+            // Parse JSON
+            JSONObject root = new JSONObject(content.toString());
+            JSONObject regions = root.optJSONObject("regions");
+            
+            if (regions == null) {
+                Log.w(TAG, "[REGIONS] ⚠ No 'regions' object in index file!");
+                return;
+            }
+            
+            int totalInIndex = 0;
+            int loadedCount = 0;
+            int missingCount = 0;
+            
+            // Iterate through regions
+            java.util.Iterator<String> keys = regions.keys();
+            while (keys.hasNext()) {
+                totalInIndex++;
+                String regionId = keys.next();
+                JSONObject regionJson = regions.optJSONObject(regionId);
+                if (regionJson == null) continue;
+                
+                RegionInfo info = new RegionInfo(regionId);
+                
+                // Parse filename
+                info.filename = regionJson.optString("filename", regionId + ".mbtiles");
+                
+                // Parse bounds [west, south, east, north]
+                JSONArray bounds = regionJson.optJSONArray("bounds");
+                if (bounds != null && bounds.length() == 4) {
+                    info.west = bounds.getDouble(0);
+                    info.south = bounds.getDouble(1);
+                    info.east = bounds.getDouble(2);
+                    info.north = bounds.getDouble(3);
+                }
+                
+                // Parse zoom range
+                info.minZoom = regionJson.optInt("minZoom", 0);
+                info.maxZoom = regionJson.optInt("maxZoom", 22);
+                
+                // Parse size
+                info.sizeBytes = regionJson.optLong("sizeBytes", 0);
+                
+                // Determine if this is the overview pack
+                info.isOverview = regionId.contains("overview") || regionId.equals(OVERVIEW_REGION);
+                
+                // Verify mbtiles file exists
+                File mbtFile = new File(mbtilesDir + "/" + info.filename);
+                if (mbtFile.exists()) {
+                    regionIndex.put(regionId, info);
+                    loadedCount++;
+                    Log.d(TAG, "[REGIONS] ✓ " + regionId + (info.isOverview ? " (OVERVIEW)" : "") +
+                        " z" + info.minZoom + "-" + info.maxZoom +
+                        " bounds=[" + String.format("%.2f,%.2f,%.2f,%.2f", info.west, info.south, info.east, info.north) + "]" +
+                        " (" + (info.sizeBytes / 1024 / 1024) + " MB)");
+                } else {
+                    missingCount++;
+                    Log.w(TAG, "[REGIONS] ✗ " + regionId + " - mbtiles file NOT FOUND: " + info.filename);
+                }
+            }
+            
+            regionIndexLoaded = true;
+            Log.i(TAG, "[REGIONS] ════════════════════════════════════════════════════");
+            Log.i(TAG, "[REGIONS] Regional pack index loaded successfully!");
+            Log.i(TAG, "[REGIONS]   Total in index: " + totalInIndex);
+            Log.i(TAG, "[REGIONS]   Loaded (have mbtiles): " + loadedCount);
+            Log.i(TAG, "[REGIONS]   Missing (no mbtiles): " + missingCount);
+            Log.i(TAG, "[REGIONS]   Tiered loading: z0-" + OVERVIEW_ONLY_MAX_ZOOM + " overview only, " +
+                "z" + (OVERVIEW_ONLY_MAX_ZOOM + 1) + "-" + OVERVIEW_TRANSITION_MAX_ZOOM + " mixed, " +
+                "z" + (OVERVIEW_TRANSITION_MAX_ZOOM + 1) + "+ regional only");
+            Log.i(TAG, "[REGIONS] ════════════════════════════════════════════════════");
+            
+        } catch (Exception e) {
+            Log.e(TAG, "[REGIONS] ✗ FAILED to load regional index!", e);
+        }
+    }
+
+    /**
      * Convert tile coordinates to geographic bounds
      */
     private double[] tileToBounds(int z, int x, int y) {
@@ -439,24 +626,141 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Find the best chart for a tile using quilting logic
-     * Returns the most detailed chart that covers the tile and is visible at this zoom
+     * Find all regional packs or charts that cover a tile, sorted by preference.
+     * Returns a list of mbtiles filenames (without .mbtiles extension) to try.
+     * 
+     * TIERED LOADING STRATEGY (when regions.json is loaded):
+     * - z0-7:   Only query overview pack (fast, covers all of Alaska)
+     * - z8-10:  Query overview + regional packs that intersect tile (transition zone)
+     * - z11+:   Only query regional packs that intersect tile (detailed)
+     * 
+     * LEGACY MODE (when only chart_index.json is loaded):
+     * - Query all charts sorted by level descending
      */
-    private String findBestChartForTile(int z, int x, int y) {
-        if (!chartIndexLoaded || chartIndex.isEmpty()) {
-            Log.w(TAG, "[QUILT] Chart index not loaded or empty!");
-            return null;
+    private List<String> findChartsForTile(int z, int x, int y) {
+        // Use regional tiered loading if available
+        if (regionIndexLoaded && !regionIndex.isEmpty()) {
+            return findRegionsForTile(z, x, y);
         }
         
+        // Fall back to legacy chart index
+        if (!chartIndexLoaded || chartIndex.isEmpty()) {
+            Log.w(TAG, "[QUILT] No index loaded (neither regions.json nor chart_index.json)!");
+            return Collections.emptyList();
+        }
+        
+        return findChartsForTileLegacy(z, x, y);
+    }
+    
+    /**
+     * Find regional packs for a tile using tiered loading strategy.
+     * This is the preferred, efficient method when regions.json is available.
+     */
+    private List<String> findRegionsForTile(int z, int x, int y) {
+        double[] bounds = tileToBounds(z, x, y);
+        double west = bounds[0], south = bounds[1], east = bounds[2], north = bounds[3];
+        
+        List<String> packIds = new ArrayList<>();
+        
+        if (z <= OVERVIEW_ONLY_MAX_ZOOM) {
+            // LOW ZOOM (z0-7): Only use overview pack - it's optimized for this
+            for (RegionInfo region : regionIndex.values()) {
+                if (region.isOverview && region.isVisibleAtZoom(z)) {
+                    packIds.add(region.regionId);
+                    Log.d(TAG, "[TIERED] z" + z + " → overview only: " + region.regionId);
+                    return packIds;
+                }
+            }
+            Log.w(TAG, "[TIERED] z" + z + " → No overview pack found!");
+            return packIds;
+            
+        } else if (z <= OVERVIEW_TRANSITION_MAX_ZOOM) {
+            // TRANSITION ZOOM (z8-10): Try regional packs first, fall back to overview
+            // This handles the transition smoothly - regional packs have more detail
+            // but overview fills any gaps
+            
+            // First, find regional packs that intersect
+            List<RegionInfo> regionalCandidates = new ArrayList<>();
+            RegionInfo overviewPack = null;
+            
+            for (RegionInfo region : regionIndex.values()) {
+                if (!region.isVisibleAtZoom(z)) continue;
+                
+                if (region.isOverview) {
+                    overviewPack = region;
+                } else if (region.intersectsTileBounds(west, south, east, north)) {
+                    regionalCandidates.add(region);
+                }
+            }
+            
+            // Sort regional packs by size (smaller = more detailed/specific)
+            Collections.sort(regionalCandidates, new Comparator<RegionInfo>() {
+                @Override
+                public int compare(RegionInfo a, RegionInfo b) {
+                    return Long.compare(a.sizeBytes, b.sizeBytes);
+                }
+            });
+            
+            // Add regional packs first (they have more detail)
+            for (RegionInfo r : regionalCandidates) {
+                packIds.add(r.regionId);
+            }
+            
+            // Add overview as fallback
+            if (overviewPack != null) {
+                packIds.add(overviewPack.regionId);
+            }
+            
+            Log.d(TAG, "[TIERED] z" + z + " → transition: " + packIds.size() + " packs " + packIds);
+            return packIds;
+            
+        } else {
+            // HIGH ZOOM (z11+): Only use regional packs - overview has no detail here
+            List<RegionInfo> candidates = new ArrayList<>();
+            
+            for (RegionInfo region : regionIndex.values()) {
+                if (region.isOverview) continue; // Skip overview at high zoom
+                if (!region.isVisibleAtZoom(z)) continue;
+                if (!region.intersectsTileBounds(west, south, east, north)) continue;
+                
+                candidates.add(region);
+            }
+            
+            // Sort by size (smaller packs are more specific/detailed)
+            Collections.sort(candidates, new Comparator<RegionInfo>() {
+                @Override
+                public int compare(RegionInfo a, RegionInfo b) {
+                    return Long.compare(a.sizeBytes, b.sizeBytes);
+                }
+            });
+            
+            for (RegionInfo r : candidates) {
+                packIds.add(r.regionId);
+            }
+            
+            if (packIds.isEmpty()) {
+                Log.d(TAG, "[TIERED] z" + z + " → No regional packs cover tile " + x + "/" + y);
+            } else {
+                Log.d(TAG, "[TIERED] z" + z + " → regional: " + packIds);
+            }
+            
+            return packIds;
+        }
+    }
+    
+    /**
+     * Legacy method: Find charts using chart_index.json (individual chart files)
+     */
+    private List<String> findChartsForTileLegacy(int z, int x, int y) {
         double[] bounds = tileToBounds(z, x, y);
         double west = bounds[0], south = bounds[1], east = bounds[2], north = bounds[3];
         double centerLon = (west + east) / 2;
         double centerLat = (south + north) / 2;
         
-        // Find all charts that contain the tile center and are visible at this zoom
+        // Find all charts that INTERSECT the tile bounds and are visible at this zoom
         List<ChartInfo> candidates = new ArrayList<>();
         for (ChartInfo chart : chartIndex.values()) {
-            if (chart.containsPoint(centerLon, centerLat) && chart.isVisibleAtZoom(z)) {
+            if (chart.intersectsTileBounds(west, south, east, north) && chart.isVisibleAtZoom(z)) {
                 candidates.add(chart);
             }
         }
@@ -464,16 +768,24 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         if (candidates.isEmpty()) {
             Log.d(TAG, "[QUILT] No charts cover tile " + z + "/" + x + "/" + y + " at lon=" + 
                 String.format("%.3f", centerLon) + ", lat=" + String.format("%.3f", centerLat));
-            return null;
+            return Collections.emptyList();
         }
         
-        // Sort by level descending (most detailed first)
+        // Sort by level descending (most detailed first), then by chartId alphabetically
         Collections.sort(candidates, new Comparator<ChartInfo>() {
             @Override
             public int compare(ChartInfo a, ChartInfo b) {
-                return b.level - a.level;
+                int levelDiff = b.level - a.level;
+                if (levelDiff != 0) return levelDiff;
+                return a.chartId.compareTo(b.chartId);
             }
         });
+        
+        // Convert to list of chart IDs
+        List<String> chartIds = new ArrayList<>();
+        for (ChartInfo c : candidates) {
+            chartIds.add(c.chartId);
+        }
         
         // Log candidates for debugging
         StringBuilder candidateList = new StringBuilder();
@@ -484,26 +796,44 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         }
         if (candidates.size() > 5) candidateList.append("...");
         
-        String selected = candidates.get(0).chartId;
-        Log.i(TAG, "[QUILT] z" + z + " tile " + x + "/" + y + " → " + selected + 
-            " (from " + candidates.size() + " candidates: " + candidateList + ")");
+        Log.d(TAG, "[QUILT] z" + z + " tile " + x + "/" + y + " → " + candidates.size() + 
+            " candidates: " + candidateList);
         
-        return selected;
+        return chartIds;
+    }
+    
+    /**
+     * Find the best chart for a tile using quilting logic
+     * Returns the most detailed chart that covers the tile and is visible at this zoom
+     * 
+     * @deprecated Use findChartsForTile() and try each chart until one has data
+     */
+    private String findBestChartForTile(int z, int x, int y) {
+        List<String> charts = findChartsForTile(z, x, y);
+        return charts.isEmpty() ? null : charts.get(0);
     }
 
     /**
-     * Open a database connection for a chart
+     * Open a database connection for a chart or regional pack
      */
-    private SQLiteDatabase openDatabase(String chartId) {
-        if (databases.containsKey(chartId)) {
-            SQLiteDatabase db = databases.get(chartId);
+    private SQLiteDatabase openDatabase(String packId) {
+        if (databases.containsKey(packId)) {
+            SQLiteDatabase db = databases.get(packId);
             if (db != null && db.isOpen()) {
-                Log.d(TAG, "Using cached DB connection for: " + chartId);
+                Log.d(TAG, "Using cached DB connection for: " + packId);
                 return db;
             }
         }
         
-        String dbPath = mbtilesDir + "/" + chartId + ".mbtiles";
+        // Determine the filename - check regional index first, then default to packId.mbtiles
+        String filename;
+        if (regionIndex.containsKey(packId)) {
+            filename = regionIndex.get(packId).getMbtilesFilename();
+        } else {
+            filename = packId + ".mbtiles";
+        }
+        
+        String dbPath = mbtilesDir + "/" + filename;
         File dbFile = new File(dbPath);
         
         Log.d(TAG, "Opening database: " + dbPath);
@@ -531,8 +861,8 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         
         try {
             SQLiteDatabase db = SQLiteDatabase.openDatabase(dbPath, null, SQLiteDatabase.OPEN_READONLY);
-            databases.put(chartId, db);
-            Log.i(TAG, "✓ Opened database: " + chartId + " (" + dbFile.length() / 1024 + " KB)");
+            databases.put(packId, db);
+            Log.i(TAG, "✓ Opened database: " + packId + " (" + dbFile.length() / 1024 + " KB)");
             
             // Log some metadata
             try {
@@ -604,6 +934,55 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     }
 
     /**
+     * Build TileJSON metadata for the composite tile source.
+     * Mapbox needs this to know about the tile source configuration.
+     */
+    private String buildCompositeTileJson() {
+        // Calculate bounds from all charts in the index
+        double minLon = -180, minLat = -90, maxLon = 180, maxLat = 90;
+        if (!chartIndex.isEmpty()) {
+            minLon = 180; minLat = 90; maxLon = -180; maxLat = -90;
+            for (ChartInfo chart : chartIndex.values()) {
+                minLon = Math.min(minLon, chart.west);
+                minLat = Math.min(minLat, chart.south);
+                maxLon = Math.max(maxLon, chart.east);
+                maxLat = Math.max(maxLat, chart.north);
+            }
+        }
+        
+        String tileUrl = "http://127.0.0.1:" + port + "/tiles/{z}/{x}/{y}.pbf";
+        
+        // TileJSON spec: https://github.com/mapbox/tilejson-spec
+        StringBuilder json = new StringBuilder();
+        json.append("{");
+        json.append("\"tilejson\":\"3.0.0\",");
+        json.append("\"name\":\"composite-charts\",");
+        json.append("\"description\":\"Server-side quilted nautical charts\",");
+        json.append("\"version\":\"1.0.0\",");
+        json.append("\"scheme\":\"xyz\",");  // We convert TMS to XYZ in the server
+        json.append("\"attribution\":\"NOAA\",");
+        json.append("\"tiles\":[\"").append(tileUrl).append("\"],");
+        json.append("\"minzoom\":0,");
+        json.append("\"maxzoom\":18,");
+        json.append("\"bounds\":[").append(minLon).append(",").append(minLat).append(",").append(maxLon).append(",").append(maxLat).append("],");
+        json.append("\"center\":[").append((minLon + maxLon) / 2).append(",").append((minLat + maxLat) / 2).append(",4],");
+        // Vector layers - all features are in the "charts" layer
+        json.append("\"vector_layers\":[{");
+        json.append("\"id\":\"charts\",");
+        json.append("\"description\":\"Nautical chart features\",");
+        json.append("\"minzoom\":0,");
+        json.append("\"maxzoom\":18,");
+        json.append("\"fields\":{\"_layer\":\"string\",\"DEPTH\":\"number\",\"DRVAL1\":\"number\",\"DRVAL2\":\"number\"}");
+        json.append("}]");
+        json.append("}");
+        
+        Log.i(TAG, "[TILEJSON] Built TileJSON with " + chartIndex.size() + " charts, bounds: " + 
+            minLon + "," + minLat + " to " + maxLon + "," + maxLat);
+        
+        return json.toString();
+    }
+
+    /**
      * NanoHTTPD server implementation for serving tiles
      */
     private class TileServer extends NanoHTTPD {
@@ -616,7 +995,8 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             String uri = session.getUri();
             Method method = session.getMethod();
             
-            Log.d(TAG, "Request: " + method + " " + uri);
+            // Log ALL requests at INFO level so they're visible in logcat
+            Log.i(TAG, "[REQUEST] " + method + " " + uri);
             
             // Handle CORS preflight
             if (method == Method.OPTIONS) {
@@ -646,6 +1026,15 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             // Health check endpoint
             if (uri.equals("/health")) {
                 Response response = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"status\":\"ok\"}");
+                addCorsHeaders(response);
+                return response;
+            }
+            
+            // TileJSON endpoint for composite tiles - Mapbox needs this metadata
+            if (uri.equals("/tiles.json") || uri.equals("/tiles/composite.json")) {
+                Log.i(TAG, "[TILEJSON] Serving TileJSON metadata");
+                String tileJson = buildCompositeTileJson();
+                Response response = newFixedLengthResponse(Response.Status.OK, "application/json", tileJson);
                 addCorsHeaders(response);
                 return response;
             }
@@ -716,6 +1105,10 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         /**
          * Handle composite tile request - quilts tiles from multiple charts
          * URL format: /tiles/{z}/{x}/{y}.pbf
+         * 
+         * This method tries ALL candidate charts in order of preference until
+         * finding one that has actual tile data. This solves the issue where
+         * multiple charts overlap at low zoom but only the first one was tried.
          */
         private Response handleCompositeTileRequest(String uri) {
             long startTime = System.currentTimeMillis();
@@ -734,11 +1127,11 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 int x = Integer.parseInt(parts[1]);
                 int y = Integer.parseInt(parts[2]);
                 
-                // Find the best chart for this tile using quilting logic
-                String bestChart = findBestChartForTile(z, x, y);
+                // Find ALL charts that cover this tile, sorted by preference
+                List<String> candidateCharts = findChartsForTile(z, x, y);
                 tileRequestCount++;
                 
-                if (bestChart == null) {
+                if (candidateCharts.isEmpty()) {
                     // No chart covers this tile
                     Log.d(TAG, "Composite: No chart for " + z + "/" + x + "/" + y);
                     Response response = newFixedLengthResponse(Response.Status.NO_CONTENT, "application/x-protobuf", "");
@@ -747,39 +1140,60 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                     return response;
                 }
                 
-                // Track chart switches with prominent logging
-                boolean chartChanged = !bestChart.equals(lastSelectedChart);
-                boolean zoomChanged = z != lastZoom;
+                // Try each candidate chart until we find one with actual tile data
+                // This is important because at low zoom, multiple charts may intersect
+                // the tile bounds but have actual feature data in different tiles
+                byte[] tileData = null;
+                String selectedChart = null;
+                int chartsTriedCount = 0;
                 
-                if (chartChanged) {
-                    chartSwitchCount++;
-                    Log.i(TAG, "════════════════════════════════════════════════════════════");
-                    Log.i(TAG, "[CHART SWITCH] " + lastSelectedChart + " → " + bestChart);
-                    Log.i(TAG, "[CHART SWITCH] Zoom: z" + lastZoom + " → z" + z);
-                    Log.i(TAG, "[CHART SWITCH] Total switches: " + chartSwitchCount + " / " + tileRequestCount + " requests");
-                    Log.i(TAG, "════════════════════════════════════════════════════════════");
-                    lastSelectedChart = bestChart;
-                } else if (zoomChanged) {
-                    Log.i(TAG, "[ZOOM] z" + lastZoom + " → z" + z + " (still using " + bestChart + ")");
+                for (String chartId : candidateCharts) {
+                    chartsTriedCount++;
+                    tileData = getTile(chartId, z, x, y);
+                    if (tileData != null && tileData.length > 0) {
+                        selectedChart = chartId;
+                        break;
+                    }
                 }
-                lastZoom = z;
                 
-                // Get tile from the best chart
-                byte[] tileData = getTile(bestChart, z, x, y);
                 long queryTime = System.currentTimeMillis() - startTime;
                 
                 if (tileData == null || tileData.length == 0) {
-                    // Chart exists but no tile data at this location
-                    Log.d(TAG, "Composite: No tile from " + bestChart + " at " + z + "/" + x + "/" + y + " (" + queryTime + "ms)");
+                    // No chart had data at this tile location
+                    Log.d(TAG, "Composite: No tile data from " + chartsTriedCount + " charts at " + 
+                        z + "/" + x + "/" + y + " (" + queryTime + "ms)");
                     Response response = newFixedLengthResponse(Response.Status.NO_CONTENT, "application/x-protobuf", "");
                     addCorsHeaders(response);
                     addVectorTileHeaders(response);
                     return response;
                 }
                 
-                // Log hit (verbose - use Log.d for less noise)
-                Log.d(TAG, "Composite hit: " + z + "/" + x + "/" + y + " -> " + bestChart + 
-                    " (" + tileData.length + " bytes, " + queryTime + "ms)");
+                // Track chart switches with prominent logging
+                boolean chartChanged = !selectedChart.equals(lastSelectedChart);
+                boolean zoomChanged = z != lastZoom;
+                
+                if (chartChanged) {
+                    chartSwitchCount++;
+                    Log.i(TAG, "════════════════════════════════════════════════════════════");
+                    Log.i(TAG, "[CHART SWITCH] " + lastSelectedChart + " → " + selectedChart);
+                    Log.i(TAG, "[CHART SWITCH] Zoom: z" + lastZoom + " → z" + z);
+                    Log.i(TAG, "[CHART SWITCH] Tried " + chartsTriedCount + "/" + candidateCharts.size() + " candidates");
+                    Log.i(TAG, "[CHART SWITCH] Total switches: " + chartSwitchCount + " / " + tileRequestCount + " requests");
+                    Log.i(TAG, "════════════════════════════════════════════════════════════");
+                    lastSelectedChart = selectedChart;
+                } else if (zoomChanged) {
+                    Log.i(TAG, "[ZOOM] z" + lastZoom + " → z" + z + " (still using " + selectedChart + ")");
+                }
+                lastZoom = z;
+                
+                // Log hit with details about fallback behavior
+                if (chartsTriedCount > 1) {
+                    Log.i(TAG, "Composite hit: " + z + "/" + x + "/" + y + " -> " + selectedChart + 
+                        " (tried " + chartsTriedCount + " charts, " + tileData.length + " bytes, " + queryTime + "ms)");
+                } else {
+                    Log.d(TAG, "Composite hit: " + z + "/" + x + "/" + y + " -> " + selectedChart + 
+                        " (" + tileData.length + " bytes, " + queryTime + "ms)");
+                }
                 
                 // Return tile data
                 Response response = newFixedLengthResponse(
@@ -791,7 +1205,8 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 addCorsHeaders(response);
                 addVectorTileHeaders(response);
                 response.addHeader("Content-Encoding", "gzip");
-                response.addHeader("X-Chart-Source", bestChart); // Debug header showing which chart was used
+                response.addHeader("X-Chart-Source", selectedChart); // Debug header showing which chart was used
+                response.addHeader("X-Charts-Tried", String.valueOf(chartsTriedCount)); // How many charts were tried
                 
                 return response;
             } catch (NumberFormatException e) {
