@@ -1962,13 +1962,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             key={`composite-charts-${cacheBuster}`}
             id="composite-charts"
             tileUrlTemplates={[compositeUrl]}
+            minZoomLevel={0}
             maxZoomLevel={22}
+            onPress={(e) => console.log('[COMPOSITE] Source press:', e)}
           >
             {/* DEPARE - Depth Areas */}
             <Mapbox.FillLayer
               id="composite-depare"
               sourceLayerID="charts"
-              belowLayerID="chart-top-marker"
+              minZoomLevel={0}
               filter={['==', ['get', '_layer'], 'DEPARE']}
               style={{
                 fillColor: [
