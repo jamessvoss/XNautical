@@ -139,6 +139,9 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Extract chart_id from filename (e.g., US4AK4PH.000 -> US4AK4PH)
+    chart_id = s57_path.stem
+    
     # Get all layers in the S-57 file
     layers = get_s57_layers(str(s57_path))
     print(f"Found {len(layers)} layers in {s57_path.name}: {', '.join(layers[:10])}{'...' if len(layers) > 10 else ''}")
