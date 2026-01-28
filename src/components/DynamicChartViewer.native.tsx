@@ -1966,6 +1966,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             maxZoomLevel={22}
             onPress={(e) => console.log('[COMPOSITE] Source press:', e)}
           >
+            {/* TEST LAYER - No filter, should trigger tile requests */}
+            <Mapbox.FillLayer
+              id="composite-test"
+              sourceLayerID="charts"
+              style={{
+                fillColor: '#ff0000',
+                fillOpacity: 0.5,
+              }}
+            />
+            
             {/* DEPARE - Depth Areas */}
             <Mapbox.FillLayer
               id="composite-depare"
