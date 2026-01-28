@@ -273,8 +273,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   
   // Composite tile mode - when enabled, uses single VectorSource with server-side quilting
   // Requires mbtiles files converted with common layer name "charts"
-  // Set to true once all mbtiles are re-converted
-  const [useCompositeTiles, setUseCompositeTiles] = useState(false);
+  // Enabled by default since mbtiles have been re-converted
+  const [useCompositeTiles, setUseCompositeTiles] = useState(true);
   
   // Layer visibility - consolidated into single reducer for performance (fewer re-renders)
   const [layers, dispatchLayers] = useReducer(layerVisibilityReducer, initialLayerVisibility);
@@ -507,7 +507,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   
   // Progressive loading: Add more charts after initial render
   // Uses InteractionManager, batching, and startTransition for responsiveness
+  // SKIPPED when composite mode is enabled (not needed - single VectorSource)
   useEffect(() => {
+    // Skip progressive loading in composite mode - not needed
+    if (useCompositeTiles) {
+      console.log(`[PROGRESSIVE] Skipped - using composite tile mode (single source)`);
+      setLoadingPhase('complete');
+      return;
+    }
+    
     // DEBUG: Log every time this effect runs
     console.log(`[PROGRESSIVE] Effect triggered - phase=${loadingPhase}, tileServerReady=${tileServerReady}, mbtilesCharts=${mbtilesCharts.length}, chartsToRender=${chartsToRender.length}`);
     
@@ -587,7 +595,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }
     
     console.log(`[PROGRESSIVE] No action taken this run`);
-  }, [loadingPhase, tileServerReady, mbtilesCharts, addChartsBatched]);
+  }, [loadingPhase, tileServerReady, mbtilesCharts, addChartsBatched, useCompositeTiles]);
   
   // Start/stop GPS tracking when panel is shown/hidden
   useEffect(() => {
@@ -879,7 +887,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const totalTime = Date.now() - t0;
       console.log('=== STARTUP COMPLETE ===');
       console.log(`[PERF] Total startup: ${totalTime}ms`);
-      console.log(`[PERF] Progressive loading: US1 → US2+US3 → US4 (up to 100)`);
+      console.log(`[PERF] Tile mode: COMPOSITE (server-side quilting, ~20 layers)`);
       console.log(`[PERF] Special: GNIS=${gnisFound}, Basemap=${basemapFound}`);
       
       if (totalTime > 5000) {
