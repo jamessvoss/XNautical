@@ -32,6 +32,30 @@ def get_chart_level(chart_id: str) -> int:
     return 5  # Default to most detailed
 
 
+def get_default_zoom_range(level: int) -> tuple:
+    """Get default min/max zoom for a chart level.
+    
+    These ranges define when each chart level should be visible:
+    - US1 (Overview): z0-8 - visible at very low zooms
+    - US2 (General): z6-10 - transition zone from overview
+    - US3 (Coastal): z8-12 - coastal navigation
+    - US4 (Approach): z10-14 - harbor approaches
+    - US5 (Harbor): z12-18 - harbor detail
+    - US6 (Berthing): z14-18 - maximum detail
+    
+    Ranges overlap slightly to allow smooth transitions.
+    """
+    zoom_ranges = {
+        1: (0, 8),    # US1 Overview
+        2: (6, 10),   # US2 General
+        3: (8, 12),   # US3 Coastal
+        4: (10, 14),  # US4 Approach
+        5: (12, 18),  # US5 Harbor
+        6: (14, 18),  # US6 Berthing
+    }
+    return zoom_ranges.get(level, (0, 18))
+
+
 def parse_bounds(bounds_str: str) -> Optional[List[float]]:
     """Parse bounds string from mbtiles metadata.
     
@@ -235,12 +259,17 @@ def generate_chart_index(mbtiles_dir: str, output_path: str) -> Dict:
         metadata = get_mbtiles_metadata(filepath)
         level = get_chart_level(chart_id)
         
+        # Get zoom range - use mbtiles metadata if available, otherwise use level-based defaults
+        default_min, default_max = get_default_zoom_range(level)
+        min_zoom = metadata['minzoom'] if metadata['minzoom'] is not None else default_min
+        max_zoom = metadata['maxzoom'] if metadata['maxzoom'] is not None else default_max
+        
         charts[chart_id] = {
             'bounds': metadata['bounds'],
             'level': level,
             'levelName': ['', 'Overview', 'General', 'Coastal', 'Approach', 'Harbor'][min(level, 5)],
-            'minZoom': metadata['minzoom'],
-            'maxZoom': metadata['maxzoom'],
+            'minZoom': min_zoom,
+            'maxZoom': max_zoom,
             'name': metadata['name'],
             'format': metadata['format'] or 'pbf',
             'fileSizeBytes': filesize,
