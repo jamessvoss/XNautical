@@ -1968,14 +1968,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Requires mbtiles converted with sourceLayerID="charts" */}
         {/* ================================================================== */}
         {useMBTiles && tileServerReady && useCompositeTiles && (() => {
-          // Use tile URL templates - add v=1 cache buster param
-          const tileUrl = `${tileServer.getCompositeTileUrl()}?v=3`;
-          console.log('[COMPOSITE] Using tile URL template:', tileUrl);
+          // Use TileJSON URL - provides bounds and metadata for better low-zoom tile loading
+          const tileJsonUrl = `${tileServer.getTileServerUrl()}/tiles.json?v=3`;
+          console.log('[COMPOSITE] Using TileJSON URL:', tileJsonUrl);
           return (
           <Mapbox.VectorSource
             key="composite-charts"
             id="composite-charts"
-            tileUrlTemplates={[tileUrl]}
+            url={tileJsonUrl}
             minZoomLevel={0}
             maxZoomLevel={18}
             onPress={(e) => {
@@ -2049,8 +2049,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             // @ts-ignore - undocumented but useful for debugging
             onMapboxError={(e: any) => console.error('[COMPOSITE] VectorSource error:', e)}
           >
-            {/* DEBUG: Test layer - shows ALL features in red at ALL zoom levels */}
-            {/* DISABLED - was causing confusing red blocks where only non-DEPARE features exist
+            {/* DEBUG: Test layer - shows ALL polygon features (disabled)
             <Mapbox.FillLayer
               id="composite-test-all"
               sourceLayerID="charts"
@@ -2058,7 +2057,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               maxZoomLevel={22}
               style={{
                 fillColor: '#ff0000',
-                fillOpacity: 0.3,
+                fillOpacity: 0.5,
               }}
             />
             */}
@@ -2073,13 +2072,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 fillColor: [
                   'step',
                   ['coalesce', ['get', 'DRVAL1'], 0],
-                  '#C8D6A3', 0,
-                  '#B5E3F0', 2,
-                  '#9DD5E8', 5,
-                  '#7EC8E3', 10,
-                  '#5BB4D6', 20,
-                  '#3A9FC9', 50,
-                  '#2185B5',
+                  '#C8D6A3', 0,    // Drying/negative depth - greenish
+                  '#B5E3F0', 2,    // 0-2m - very light blue
+                  '#9DD5E8', 5,    // 2-5m - light blue
+                  '#7EC8E3', 10,   // 5-10m - medium light blue
+                  '#5BB4D6', 20,   // 10-20m - medium blue
+                  '#3A9FC9', 50,   // 20-50m - darker blue
+                  '#2185B5',       // 50m+ - deep blue
                 ],
                 fillOpacity: mapStyle === 'satellite' ? 0.6 : 1.0,
                 visibility: showDepthAreas ? 'visible' : 'none',
