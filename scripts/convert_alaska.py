@@ -93,7 +93,7 @@ SCALE_ZOOM_RANGES = {
     'US3': (4, 13),   # Coastal - was 8, now 4 (4 zooms earlier)
     'US4': (6, 16),   # Approach - was 10, now 6 (4 zooms earlier)
     'US5': (8, 18),   # Harbor - was 12, now 8 (4 zooms earlier)
-    'US6': (10, 18),  # Berthing - was 14, now 10 (4 zooms earlier)
+    'US6': (6, 18),   # Berthing - was 14, now 6 (8 zooms earlier for early harbor detail)
 }
 
 # Paths
