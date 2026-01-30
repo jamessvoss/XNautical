@@ -434,8 +434,9 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
         ])
     
     elif chart_id.startswith('US6'):
-        # Berthing charts: z10-18 (extended from z14 for detail level options)
-        return (18, 10, [
+        # Berthing charts: z6-18 (extended from z14 for early detail visibility)
+        # These are the most detailed charts - make them available earlier
+        return (18, 6, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',
