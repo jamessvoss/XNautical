@@ -1145,30 +1145,37 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, []);
 
   // Process camera state updates (extracted for throttling)
-  const processCameraState = useCallback((state: any) => {
-    if (state?.properties?.center) {
-      setCenterCoord(state.properties.center);
+  // MapLibre sends a GeoJSON Feature with geometry.coordinates for center
+  // and properties.zoomLevel for zoom
+  const processCameraState = useCallback((feature: any) => {
+    // MapLibre sends: { type: 'Feature', geometry: { coordinates: [lng, lat] }, properties: { zoomLevel, ... } }
+    if (feature?.geometry?.coordinates) {
+      const [lng, lat] = feature.geometry.coordinates;
+      setCenterCoord([lng, lat]);
     }
-    if (state?.properties?.zoom !== undefined) {
-      const zoom = Math.round(state.properties.zoom * 10) / 10;
-      setCurrentZoom(zoom);
+    // MapLibre uses 'zoomLevel' in properties
+    const zoom = feature?.properties?.zoomLevel ?? feature?.properties?.zoom;
+    if (zoom !== undefined) {
+      const roundedZoom = Math.round(zoom * 10) / 10;
+      setCurrentZoom(roundedZoom);
       // Check if we're at the max zoom limit
-      setIsAtMaxZoom(limitZoomToCharts && zoom >= effectiveMaxZoom - 0.1);
+      setIsAtMaxZoom(limitZoomToCharts && roundedZoom >= effectiveMaxZoom - 0.1);
     }
   }, [limitZoomToCharts, effectiveMaxZoom]);
 
   // Handle camera changes - throttled to max once per 100ms to reduce re-renders during pan/zoom
-  const handleCameraChanged = useCallback((state: any) => {
+  // MapLibre uses onRegionDidChange/onRegionIsChanging which sends a GeoJSON Feature
+  const handleCameraChanged = useCallback((feature: any) => {
     const THROTTLE_MS = 100;
     const now = Date.now();
     
-    // Always store the latest state
-    pendingCameraStateRef.current = state;
+    // Always store the latest feature
+    pendingCameraStateRef.current = feature;
     
     // If enough time has passed, process immediately
     if (now - lastCameraUpdateRef.current >= THROTTLE_MS) {
       lastCameraUpdateRef.current = now;
-      processCameraState(state);
+      processCameraState(feature);
       pendingCameraStateRef.current = null;
       
       // Clear any pending timeout since we just processed
@@ -1621,7 +1628,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         styleURL={typeof mapStyleUrls[mapStyle] === 'string' ? mapStyleUrls[mapStyle] : undefined}
         styleJSON={typeof mapStyleUrls[mapStyle] === 'object' ? JSON.stringify(mapStyleUrls[mapStyle]) : undefined}
         onMapIdle={handleMapIdle}
-        onCameraChanged={handleCameraChanged}
+        onRegionDidChange={handleCameraChanged}
+        onRegionIsChanging={handleCameraChanged}
         onPress={handleMapPress}
         // @ts-ignore - MapLibre callback types may differ slightly
         onWillStartLoadingMap={handleWillStartLoadingMap}
