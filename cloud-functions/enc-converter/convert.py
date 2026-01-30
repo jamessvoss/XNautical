@@ -364,12 +364,16 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
     
     Returns: (max_zoom, min_zoom, additional_flags)
     
-    Scale bands:
-    - US1: Overview charts - z8 max (prevents GB-sized files)
-    - US2: General charts - z10 max (prevents GB-sized files)  
-    - US3: Coastal charts - z13 max (stop line simplification)
-    - US4: Approach charts - z16 max (high precision)
-    - US5: Harbor charts - z18 max (maximum detail)
+    Scale bands (with extended min zoom for user-selectable detail levels):
+    - US1: Overview charts - z0-8 (full coverage)
+    - US2: General charts - z0-10 (full coverage)
+    - US3: Coastal charts - z4-13 (extended 4 zooms earlier from z8)
+    - US4: Approach charts - z6-16 (extended 4 zooms earlier from z10)
+    - US5: Harbor charts - z8-18 (extended 4 zooms earlier from z12)
+    - US6: Berthing charts - z10-18 (extended 4 zooms earlier from z14)
+    
+    The extended min zoom allows the app to offer low/medium/high detail settings
+    where users can choose to see detail charts earlier when zoomed out.
     
     Note: We avoid --simplify-only-low-zooms for all chart types as it
     can cause significant polygon distortion (e.g., caution areas appearing
@@ -377,20 +381,23 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
     """
     
     # Detect chart scale from ID prefix
+    # All charts use:
+    #   --no-feature-limit: don't drop features to meet tile count limits
+    #   --no-tile-size-limit: allow tiles to be any size (preserves all features)
+    #   --no-line-simplification: keep line geometry exact
+    #   -r1: drop rate 1 - no density-based feature dropping between zoom levels
+    
     if chart_id.startswith('US1'):
-        # Overview charts: full coverage at all zoom levels
-        # Removed --drop-densest-as-needed which was causing feature truncation
+        # Overview charts: z0-8
         return (8, 0, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',
-            '-r2.5'
+            '-r1'
         ])
     
     elif chart_id.startswith('US2'):
-        # General charts: full coverage at all zoom levels
-        # Changed minzoom from 8 to 0 for complete low-zoom coverage
-        # Removed --drop-densest-as-needed which was causing feature truncation
+        # General charts: z0-10
         return (10, 0, [
             '--no-feature-limit',
             '--no-tile-size-limit',
@@ -399,25 +406,36 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
         ])
     
     elif chart_id.startswith('US3'):
-        # Coastal charts: preserve line accuracy, stop simplification
-        return (13, 10, [
+        # Coastal charts: z4-13 (extended from z8 for detail level options)
+        return (13, 4, [
+            '--no-feature-limit',
+            '--no-tile-size-limit',
             '--no-line-simplification',
-            '--maximum-tile-bytes=2500000',
             '-r1'
         ])
     
     elif chart_id.startswith('US4'):
-        # Approach charts: high precision for channels
-        return (16, 11, [
+        # Approach charts: z6-16 (extended from z10 for detail level options)
+        return (16, 6, [
             '--no-feature-limit',
+            '--no-tile-size-limit',
             '--no-line-simplification',
-            '--maximum-tile-bytes=5000000',
             '-r1'
         ])
     
     elif chart_id.startswith('US5'):
-        # Harbor charts: maximum detail, no compromises
-        return (18, 13, [
+        # Harbor charts: z8-18 (extended from z12 for detail level options)
+        return (18, 8, [
+            '--no-feature-limit',
+            '--no-tile-size-limit',
+            '--no-line-simplification',
+            '--no-tiny-polygon-reduction',
+            '-r1'
+        ])
+    
+    elif chart_id.startswith('US6'):
+        # Berthing charts: z10-18 (extended from z14 for detail level options)
+        return (18, 10, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',
@@ -426,9 +444,9 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
         ])
     
     else:
-        # Default: assume high-detail chart
+        # Default: assume high-detail chart (US5 settings)
         print(f"Warning: Unknown chart scale for {chart_id}, using US5 settings")
-        return (18, 13, [
+        return (18, 8, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',

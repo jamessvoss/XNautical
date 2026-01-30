@@ -14,18 +14,61 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getAuth, signOut } from '@react-native-firebase/auth';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as chartCacheService from '../services/chartCacheService';
 import { formatBytes } from '../services/chartService';
+
+// Detail level affects when higher-resolution charts appear
+// Low: Charts appear at their natural zoom (US5 at z13)
+// Medium: Charts appear 2 zooms earlier (US5 at z11)
+// High: Charts appear 4 zooms earlier (US5 at z8) - uses all available data
+export type DetailLevel = 'low' | 'medium' | 'high';
+
+export const DETAIL_LEVEL_STORAGE_KEY = '@xnautical_detail_level';
+
+// Export function to get current detail level from anywhere in the app
+export const getDetailLevel = async (): Promise<DetailLevel> => {
+  try {
+    const value = await AsyncStorage.getItem(DETAIL_LEVEL_STORAGE_KEY);
+    if (value === 'low' || value === 'medium' || value === 'high') {
+      return value;
+    }
+    return 'medium'; // Default
+  } catch {
+    return 'medium';
+  }
+};
+
+// Get min zoom offset based on detail level
+export const getDetailZoomOffset = (level: DetailLevel): number => {
+  switch (level) {
+    case 'low': return 0;
+    case 'medium': return 2;
+    case 'high': return 4;
+  }
+};
 
 export default function SettingsScreen() {
   const [cacheSize, setCacheSize] = useState<number>(0);
   const [downloadedCount, setDownloadedCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
+  const [detailLevel, setDetailLevel] = useState<DetailLevel>('medium');
 
   useEffect(() => {
     loadCacheInfo();
+    loadDetailLevel();
   }, []);
+
+  const loadDetailLevel = async () => {
+    const level = await getDetailLevel();
+    setDetailLevel(level);
+  };
+
+  const handleDetailLevelChange = async (level: DetailLevel) => {
+    setDetailLevel(level);
+    await AsyncStorage.setItem(DETAIL_LEVEL_STORAGE_KEY, level);
+  };
 
   const loadCacheInfo = async () => {
     try {
@@ -142,6 +185,70 @@ export default function SettingsScreen() {
                 </TouchableOpacity>
               </>
             )}
+          </View>
+        </View>
+
+        {/* Chart Detail Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Chart Detail</Text>
+          <View style={styles.card}>
+            <Text style={styles.detailDescription}>
+              Controls when higher-resolution charts appear as you zoom in.
+              Higher detail shows more charts earlier but may slow down rendering.
+            </Text>
+            <View style={styles.detailButtonContainer}>
+              <TouchableOpacity
+                style={[
+                  styles.detailButton,
+                  detailLevel === 'low' && styles.detailButtonActive,
+                ]}
+                onPress={() => handleDetailLevelChange('low')}
+              >
+                <Text style={[
+                  styles.detailButtonText,
+                  detailLevel === 'low' && styles.detailButtonTextActive,
+                ]}>Low</Text>
+                <Text style={[
+                  styles.detailButtonSubtext,
+                  detailLevel === 'low' && styles.detailButtonSubtextActive,
+                ]}>Default timing</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.detailButton,
+                  detailLevel === 'medium' && styles.detailButtonActive,
+                ]}
+                onPress={() => handleDetailLevelChange('medium')}
+              >
+                <Text style={[
+                  styles.detailButtonText,
+                  detailLevel === 'medium' && styles.detailButtonTextActive,
+                ]}>Medium</Text>
+                <Text style={[
+                  styles.detailButtonSubtext,
+                  detailLevel === 'medium' && styles.detailButtonSubtextActive,
+                ]}>2 zooms earlier</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.detailButton,
+                  detailLevel === 'high' && styles.detailButtonActive,
+                ]}
+                onPress={() => handleDetailLevelChange('high')}
+              >
+                <Text style={[
+                  styles.detailButtonText,
+                  detailLevel === 'high' && styles.detailButtonTextActive,
+                ]}>High</Text>
+                <Text style={[
+                  styles.detailButtonSubtext,
+                  detailLevel === 'high' && styles.detailButtonSubtextActive,
+                ]}>4 zooms earlier</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.detailNote}>
+              Requires app restart to take effect.
+            </Text>
           </View>
         </View>
 
@@ -283,5 +390,53 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  detailDescription: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 16,
+    lineHeight: 20,
+  },
+  detailButtonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  detailButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    borderRadius: 8,
+    backgroundColor: '#f0f0f0',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  detailButtonActive: {
+    backgroundColor: '#007AFF20',
+    borderColor: '#007AFF',
+  },
+  detailButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+  },
+  detailButtonTextActive: {
+    color: '#007AFF',
+  },
+  detailButtonSubtext: {
+    fontSize: 10,
+    color: '#999',
+    marginTop: 2,
+  },
+  detailButtonSubtextActive: {
+    color: '#007AFF',
+  },
+  detailNote: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 12,
+    fontStyle: 'italic',
+    textAlign: 'center',
   },
 });

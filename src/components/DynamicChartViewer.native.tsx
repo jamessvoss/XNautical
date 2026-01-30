@@ -14,7 +14,7 @@ import {
   Alert,
   InteractionManager,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapLibre from '@maplibre/maplibre-react-native';
 import {
@@ -40,6 +40,7 @@ import ChartDebugOverlay from './ChartDebugOverlay';
 import GPSInfoPanel from './GPSInfoPanel';
 import CompassOverlay from './CompassOverlay';
 import { useGPS } from '../hooks/useGPS';
+import { getDetailLevel, getDetailZoomOffset, DetailLevel } from '../screens/SettingsScreen';
 
 // MapLibre doesn't require an access token
 // Logger removed - not available in MapLibre React Native
@@ -98,13 +99,13 @@ const NAV_SYMBOLS: Record<string, any> = {
 // OBJL code to layer name mapping (S-57 standard)
 const OBJL_NAMES: Record<number, string> = {
   2: 'ACHARE', 3: 'ACHBRT', 6: 'BCNCAR', 7: 'BCNISD', 8: 'BCNLAT',
-  9: 'BCNSPP', 10: 'BCNSAW', 14: 'BOYCAR', 15: 'BOYISD', 16: 'BOYINB',
-  17: 'BOYLAT', 18: 'BOYSAW', 19: 'BOYSPP', 21: 'CBLARE', 22: 'CBLSUB',
+  9: 'BCNSPP', 10: 'BCNSAW', 12: 'BRIDGE', 14: 'BOYCAR', 15: 'BOYISD', 16: 'BOYINB',
+  17: 'BOYLAT', 18: 'BOYSAW', 19: 'BOYSPP', 20: 'BUISGL', 21: 'CBLARE', 22: 'CBLSUB',
   23: 'CBLOHD', 30: 'COALNE', 33: 'CTNARE', 42: 'DEPARE', 43: 'DEPCNT',
-  46: 'DRGARE', 57: 'FAIRWY', 71: 'LNDARE', 74: 'LNDMRK', 75: 'LIGHTS',
-  79: 'MARCUL', 83: 'MIPARE', 86: 'OBSTRN', 97: 'PIPARE', 98: 'PIPSOL',
-  112: 'RESARE', 114: 'SBDARE', 129: 'SOUNDG', 153: 'UWTROC', 156: 'WATTUR',
-  159: 'WRECKS',
+  46: 'DRGARE', 57: 'FAIRWY', 71: 'LNDARE', 73: 'LNDRGN', 74: 'LNDMRK', 75: 'LIGHTS',
+  79: 'MARCUL', 83: 'MIPARE', 84: 'MORFAC', 86: 'OBSTRN', 94: 'PIPSOL', 97: 'PIPARE', 98: 'PIPSOL',
+  112: 'RESARE', 114: 'SBDARE', 119: 'SEAARE', 121: 'SBDARE', 122: 'SLCONS',
+  129: 'SOUNDG', 153: 'UWTROC', 156: 'WATTUR', 159: 'WRECKS',
 };
 
 // Helper to get layer name from OBJL code
@@ -122,9 +123,15 @@ const OBJL_PRIORITIES: Map<number, number> = new Map([
   [112, 84], [33, 83], [83, 82],   // RESARE, CTNARE, MIPARE
   [2, 81], [3, 80], [79, 79],      // ACHARE, ACHBRT, MARCUL
   [74, 78],  // LNDMRK
-  [22, 77], [21, 76], [98, 75], [97, 74],  // Cables and pipes
-  [129, 73], [42, 72], [43, 71], [114, 70],  // SOUNDG, DEPARE, DEPCNT, SBDARE
-  [46, 69], [57, 68],  // DRGARE, FAIRWY
+  [84, 77],  // MORFAC (Mooring Facility)
+  [22, 76], [21, 75], [94, 74], [98, 74], [97, 73],  // Cables and pipes
+  [12, 72],  // BRIDGE
+  [129, 71], [42, 70], [43, 69], [114, 68], [121, 68],  // SOUNDG, DEPARE, DEPCNT, SBDARE
+  [46, 67], [57, 66],  // DRGARE, FAIRWY
+  [122, 65], // SLCONS (Shoreline Construction)
+  [20, 64],  // BUISGL (Building)
+  [73, 63],  // LNDRGN (Land Region)
+  [119, 62], // SEAARE (Sea Area names)
 ]);
 
 // Layer name to friendly display name mapping
@@ -164,6 +171,12 @@ const LAYER_DISPLAY_NAMES: Record<string, string> = {
   'ACHARE': 'Anchorage Area',
   'ACHBRT': 'Anchor Berth',
   'MARCUL': 'Marine Farm/Aquaculture',
+  'BRIDGE': 'Bridge',
+  'BUISGL': 'Building',
+  'MORFAC': 'Mooring Facility',
+  'SLCONS': 'Shoreline Construction',
+  'SEAARE': 'Sea Area',
+  'LNDRGN': 'Land Region',
 };
 
 interface Props {
@@ -213,6 +226,13 @@ interface LayerVisibility {
   anchorages: boolean;
   anchorBerths: boolean;
   marineFarms: boolean;
+  // New infrastructure layers
+  bridges: boolean;
+  buildings: boolean;
+  moorings: boolean;
+  shorelineConstruction: boolean;
+  seaAreaNames: boolean;
+  landRegions: boolean;
 }
 
 type LayerVisibilityAction = 
@@ -242,6 +262,13 @@ const initialLayerVisibility: LayerVisibility = {
   anchorages: true,
   anchorBerths: true,
   marineFarms: true,
+  // New infrastructure layers
+  bridges: true,
+  buildings: true,
+  moorings: true,
+  shorelineConstruction: true,
+  seaAreaNames: true,
+  landRegions: true,
 };
 
 function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityAction): LayerVisibility {
@@ -331,6 +358,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     anchorages: showAnchorages,
     anchorBerths: showAnchorBerths,
     marineFarms: showMarineFarms,
+    // New infrastructure layers
+    bridges: showBridges,
+    buildings: showBuildings,
+    moorings: showMoorings,
+    shorelineConstruction: showShorelineConstruction,
+    seaAreaNames: showSeaAreaNames,
+    landRegions: showLandRegions,
   } = layers;
   
   // GNIS Place Names layer toggles
@@ -429,6 +463,39 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Zoom limiting - constrain zoom to available chart detail
   const [limitZoomToCharts, setLimitZoomToCharts] = useState(true);
   const [isAtMaxZoom, setIsAtMaxZoom] = useState(false);
+  
+  // Detail level - controls when higher-res charts appear (0, 2, or 4 zoom levels earlier)
+  const [detailZoomOffset, setDetailZoomOffset] = useState(2); // Default medium
+  const [detailLevel, setDetailLevel] = useState<DetailLevel>('medium');
+  
+  // Load detail level preference when screen gains focus
+  // This allows changes in Settings to take effect immediately when returning
+  useFocusEffect(
+    useCallback(() => {
+      getDetailLevel().then(level => {
+        setDetailLevel(level);
+        setDetailZoomOffset(getDetailZoomOffset(level));
+      });
+    }, [])
+  );
+  
+  // Cycle through detail levels: low -> medium -> high -> low
+  const cycleDetailLevel = useCallback(async () => {
+    const nextLevel: DetailLevel = 
+      detailLevel === 'low' ? 'medium' : 
+      detailLevel === 'medium' ? 'high' : 'low';
+    
+    setDetailLevel(nextLevel);
+    setDetailZoomOffset(getDetailZoomOffset(nextLevel));
+    
+    // Persist to AsyncStorage
+    try {
+      const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+      await AsyncStorage.setItem('chartDetailLevel', nextLevel);
+    } catch (e) {
+      console.warn('Failed to save detail level:', e);
+    }
+  }, [detailLevel]);
   
   // Calculate max zoom based on most detailed chart available
   // Chart scale max zoom levels (from convert.py tippecanoe settings):
@@ -1233,16 +1300,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       if (!match) return true; // Include unknown charts
       const scale = parseInt(match[1], 10);
       
-      // Chart zoom ranges (from tippecanoe settings)
-      // US1: z0-8, US2: z8-10, US3: z10-13, US4: z11-16, US5: z13-18
-      // Include charts within ±2 zoom levels for overzoom tolerance
+      // Chart zoom ranges (from tippecanoe settings in convert.py)
+      // US1: z0-8, US2: z0-10, US3: z4-13, US4: z6-16, US5: z8-18, US6: z10-18
+      // Include ±2 zoom buffer for overzoom tolerance
       switch (scale) {
-        case 1: return zoom <= 10;  // US1: visible up to z10 (overzoom from z8)
-        case 2: return zoom >= 6 && zoom <= 12;  // US2: z8-10 ± buffer
-        case 3: return zoom >= 8 && zoom <= 15;  // US3: z10-13 ± buffer
-        case 4: return zoom >= 9;   // US4: z11-16, visible at high zooms
-        case 5: return zoom >= 11;  // US5: z13-18, visible at high zooms
-        default: return zoom >= 11; // US6+: high zoom only
+        case 1: return zoom <= 10;  // US1: z0-8, buffer to z10
+        case 2: return zoom <= 12;  // US2: z0-10, buffer to z12
+        case 3: return zoom >= 2 && zoom <= 15;  // US3: z4-13, buffer ±2
+        case 4: return zoom >= 4;   // US4: z6-16, buffer to z4+
+        case 5: return zoom >= 6;   // US5: z8-18, buffer to z6+
+        default: return zoom >= 8;  // US6+: z10-18, buffer to z8+
       }
     };
     
@@ -1273,6 +1340,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       { type: 'cblare', visible: showCables },
       { type: 'pipare', visible: showPipelines },
       { type: 'sbdare', visible: showSeabed },
+      // New infrastructure layers
+      { type: 'bridge', visible: showBridges },
+      { type: 'buisgl', visible: showBuildings },
+      { type: 'morfac', visible: showMoorings },
+      { type: 'slcons', visible: showShorelineConstruction },
+      { type: 'seaare', visible: showSeaAreaNames },
+      { type: 'lndrgn', visible: showLandRegions },
     ];
     
     const ids: string[] = [];
@@ -1293,7 +1367,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       showLights, showBuoys, showBeacons, showHazards, showLandmarks, showSoundings,
       showCables, showPipelines, showDepthContours, showCoastline,
       showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
-      showMarineFarms, showSeabed]);
+      showMarineFarms, showSeabed, showBridges, showBuildings, showMoorings,
+      showShorelineConstruction, showSeaAreaNames, showLandRegions]);
 
   // Handle map press - query features at tap location from MBTiles vector layers
   // Optimized: uses constant Maps for O(1) lookups, minimal logging
@@ -2286,6 +2361,151 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
+            {/* SEAARE - Sea Area (named water bodies) */}
+            <MapLibre.SymbolLayer
+              id="composite-seaare"
+              sourceLayerID="charts"
+              minZoomLevel={8}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 119],
+                ['has', 'OBJNAM']
+              ]}
+              style={{
+                textField: ['get', 'OBJNAM'],
+                textSize: ['interpolate', ['linear'], ['zoom'], 8, 10, 12, 14],
+                textColor: '#4169E1',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textFont: ['Noto Sans Italic'],
+                textAllowOverlap: false,
+                visibility: showSeaAreaNames ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* LNDRGN - Land Region names */}
+            <MapLibre.SymbolLayer
+              id="composite-lndrgn"
+              sourceLayerID="charts"
+              minZoomLevel={10}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 73],
+                ['has', 'OBJNAM']
+              ]}
+              style={{
+                textField: ['get', 'OBJNAM'],
+                textSize: 11,
+                textColor: '#654321',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textFont: ['Noto Sans Regular'],
+                textAllowOverlap: false,
+                visibility: showLandRegions ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* BRIDGE - Bridges (line) */}
+            <MapLibre.LineLayer
+              id="composite-bridge"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', 'OBJL'], 12],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#696969',
+                lineWidth: 3,
+                visibility: showBridges ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* BRIDGE - Bridges (polygon fill) */}
+            <MapLibre.FillLayer
+              id="composite-bridge-fill"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', 'OBJL'], 12],
+                ['==', ['geometry-type'], 'Polygon']
+              ]}
+              style={{
+                fillColor: '#A9A9A9',
+                fillOpacity: 0.6,
+                visibility: showBridges ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* BUISGL - Buildings */}
+            <MapLibre.FillLayer
+              id="composite-buisgl"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 20]}
+              style={{
+                fillColor: '#8B4513',
+                fillOpacity: 0.4,
+                visibility: showBuildings ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MORFAC - Mooring Facilities */}
+            <MapLibre.SymbolLayer
+              id="composite-morfac"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', 'OBJL'], 84],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: 'mooring-buoy',
+                iconSize: 0.6,
+                iconAllowOverlap: true,
+                visibility: showMoorings ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MORFAC - Mooring Facilities (line - dolphins, piers) */}
+            <MapLibre.LineLayer
+              id="composite-morfac-line"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', 'OBJL'], 84],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#4B0082',
+                lineWidth: 2,
+                visibility: showMoorings ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* SLCONS - Shoreline Construction (seawalls, breakwaters, etc) */}
+            <MapLibre.LineLayer
+              id="composite-slcons"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', 'OBJL'], 122],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#4A4A4A',
+                lineWidth: 2,
+                visibility: showShorelineConstruction ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* SLCONS - Shoreline Construction (polygon) */}
+            <MapLibre.FillLayer
+              id="composite-slcons-fill"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', 'OBJL'], 122],
+                ['==', ['geometry-type'], 'Polygon']
+              ]}
+              style={{
+                fillColor: '#808080',
+                fillOpacity: 0.5,
+                visibility: showShorelineConstruction ? 'visible' : 'none',
+              }}
+            />
+            
             {/* DEPCNT - Depth Contours */}
             <MapLibre.LineLayer
               id="composite-depcnt"
@@ -2327,10 +2547,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             {/* PIPSOL - Pipelines */}
+            {/* PIPSOL - Pipeline (OBJL 94, not 98 as some docs suggest) */}
             <MapLibre.LineLayer
               id="composite-pipsol"
               sourceLayerID="charts"
-              filter={['==', ['get', 'OBJL'], 98]}
+              filter={['in', ['get', 'OBJL'], ['literal', [94, 98]]]}
               style={{
                 lineColor: '#008000',
                 lineWidth: 2,
@@ -2378,13 +2599,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
-            {/* SBDARE - Seabed composition (text only per S-52) */}
+            {/* SBDARE - Seabed composition (text only per S-52) 
+                Note: NOAA charts use OBJL 121 for SBDARE, not the standard 114 */}
             <MapLibre.SymbolLayer
               id="composite-sbdare"
               sourceLayerID="charts"
               minZoomLevel={10}
               filter={['all',
-                ['==', ['get', 'OBJL'], 114],
+                ['in', ['get', 'OBJL'], ['literal', [114, 121]]],
                 ['==', ['geometry-type'], 'Point'],
                 ['has', 'NATSUR']
               ]}
@@ -2673,19 +2895,27 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           
           // Determine minZoomLevel and maxZoomLevel based on chart scale for proper quilting
           // When zoomed in past maxZoom, lower-resolution charts hide and higher-res ones take over
-          // US1: z0-9, US2: z8-11, US3: z10-13, US4: z11-15, US5: z13+
+          // Base values (low detail): US1: z0, US2: z8, US3: z10, US4: z11, US5: z13
+          // Medium detail: subtract 2 from base (US5 at z11)
+          // High detail: subtract 4 from base (US5 at z9) - uses all available tile data
           const getChartMinZoom = (chartId: string): number => {
             const match = chartId.match(/^US(\d)/);
             if (!match) return 0;
             const scaleNum = parseInt(match[1], 10);
             
-            if (scaleNum === 1) return 0;   // US1 Overview
-            if (scaleNum === 2) return 8;   // US2 General
-            if (scaleNum === 3) return 10;  // US3 Coastal
-            if (scaleNum === 4) return 11;  // US4 Approach
-            if (scaleNum === 5) return 13;  // US5 Harbor
-            if (scaleNum >= 6) return 13;
-            return 0;
+            // Base min zoom values (for "low" detail setting)
+            let baseMinZoom = 0;
+            if (scaleNum === 1) baseMinZoom = 0;       // US1 Overview - always starts at 0
+            else if (scaleNum === 2) baseMinZoom = 8;  // US2 General
+            else if (scaleNum === 3) baseMinZoom = 10; // US3 Coastal
+            else if (scaleNum === 4) baseMinZoom = 11; // US4 Approach
+            else if (scaleNum === 5) baseMinZoom = 13; // US5 Harbor
+            else if (scaleNum >= 6) baseMinZoom = 14;  // US6 Berthing
+            
+            // Apply detail offset (0, 2, or 4 zooms earlier)
+            // But don't go below 0 or below what the tiles support
+            const minSupported = scaleNum <= 2 ? 0 : (scaleNum === 3 ? 4 : (scaleNum === 4 ? 6 : 8));
+            return Math.max(minSupported, baseMinZoom - detailZoomOffset);
           };
           
           const getChartMaxZoom = (chartId: string): number => {
@@ -2693,14 +2923,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             if (!match) return 22;
             const scaleNum = parseInt(match[1], 10);
             
+            // Max zoom must match what tippecanoe generated (convert.py settings)
             // Lower-res charts fade out when higher-res ones become available
-            // Small overlap allows smooth transitions
-            if (scaleNum === 1) return 9;   // US1 hides at z10 when US3 available
-            if (scaleNum === 2) return 11;  // US2 hides at z12 when US4 available  
-            if (scaleNum === 3) return 13;  // US3 hides at z14 when US5 available
-            if (scaleNum === 4) return 15;  // US4 hides at z16
-            if (scaleNum === 5) return 22;  // US5 stays visible at all high zooms
-            if (scaleNum >= 6) return 22;
+            // US1: z0-8, US2: z0-10, US3: z4-13, US4: z6-16, US5: z8-18, US6: z10-18
+            if (scaleNum === 1) return 8;   // US1 tiles exist z0-8
+            if (scaleNum === 2) return 10;  // US2 tiles exist z0-10
+            if (scaleNum === 3) return 13;  // US3 tiles exist z4-13
+            if (scaleNum === 4) return 16;  // US4 tiles exist z6-16
+            if (scaleNum === 5) return 18;  // US5 tiles exist z8-18
+            if (scaleNum >= 6) return 18;   // US6 tiles exist z10-18
             return 22;
           };
           
@@ -2802,11 +3033,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* All fill layers use belowLayerID to stay below GNIS labels */}
             
             {/* CBLARE - Cable Areas (fill only, outline later) */}
+            {/* Safety-critical: visible at all zoom levels for route planning */}
             <MapLibre.FillLayer
               id={`mbtiles-cblare-${chartId}`}
               sourceLayerID={chartId}
               belowLayerID="chart-top-marker"
-              minZoomLevel={chartMinZoom}
+              minZoomLevel={0}
               filter={['==', ['get', 'OBJL'], 21]}
               style={{
                 fillColor: '#800080',
@@ -2816,11 +3048,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             {/* PIPARE - Pipeline Areas (fill only, outline later) */}
+            {/* Safety-critical: visible at all zoom levels for route planning */}
             <MapLibre.FillLayer
               id={`mbtiles-pipare-${chartId}`}
               sourceLayerID={chartId}
               belowLayerID="chart-top-marker"
-              minZoomLevel={chartMinZoom}
+              minZoomLevel={0}
               filter={['==', ['get', 'OBJL'], 97]}
               style={{
                 fillColor: '#008000',
@@ -2914,6 +3147,51 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 fillColor: '#8B4513',  // Brown for aquaculture
                 fillOpacity: 0.2,
                 visibility: showMarineFarms ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* BUISGL - Buildings */}
+            <MapLibre.FillLayer
+              id={`mbtiles-buisgl-${chartId}`}
+              sourceLayerID={chartId}
+              minZoomLevel={chartMinZoom}
+              filter={['==', ['get', 'OBJL'], 20]}
+              style={{
+                fillColor: '#8B4513',
+                fillOpacity: 0.4,
+                visibility: showBuildings ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* SLCONS - Shoreline Construction (polygon - breakwaters, etc) */}
+            <MapLibre.FillLayer
+              id={`mbtiles-slcons-${chartId}`}
+              sourceLayerID={chartId}
+              minZoomLevel={chartMinZoom}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 122],
+                ['==', ['geometry-type'], 'Polygon']
+              ]}
+              style={{
+                fillColor: '#808080',
+                fillOpacity: 0.5,
+                visibility: showShorelineConstruction ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* BRIDGE - Bridge (polygon) */}
+            <MapLibre.FillLayer
+              id={`mbtiles-bridge-${chartId}`}
+              sourceLayerID={chartId}
+              minZoomLevel={chartMinZoom}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 12],
+                ['==', ['geometry-type'], 'Polygon']
+              ]}
+              style={{
+                fillColor: '#A9A9A9',
+                fillOpacity: 0.6,
+                visibility: showBridges ? 'visible' : 'none',
               }}
             />
             
@@ -3020,7 +3298,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <MapLibre.LineLayer
               id={`mbtiles-cblare-outline-${chartId}`}
               sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
+              minZoomLevel={0}
               filter={['==', ['get', 'OBJL'], 21]}
               style={{
                 lineColor: '#800080',
@@ -3031,10 +3309,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             {/* CBLSUB - Submarine Cables (lines) */}
+            {/* Safety-critical: visible at all zoom levels for route planning */}
             <MapLibre.LineLayer
               id={`mbtiles-cblsub-${chartId}`}
               sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
+              minZoomLevel={0}
               filter={['==', ['get', 'OBJL'], 22]}
               style={{
                 lineColor: '#800080',
@@ -3049,7 +3328,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <MapLibre.LineLayer
               id={`mbtiles-pipare-outline-${chartId}`}
               sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
+              minZoomLevel={0}
               filter={['==', ['get', 'OBJL'], 97]}
               style={{
                 lineColor: '#008000',
@@ -3140,17 +3419,66 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             {/* PIPSOL - Pipelines (lines) */}
+            {/* Safety-critical: visible at all zoom levels for route planning */}
             <MapLibre.LineLayer
               id={`mbtiles-pipsol-${chartId}`}
               sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['==', ['get', 'OBJL'], 98]}
+              minZoomLevel={0}
+              filter={['in', ['get', 'OBJL'], ['literal', [94, 98]]]}
               style={{
                 lineColor: '#008000',
                 lineWidth: 2.5,
                 lineDasharray: [6, 3],
                 lineCap: 'round',
                 visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* BRIDGE - Bridge (line) */}
+            <MapLibre.LineLayer
+              id={`mbtiles-bridge-line-${chartId}`}
+              sourceLayerID={chartId}
+              minZoomLevel={chartMinZoom}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 12],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#696969',
+                lineWidth: 3,
+                visibility: showBridges ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* SLCONS - Shoreline Construction (line - seawalls, jetties) */}
+            <MapLibre.LineLayer
+              id={`mbtiles-slcons-line-${chartId}`}
+              sourceLayerID={chartId}
+              minZoomLevel={chartMinZoom}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 122],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#4A4A4A',
+                lineWidth: 2,
+                visibility: showShorelineConstruction ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MORFAC - Mooring Facilities (line - dolphins, piers) */}
+            <MapLibre.LineLayer
+              id={`mbtiles-morfac-line-${chartId}`}
+              sourceLayerID={chartId}
+              minZoomLevel={chartMinZoom}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 84],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#4B0082',
+                lineWidth: 2,
+                visibility: showMoorings ? 'visible' : 'none',
               }}
             />
             
@@ -3186,13 +3514,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
-            {/* SBDARE - Seabed composition (text only per S-52) */}
+            {/* SBDARE - Seabed composition (text only per S-52)
+                Note: NOAA charts use OBJL 121 for SBDARE, not the standard 114 */}
             <MapLibre.SymbolLayer
               id={`mbtiles-sbdare-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={chartMinZoom}
               filter={['all',
-                ['==', ['get', 'OBJL'], 114],
+                ['in', ['get', 'OBJL'], ['literal', [114, 121]]],
                 ['==', ['geometry-type'], 'Point'],
                 ['has', 'NATSUR']
               ]}
@@ -3219,6 +3548,65 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textFont: ['Noto Sans Italic'],
                 textAllowOverlap: false,
                 visibility: showSeabed ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* SEAARE - Sea Area names (bays, channels, etc) */}
+            <MapLibre.SymbolLayer
+              id={`mbtiles-seaare-${chartId}`}
+              sourceLayerID={chartId}
+              minZoomLevel={Math.max(chartMinZoom, 8)}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 119],
+                ['has', 'OBJNAM']
+              ]}
+              style={{
+                textField: ['get', 'OBJNAM'],
+                textSize: ['interpolate', ['linear'], ['zoom'], 8, 10, 12, 14],
+                textColor: '#4169E1',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textFont: ['Noto Sans Italic'],
+                textAllowOverlap: false,
+                visibility: showSeaAreaNames ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* LNDRGN - Land Region names */}
+            <MapLibre.SymbolLayer
+              id={`mbtiles-lndrgn-${chartId}`}
+              sourceLayerID={chartId}
+              minZoomLevel={Math.max(chartMinZoom, 10)}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 73],
+                ['has', 'OBJNAM']
+              ]}
+              style={{
+                textField: ['get', 'OBJNAM'],
+                textSize: 11,
+                textColor: '#654321',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textFont: ['Noto Sans Regular'],
+                textAllowOverlap: false,
+                visibility: showLandRegions ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MORFAC - Mooring Facilities (point) */}
+            <MapLibre.SymbolLayer
+              id={`mbtiles-morfac-${chartId}`}
+              sourceLayerID={chartId}
+              minZoomLevel={chartMinZoom}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 84],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: 'mooring-buoy',
+                iconSize: 0.6,
+                iconAllowOverlap: true,
+                visibility: showMoorings ? 'visible' : 'none',
               }}
             />
             
@@ -3273,7 +3661,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id={`mbtiles-pipsol-label-${chartId}`}
               sourceLayerID={chartId}
               minZoomLevel={12}
-              filter={['==', ['get', 'OBJL'], 98]}
+              filter={['in', ['get', 'OBJL'], ['literal', [94, 98]]]}
               style={{
                 textField: [
                   'case',
@@ -3524,6 +3912,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               maxZoomLevel={chartMaxZoom}
               filter={['all',
                 ['==', ['get', 'OBJL'], 75],
+                ['==', ['geometry-type'], 'LineString'],
                 ['any',
                   ['!', ['has', 'SCAMIN']],
                   ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
@@ -3545,6 +3934,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               maxZoomLevel={chartMaxZoom}
               filter={['all',
                 ['==', ['get', 'OBJL'], 75],
+                ['==', ['geometry-type'], 'LineString'],
                 ['any',
                   ['!', ['has', 'SCAMIN']],
                   ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
@@ -3573,6 +3963,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID={chartId}
               filter={['all',
                 ['==', ['get', 'OBJL'], 75],
+                ['==', ['geometry-type'], 'Point'],
                 ['any',
                   ['!', ['has', 'SCAMIN']],
                   ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
@@ -4116,7 +4507,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           <Text style={styles.quickToggleBtnText}>SBD</Text>
         </TouchableOpacity>
         
-        {/* Zoom controls at bottom */}
+        {/* Detail level toggle */}
+        <View style={styles.quickToggleDividerThick} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, styles.quickToggleBtnActive]}
+          onPress={cycleDetailLevel}
+        >
+          <Text style={[styles.quickToggleBtnText, { fontWeight: '700' }]}>
+            {detailLevel === 'low' ? 'L' : detailLevel === 'medium' ? 'M' : 'H'}
+          </Text>
+        </TouchableOpacity>
+        
+        {/* Zoom controls */}
         <View style={styles.quickToggleDividerThick} />
         <TouchableOpacity 
           style={styles.quickToggleBtn}
@@ -4437,6 +4839,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               <FFToggle label="Anchorages" value={showAnchorages} onToggle={() => toggleLayer('anchorages')} />
               <FFToggle label="Anchor Berths" value={showAnchorBerths} onToggle={() => toggleLayer('anchorBerths')} />
               <FFToggle label="Marine Farms" value={showMarineFarms} onToggle={() => toggleLayer('marineFarms')} />
+              
+              <View style={styles.ffLayersDivider} />
+              <Text style={styles.ffLayersSectionTitle}>Infrastructure</Text>
+              <FFToggle label="Bridges" value={showBridges} onToggle={() => toggleLayer('bridges')} />
+              <FFToggle label="Buildings" value={showBuildings} onToggle={() => toggleLayer('buildings')} />
+              <FFToggle label="Moorings" value={showMoorings} onToggle={() => toggleLayer('moorings')} />
+              <FFToggle label="Shoreline Construction" value={showShorelineConstruction} onToggle={() => toggleLayer('shorelineConstruction')} />
+              
+              <View style={styles.ffLayersDivider} />
+              <Text style={styles.ffLayersSectionTitle}>Labels</Text>
+              <FFToggle label="Sea Area Names" value={showSeaAreaNames} onToggle={() => toggleLayer('seaAreaNames')} />
+              <FFToggle label="Land Regions" value={showLandRegions} onToggle={() => toggleLayer('landRegions')} />
               
               <View style={styles.ffLayersDivider} />
               <Text style={styles.ffLayersSectionTitle}>Settings</Text>

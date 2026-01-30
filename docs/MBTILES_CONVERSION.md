@@ -141,17 +141,18 @@ These features get: `{'tippecanoe': {'minzoom': 0, 'maxzoom': 17}}`
 
 ### Tippecanoe Settings
 
-**IMPORTANT**: As of 2026-01-27, tippecanoe settings are **automatically selected based on chart scale**. See [`docs/SCALE_BASED_CONVERSION.md`](SCALE_BASED_CONVERSION.md) for complete details.
+**IMPORTANT**: Tippecanoe settings are **automatically selected based on chart scale**. See [`docs/SCALE_BASED_CONVERSION.md`](SCALE_BASED_CONVERSION.md) for complete details.
 
-| Scale | Max Zoom | Min Zoom | Rationale |
-|-------|----------|----------|-----------|
-| US1 | z8 | z0 | Overview only - prevents GB files |
-| US2 | z10 | z8 | Regional view - prevents GB files |
-| US3 | z13 | z10 | Coastal detail - stop line simplification |
-| US4 | z16 | z11 | High precision for channels |
-| US5 | z18 | z13 | Maximum detail for docking |
+| Scale | Zoom Range | Rationale |
+|-------|------------|-----------|
+| US1 | z0-8 | Overview - continental view |
+| US2 | z0-10 | General - regional planning |
+| US3 | z4-13 | Coastal - extended for detail level feature |
+| US4 | z6-16 | Approach - extended for detail level feature |
+| US5 | z8-18 | Harbor - extended for detail level feature |
+| US6 | z10-18 | Berthing - extended for detail level feature |
 
-The script [`convert.py`](../cloud-functions/enc-converter/convert.py) automatically detects chart scale from the filename and applies appropriate settings.
+The script [`convert.py`](../cloud-functions/enc-converter/convert.py) automatically detects chart scale from the filename and applies appropriate settings via `get_tippecanoe_settings()`.
 
 **Why scale-based settings**:
 - US2 charts were producing GB-sized files with uniform z17 settings
@@ -452,6 +453,7 @@ sqlite3 output.mbtiles "SELECT zoom_level, COUNT(*) FROM tiles GROUP BY zoom_lev
 
 | Date | Change |
 |------|--------|
+| 2026-01-29 | Updated zoom ranges for user-selectable detail level feature |
 | 2026-01-30 | Removed `_layer` property; use S-57 OBJL codes for all filtering |
 | 2026-01-25 | Added light sector arc generation (OBJL=75 LineString) |
 | 2026-01-25 | Fixed layer discovery to handle all ogrinfo output formats |
