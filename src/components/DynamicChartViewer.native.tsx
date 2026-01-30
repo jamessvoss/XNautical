@@ -317,10 +317,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Data source toggles
   const [useMBTiles, setUseMBTiles] = useState(true);
   
-  // Composite tile mode - when enabled, uses single VectorSource with server-side quilting
-  // Requires mbtiles files converted with common layer name "charts"
-  // Enabled - mbtiles in All_Alaska_ENC_ROOT have correct layer name
-  const [useCompositeTiles, setUseCompositeTiles] = useState(true);
+  // Composite tile mode - single VectorSource with server-side quilting
+  // Per-chart mode has been removed - composite is now the only mode
+  const useCompositeTiles = true;
   
   // Layer visibility - consolidated into single reducer for performance (fewer re-renders)
   const [layers, dispatchLayers] = useReducer(layerVisibilityReducer, initialLayerVisibility);
@@ -2880,1192 +2879,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 visibility: showLandmarks ? 'visible' : 'none',
               }}
             />
-          </MapLibre.VectorSource>
-          );
-        })()}
-
-        {/* ================================================================== */}
-        {/* PER-CHART MODE - Original VectorSource per chart (legacy)         */}
-        {/* Kept for backward compatibility until all mbtiles are re-converted */}
-        {/* ================================================================== */}
-        {/* MBTiles Vector Sources - Chart quilting with zoom-based visibility */}
-        {/* PERFORMANCE: Progressive loading + viewport-based dynamic loading */}
-        {useMBTiles && tileServerReady && !useCompositeTiles && allChartsToRender.map((chartId) => {
-          const tileUrl = tileServer.getTileUrlTemplate(chartId);
-          
-          // Determine minZoomLevel and maxZoomLevel based on chart scale for proper quilting
-          // When zoomed in past maxZoom, lower-resolution charts hide and higher-res ones take over
-          // Base values (low detail): US1: z0, US2: z8, US3: z10, US4: z11, US5: z13
-          // Medium detail: subtract 2 from base (US5 at z11)
-          // High detail: subtract 4 from base (US5 at z9) - uses all available tile data
-          const getChartMinZoom = (chartId: string): number => {
-            const match = chartId.match(/^US(\d)/);
-            if (!match) return 0;
-            const scaleNum = parseInt(match[1], 10);
             
-            // Base min zoom values (for "low" detail setting)
-            let baseMinZoom = 0;
-            if (scaleNum === 1) baseMinZoom = 0;       // US1 Overview - always starts at 0
-            else if (scaleNum === 2) baseMinZoom = 8;  // US2 General
-            else if (scaleNum === 3) baseMinZoom = 10; // US3 Coastal
-            else if (scaleNum === 4) baseMinZoom = 11; // US4 Approach
-            else if (scaleNum === 5) baseMinZoom = 13; // US5 Harbor
-            else if (scaleNum >= 6) baseMinZoom = 14;  // US6 Berthing
-            
-            // Apply detail offset (0, 2, or 4 zooms earlier)
-            // But don't go below 0 or below what the tiles support
-            const minSupported = scaleNum <= 2 ? 0 : (scaleNum === 3 ? 4 : (scaleNum === 4 ? 6 : 8));
-            return Math.max(minSupported, baseMinZoom - detailZoomOffset);
-          };
-          
-          const getChartMaxZoom = (chartId: string): number => {
-            const match = chartId.match(/^US(\d)/);
-            if (!match) return 22;
-            const scaleNum = parseInt(match[1], 10);
-            
-            // Max zoom must match what tippecanoe generated (convert.py settings)
-            // Lower-res charts fade out when higher-res ones become available
-            // US1: z0-8, US2: z0-10, US3: z4-13, US4: z6-16, US5: z8-18, US6: z10-18
-            if (scaleNum === 1) return 8;   // US1 tiles exist z0-8
-            if (scaleNum === 2) return 10;  // US2 tiles exist z0-10
-            if (scaleNum === 3) return 13;  // US3 tiles exist z4-13
-            if (scaleNum === 4) return 16;  // US4 tiles exist z6-16
-            if (scaleNum === 5) return 18;  // US5 tiles exist z8-18
-            if (scaleNum >= 6) return 18;   // US6 tiles exist z10-18
-            return 22;
-          };
-          
-          const chartMinZoom = getChartMinZoom(chartId);
-          const chartMaxZoom = getChartMaxZoom(chartId);
-          
-          return (
-          <MapLibre.VectorSource
-            key={`mbtiles-src-${chartId}-${cacheBuster}`}
-            id={`mbtiles-src-${chartId}`}
-            tileUrlTemplates={[tileUrl]}
-            maxZoomLevel={22}
-          >
-            {/* ============================================================ */}
-            {/* LAYER ORDER - S-52 Compliant (bottom to top)                 */}
-            {/* 1. Water/depth backgrounds                                    */}
-            {/* 2. Land areas (masks water features on land)                  */}
-            {/* 3. Area overlays (cables, pipelines, restricted areas)        */}
-            {/* 4. Lines (depth contours, coastline, cables, pipelines)       */}
-            {/* 5. Text (soundings, seabed)                                   */}
-            {/* 6. Point symbols (hazards, nav aids, lights, landmarks)       */}
-            {/* ============================================================ */}
-            
-            {/* === SECTION 1: WATER/DEPTH BACKGROUNDS === */}
-            
-            {/* DEPARE - Depth Areas with proper depth-based coloring */}
-            {/* belowLayerID ensures depth fills stay below GNIS labels */}
-            {/* maxZoomLevel hides lower-res charts when higher-res available */}
-            <MapLibre.FillLayer
-              id={`mbtiles-depare-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['==', ['get', 'OBJL'], 42]}
-              style={{
-                fillColor: [
-                  'step',
-                  ['coalesce', ['get', 'DRVAL1'], 0], // Handle null/undefined DRVAL1
-                  '#C8D6A3', 0,      // Drying/intertidal - tan/green
-                  '#B5E3F0', 2,      // 0-2m - very light blue (danger)
-                  '#9DD5E8', 5,      // 2-5m - light blue
-                  '#7EC8E3', 10,     // 5-10m - medium light blue
-                  '#5BB4D6', 20,     // 10-20m - medium blue
-                  '#3A9FC9', 50,     // 20-50m - darker blue
-                  '#2185B5',         // 50m+ - deep blue
-                ],
-                fillOpacity: mapStyle === 'satellite' ? 0.6 : 1.0,
-                visibility: showDepthAreas ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* DRGARE - Dredged Areas (maintained channels) */}
-            <MapLibre.FillLayer
-              id={`mbtiles-drgare-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['==', ['get', 'OBJL'], 46]}
-              style={{
-                fillColor: '#87CEEB',
-                fillOpacity: 0.4,
-              }}
-            />
-            
-            {/* FAIRWY - Fairways (navigation channels) */}
-            <MapLibre.FillLayer
-              id={`mbtiles-fairwy-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['==', ['get', 'OBJL'], 57]}
-              style={{
-                fillColor: '#E6E6FA',
-                fillOpacity: 0.3,
-              }}
-            />
-            
-            {/* === SECTION 2: LAND (masks water features) === */}
-            
-            {/* LNDARE - Land Areas - MUST be early to mask water features on land */}
-            <MapLibre.FillLayer
-              id={`mbtiles-lndare-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['==', ['get', 'OBJL'], 71]}
-              style={{
-                fillColor: '#F5DEB3',
-                fillOpacity: mapStyle === 'satellite' ? 0.3 : 1,
-                visibility: showLand ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* === SECTION 3: AREA OVERLAYS (on top of land/water) === */}
-            {/* All fill layers use belowLayerID to stay below GNIS labels */}
-            
-            {/* CBLARE - Cable Areas (fill only, outline later) */}
-            {/* Safety-critical: visible at all zoom levels for route planning */}
-            <MapLibre.FillLayer
-              id={`mbtiles-cblare-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 21]}
-              style={{
-                fillColor: '#800080',
-                fillOpacity: 0.15,
-                visibility: showCables ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* PIPARE - Pipeline Areas (fill only, outline later) */}
-            {/* Safety-critical: visible at all zoom levels for route planning */}
-            <MapLibre.FillLayer
-              id={`mbtiles-pipare-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 97]}
-              style={{
-                fillColor: '#008000',
-                fillOpacity: 0.15,
-                visibility: showPipelines ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* RESARE - Restricted Areas (no-go zones, nature reserves, etc.) */}
-            {/* CATREA: 1=offshore safety, 4=nature reserve, 7=bird sanctuary, 8=game reserve, */}
-            {/*         9=seal sanctuary, 12=degaussing range, 14=military, 17=historic wreck, */}
-            {/*         22=no wake, 24=swinging area, 27=water skiing */}
-            {/* Available at all zoom levels for route planning */}
-            <MapLibre.FillLayer
-              id={`mbtiles-resare-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 112]}
-              style={{
-                fillColor: [
-                  'match',
-                  ['get', 'CATREA'],
-                  14, '#FF0000',    // Military - red
-                  12, '#FF0000',    // Degaussing - red
-                  4, '#00AA00',     // Nature reserve - green
-                  7, '#00AA00',     // Bird sanctuary - green
-                  8, '#00AA00',     // Game reserve - green
-                  9, '#00AA00',     // Seal sanctuary - green
-                  '#FF00FF',        // Default - magenta
-                ],
-                fillOpacity: 0.2,
-                visibility: showRestrictedAreas ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* CTNARE - Caution Areas (areas requiring special attention) */}
-            {/* Available at all zoom levels for route planning */}
-            <MapLibre.FillLayer
-              id={`mbtiles-ctnare-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 33]}
-              style={{
-                fillColor: '#FFA500',  // Orange for caution
-                fillOpacity: 0.2,
-                visibility: showCautionAreas ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* MIPARE - Military Practice Areas */}
-            {/* Available at all zoom levels for route planning */}
-            <MapLibre.FillLayer
-              id={`mbtiles-mipare-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 83]}
-              style={{
-                fillColor: '#FF0000',  // Red for military/danger
-                fillOpacity: 0.2,
-                visibility: showMilitaryAreas ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* ACHARE - Anchorage Areas */}
-            {/* Available at all zoom levels for route planning */}
-            <MapLibre.FillLayer
-              id={`mbtiles-achare-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 2]}
-              style={{
-                fillColor: '#9400D3',  // Dark violet for anchorage
-                fillOpacity: 0.15,
-                visibility: showAnchorages ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* MARCUL - Marine Farm/Culture (aquaculture) */}
-            {/* Available at all zoom levels for route planning */}
-            <MapLibre.FillLayer
-              id={`mbtiles-marcul-${chartId}`}
-              sourceLayerID={chartId}
-              belowLayerID="chart-top-marker"
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 79]}
-              style={{
-                fillColor: '#8B4513',  // Brown for aquaculture
-                fillOpacity: 0.2,
-                visibility: showMarineFarms ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* BUISGL - Buildings */}
-            <MapLibre.FillLayer
-              id={`mbtiles-buisgl-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['==', ['get', 'OBJL'], 20]}
-              style={{
-                fillColor: '#8B4513',
-                fillOpacity: 0.4,
-                visibility: showBuildings ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* SLCONS - Shoreline Construction (polygon - breakwaters, etc) */}
-            <MapLibre.FillLayer
-              id={`mbtiles-slcons-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 122],
-                ['==', ['geometry-type'], 'Polygon']
-              ]}
-              style={{
-                fillColor: '#808080',
-                fillOpacity: 0.5,
-                visibility: showShorelineConstruction ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* BRIDGE - Bridge (polygon) */}
-            <MapLibre.FillLayer
-              id={`mbtiles-bridge-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 12],
-                ['==', ['geometry-type'], 'Polygon']
-              ]}
-              style={{
-                fillColor: '#A9A9A9',
-                fillOpacity: 0.6,
-                visibility: showBridges ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* === SECTION 4: LINES === */}
-            
-            {/* DEPCNT - Depth Contours */}
-            {/* maxZoomLevel prevents crossing contours from overlapping chart scales */}
-            <MapLibre.LineLayer
-              id={`mbtiles-depcnt-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={[
-                'all',
-                ['==', ['get', 'OBJL'], 43],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'],
-                    ['step', ['zoom'],
-                      250000, 11, 100000, 12, 15000, 13, 0
-                    ]
-                  ]
-                ]
-              ]}
-              style={{
-                lineColor: [
-                  'step',
-                  ['coalesce', ['get', 'VALDCO'], 0],
-                  '#1E3A5F', 2,      // 0-2m - dark blue (shallow, important)
-                  '#2E5984', 5,      // 2-5m
-                  '#4A7BA7', 10,     // 5-10m
-                  '#6B9BC3', 20,     // 10-20m
-                  '#8FBCD9', 50,     // 20-50m
-                  '#B0D4E8',         // 50m+ - light blue
-                ],
-                lineWidth: [
-                  'step',
-                  ['coalesce', ['get', 'VALDCO'], 0],
-                  1.5, 5, 1.0, 20, 0.7, 50, 0.5, // Simplified - no 0.1 threshold
-                ],
-                lineCap: 'round',
-                lineJoin: 'round',
-                visibility: showDepthContours ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* COALNE - Coastline */}
-            <MapLibre.LineLayer
-              id={`mbtiles-coalne-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['==', ['get', 'OBJL'], 30]}
-              style={{
-                lineColor: '#000000',
-                lineWidth: 1.5,
-                lineCap: 'round',
-                lineJoin: 'round',
-                visibility: showCoastline ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* LNDARE outline */}
-            <MapLibre.LineLayer
-              id={`mbtiles-lndare-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['==', ['get', 'OBJL'], 71]}
-              style={{
-                lineColor: '#8B7355',
-                lineWidth: 1,
-                visibility: showLand ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* DRGARE outline */}
-            <MapLibre.LineLayer
-              id={`mbtiles-drgare-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['==', ['get', 'OBJL'], 46]}
-              style={{
-                lineColor: '#4682B4',
-                lineWidth: 1.5,
-                lineDasharray: [4, 2],
-              }}
-            />
-            
-            {/* FAIRWY outline */}
-            <MapLibre.LineLayer
-              id={`mbtiles-fairwy-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['==', ['get', 'OBJL'], 57]}
-              style={{
-                lineColor: '#9370DB',
-                lineWidth: 2,
-                lineDasharray: [8, 4],
-              }}
-            />
-            
-            {/* CBLARE outline */}
-            <MapLibre.LineLayer
-              id={`mbtiles-cblare-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 21]}
-              style={{
-                lineColor: '#800080',
-                lineWidth: 1.5,
-                lineDasharray: [4, 2],
-                visibility: showCables ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* CBLSUB - Submarine Cables (lines) */}
-            {/* Safety-critical: visible at all zoom levels for route planning */}
-            <MapLibre.LineLayer
-              id={`mbtiles-cblsub-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 22]}
-              style={{
-                lineColor: '#800080',
-                lineWidth: 2,
-                lineDasharray: [4, 2],
-                lineCap: 'round',
-                visibility: showCables ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* PIPARE outline */}
-            <MapLibre.LineLayer
-              id={`mbtiles-pipare-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 97]}
-              style={{
-                lineColor: '#008000',
-                lineWidth: 1.5,
-                lineDasharray: [6, 3],
-                visibility: showPipelines ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* RESARE outline - Restricted Areas */}
-            <MapLibre.LineLayer
-              id={`mbtiles-resare-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 112]}
-              style={{
-                lineColor: [
-                  'match',
-                  ['get', 'CATREA'],
-                  14, '#FF0000',    // Military - red
-                  12, '#FF0000',    // Degaussing - red
-                  4, '#00AA00',     // Nature reserve - green
-                  7, '#00AA00',     // Bird sanctuary - green
-                  8, '#00AA00',     // Game reserve - green
-                  9, '#00AA00',     // Seal sanctuary - green
-                  '#FF00FF',        // Default - magenta
-                ],
-                lineWidth: 2,
-                lineDasharray: [6, 3],
-                visibility: showRestrictedAreas ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* CTNARE outline - Caution Areas */}
-            <MapLibre.LineLayer
-              id={`mbtiles-ctnare-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 33]}
-              style={{
-                lineColor: '#FFA500',
-                lineWidth: 2,
-                lineDasharray: [6, 3],
-                visibility: showCautionAreas ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* MIPARE outline - Military Practice Areas */}
-            <MapLibre.LineLayer
-              id={`mbtiles-mipare-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 83]}
-              style={{
-                lineColor: '#FF0000',
-                lineWidth: 2,
-                lineDasharray: [4, 2],
-                visibility: showMilitaryAreas ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* ACHARE outline - Anchorage Areas */}
-            <MapLibre.LineLayer
-              id={`mbtiles-achare-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 2]}
-              style={{
-                lineColor: '#9400D3',
-                lineWidth: 2,
-                lineDasharray: [8, 4],
-                visibility: showAnchorages ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* MARCUL outline - Marine Farm/Culture */}
-            <MapLibre.LineLayer
-              id={`mbtiles-marcul-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 79]}
-              style={{
-                lineColor: '#8B4513',
-                lineWidth: 2,
-                lineDasharray: [4, 2],
-                visibility: showMarineFarms ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* PIPSOL - Pipelines (lines) */}
-            {/* Safety-critical: visible at all zoom levels for route planning */}
-            <MapLibre.LineLayer
-              id={`mbtiles-pipsol-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['in', ['get', 'OBJL'], ['literal', [94, 98]]]}
-              style={{
-                lineColor: '#008000',
-                lineWidth: 2.5,
-                lineDasharray: [6, 3],
-                lineCap: 'round',
-                visibility: showPipelines ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* BRIDGE - Bridge (line) */}
-            <MapLibre.LineLayer
-              id={`mbtiles-bridge-line-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 12],
-                ['==', ['geometry-type'], 'LineString']
-              ]}
-              style={{
-                lineColor: '#696969',
-                lineWidth: 3,
-                visibility: showBridges ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* SLCONS - Shoreline Construction (line - seawalls, jetties) */}
-            <MapLibre.LineLayer
-              id={`mbtiles-slcons-line-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 122],
-                ['==', ['geometry-type'], 'LineString']
-              ]}
-              style={{
-                lineColor: '#4A4A4A',
-                lineWidth: 2,
-                visibility: showShorelineConstruction ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* MORFAC - Mooring Facilities (line - dolphins, piers) */}
-            <MapLibre.LineLayer
-              id={`mbtiles-morfac-line-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 84],
-                ['==', ['geometry-type'], 'LineString']
-              ]}
-              style={{
-                lineColor: '#4B0082',
-                lineWidth: 2,
-                visibility: showMoorings ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* === SECTION 5: TEXT/LABELS ON WATER === */}
-            
-            {/* DEPCNT Labels */}
+            {/* LNDMRK Label */}
             <MapLibre.SymbolLayer
-              id={`mbtiles-depcnt-labels-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={Math.max(chartMinZoom, 12)}
-              filter={[
-                'all',
-                ['==', ['get', 'OBJL'], 43],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'],
-                    ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]
-                  ]
-                ]
-              ]}
-              style={{
-                textField: ['to-string', ['coalesce', ['get', 'VALDCO'], '']],
-                textSize: 10,
-                textColor: '#1E3A5F',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                symbolPlacement: 'line',
-                symbolSpacing: 300,
-                textFont: ['Noto Sans Regular'],
-                textMaxAngle: 30,
-                textAllowOverlap: false,
-                visibility: showDepthContours ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* SBDARE - Seabed composition (text only per S-52)
-                Note: NOAA charts use OBJL 121 for SBDARE, not the standard 114 */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-sbdare-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['all',
-                ['in', ['get', 'OBJL'], ['literal', [114, 121]]],
-                ['==', ['geometry-type'], 'Point'],
-                ['has', 'NATSUR']
-              ]}
-              style={{
-                textField: [
-                  'case',
-                  ['in', '11', ['to-string', ['get', 'NATSUR']]], 'Co',
-                  ['in', '14', ['to-string', ['get', 'NATSUR']]], 'Sh',
-                  ['in', '"1"', ['to-string', ['get', 'NATSUR']]], 'M',
-                  ['in', '"2"', ['to-string', ['get', 'NATSUR']]], 'Cy',
-                  ['in', '"3"', ['to-string', ['get', 'NATSUR']]], 'Si',
-                  ['in', '"4"', ['to-string', ['get', 'NATSUR']]], 'S',
-                  ['in', '"5"', ['to-string', ['get', 'NATSUR']]], 'St',
-                  ['in', '"6"', ['to-string', ['get', 'NATSUR']]], 'G',
-                  ['in', '"7"', ['to-string', ['get', 'NATSUR']]], 'P',
-                  ['in', '"8"', ['to-string', ['get', 'NATSUR']]], 'Cb',
-                  ['in', '"9"', ['to-string', ['get', 'NATSUR']]], 'R',
-                  '',
-                ],
-                textSize: 10,
-                textColor: '#6B4423',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                textFont: ['Noto Sans Italic'],
-                textAllowOverlap: false,
-                visibility: showSeabed ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* SEAARE - Sea Area names (bays, channels, etc) */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-seaare-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={Math.max(chartMinZoom, 8)}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 119],
-                ['has', 'OBJNAM']
-              ]}
-              style={{
-                textField: ['get', 'OBJNAM'],
-                textSize: ['interpolate', ['linear'], ['zoom'], 8, 10, 12, 14],
-                textColor: '#4169E1',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                textFont: ['Noto Sans Italic'],
-                textAllowOverlap: false,
-                visibility: showSeaAreaNames ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* LNDRGN - Land Region names */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-lndrgn-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={Math.max(chartMinZoom, 10)}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 73],
-                ['has', 'OBJNAM']
-              ]}
-              style={{
-                textField: ['get', 'OBJNAM'],
-                textSize: 11,
-                textColor: '#654321',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                textFont: ['Noto Sans Regular'],
-                textAllowOverlap: false,
-                visibility: showLandRegions ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* MORFAC - Mooring Facilities (point) */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-morfac-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 84],
-                ['==', ['geometry-type'], 'Point']
-              ]}
-              style={{
-                iconImage: 'mooring-buoy',
-                iconSize: 0.6,
-                iconAllowOverlap: true,
-                visibility: showMoorings ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* SOUNDG - Soundings */}
-            {/* maxZoomLevel prevents duplicate soundings from overlapping chart scales */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-soundg-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={[
-                'all',
-                ['==', ['get', 'OBJL'], 129],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'],
-                    ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]
-                  ]
-                ]
-              ]}
-              style={{
-                textField: ['to-string', ['round', ['get', 'DEPTH']]],
-                textSize: 11,
-                textColor: '#000080',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                textAllowOverlap: false,
-                textIgnorePlacement: false,
-                visibility: showSoundings ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* Cable/Pipeline labels */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-cblsub-label-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={12}
-              filter={['==', ['get', 'OBJL'], 22]}
-              style={{
-                textField: 'Cable',
-                textSize: 9,
-                textColor: '#800080',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                symbolPlacement: 'line',
-                symbolSpacing: 400,
-                visibility: showCables ? 'visible' : 'none',
-              }}
-            />
-            
-            <MapLibre.SymbolLayer
-              id={`mbtiles-pipsol-label-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={12}
-              filter={['in', ['get', 'OBJL'], ['literal', [94, 98]]]}
-              style={{
-                textField: [
-                  'case',
-                  ['==', ['get', 'CATPIP'], 1], 'Oil',
-                  ['==', ['get', 'CATPIP'], 2], 'Gas',
-                  ['==', ['get', 'CATPIP'], 3], 'Water',
-                  ['==', ['get', 'CATPIP'], 4], 'Sewer',
-                  'Pipe',
-                ],
-                textSize: 9,
-                textColor: '#006400',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                symbolPlacement: 'line',
-                symbolSpacing: 400,
-                visibility: showPipelines ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* === SECTION 6: POINT SYMBOLS (bottom to top) === */}
-            
-            {/* WRECKS - Hazards */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-wrecks-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 159],
-                ['==', ['geometry-type'], 'Point'],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
-                ]
-              ]}
-              style={{
-                iconImage: [
-                  'case',
-                  ['==', ['get', 'CATWRK'], 5], 'wreck-hull',
-                  ['any', ['==', ['get', 'CATWRK'], 2], ['==', ['get', 'WATLEV'], 5]], 'wreck-danger',
-                  ['==', ['get', 'WATLEV'], 4], 'wreck-uncovers',
-                  ['==', ['get', 'CATWRK'], 1], 'wreck-safe',
-                  ['==', ['get', 'WATLEV'], 3], 'wreck-submerged',
-                  'wreck-danger',
-                ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.45, 16, 0.7],
-                iconAllowOverlap: true,
-                visibility: showHazards ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* UWTROC - Underwater Rocks */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-uwtroc-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 153],
-                ['==', ['geometry-type'], 'Point'],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
-                ]
-              ]}
-              style={{
-                iconImage: [
-                  'case',
-                  ['==', ['get', 'WATLEV'], 5], 'rock-awash',
-                  ['==', ['get', 'WATLEV'], 4], 'rock-uncovers',
-                  'rock-submerged',
-                ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.45, 16, 0.7],
-                iconAllowOverlap: true,
-                visibility: showHazards ? 'visible' : 'none',
-              }}
-            />
-            <MapLibre.SymbolLayer
-              id={`mbtiles-uwtroc-label-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={12}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 153],
-                ['==', ['geometry-type'], 'Point'],
-                ['has', 'VALSOU']
-              ]}
-              style={{
-                textField: ['to-string', ['round', ['get', 'VALSOU']]],
-                textSize: 9,
-                textColor: '#000000',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                textOffset: [0, 1.3],
-                visibility: showHazards ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* OBSTRN - Obstructions */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-obstrn-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 86],
-                ['==', ['geometry-type'], 'Point'],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
-                ]
-              ]}
-              style={{
-                iconImage: [
-                  'case',
-                  ['any', ['==', ['get', 'CATOBS'], 6], ['==', ['get', 'CATOBS'], 7]], 'foul-ground',
-                  'obstruction',
-                ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.45, 16, 0.7],
-                iconAllowOverlap: true,
-                visibility: showHazards ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* ACHBRT - Anchor Berths (specific anchorage positions) */}
-            {/* Available at all zoom levels for route planning */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-achbrt-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={0}
-              filter={['==', ['get', 'OBJL'], 3]}
-              style={{
-                iconImage: 'anchor',
-                iconSize: ['interpolate', ['linear'], ['zoom'], 4, 0.2, 8, 0.3, 12, 0.5, 16, 0.7],
-                iconAllowOverlap: true,
-                visibility: showAnchorBerths ? 'visible' : 'none',
-              }}
-            />
-            <MapLibre.SymbolLayer
-              id={`mbtiles-achbrt-label-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={10}
-              filter={['==', ['get', 'OBJL'], 3]}
-              style={{
-                textField: ['coalesce', ['get', 'OBJNAM'], 'Anchorage'],
-                textSize: 10,
-                textColor: '#9400D3',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.5,
-                textOffset: [0, 1.5],
-                textAllowOverlap: false,
-                visibility: showAnchorBerths ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* All Buoys */}
-            {/* BOYSHP: 1=conical, 2=can, 3=spherical, 4=pillar, 5=spar, 6=barrel, 7=super-buoy */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-buoys-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['all',
-                ['any',
-                  ['==', ['get', 'OBJL'], 17],
-                  ['==', ['get', 'OBJL'], 14],
-                  ['==', ['get', 'OBJL'], 18],
-                  ['==', ['get', 'OBJL'], 19],
-                  ['==', ['get', 'OBJL'], 15],
-                ],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
-                ]
-              ]}
-              style={{
-                iconImage: [
-                  'match',
-                  ['get', 'BOYSHP'],
-                  1, 'buoy-conical',    // Conical (nun)
-                  2, 'buoy-can',        // Can (cylindrical)
-                  3, 'buoy-spherical',  // Spherical
-                  4, 'buoy-pillar',     // Pillar
-                  5, 'buoy-spar',       // Spar
-                  6, 'buoy-barrel',     // Barrel
-                  7, 'buoy-super',      // Super buoy
-                  'buoy-pillar',        // Default to pillar
-                ],
-                iconSize: [
-                  'interpolate', ['linear'], ['zoom'],
-                  8, 0.25,   // Small at zoom 8
-                  12, 0.45,  // Medium at zoom 12
-                  16, 0.7    // Full size at zoom 16+
-                ],
-                iconAllowOverlap: true,
-                visibility: showBuoys ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* All Beacons - S-52 symbols based on BCNSHP (beacon shape) */}
-            {/* BCNSHP: 1=stake/pole, 2=withy, 3=tower, 4=lattice, 5=cairn, 6=buoyant */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-beacons-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['all',
-                ['any',
-                  ['==', ['get', 'OBJL'], 8],
-                  ['==', ['get', 'OBJL'], 9],
-                  ['==', ['get', 'OBJL'], 6],
-                  ['==', ['get', 'OBJL'], 7],
-                  ['==', ['get', 'OBJL'], 10],
-                ],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
-                ]
-              ]}
-              style={{
-                iconImage: [
-                  'match',
-                  ['get', 'BCNSHP'],
-                  1, 'beacon-stake',    // Stake/pole
-                  2, 'beacon-withy',    // Withy
-                  3, 'beacon-tower',    // Tower
-                  4, 'beacon-lattice',  // Lattice
-                  5, 'beacon-cairn',    // Cairn
-                  'beacon-generic',     // Default
-                ],
-                iconSize: [
-                  'interpolate', ['linear'], ['zoom'],
-                  8, 0.25,   // Small at zoom 8
-                  12, 0.45,  // Medium at zoom 12
-                  16, 0.7    // Full size at zoom 16+
-                ],
-                iconAllowOverlap: true,
-                visibility: showBeacons ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* === SECTION 7: LIGHTS (on top of nav aids) === */}
-            
-            {/* Light Sector arcs - background outline (BEFORE symbols) */}
-            <MapLibre.LineLayer
-              id={`mbtiles-lights-sector-outline-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 75],
-                ['==', ['geometry-type'], 'LineString'],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
-                ]
-              ]}
-              style={{
-                lineColor: '#000000',
-                lineWidth: 7,
-                lineOpacity: 0.7,
-                visibility: showLights ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* Colored sector arcs (rendered on top of outline) */}
-            <MapLibre.LineLayer
-              id={`mbtiles-lights-sector-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 75],
-                ['==', ['geometry-type'], 'LineString'],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
-                ]
-              ]}
-              style={{
-                lineColor: [
-                  'match',
-                  ['to-string', ['get', 'COLOUR']],
-                  '1', '#FFFFFF',        // White
-                  '3', '#FF0000',        // RED (code 3)
-                  '4', '#00FF00',        // GREEN (code 4)
-                  '6', '#FFFF00',        // Yellow
-                  '11', '#FFA500',       // Orange
-                  '#FF00FF',             // Default MAGENTA (makes missing colors obvious)
-                ],
-                lineWidth: 4,
-                lineOpacity: 1.0,
-                visibility: showLights ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* LIGHTS - Navigation Light symbols (ON TOP of sector arcs) */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-lights-${chartId}`}
-              sourceLayerID={chartId}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 75],
-                ['==', ['geometry-type'], 'Point'],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
-                ]
-              ]}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              style={{
-                iconImage: [
-                  'case',
-                  // Check for RED (code 3)
-                  ['any',
-                    ['==', ['get', 'COLOUR'], '["3"]'],
-                    ['==', ['get', 'COLOUR'], '3'],
-                    ['in', '"3"', ['to-string', ['get', 'COLOUR']]],
-                  ],
-                  'light-red',
-                  // Check for GREEN (code 4)
-                  ['any',
-                    ['==', ['get', 'COLOUR'], '["4"]'],
-                    ['==', ['get', 'COLOUR'], '4'],
-                    ['in', '"4"', ['to-string', ['get', 'COLOUR']]],
-                  ],
-                  'light-green',
-                  // Check for white (code 1) or yellow (code 6)
-                  ['any',
-                    ['==', ['get', 'COLOUR'], '["1"]'],
-                    ['==', ['get', 'COLOUR'], '1'],
-                    ['in', '"1"', ['to-string', ['get', 'COLOUR']]],
-                    ['==', ['get', 'COLOUR'], '["6"]'],
-                    ['==', ['get', 'COLOUR'], '6'],
-                    ['in', '"6"', ['to-string', ['get', 'COLOUR']]],
-                  ],
-                  'light-white',
-                  // Default - magenta
-                  'light-major',
-                ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.3, 12, 0.5, 16, 0.8],
-                iconRotate: ['coalesce', ['get', '_ORIENT'], 135],
-                iconRotationAlignment: 'map',
-                iconAnchor: 'bottom',
-                iconAllowOverlap: true,
-                iconIgnorePlacement: true,
-                visibility: showLights ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* LNDMRK - Landmarks - S-52 symbols based on CATLMK */}
-            {/* CATLMK: 1=cairn, 2=cemetery, 3=chimney, 4=dish aerial, 5=flagstaff, 6=flare stack, */}
-            {/*         7=mast, 8=windsock, 9=monument, 10=column, 11=memorial plaque, 12=obelisk, */}
-            {/*         13=statue, 14=cross, 15=dome, 16=radar scanner, 17=tower, 18=windmill, */}
-            {/*         19=windmotor, 20=spire/minaret, 21=large rock/boulder */}
-            <MapLibre.SymbolLayer
-              id={`mbtiles-lndmrk-${chartId}`}
-              sourceLayerID={chartId}
-              minZoomLevel={chartMinZoom}
-              maxZoomLevel={chartMaxZoom}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 74],
-                ['==', ['geometry-type'], 'Point'],
-                ['any',
-                  ['!', ['has', 'SCAMIN']],
-                  ['>=', ['get', 'SCAMIN'], ['step', ['zoom'], 250000, 11, 100000, 12, 15000, 13, 0]]
-                ]
-              ]}
-              style={{
-                iconImage: [
-                  'match',
-                  ['get', 'CATLMK'],
-                  3, 'landmark-chimney',      // Chimney
-                  5, 'landmark-flagpole',     // Flagstaff
-                  7, 'landmark-mast',         // Mast
-                  9, 'landmark-monument',     // Monument
-                  10, 'landmark-monument',    // Column (use monument)
-                  12, 'landmark-monument',    // Obelisk (use monument)
-                  13, 'landmark-monument',    // Statue (use monument)
-                  14, 'landmark-church',      // Cross (use church)
-                  17, 'landmark-tower',       // Tower
-                  18, 'landmark-windmill',    // Windmill
-                  19, 'landmark-windmill',    // Windmotor (use windmill)
-                  20, 'landmark-church',      // Spire/minaret (use church)
-                  28, 'landmark-radio-tower', // Radio/TV tower
-                  'landmark-tower',           // Default to tower
-                ],
-                iconSize: [
-                  'interpolate', ['linear'], ['zoom'],
-                  8, 0.25,   // Small at zoom 8
-                  12, 0.45,  // Medium at zoom 12
-                  16, 0.7    // Full size at zoom 16+
-                ],
-                iconAllowOverlap: true,
-                visibility: showLandmarks ? 'visible' : 'none',
-              }}
-            />
-            <MapLibre.SymbolLayer
-              id={`mbtiles-lndmrk-label-${chartId}`}
-              sourceLayerID={chartId}
-              filter={['all',
-                ['==', ['get', 'OBJL'], 74],
-                ['==', ['geometry-type'], 'Point']
-              ]}
+              id="composite-lndmrk-label"
+              sourceLayerID="charts"
               minZoomLevel={11}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 74],
+                ['==', ['geometry-type'], 'Point']
+              ]}
               style={{
                 textField: [
                   'case',
@@ -4089,9 +2912,278 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 visibility: showLandmarks ? 'visible' : 'none',
               }}
             />
-            </MapLibre.VectorSource>
-        );
-        })}
+            
+            {/* ACHBRT - Anchor Berths (specific anchorage positions) */}
+            <MapLibre.SymbolLayer
+              id="composite-achbrt"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 3]}
+              style={{
+                iconImage: 'anchor',
+                iconSize: ['interpolate', ['linear'], ['zoom'], 4, 0.2, 8, 0.3, 12, 0.5, 16, 0.7],
+                iconAllowOverlap: true,
+                visibility: showAnchorBerths ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* ACHBRT Label */}
+            <MapLibre.SymbolLayer
+              id="composite-achbrt-label"
+              sourceLayerID="charts"
+              minZoomLevel={10}
+              filter={['==', ['get', 'OBJL'], 3]}
+              style={{
+                textField: ['coalesce', ['get', 'OBJNAM'], 'Anchorage'],
+                textSize: 10,
+                textColor: '#9400D3',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textOffset: [0, 1.5],
+                textAllowOverlap: false,
+                visibility: showAnchorBerths ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* CBLSUB - Submarine Cables (separate from combined cables layer) */}
+            <MapLibre.LineLayer
+              id="composite-cblsub"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 22]}
+              style={{
+                lineColor: '#800080',
+                lineWidth: 2,
+                lineDasharray: [4, 2],
+                lineCap: 'round',
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* CBLSUB Label */}
+            <MapLibre.SymbolLayer
+              id="composite-cblsub-label"
+              sourceLayerID="charts"
+              minZoomLevel={12}
+              filter={['==', ['get', 'OBJL'], 22]}
+              style={{
+                textField: 'Cable',
+                textSize: 9,
+                textColor: '#800080',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                symbolPlacement: 'line',
+                symbolSpacing: 400,
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* PIPSOL Label */}
+            <MapLibre.SymbolLayer
+              id="composite-pipsol-label"
+              sourceLayerID="charts"
+              minZoomLevel={12}
+              filter={['in', ['get', 'OBJL'], ['literal', [94, 98]]]}
+              style={{
+                textField: [
+                  'case',
+                  ['==', ['get', 'CATPIP'], 1], 'Oil',
+                  ['==', ['get', 'CATPIP'], 2], 'Gas',
+                  ['==', ['get', 'CATPIP'], 3], 'Water',
+                  ['==', ['get', 'CATPIP'], 4], 'Sewer',
+                  'Pipe',
+                ],
+                textSize: 9,
+                textColor: '#006400',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                symbolPlacement: 'line',
+                symbolSpacing: 400,
+                visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* UWTROC Label */}
+            <MapLibre.SymbolLayer
+              id="composite-uwtroc-label"
+              sourceLayerID="charts"
+              minZoomLevel={12}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 153],
+                ['==', ['geometry-type'], 'Point'],
+                ['has', 'VALSOU']
+              ]}
+              style={{
+                textField: ['to-string', ['round', ['get', 'VALSOU']]],
+                textSize: 9,
+                textColor: '#000000',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                textOffset: [0, 1.3],
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* DEPCNT Labels */}
+            <MapLibre.SymbolLayer
+              id="composite-depcnt-labels"
+              sourceLayerID="charts"
+              minZoomLevel={12}
+              filter={['==', ['get', 'OBJL'], 43]}
+              style={{
+                textField: ['to-string', ['coalesce', ['get', 'VALDCO'], '']],
+                textSize: 10,
+                textColor: '#1E3A5F',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 1.5,
+                symbolPlacement: 'line',
+                symbolSpacing: 300,
+                textFont: ['Noto Sans Regular'],
+                textMaxAngle: 30,
+                textAllowOverlap: false,
+                visibility: showDepthContours ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* === OUTLINE LAYERS === */}
+            
+            {/* LNDARE outline */}
+            <MapLibre.LineLayer
+              id="composite-lndare-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 71]}
+              style={{
+                lineColor: '#8B7355',
+                lineWidth: 1,
+                visibility: showLand ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* DRGARE outline */}
+            <MapLibre.LineLayer
+              id="composite-drgare-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 46]}
+              style={{
+                lineColor: '#4682B4',
+                lineWidth: 1.5,
+                lineDasharray: [4, 2],
+              }}
+            />
+            
+            {/* FAIRWY outline */}
+            <MapLibre.LineLayer
+              id="composite-fairwy-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 57]}
+              style={{
+                lineColor: '#9370DB',
+                lineWidth: 2,
+                lineDasharray: [8, 4],
+              }}
+            />
+            
+            {/* CBLARE outline */}
+            <MapLibre.LineLayer
+              id="composite-cblare-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 21]}
+              style={{
+                lineColor: '#800080',
+                lineWidth: 1.5,
+                lineDasharray: [4, 2],
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* PIPARE outline */}
+            <MapLibre.LineLayer
+              id="composite-pipare-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 97]}
+              style={{
+                lineColor: '#008000',
+                lineWidth: 1.5,
+                lineDasharray: [6, 3],
+                visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* RESARE outline */}
+            <MapLibre.LineLayer
+              id="composite-resare-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 112]}
+              style={{
+                lineColor: [
+                  'match',
+                  ['get', 'CATREA'],
+                  14, '#FF0000',
+                  12, '#FF0000',
+                  4, '#00AA00',
+                  7, '#00AA00',
+                  8, '#00AA00',
+                  9, '#00AA00',
+                  '#FF00FF',
+                ],
+                lineWidth: 2,
+                lineDasharray: [6, 3],
+                visibility: showRestrictedAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* CTNARE outline */}
+            <MapLibre.LineLayer
+              id="composite-ctnare-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 33]}
+              style={{
+                lineColor: '#FFA500',
+                lineWidth: 2,
+                lineDasharray: [6, 3],
+                visibility: showCautionAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MIPARE outline */}
+            <MapLibre.LineLayer
+              id="composite-mipare-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 83]}
+              style={{
+                lineColor: '#FF0000',
+                lineWidth: 2,
+                lineDasharray: [4, 2],
+                visibility: showMilitaryAreas ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* ACHARE outline */}
+            <MapLibre.LineLayer
+              id="composite-achare-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 2]}
+              style={{
+                lineColor: '#9400D3',
+                lineWidth: 2,
+                lineDasharray: [8, 4],
+                visibility: showAnchorages ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MARCUL outline */}
+            <MapLibre.LineLayer
+              id="composite-marcul-outline"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 79]}
+              style={{
+                lineColor: '#8B4513',
+                lineWidth: 2,
+                lineDasharray: [4, 2],
+                visibility: showMarineFarms ? 'visible' : 'none',
+              }}
+            />
+          </MapLibre.VectorSource>
+          );
+        })()}
 
         {/* Marker layer to establish z-order boundary between charts and labels */}
         {/* Uses an empty ShapeSource with a CircleLayer as the anchor point */}
@@ -4576,7 +3668,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               Status: {tileServerReady ? '✅ Running' : '❌ Not running'}
             </Text>
             <Text style={styles.debugText}>
-              Mode: {useCompositeTiles ? '🚀 Composite (1 source)' : `📦 Per-chart (${allChartsToRender.length} sources)`}
+              Mode: 🚀 Composite (1 source)
             </Text>
             <View style={styles.debugDivider} />
             
@@ -4779,12 +3871,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <ScrollView style={styles.ffLayersColumnRight}>
               <Text style={styles.ffLayersSectionTitle}>Data Sources</Text>
               <FFToggle label={`ENC Charts (${allChartsToRender.length})`} value={useMBTiles} onToggle={setUseMBTiles} />
-              <FFToggle 
-                label={`Composite Mode ${useCompositeTiles ? '(1 src)' : '(' + allChartsToRender.length + ' srcs)'}`} 
-                value={useCompositeTiles} 
-                onToggle={setUseCompositeTiles} 
-                indent 
-              />
               {rasterCharts.length > 0 && (
                 <FFToggle label={`Bathymetry (${rasterCharts.length})`} value={showBathymetry} onToggle={() => toggleLayer('bathymetry')} />
               )}
