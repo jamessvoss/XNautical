@@ -114,7 +114,7 @@ charts/
 ├── US5/
 │   ├── US5AK1234.mbtiles        (individual harbor charts)
 │   └── ...
-└── chart_index.json
+└── manifest.json                  (chart pack metadata)
 ```
 
 ## Why Not Composite Everything?
@@ -126,3 +126,25 @@ The hybrid approach gives us:
 - ✅ Reasonable file sizes for mobile
 - ✅ Cascading fallback for gaps
 - ✅ Maximum detail where available
+
+## Feature Identification
+
+All features in composited tiles are identified by their **S-57 OBJL code** (a numeric identifier), not by layer name. This ensures consistent filtering across all sources:
+
+```javascript
+// Filter for depth areas (OBJL=42)
+filter={['==', ['get', 'OBJL'], 42]}
+
+// Filter for lights (OBJL=75)
+filter={['==', ['get', 'OBJL'], 75]}
+```
+
+See [MBTILES_CONVERSION.md](MBTILES_CONVERSION.md) for the complete OBJL code reference.
+
+## tile-join Considerations
+
+When merging charts with `tile-join`, use `--no-tile-size-limit` to prevent tiles from being silently dropped at low zoom levels where they exceed the default 500KB limit:
+
+```bash
+tile-join --no-tile-size-limit -o US1_composite.mbtiles US1*.mbtiles
+```

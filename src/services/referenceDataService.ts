@@ -16,8 +16,8 @@ const STORAGE_KEYS = {
   REFERENCE_DATA_VERSION: '@XNautical:referenceDataVersion',
 } as const;
 
-// Base directory for reference data (same as mbtiles for tile server compatibility)
-const MBTILES_DIR = `${FileSystem.documentDirectory}mbtiles/`;
+// Base directory for reference data - EXTERNAL storage (survives app uninstall)
+const MBTILES_DIR = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles/';
 
 // Known GNIS datasets
 export interface GNISDataset {

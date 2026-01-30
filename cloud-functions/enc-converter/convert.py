@@ -189,10 +189,9 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
                 with open(layer_output, 'r') as f:
                     data = json.load(f)
                     features = data.get('features', [])
-                    # Add layer name to each feature
+                    # Add metadata to each feature (OBJL code already present from ogr2ogr)
                     for feature in features:
                         if feature.get('geometry') is not None:
-                            feature['properties']['_layer'] = layer
                             feature['properties']['_chartId'] = chart_id  # Track source chart for compositing
                             # Force navigation aids and safety areas to appear at all zoom levels
                             if layer in NAVIGATION_AIDS or layer in SAFETY_AREAS:
@@ -265,7 +264,7 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
                                             'type': 'Feature',
                                             'geometry': arc_geom,
                                             'properties': {
-                                                '_layer': 'LIGHTS_SECTOR',
+                                                'OBJL': 75,  # LIGHTS - sector identified by LineString geometry
                                                 'COLOUR': colour_code,
                                                 'SECTR1': sectr1,
                                                 'SECTR2': sectr2,
@@ -291,7 +290,7 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
                                     for coord in coords:
                                         if len(coord) >= 3:
                                             point_props = {
-                                                '_layer': 'SOUNDG',
+                                                'OBJL': 129,  # SOUNDG
                                                 'DEPTH': coord[2]
                                             }
                                             # Include SCAMIN if present for zoom-based filtering
@@ -379,19 +378,22 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
     
     # Detect chart scale from ID prefix
     if chart_id.startswith('US1'):
-        # Overview charts: minimize file size, reasonable for overview
-        # Use --no-line-simplification to preserve polygon shapes
+        # Overview charts: full coverage at all zoom levels
+        # Removed --drop-densest-as-needed which was causing feature truncation
         return (8, 0, [
-            '--drop-densest-as-needed',
+            '--no-feature-limit',
+            '--no-tile-size-limit',
             '--no-line-simplification',
             '-r2.5'
         ])
     
     elif chart_id.startswith('US2'):
-        # General charts: prevent GB-sized files, optimize for regional view
-        # Use --no-line-simplification to preserve polygon shapes
-        return (10, 8, [
-            '--drop-densest-as-needed',
+        # General charts: full coverage at all zoom levels
+        # Changed minzoom from 8 to 0 for complete low-zoom coverage
+        # Removed --drop-densest-as-needed which was causing feature truncation
+        return (10, 0, [
+            '--no-feature-limit',
+            '--no-tile-size-limit',
             '--no-line-simplification',
             '-r1'
         ])
@@ -437,13 +439,14 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
 
 def check_geojson_has_safety_areas(geojson_path: str) -> bool:
     """Check if GeoJSON contains any safety area features (RESARE, MIPARE, etc.)."""
-    SAFETY_AREAS = {'RESARE', 'CTNARE', 'MIPARE', 'ACHARE', 'ACHBRT', 'MARCUL'}
+    # OBJL codes: RESARE=112, CTNARE=33, MIPARE=83, ACHARE=2, ACHBRT=3, MARCUL=79
+    SAFETY_AREA_OBJL = {112, 33, 83, 2, 3, 79}
     try:
         with open(geojson_path, 'r') as f:
             data = json.load(f)
         for feature in data.get('features', []):
-            layer = feature.get('properties', {}).get('_layer', '')
-            if layer in SAFETY_AREAS:
+            objl = feature.get('properties', {}).get('OBJL')
+            if objl in SAFETY_AREA_OBJL:
                 return True
         return False
     except Exception:

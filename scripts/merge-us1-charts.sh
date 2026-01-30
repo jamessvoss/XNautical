@@ -89,33 +89,7 @@ echo "────────────────────────�
 echo "NEXT STEPS:"
 echo "1. Copy ${SCALE}_composite.mbtiles to device"
 echo "2. Remove individual ${SCALE}*.mbtiles from device"
-echo "3. Update chart_index.json to reference the composite"
+echo "3. Update manifest.json to reference the composite"
 echo "───────────────────────────────────────────────────────────"
-
-# Generate chart_index entry for the composite
-echo ""
-echo "Add this to chart_index.json:"
-echo ""
-
-# Calculate bounds from all charts
-WEST=$(sqlite3 "$OUTPUT_FILE" "SELECT value FROM metadata WHERE name='bounds'" 2>/dev/null | cut -d',' -f1 || echo "-180")
-SOUTH=$(sqlite3 "$OUTPUT_FILE" "SELECT value FROM metadata WHERE name='bounds'" 2>/dev/null | cut -d',' -f2 || echo "-90")
-EAST=$(sqlite3 "$OUTPUT_FILE" "SELECT value FROM metadata WHERE name='bounds'" 2>/dev/null | cut -d',' -f3 || echo "180")
-NORTH=$(sqlite3 "$OUTPUT_FILE" "SELECT value FROM metadata WHERE name='bounds'" 2>/dev/null | cut -d',' -f4 || echo "90")
-MINZOOM=$(sqlite3 "$OUTPUT_FILE" "SELECT MIN(zoom_level) FROM tiles")
-MAXZOOM=$(sqlite3 "$OUTPUT_FILE" "SELECT MAX(zoom_level) FROM tiles")
-
-cat << EOF
-"${SCALE}_composite": {
-  "bounds": [$WEST, $SOUTH, $EAST, $NORTH],
-  "level": 1,
-  "levelName": "Overview",
-  "minZoom": $MINZOOM,
-  "maxZoom": $MAXZOOM,
-  "name": "${SCALE}_composite",
-  "format": "pbf"
-}
-EOF
-
 echo ""
 echo "Done!"

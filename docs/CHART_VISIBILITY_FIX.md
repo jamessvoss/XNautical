@@ -57,6 +57,14 @@ This creates `US1_composite.mbtiles` containing:
 - Properly merged tiles where data overlaps
 - z0 tile: 692KB (vs ~74-94KB for individual charts)
 
+**Important**: When merging, use `--no-tile-size-limit` with `tile-join` to prevent large tiles from being silently dropped:
+
+```bash
+tile-join --no-tile-size-limit -o US1_composite.mbtiles US1*.mbtiles
+```
+
+Without this flag, tiles exceeding 500KB (common at low zoom) are skipped, causing missing coverage.
+
 ### Results
 
 | Metric | Individual Charts | Composite |
@@ -77,7 +85,7 @@ This creates `US1_composite.mbtiles` containing:
    adb push /path/to/US1_composite.mbtiles /path/on/device/
    ```
 
-3. Update `chart_index.json` to reference the composite instead of individual charts
+3. Update `manifest.json` to reference the composite instead of individual charts
 
 4. Remove individual US1*.mbtiles from device (optional, saves space)
 

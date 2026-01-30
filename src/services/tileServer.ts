@@ -68,8 +68,8 @@ export async function startTileServer(options: TileServerOptions = {}): Promise<
       return url;
     }
 
-    // Configure options
-    const mbtilesDir = options.mbtilesDir || `${FileSystem.documentDirectory}mbtiles`;
+    // Configure options - ALWAYS use external storage (survives app uninstall)
+    const mbtilesDir = options.mbtilesDir || 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
     const port = options.port || DEFAULT_PORT;
 
     // Start the native server
@@ -290,10 +290,10 @@ export async function getVectorLayers(chartId: string): Promise<string[]> {
 
 /**
  * Get the MBTiles directory path
- * This is where MBTiles files should be stored
+ * Uses EXTERNAL storage so files survive app uninstall
  */
 export function getMBTilesDir(): string {
-  return `${FileSystem.documentDirectory}mbtiles`;
+  return 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
 }
 
 // Export a convenience object for the tile server

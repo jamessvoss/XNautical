@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Use nested directory structure (mbtiles next to .000 source files)
 SOURCE_DIR="$PROJECT_DIR/charts/All_Alaska_ENC_ROOT"
-# Flat directory for chart_index.json and other metadata
+# Flat directory for metadata files
 FLAT_DIR="$PROJECT_DIR/charts/flat_mbtiles"
 DEVICE_DIR="/storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles"
 ARCHIVE_DIR="/tmp/xnautical_archives"
@@ -345,20 +345,6 @@ if [ "$PUSH_GNIS" = true ]; then
     else
         echo "${YELLOW}⚠ GNIS file not found${NC}"
         echo "  Run: python scripts/convert_gnis_names.py 'charts/US Domestic Names/Alaska/DomesticNames_AK.txt'"
-        echo ""
-    fi
-fi
-
-# Push chart index (if any charts were pushed)
-if [ ${#TIERS[@]} -gt 0 ]; then
-    echo "${CYAN}━━━ Chart Index ━━━${NC}"
-    # Chart index is in flat_mbtiles directory
-    if [ -f "$FLAT_DIR/chart_index.json" ]; then
-        adb push "$FLAT_DIR/chart_index.json" "$DEVICE_DIR/chart_index.json"
-        echo "  ${GREEN}✓ Chart index pushed${NC}"
-        echo ""
-    else
-        echo "  ${YELLOW}⚠ chart_index.json not found in $FLAT_DIR${NC}"
         echo ""
     fi
 fi

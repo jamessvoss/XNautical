@@ -65,19 +65,57 @@ def get_label_priority(feature_class: str, category: str) -> int:
     """
     Determine label priority for rendering (lower = higher priority).
     This affects which labels are shown at different zoom levels.
+    
+    Priority is based on both category AND feature class to ensure
+    major features like "Cook Inlet" show before minor ones like "Barge Slough".
     """
-    priorities = {
-        'water': 1,      # Always show water feature names
-        'coastal': 2,    # Show coastal features prominently
-        'populated': 3,  # Towns and ports
-        'landmark': 4,   # Navigational landmarks
-        'stream': 5,     # River mouths
-        'lake': 6,       # Lakes
-        'terrain': 7,    # Terrain features
-        'admin': 8,      # Administrative areas
-        'other': 9,
+    # Class-specific priorities within water category
+    # Major water bodies should always show
+    water_class_priority = {
+        'Sea': 1,
+        'Bay': 1,
+        'Inlet': 1,
+        'Sound': 1,
+        'Strait': 1,
+        'Harbor': 2,
+        'Channel': 3,
+        'Gut': 4,  # Sloughs, guts are minor
     }
-    return priorities.get(category, 9)
+    
+    # Class-specific priorities within coastal category
+    coastal_class_priority = {
+        'Cape': 1,
+        'Island': 2,
+        'Point': 2,
+        'Reef': 3,
+        'Rock': 3,
+        'Rocks': 3,
+        'Shoal': 3,
+        'Beach': 4,
+        'Bar': 4,
+        'Spit': 4,
+    }
+    
+    # Base priorities by category (used as fallback)
+    base_priorities = {
+        'water': 5,      # Default for unclassified water
+        'coastal': 6,    # Default for unclassified coastal
+        'populated': 7,  # Towns and ports
+        'landmark': 8,   # Navigational landmarks
+        'stream': 9,     # River mouths
+        'lake': 10,      # Lakes
+        'terrain': 11,   # Terrain features
+        'admin': 12,     # Administrative areas
+        'other': 13,
+    }
+    
+    # Check for class-specific priority first
+    if category == 'water' and feature_class in water_class_priority:
+        return water_class_priority[feature_class]
+    if category == 'coastal' and feature_class in coastal_class_priority:
+        return coastal_class_priority[feature_class]
+    
+    return base_priorities.get(category, 13)
 
 
 def parse_gnis_file(filepath: str) -> list:

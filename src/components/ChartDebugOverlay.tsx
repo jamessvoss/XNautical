@@ -17,7 +17,6 @@ import {
   TouchableOpacity,
   ScrollView,
 } from 'react-native';
-import { isPointInChart } from '../services/chartIndex';
 
 // Chart scale definitions matching convert.py and DynamicChartViewer
 const CHART_SCALES = [
@@ -169,11 +168,8 @@ export default function ChartDebugOverlay({
 
   if (!visible) return null;
 
-  // Determine which charts cover the current viewport
-  const [lon, lat] = centerCoord;
-  const coveringCharts = mbtilesCharts.filter(chart => {
-    return isPointInChart(chart.chartId, lon, lat);
-  });
+  // All loaded charts (bounds filtering not available without chart index)
+  const coveringCharts = mbtilesCharts;
 
   // Helper to get chart scale info
   const getChartScaleInfo = (chartId: string) => {

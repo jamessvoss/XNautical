@@ -1,6 +1,7 @@
 package com.xnautical.app;
 
 import android.content.Context;
+import android.content.res.AssetManager;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.util.Base64;
@@ -259,24 +260,30 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 Log.w(TAG, "  ⚠ MBTiles directory does not exist or is not a directory!");
             }
             
-            // Log regional pack status (preferred mode)
+            // Log manifest/pack status (preferred mode)
             Log.i(TAG, "────────────────────────────────────────────────────────────");
-            Log.i(TAG, "  REGIONAL PACK STATUS:");
+            Log.i(TAG, "  MANIFEST PACK STATUS (from manifest.json):");
             Log.i(TAG, "    Loaded: " + (regionIndexLoaded ? "YES ✓ (TIERED LOADING ACTIVE)" : "NO ✗"));
-            Log.i(TAG, "    Regional packs: " + regionIndex.size());
+            Log.i(TAG, "    Packs found: " + regionIndex.size());
             if (regionIndexLoaded && !regionIndex.isEmpty()) {
                 long regionTotalSize = 0;
+                boolean hasOverview = false;
                 for (RegionInfo info : regionIndex.values()) {
                     regionTotalSize += info.sizeBytes;
-                    String type = info.isOverview ? "OVERVIEW" : "REGIONAL";
+                    String type = info.isOverview ? "OVERVIEW ★" : "REGIONAL";
+                    if (info.isOverview) hasOverview = true;
                     Log.i(TAG, "      " + info.regionId + " (" + type + "): " + 
                         (info.sizeBytes / 1024 / 1024) + " MB, z" + info.minZoom + "-" + info.maxZoom);
                 }
                 Log.i(TAG, "    Total pack size: " + (regionTotalSize / 1024 / 1024) + " MB");
+                Log.i(TAG, "    Has overview pack: " + (hasOverview ? "YES ✓" : "NO ⚠️"));
                 Log.i(TAG, "    Tiered strategy:");
                 Log.i(TAG, "      z0-" + OVERVIEW_ONLY_MAX_ZOOM + ": Overview only");
                 Log.i(TAG, "      z" + (OVERVIEW_ONLY_MAX_ZOOM + 1) + "-" + OVERVIEW_TRANSITION_MAX_ZOOM + ": Overview + Regional");
                 Log.i(TAG, "      z" + (OVERVIEW_TRANSITION_MAX_ZOOM + 1) + "+: Regional only");
+                if (!hasOverview) {
+                    Log.e(TAG, "    ⚠️ WARNING: No overview pack found! Low zoom (z0-" + OVERVIEW_ONLY_MAX_ZOOM + ") won't work!");
+                }
             }
             
             // Log chart index status (legacy mode fallback)
@@ -507,25 +514,25 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Load the regional pack index from regions.json
+     * Load the regional pack index from manifest.json
      * This enables tiered loading where overview packs serve low zoom
      * and regional packs serve high zoom based on viewport.
      */
     private void loadRegionsIndex() {
-        Log.i(TAG, "[REGIONS] Loading regional pack index...");
+        Log.i(TAG, "[MANIFEST] Loading regional pack index from manifest.json...");
         regionIndex.clear();
         regionIndexLoaded = false;
         
-        String indexPath = mbtilesDir + "/regions.json";
+        String indexPath = mbtilesDir + "/manifest.json";
         File indexFile = new File(indexPath);
         
         if (!indexFile.exists()) {
-            Log.w(TAG, "[REGIONS] ⚠ Regional index NOT FOUND: " + indexPath);
-            Log.w(TAG, "[REGIONS] Falling back to chart_index.json mode");
+            Log.w(TAG, "[MANIFEST] ⚠ manifest.json NOT FOUND: " + indexPath);
+            Log.w(TAG, "[MANIFEST] Falling back to chart_index.json mode");
             return;
         }
         
-        Log.i(TAG, "[REGIONS] Found regions.json (" + (indexFile.length() / 1024) + " KB)");
+        Log.i(TAG, "[MANIFEST] Found manifest.json (" + (indexFile.length() / 1024) + " KB)");
         
         try {
             // Read file
@@ -537,12 +544,12 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             }
             reader.close();
             
-            // Parse JSON
+            // Parse JSON - manifest.json has "packs" array, not "regions" object
             JSONObject root = new JSONObject(content.toString());
-            JSONObject regions = root.optJSONObject("regions");
+            JSONArray packs = root.optJSONArray("packs");
             
-            if (regions == null) {
-                Log.w(TAG, "[REGIONS] ⚠ No 'regions' object in index file!");
+            if (packs == null) {
+                Log.w(TAG, "[MANIFEST] ⚠ No 'packs' array in manifest.json!");
                 return;
             }
             
@@ -550,66 +557,84 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             int loadedCount = 0;
             int missingCount = 0;
             
-            // Iterate through regions
-            java.util.Iterator<String> keys = regions.keys();
-            while (keys.hasNext()) {
+            // Iterate through packs array
+            for (int i = 0; i < packs.length(); i++) {
+                JSONObject packJson = packs.optJSONObject(i);
+                if (packJson == null) continue;
+                
                 totalInIndex++;
-                String regionId = keys.next();
-                JSONObject regionJson = regions.optJSONObject(regionId);
-                if (regionJson == null) continue;
+                String packId = packJson.optString("id", "");
+                if (packId.isEmpty()) continue;
                 
-                RegionInfo info = new RegionInfo(regionId);
+                RegionInfo info = new RegionInfo(packId);
                 
-                // Parse filename
-                info.filename = regionJson.optString("filename", regionId + ".mbtiles");
+                // Filename is id + .mbtiles
+                info.filename = packId + ".mbtiles";
                 
-                // Parse bounds [west, south, east, north]
-                JSONArray bounds = regionJson.optJSONArray("bounds");
-                if (bounds != null && bounds.length() == 4) {
-                    info.west = bounds.getDouble(0);
-                    info.south = bounds.getDouble(1);
-                    info.east = bounds.getDouble(2);
-                    info.north = bounds.getDouble(3);
+                // Parse bounds object {south, west, north, east}
+                JSONObject bounds = packJson.optJSONObject("bounds");
+                if (bounds != null) {
+                    info.west = bounds.optDouble("west", -180);
+                    info.south = bounds.optDouble("south", -90);
+                    info.east = bounds.optDouble("east", 180);
+                    info.north = bounds.optDouble("north", 90);
                 }
                 
                 // Parse zoom range
-                info.minZoom = regionJson.optInt("minZoom", 0);
-                info.maxZoom = regionJson.optInt("maxZoom", 22);
+                info.minZoom = packJson.optInt("minZoom", 0);
+                info.maxZoom = packJson.optInt("maxZoom", 22);
                 
                 // Parse size
-                info.sizeBytes = regionJson.optLong("sizeBytes", 0);
+                info.sizeBytes = packJson.optLong("fileSize", 0);
                 
                 // Determine if this is the overview pack
-                info.isOverview = regionId.contains("overview") || regionId.equals(OVERVIEW_REGION);
+                info.isOverview = packId.contains("overview") || packId.equals(OVERVIEW_REGION);
                 
                 // Verify mbtiles file exists
                 File mbtFile = new File(mbtilesDir + "/" + info.filename);
                 if (mbtFile.exists()) {
-                    regionIndex.put(regionId, info);
+                    regionIndex.put(packId, info);
                     loadedCount++;
-                    Log.d(TAG, "[REGIONS] ✓ " + regionId + (info.isOverview ? " (OVERVIEW)" : "") +
-                        " z" + info.minZoom + "-" + info.maxZoom +
-                        " bounds=[" + String.format("%.2f,%.2f,%.2f,%.2f", info.west, info.south, info.east, info.north) + "]" +
-                        " (" + (info.sizeBytes / 1024 / 1024) + " MB)");
+                    // Use INFO level for overview pack so it's always visible
+                    if (info.isOverview) {
+                        Log.i(TAG, "[MANIFEST] ★★★ OVERVIEW PACK FOUND ★★★");
+                        Log.i(TAG, "[MANIFEST] ✓ " + packId + " (OVERVIEW)" +
+                            " z" + info.minZoom + "-" + info.maxZoom +
+                            " bounds=[" + String.format("%.2f,%.2f,%.2f,%.2f", info.west, info.south, info.east, info.north) + "]" +
+                            " (" + (info.sizeBytes / 1024 / 1024) + " MB)");
+                        Log.i(TAG, "[MANIFEST] This pack will serve z0-" + OVERVIEW_ONLY_MAX_ZOOM + " tiles");
+                    } else {
+                        Log.i(TAG, "[MANIFEST] ✓ " + packId +
+                            " z" + info.minZoom + "-" + info.maxZoom +
+                            " bounds=[" + String.format("%.2f,%.2f,%.2f,%.2f", info.west, info.south, info.east, info.north) + "]" +
+                            " (" + (info.sizeBytes / 1024 / 1024) + " MB)");
+                    }
                 } else {
                     missingCount++;
-                    Log.w(TAG, "[REGIONS] ✗ " + regionId + " - mbtiles file NOT FOUND: " + info.filename);
+                    if (info.isOverview) {
+                        Log.e(TAG, "[MANIFEST] ⚠️⚠️⚠️ CRITICAL: OVERVIEW PACK MISSING! ⚠️⚠️⚠️");
+                        Log.e(TAG, "[MANIFEST] ✗ " + packId + " - mbtiles file NOT FOUND: " + info.filename);
+                        Log.e(TAG, "[MANIFEST] Low zoom tiles (z0-" + OVERVIEW_ONLY_MAX_ZOOM + ") will NOT work!");
+                        Log.e(TAG, "[MANIFEST] Expected file: " + mbtilesDir + "/" + info.filename);
+                    } else {
+                        Log.w(TAG, "[MANIFEST] ✗ " + packId + " - mbtiles file NOT FOUND: " + info.filename);
+                    }
                 }
             }
             
             regionIndexLoaded = true;
-            Log.i(TAG, "[REGIONS] ════════════════════════════════════════════════════");
-            Log.i(TAG, "[REGIONS] Regional pack index loaded successfully!");
-            Log.i(TAG, "[REGIONS]   Total in index: " + totalInIndex);
-            Log.i(TAG, "[REGIONS]   Loaded (have mbtiles): " + loadedCount);
-            Log.i(TAG, "[REGIONS]   Missing (no mbtiles): " + missingCount);
-            Log.i(TAG, "[REGIONS]   Tiered loading: z0-" + OVERVIEW_ONLY_MAX_ZOOM + " overview only, " +
+            Log.i(TAG, "[MANIFEST] ════════════════════════════════════════════════════");
+            Log.i(TAG, "[MANIFEST] Pack manifest loaded successfully!");
+            Log.i(TAG, "[MANIFEST]   Total packs in manifest: " + totalInIndex);
+            Log.i(TAG, "[MANIFEST]   Loaded (have mbtiles): " + loadedCount);
+            Log.i(TAG, "[MANIFEST]   Missing (no mbtiles): " + missingCount);
+            Log.i(TAG, "[MANIFEST]   Tiered loading: z0-" + OVERVIEW_ONLY_MAX_ZOOM + " overview only, " +
                 "z" + (OVERVIEW_ONLY_MAX_ZOOM + 1) + "-" + OVERVIEW_TRANSITION_MAX_ZOOM + " mixed, " +
                 "z" + (OVERVIEW_TRANSITION_MAX_ZOOM + 1) + "+ regional only");
-            Log.i(TAG, "[REGIONS] ════════════════════════════════════════════════════");
+            Log.i(TAG, "[MANIFEST] ════════════════════════════════════════════════════");
             
         } catch (Exception e) {
-            Log.e(TAG, "[REGIONS] ✗ FAILED to load regional index!", e);
+            Log.e(TAG, "[MANIFEST] ✗ FAILED to load manifest!", e);
         }
     }
 
@@ -638,6 +663,15 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
      * - Query all charts sorted by level descending
      */
     private List<String> findChartsForTile(int z, int x, int y) {
+        // DEBUG: Log index status on every request for low zoom to help diagnose issues
+        if (z <= 8) {
+            Log.i(TAG, "[TILE-DEBUG] z" + z + "/" + x + "/" + y + 
+                " regionIndexLoaded=" + regionIndexLoaded + 
+                " regionCount=" + regionIndex.size() +
+                " chartIndexLoaded=" + chartIndexLoaded +
+                " chartCount=" + chartIndex.size());
+        }
+        
         // Use regional tiered loading if available
         if (regionIndexLoaded && !regionIndex.isEmpty()) {
             return findRegionsForTile(z, x, y);
@@ -645,7 +679,9 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         
         // Fall back to legacy chart index
         if (!chartIndexLoaded || chartIndex.isEmpty()) {
-            Log.w(TAG, "[QUILT] No index loaded (neither regions.json nor chart_index.json)!");
+            Log.w(TAG, "[QUILT] ⚠️ NO INDEX LOADED! Neither manifest.json nor chart_index.json found!");
+            Log.w(TAG, "[QUILT] ⚠️ MBTiles directory: " + mbtilesDir);
+            Log.w(TAG, "[QUILT] ⚠️ Check that manifest.json exists in the mbtiles directory on device");
             return Collections.emptyList();
         }
         
@@ -664,14 +700,24 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         
         if (z <= OVERVIEW_ONLY_MAX_ZOOM) {
             // LOW ZOOM (z0-7): Only use overview pack - it's optimized for this
+            Log.i(TAG, "[TIERED] z" + z + " LOW ZOOM - searching for overview pack...");
+            Log.i(TAG, "[TIERED] Available regions: " + regionIndex.keySet());
+            
             for (RegionInfo region : regionIndex.values()) {
+                Log.i(TAG, "[TIERED]   Checking: " + region.regionId + 
+                    " isOverview=" + region.isOverview + 
+                    " visibleAtZ" + z + "=" + region.isVisibleAtZoom(z) +
+                    " zoomRange=" + region.minZoom + "-" + region.maxZoom);
+                    
                 if (region.isOverview && region.isVisibleAtZoom(z)) {
                     packIds.add(region.regionId);
-                    Log.d(TAG, "[TIERED] z" + z + " → overview only: " + region.regionId);
+                    Log.i(TAG, "[TIERED] ✓ z" + z + " → USING OVERVIEW: " + region.regionId);
                     return packIds;
                 }
             }
-            Log.w(TAG, "[TIERED] z" + z + " → No overview pack found!");
+            Log.w(TAG, "[TIERED] ⚠️ z" + z + " → NO OVERVIEW PACK FOUND!");
+            Log.w(TAG, "[TIERED] ⚠️ This is why low-zoom tiles aren't rendering!");
+            Log.w(TAG, "[TIERED] ⚠️ Ensure alaska_overview.mbtiles AND manifest.json are on the device");
             return packIds;
             
         } else if (z <= OVERVIEW_TRANSITION_MAX_ZOOM) {
@@ -876,15 +922,19 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 }
                 metaCursor.close();
                 
-                // Count tiles
-                Cursor countCursor = db.rawQuery("SELECT COUNT(*), MIN(zoom_level), MAX(zoom_level) FROM tiles", null);
-                if (countCursor.moveToFirst()) {
-                    int count = countCursor.getInt(0);
-                    int minZ = countCursor.getInt(1);
-                    int maxZ = countCursor.getInt(2);
-                    Log.i(TAG, "  Tiles: " + count + " (zoom " + minZ + "-" + maxZ + ")");
+                // Count tiles - SKIP for large files (>500MB) to avoid 30+ second hang
+                if (dbFile.length() < 500 * 1024 * 1024) {
+                    Cursor countCursor = db.rawQuery("SELECT COUNT(*), MIN(zoom_level), MAX(zoom_level) FROM tiles", null);
+                    if (countCursor.moveToFirst()) {
+                        int count = countCursor.getInt(0);
+                        int minZ = countCursor.getInt(1);
+                        int maxZ = countCursor.getInt(2);
+                        Log.i(TAG, "  Tiles: " + count + " (zoom " + minZ + "-" + maxZ + ")");
+                    }
+                    countCursor.close();
+                } else {
+                    Log.i(TAG, "  Tiles: (skipped count for large file - " + dbFile.length() / 1024 / 1024 + "MB)");
                 }
-                countCursor.close();
             } catch (Exception e) {
                 Log.w(TAG, "Could not read metadata: " + e.getMessage());
             }
@@ -938,15 +988,19 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
      * Mapbox needs this to know about the tile source configuration.
      */
     private String buildCompositeTileJson() {
-        // Calculate bounds from all charts in the index
+        // Calculate bounds from manifest packs (regionIndex)
         double minLon = -180, minLat = -90, maxLon = 180, maxLat = 90;
-        if (!chartIndex.isEmpty()) {
+        int minZoom = 0, maxZoom = 18;
+        
+        if (!regionIndex.isEmpty()) {
             minLon = 180; minLat = 90; maxLon = -180; maxLat = -90;
-            for (ChartInfo chart : chartIndex.values()) {
-                minLon = Math.min(minLon, chart.west);
-                minLat = Math.min(minLat, chart.south);
-                maxLon = Math.max(maxLon, chart.east);
-                maxLat = Math.max(maxLat, chart.north);
+            for (RegionInfo region : regionIndex.values()) {
+                minLon = Math.min(minLon, region.west);
+                minLat = Math.min(minLat, region.south);
+                maxLon = Math.max(maxLon, region.east);
+                maxLat = Math.max(maxLat, region.north);
+                minZoom = Math.min(minZoom, region.minZoom);
+                maxZoom = Math.max(maxZoom, region.maxZoom);
             }
         }
         
@@ -962,22 +1016,22 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         json.append("\"scheme\":\"xyz\",");  // We convert TMS to XYZ in the server
         json.append("\"attribution\":\"NOAA\",");
         json.append("\"tiles\":[\"").append(tileUrl).append("\"],");
-        json.append("\"minzoom\":0,");
-        json.append("\"maxzoom\":18,");
+        json.append("\"minzoom\":").append(minZoom).append(",");
+        json.append("\"maxzoom\":").append(maxZoom).append(",");
         json.append("\"bounds\":[").append(minLon).append(",").append(minLat).append(",").append(maxLon).append(",").append(maxLat).append("],");
         json.append("\"center\":[").append((minLon + maxLon) / 2).append(",").append((minLat + maxLat) / 2).append(",4],");
         // Vector layers - all features are in the "charts" layer
         json.append("\"vector_layers\":[{");
         json.append("\"id\":\"charts\",");
         json.append("\"description\":\"Nautical chart features\",");
-        json.append("\"minzoom\":0,");
-        json.append("\"maxzoom\":18,");
+        json.append("\"minzoom\":").append(minZoom).append(",");
+        json.append("\"maxzoom\":").append(maxZoom).append(",");
         json.append("\"fields\":{\"_layer\":\"string\",\"DEPTH\":\"number\",\"DRVAL1\":\"number\",\"DRVAL2\":\"number\"}");
         json.append("}]");
         json.append("}");
         
-        Log.i(TAG, "[TILEJSON] Built TileJSON with " + chartIndex.size() + " charts, bounds: " + 
-            minLon + "," + minLat + " to " + maxLon + "," + maxLat);
+        Log.i(TAG, "[TILEJSON] Built TileJSON with " + regionIndex.size() + " packs, bounds: " + 
+            minLon + "," + minLat + " to " + maxLon + "," + maxLat + ", zoom: " + minZoom + "-" + maxZoom);
         
         return json.toString();
     }
@@ -997,6 +1051,22 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             
             // Log ALL requests at INFO level so they're visible in logcat
             Log.i(TAG, "[REQUEST] " + method + " " + uri);
+            
+            // Extra prominent logging for low-zoom composite tile requests
+            if (uri.startsWith("/tiles/") && uri.endsWith(".pbf")) {
+                String path = uri.substring(7, uri.length() - 4);
+                String[] parts = path.split("/");
+                if (parts.length == 3) {
+                    try {
+                        int z = Integer.parseInt(parts[0]);
+                        if (z <= 8) {
+                            Log.i(TAG, "════════════════════════════════════════════════════════════");
+                            Log.i(TAG, "[LOW-ZOOM REQUEST] z" + z + " tile requested: " + uri);
+                            Log.i(TAG, "════════════════════════════════════════════════════════════");
+                        }
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
             
             // Handle CORS preflight
             if (method == Method.OPTIONS) {
@@ -1021,6 +1091,11 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 } else if (uri.endsWith(".png")) {
                     return handleRasterTileRequest(uri);
                 }
+            }
+            
+            // Font glyph endpoint: /fonts/{fontstack}/{range}.pbf
+            if (uri.startsWith("/fonts/") && uri.endsWith(".pbf")) {
+                return handleFontRequest(uri);
             }
             
             // Health check endpoint
@@ -1215,6 +1290,65 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             } catch (Exception e) {
                 Log.e(TAG, "Error handling composite tile request: " + uri, e);
                 return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Internal error");
+            }
+        }
+
+        /**
+         * Handle font glyph requests: /fonts/{fontstack}/{range}.pbf
+         * Serves pre-built PBF font files from assets for offline text rendering
+         */
+        private Response handleFontRequest(String uri) {
+            try {
+                // Parse /fonts/{fontstack}/{range}.pbf
+                // Example: /fonts/Noto%20Sans%20Regular/0-255.pbf
+                String path = uri.substring(7); // Remove "/fonts/"
+                path = path.substring(0, path.length() - 4); // Remove ".pbf"
+                
+                // URL decode the fontstack (spaces are %20)
+                String[] parts = path.split("/");
+                if (parts.length != 2) {
+                    Log.w(TAG, "[FONTS] Invalid font path format: " + uri);
+                    return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Invalid font path");
+                }
+                
+                String fontstack = java.net.URLDecoder.decode(parts[0], "UTF-8");
+                String range = parts[1];
+                
+                // Build asset path: fonts/{fontstack}/{range}.pbf
+                String assetPath = "fonts/" + fontstack + "/" + range + ".pbf";
+                
+                Log.d(TAG, "[FONTS] Serving: " + assetPath);
+                
+                // Read from assets
+                AssetManager assetManager = reactContext.getAssets();
+                java.io.InputStream is = assetManager.open(assetPath);
+                java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+                
+                int nRead;
+                byte[] data = new byte[16384];
+                while ((nRead = is.read(data, 0, data.length)) != -1) {
+                    buffer.write(data, 0, nRead);
+                }
+                is.close();
+                
+                byte[] fontData = buffer.toByteArray();
+                
+                Response response = newFixedLengthResponse(
+                    Response.Status.OK,
+                    "application/x-protobuf",
+                    new java.io.ByteArrayInputStream(fontData),
+                    fontData.length
+                );
+                addCorsHeaders(response);
+                response.addHeader("Cache-Control", "public, max-age=31536000"); // Cache for 1 year
+                return response;
+                
+            } catch (java.io.FileNotFoundException e) {
+                Log.w(TAG, "[FONTS] Font not found: " + uri);
+                return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Font not found");
+            } catch (Exception e) {
+                Log.e(TAG, "[FONTS] Error serving font: " + uri, e);
+                return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Error loading font");
             }
         }
 

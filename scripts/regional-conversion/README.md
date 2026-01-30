@@ -37,7 +37,8 @@ python3 convert_regional.py /path/to/ENC_ROOT /path/to/output --region southeast
 2. **Converts** each to GeoJSON with zoom-level metadata
 3. **Assigns** charts to regions based on bounds
 4. **Runs tippecanoe** to create optimized MBTiles per region
-5. **Creates** `regions.json` index for the app
+
+Note: The scripts also create `regions.json`, but the app currently uses `manifest.json` instead for chart pack metadata.
 
 ## Zoom Ranges by Scale
 
@@ -56,10 +57,7 @@ Navigation aids (lights, buoys) are always visible regardless of scale.
 
 ## App Integration
 
-The app loads `regions.json` and:
-1. Always uses `alaska_overview.mbtiles` for z0-10
-2. Uses regional packs (if downloaded) for z10+
-3. Shows "Download Pack" prompt for areas without local data
+The app loads `manifest.json` to discover available chart packs. Push the MBTiles files along with an updated `manifest.json` that lists each pack.
 
 ## File Structure
 
@@ -71,7 +69,7 @@ regional_packs/
 ├── southwest_alaska.mbtiles     # Optional
 ├── western_alaska.mbtiles       # Optional
 ├── northern_alaska.mbtiles      # Optional
-└── regions.json                 # Index of available regions
+└── manifest.json                # Index of available packs (for app)
 ```
 
 ## Requirements

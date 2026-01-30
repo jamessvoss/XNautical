@@ -119,8 +119,7 @@ def convert_chart_to_geojson(s57_path: Path, output_dir: Path, chart_scale: int)
                     
                     for feature in features:
                         if feature.get('geometry') is not None:
-                            # Add metadata
-                            feature['properties']['_layer'] = layer
+                            # Add metadata (OBJL code already present from ogr2ogr)
                             feature['properties']['_chartId'] = chart_id
                             feature['properties']['_scale'] = chart_scale
                             

@@ -160,10 +160,12 @@ No changes needed to conversion scripts - just run as normal:
 **Critical navigation features** (lights, buoys, wrecks, obstructions) are marked with tippecanoe zoom hints during GeoJSON enrichment, ensuring they appear at ALL zoom levels regardless of scale settings:
 
 ```python
+# Navigation aids identified by OBJL code (S-57 standard)
 NAVIGATION_AIDS = {
-    'LIGHTS', 'BOYLAT', 'BOYCAR', 'BOYSAW', 'BOYSPP', 'BOYISD',
-    'BCNLAT', 'BCNSPP', 'BCNCAR', 'BCNISD', 'BCNSAW',
-    'WRECKS', 'UWTROC', 'OBSTRN',
+    'LIGHTS',   # OBJL 75
+    'BOYLAT', 'BOYCAR', 'BOYSAW', 'BOYSPP', 'BOYISD',  # OBJL 17, 14, 18, 19, 15
+    'BCNLAT', 'BCNSPP', 'BCNCAR', 'BCNISD', 'BCNSAW',  # OBJL 8, 9, 6, 7, 10
+    'WRECKS', 'UWTROC', 'OBSTRN',  # OBJL 159, 153, 86
 }
 
 # These get: {'tippecanoe': {'minzoom': 0, 'maxzoom': <chart_max>}}
@@ -173,6 +175,8 @@ This means:
 - Lights visible on US2 charts even with `--drop-densest-as-needed`
 - Wrecks/hazards never dropped at low zooms
 - Navigation aids don't disappear when zooming out for route planning
+
+**Note**: Features are filtered in the app using S-57 OBJL codes (e.g., `['==', ['get', 'OBJL'], 75]` for lights), not layer names. See [MBTILES_CONVERSION.md](MBTILES_CONVERSION.md) for the full OBJL reference.
 
 ## Verification
 
@@ -218,6 +222,7 @@ elif chart_id.startswith('US3'):
 
 | Date | Change |
 |------|--------|
+| 2026-01-30 | Updated to reference OBJL codes for feature filtering |
 | 2026-01-27 | Implemented scale-based settings to solve US2 GB-file issue |
 | 2026-01-26 | Added SCAMIN preservation for soundings |
 | 2026-01-25 | Added light sector arc generation |

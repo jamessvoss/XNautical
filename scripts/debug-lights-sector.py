@@ -79,7 +79,10 @@ def main():
         try:
             feature = json.loads(line)
             props = feature.get('properties', {})
-            if props.get('_layer') == 'LIGHTS_SECTOR':
+            geom = feature.get('geometry', {})
+            # LIGHTS_SECTOR: OBJL=75 (LIGHTS) with LineString geometry (arc)
+            # Note: LIGHTS points have Point geometry, sectors have LineString
+            if props.get('OBJL') == 75 and geom.get('type') == 'LineString':
                 lights_sectors.append(feature)
         except json.JSONDecodeError:
             continue
@@ -145,7 +148,9 @@ def main():
         try:
             feature = json.loads(line)
             props = feature.get('properties', {})
-            if props.get('_layer') == 'LIGHTS':
+            geom = feature.get('geometry', {})
+            # LIGHTS: OBJL=75 with Point geometry and sector info
+            if props.get('OBJL') == 75 and geom.get('type') == 'Point':
                 s1 = props.get('SECTR1')
                 s2 = props.get('SECTR2')
                 if s1 is not None and s2 is not None:

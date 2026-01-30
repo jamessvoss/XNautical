@@ -30,10 +30,10 @@ S-57 ENC (.000)  →  GeoJSON  →  MBTiles
 
 ### What the Conversion Does
 
-1. **Extracts ALL layers** from the S-57 file (except metadata layers like `DS*` and `M_*`)
-2. **Adds `_layer` property** to each feature for filtering in Mapbox
-3. **Generates synthetic layers**:
-   - `LIGHTS_SECTOR`: Arc geometry for directional lights (from `SECTR1`/`SECTR2` attributes)
+1. **Extracts ALL layers** from the S-57 file (except metadata layers `GRUP=2`)
+2. **Uses S-57 OBJL codes** for feature identification in Mapbox filters (e.g., DEPARE=42, LIGHTS=75)
+3. **Generates synthetic features**:
+   - Light sector arcs: LineString geometry for directional lights (OBJL=75 with `SECTR1`/`SECTR2`)
 4. **Extracts depth from soundings**: Converts 3D coordinates `[lon, lat, depth]` to 2D with `DEPTH` property
 5. **Adds zoom hints** for navigation aids to prevent tippecanoe from dropping them at low zooms
 
@@ -102,12 +102,14 @@ The script automatically discovers all layers in the S-57 file using `ogrinfo`. 
 
 #### 2. Light Sector Arc Generation
 
-For lights with `SECTR1` and `SECTR2` attributes (directional lights), the script generates a `LIGHTS_SECTOR` synthetic layer with arc geometry:
+For lights with `SECTR1` and `SECTR2` attributes (directional lights), the script generates synthetic arc features:
 
 ```
-Light point (LIGHTS)           →  Light symbol
-SECTR1=24°, SECTR2=119°        →  Arc from 24° to 119° (LIGHTS_SECTOR)
+Light point (OBJL=75, Point)   →  Light symbol
+SECTR1=24°, SECTR2=119°        →  Arc from 24° to 119° (OBJL=75, LineString)
 ```
+
+Light sectors share OBJL=75 with LIGHTS but are distinguished by geometry type (LineString vs Point).
 
 Arc parameters:
 - **Radius**: 0.25 nautical miles (configurable)
@@ -156,17 +158,85 @@ The script [`convert.py`](../cloud-functions/enc-converter/convert.py) automatic
 - Cartographic correctness: don't show detail beyond source resolution
 - Optimized file sizes while preserving maximum detail where needed
 
+## Feature Identification: OBJL Codes
+
+Features are identified using **S-57 OBJL codes** (Object Class codes), not layer names. This is the standard S-57 numeric identifier for each feature type.
+
+### Why OBJL Codes Instead of Layer Names?
+
+1. **Standard**: OBJL is the official S-57 standard; layer names can vary between tools
+2. **Reliable**: ogr2ogr always outputs OBJL; other properties like `_layer` may be empty
+3. **Efficient**: Numeric comparison is faster than string comparison in Mapbox filters
+4. **Consistent**: Works across all conversion pipelines and tools
+
+### OBJL Code Reference
+
+| OBJL | Layer Name | Description |
+|------|------------|-------------|
+| 2 | ACHARE | Anchorage Area |
+| 3 | ACHBRT | Anchor Berth |
+| 6 | BCNCAR | Cardinal Beacon |
+| 7 | BCNISD | Isolated Danger Beacon |
+| 8 | BCNLAT | Lateral Beacon |
+| 9 | BCNSPP | Special Purpose Beacon |
+| 10 | BCNSAW | Safe Water Beacon |
+| 14 | BOYCAR | Cardinal Buoy |
+| 15 | BOYISD | Isolated Danger Buoy |
+| 16 | BOYINB | Installation Buoy |
+| 17 | BOYLAT | Lateral Buoy |
+| 18 | BOYSAW | Safe Water Buoy |
+| 19 | BOYSPP | Special Purpose Buoy |
+| 21 | CBLARE | Cable Area |
+| 22 | CBLSUB | Submarine Cable |
+| 23 | CBLOHD | Overhead Cable |
+| 30 | COALNE | Coastline |
+| 33 | CTNARE | Caution Area |
+| 42 | DEPARE | Depth Area |
+| 43 | DEPCNT | Depth Contour |
+| 46 | DRGARE | Dredged Area |
+| 57 | FAIRWY | Fairway |
+| 71 | LNDARE | Land Area |
+| 74 | LNDMRK | Landmark |
+| 75 | LIGHTS | Light (Point=light symbol, LineString=sector arc) |
+| 79 | MARCUL | Marine Farm/Culture |
+| 83 | MIPARE | Military Practice Area |
+| 86 | OBSTRN | Obstruction |
+| 97 | PIPARE | Pipeline Area |
+| 98 | PIPSOL | Pipeline (Solid) |
+| 112 | RESARE | Restricted Area |
+| 114 | SBDARE | Seabed Area |
+| 129 | SOUNDG | Sounding |
+| 153 | UWTROC | Underwater Rock |
+| 156 | WATTUR | Water Turbulence |
+| 159 | WRECKS | Wreck |
+
+### Using OBJL in Mapbox Filters
+
+```javascript
+// Filter for depth areas (DEPARE)
+filter={['==', ['get', 'OBJL'], 42]}
+
+// Filter for all buoy types
+filter={['in', ['get', 'OBJL'], ['literal', [14, 15, 16, 17, 18, 19]]]}
+
+// Filter for light sectors (LIGHTS with LineString geometry)
+filter={['all',
+  ['==', ['get', 'OBJL'], 75],
+  ['==', ['geometry-type'], 'LineString']
+]}
+```
+
 ## S-57 Layer Reference
 
 ### Core Navigation Layers
 
-| Layer | Description | Geometry | App Toggle |
-|-------|-------------|----------|------------|
-| DEPARE | Depth areas | Polygon | Depth Areas |
-| DEPCNT | Depth contours | LineString | Depth Contours |
-| SOUNDG | Soundings (depth points) | Point | Soundings |
-| LIGHTS | Navigation lights | Point | Lights |
-| LIGHTS_SECTOR | Light visibility arcs (synthetic) | LineString | Lights |
+| Layer | Description | Geometry | OBJL Code |
+|-------|-------------|----------|-----------|
+| DEPARE | Depth areas | Polygon | 42 |
+| DEPCNT | Depth contours | LineString | 43 |
+| SOUNDG | Soundings (depth points) | Point | 129 |
+| LIGHTS | Navigation lights | Point | 75 |
+| LIGHTS (sector) | Light visibility arcs (synthetic) | LineString | 75 |
 
 ### Buoys
 
@@ -318,8 +388,8 @@ ogrinfo -so -q /path/to/chart.000 | head -20
 
 **Verify**:
 ```bash
-# Check if LIGHTS_SECTOR exists in the GeoJSON (before cleanup)
-# Or check the MBTiles json metadata for LIGHTS_SECTOR references
+# Check if light sector arcs exist (OBJL=75 with LineString geometry)
+tippecanoe-decode output.mbtiles | grep -A 5 '"OBJL":75' | grep LineString
 ```
 
 ### "Soundings missing depth values"
@@ -355,10 +425,34 @@ ogrinfo -so -q /path/to/chart.000 | head -20
 
 **Fix**: Add `--no-tile-size-limit` flag (use sparingly - large tiles impact performance)
 
+### "Missing tiles at low zoom levels" (tile-join)
+
+**Symptom**: Charts don't show at z1-z3, but appear at higher zooms. Large areas of the map are blank.
+
+**Cause**: `tile-join` has a default 500KB tile size limit. At low zoom levels (z1-z3), tiles cover huge geographic areas and often exceed this limit. `tile-join` **silently drops** these tiles with only a stderr message: "%.1f%% of tile /z/x/y%.0f%.0f%.0f%.0f%.0f%.0f is > 500KB; skipping this tile"
+
+**Example**: Alaska at z3/0/2 contains data from dozens of charts and exceeded 500KB, causing all of Alaska to be invisible at that zoom.
+
+**Fix**: Add `--no-tile-size-limit` to ALL `tile-join` commands:
+
+```bash
+tile-join --no-tile-size-limit -o output.mbtiles input1.mbtiles input2.mbtiles
+```
+
+**Detection**: After running `tile-join`, check stderr for "skipping this tile" messages. The conversion scripts now fail loudly if any tiles are skipped.
+
+**Verification**:
+```bash
+# Check that low-zoom tiles exist
+sqlite3 output.mbtiles "SELECT zoom_level, COUNT(*) FROM tiles GROUP BY zoom_level ORDER BY zoom_level;"
+# Should show tiles at z1, z2, z3, etc.
+```
+
 ## Version History
 
 | Date | Change |
 |------|--------|
-| 2026-01-25 | Added light sector arc generation (LIGHTS_SECTOR) |
+| 2026-01-30 | Removed `_layer` property; use S-57 OBJL codes for all filtering |
+| 2026-01-25 | Added light sector arc generation (OBJL=75 LineString) |
 | 2026-01-25 | Fixed layer discovery to handle all ogrinfo output formats |
 | 2026-01-25 | Updated documentation for automated conversion script |

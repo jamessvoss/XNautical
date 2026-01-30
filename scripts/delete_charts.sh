@@ -295,24 +295,6 @@ if [ "$DELETE_GNIS" = true ]; then
     fi
 fi
 
-# Delete chart_index.json if all charts were deleted
-ALL_CHARTS_DELETED=true
-[ "$DELETE_US1" = false ] && ALL_CHARTS_DELETED=false
-[ "$DELETE_US2" = false ] && ALL_CHARTS_DELETED=false
-[ "$DELETE_US3" = false ] && ALL_CHARTS_DELETED=false
-[ "$DELETE_US4" = false ] && ALL_CHARTS_DELETED=false
-[ "$DELETE_US5" = false ] && ALL_CHARTS_DELETED=false
-[ "$DELETE_US6" = false ] && ALL_CHARTS_DELETED=false
-
-if [ "$ALL_CHARTS_DELETED" = true ]; then
-    index_exists=$(adb shell "[ -f '$DEVICE_DIR/chart_index.json' ] && echo 'yes' || echo 'no'" | tr -d '\r')
-    if [ "$index_exists" = "yes" ]; then
-        echo -n "  Deleting chart_index.json... "
-        adb shell "rm '$DEVICE_DIR/chart_index.json'" 2>/dev/null
-        echo "${GREEN}✓${NC}"
-    fi
-fi
-
 # Summary
 echo ""
 REMAINING=$(adb shell "ls -1 '$DEVICE_DIR'/*.mbtiles 2>/dev/null | wc -l" 2>/dev/null | tr -d '\r ' || echo "0")

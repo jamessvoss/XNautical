@@ -23,9 +23,10 @@ const STORAGE_KEYS = {
   REGIONS_CACHE: '@XNautical:regionsCache',
 } as const;
 
-// Base directory for chart data
-const CHARTS_DIR = `${documentDirectory}charts/`;
-const MBTILES_DIR = `${documentDirectory}mbtiles/`;
+// Base directory for chart data - persistent external storage (survives app uninstall)
+const EXTERNAL_BASE = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/';
+const CHARTS_DIR = `${EXTERNAL_BASE}charts/`;
+const MBTILES_DIR = `${EXTERNAL_BASE}mbtiles/`;
 
 /**
  * Initialize the cache directories (charts and mbtiles)
