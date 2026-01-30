@@ -777,11 +777,22 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 }
             }
             
-            // Sort regional packs by size (smaller = more detailed/specific)
+            // Sort regional packs by detail level (detail > coastal > overview naming convention)
+            // Note: For regional packs, "detail" packs are LARGEST (contain all harbor charts)
+            // but should be tried FIRST because they have the most detailed features
             Collections.sort(regionalCandidates, new Comparator<RegionInfo>() {
                 @Override
                 public int compare(RegionInfo a, RegionInfo b) {
-                    return Long.compare(a.sizeBytes, b.sizeBytes);
+                    // Priority: detail (0) > coastal (1) > other (2)
+                    int priorityA = getPackPriority(a.regionId);
+                    int priorityB = getPackPriority(b.regionId);
+                    return Integer.compare(priorityA, priorityB);
+                }
+                
+                private int getPackPriority(String packId) {
+                    if (packId.contains("detail")) return 0;  // Highest priority
+                    if (packId.contains("coastal")) return 1;
+                    return 2;  // overview and others
                 }
             });
             
@@ -812,11 +823,13 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 candidates.add(region);
             }
             
-            // Sort by size (smaller packs are more specific/detailed)
+            // Sort by detail level (detail > coastal naming convention)
             Collections.sort(candidates, new Comparator<RegionInfo>() {
                 @Override
                 public int compare(RegionInfo a, RegionInfo b) {
-                    return Long.compare(a.sizeBytes, b.sizeBytes);
+                    int priorityA = a.regionId.contains("detail") ? 0 : (a.regionId.contains("coastal") ? 1 : 2);
+                    int priorityB = b.regionId.contains("detail") ? 0 : (b.regionId.contains("coastal") ? 1 : 2);
+                    return Integer.compare(priorityA, priorityB);
                 }
             });
             

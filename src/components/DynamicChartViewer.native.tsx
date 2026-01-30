@@ -2148,7 +2148,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {useMBTiles && tileServerReady && useCompositeTiles && (() => {
           // Use direct tile URL template instead of TileJSON
           // Include detail level param for server-side quilting adjustment
-          const tileUrl = `${tileServer.getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf?detail=${detailZoomOffset}`;
+          // Cache version - increment to force tile reload after server changes
+          const cacheVersion = 2;
+          const tileUrl = `${tileServer.getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf?detail=${detailZoomOffset}&v=${cacheVersion}`;
           console.log('[COMPOSITE] ═══════════════════════════════════════════');
           console.log('[COMPOSITE] VectorSource RENDERING');
           console.log('[COMPOSITE] Detail level:', detailLevel, '(offset:', detailZoomOffset, ')');
@@ -2456,7 +2458,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               ]}
               style={{
                 iconImage: 'mooring-buoy',
-                iconSize: 0.6,
+                iconSize: ['interpolate', ['linear'], ['zoom'], 10, 0.4, 14, 0.6, 18, 0.8],
                 iconAllowOverlap: true,
                 visibility: showMoorings ? 'visible' : 'none',
               }}
@@ -2472,7 +2474,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               ]}
               style={{
                 lineColor: '#4B0082',
-                lineWidth: 2,
+                lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 1.5, 14, 3, 18, 5],
+                visibility: showMoorings ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* MORFAC - Mooring Facilities (polygon - piers, jetties) */}
+            <MapLibre.FillLayer
+              id="composite-morfac-fill"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', 'OBJL'], 84],
+                ['==', ['geometry-type'], 'Polygon']
+              ]}
+              style={{
+                fillColor: '#4B0082',
+                fillOpacity: 0.4,
                 visibility: showMoorings ? 'visible' : 'none',
               }}
             />
@@ -2486,8 +2503,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 ['==', ['geometry-type'], 'LineString']
               ]}
               style={{
-                lineColor: '#4A4A4A',
-                lineWidth: 2,
+                lineColor: '#5C4033',
+                lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 1.5, 14, 3, 18, 5],
+                visibility: showShorelineConstruction ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* SLCONS - Shoreline Construction (points - rip-rap, etc) */}
+            <MapLibre.CircleLayer
+              id="composite-slcons-point"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', 'OBJL'], 122],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                circleColor: '#5C4033',
+                circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 5, 18, 8],
+                circleStrokeColor: '#FFFFFF',
+                circleStrokeWidth: 1,
                 visibility: showShorelineConstruction ? 'visible' : 'none',
               }}
             />
