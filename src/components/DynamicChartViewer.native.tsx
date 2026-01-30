@@ -2147,9 +2147,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* ================================================================== */}
         {useMBTiles && tileServerReady && useCompositeTiles && (() => {
           // Use direct tile URL template instead of TileJSON
-          const tileUrl = `${tileServer.getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf`;
+          // Include detail level param for server-side quilting adjustment
+          const tileUrl = `${tileServer.getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf?detail=${detailZoomOffset}`;
           console.log('[COMPOSITE] ═══════════════════════════════════════════');
           console.log('[COMPOSITE] VectorSource RENDERING');
+          console.log('[COMPOSITE] Detail level:', detailLevel, '(offset:', detailZoomOffset, ')');
           console.log('[COMPOSITE] useMBTiles:', useMBTiles);
           console.log('[COMPOSITE] tileServerReady:', tileServerReady);
           console.log('[COMPOSITE] useCompositeTiles:', useCompositeTiles);
@@ -2157,7 +2159,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           console.log('[COMPOSITE] ═══════════════════════════════════════════');
           return (
           <MapLibre.VectorSource
-            key="composite-charts"
+            key={`composite-charts-detail${detailZoomOffset}`}
             id="composite-charts"
             tileUrlTemplates={[tileUrl]}
             minZoomLevel={0}

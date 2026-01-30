@@ -64,10 +64,32 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     private boolean regionIndexLoaded = false;
     private static final String OVERVIEW_REGION = "alaska_overview";
     
-    // Zoom thresholds for tiered loading
+    // Zoom thresholds for tiered loading (base values for "low" detail)
     private static final int OVERVIEW_ONLY_MAX_ZOOM = 7;      // z0-7: only overview
     private static final int OVERVIEW_TRANSITION_MAX_ZOOM = 10; // z8-10: overview + regional
     // z11+: only regional packs
+    
+    /**
+     * Get effective overview-only max zoom based on detail level.
+     * Higher detail = lower threshold = regional charts appear earlier.
+     * 
+     * @param detailOffset 0 (low), 2 (medium), or 4 (high)
+     * @return Adjusted max zoom for overview-only tier
+     */
+    private int getEffectiveOverviewMaxZoom(int detailOffset) {
+        return Math.max(0, OVERVIEW_ONLY_MAX_ZOOM - detailOffset);
+    }
+    
+    /**
+     * Get effective transition max zoom based on detail level.
+     * Higher detail = lower threshold = regional charts appear earlier.
+     * 
+     * @param detailOffset 0 (low), 2 (medium), or 4 (high)
+     * @return Adjusted max zoom for transition tier
+     */
+    private int getEffectiveTransitionMaxZoom(int detailOffset) {
+        return Math.max(0, OVERVIEW_TRANSITION_MAX_ZOOM - detailOffset);
+    }
     
     // Track chart changes for logging
     private volatile String lastSelectedChart = null;
@@ -662,10 +684,13 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
      * LEGACY MODE (when only chart_index.json is loaded):
      * - Query all charts sorted by level descending
      */
-    private List<String> findChartsForTile(int z, int x, int y) {
+    private List<String> findChartsForTile(int z, int x, int y, int detailOffset) {
         // DEBUG: Log index status on every request for low zoom to help diagnose issues
-        if (z <= 8) {
+        int effectiveOverviewMax = getEffectiveOverviewMaxZoom(detailOffset);
+        if (z <= effectiveOverviewMax + 1) {
             Log.i(TAG, "[TILE-DEBUG] z" + z + "/" + x + "/" + y + 
+                " detailOffset=" + detailOffset +
+                " effectiveOverviewMax=" + effectiveOverviewMax +
                 " regionIndexLoaded=" + regionIndexLoaded + 
                 " regionCount=" + regionIndex.size() +
                 " chartIndexLoaded=" + chartIndexLoaded +
@@ -674,10 +699,10 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         
         // Use regional tiered loading if available
         if (regionIndexLoaded && !regionIndex.isEmpty()) {
-            return findRegionsForTile(z, x, y);
+            return findRegionsForTile(z, x, y, detailOffset);
         }
         
-        // Fall back to legacy chart index
+        // Fall back to legacy chart index (does not support detail offset)
         if (!chartIndexLoaded || chartIndex.isEmpty()) {
             Log.w(TAG, "[QUILT] ⚠️ NO INDEX LOADED! Neither manifest.json nor chart_index.json found!");
             Log.w(TAG, "[QUILT] ⚠️ MBTiles directory: " + mbtilesDir);
@@ -691,16 +716,28 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     /**
      * Find regional packs for a tile using tiered loading strategy.
      * This is the preferred, efficient method when regions.json is available.
+     * 
+     * @param z Zoom level
+     * @param x Tile X coordinate
+     * @param y Tile Y coordinate
+     * @param detailOffset Detail level offset (0=low, 2=medium, 4=high)
+     *                     Higher values shift thresholds down, showing regional detail earlier
      */
-    private List<String> findRegionsForTile(int z, int x, int y) {
+    private List<String> findRegionsForTile(int z, int x, int y, int detailOffset) {
         double[] bounds = tileToBounds(z, x, y);
         double west = bounds[0], south = bounds[1], east = bounds[2], north = bounds[3];
         
         List<String> packIds = new ArrayList<>();
         
-        if (z <= OVERVIEW_ONLY_MAX_ZOOM) {
-            // LOW ZOOM (z0-7): Only use overview pack - it's optimized for this
-            Log.i(TAG, "[TIERED] z" + z + " LOW ZOOM - searching for overview pack...");
+        // Compute effective thresholds based on detail level
+        int effectiveOverviewMax = getEffectiveOverviewMaxZoom(detailOffset);
+        int effectiveTransitionMax = getEffectiveTransitionMaxZoom(detailOffset);
+        
+        if (z <= effectiveOverviewMax) {
+            // LOW ZOOM: Only use overview pack - it's optimized for this
+            // With detailOffset=0: z0-7, detailOffset=2: z0-5, detailOffset=4: z0-3
+            Log.i(TAG, "[TIERED] z" + z + " LOW ZOOM (detail=" + detailOffset + 
+                ", threshold=" + effectiveOverviewMax + ") - searching for overview pack...");
             Log.i(TAG, "[TIERED] Available regions: " + regionIndex.keySet());
             
             for (RegionInfo region : regionIndex.values()) {
@@ -720,8 +757,9 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             Log.w(TAG, "[TIERED] ⚠️ Ensure alaska_overview.mbtiles AND manifest.json are on the device");
             return packIds;
             
-        } else if (z <= OVERVIEW_TRANSITION_MAX_ZOOM) {
-            // TRANSITION ZOOM (z8-10): Try regional packs first, fall back to overview
+        } else if (z <= effectiveTransitionMax) {
+            // TRANSITION ZOOM: Try regional packs first, fall back to overview
+            // With detailOffset=0: z8-10, detailOffset=2: z6-8, detailOffset=4: z4-6
             // This handles the transition smoothly - regional packs have more detail
             // but overview fills any gaps
             
@@ -757,11 +795,13 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 packIds.add(overviewPack.regionId);
             }
             
-            Log.d(TAG, "[TIERED] z" + z + " → transition: " + packIds.size() + " packs " + packIds);
+            Log.d(TAG, "[TIERED] z" + z + " (detail=" + detailOffset + 
+                ", threshold=" + effectiveTransitionMax + ") → transition: " + packIds.size() + " packs " + packIds);
             return packIds;
             
         } else {
-            // HIGH ZOOM (z11+): Only use regional packs - overview has no detail here
+            // HIGH ZOOM: Only use regional packs - overview has no detail here
+            // With detailOffset=0: z11+, detailOffset=2: z9+, detailOffset=4: z7+
             List<RegionInfo> candidates = new ArrayList<>();
             
             for (RegionInfo region : regionIndex.values()) {
@@ -785,9 +825,11 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             }
             
             if (packIds.isEmpty()) {
-                Log.d(TAG, "[TIERED] z" + z + " → No regional packs cover tile " + x + "/" + y);
+                Log.d(TAG, "[TIERED] z" + z + " (detail=" + detailOffset + 
+                    ") → No regional packs cover tile " + x + "/" + y);
             } else {
-                Log.d(TAG, "[TIERED] z" + z + " → regional: " + packIds);
+                Log.d(TAG, "[TIERED] z" + z + " (detail=" + detailOffset + 
+                    ") → regional (harbor detail): " + packIds);
             }
             
             return packIds;
@@ -855,7 +897,7 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
      * @deprecated Use findChartsForTile() and try each chart until one has data
      */
     private String findBestChartForTile(int z, int x, int y) {
-        List<String> charts = findChartsForTile(z, x, y);
+        List<String> charts = findChartsForTile(z, x, y, 0); // Default to low detail
         return charts.isEmpty() ? null : charts.get(0);
     }
 
@@ -1188,8 +1230,31 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         private Response handleCompositeTileRequest(String uri) {
             long startTime = System.currentTimeMillis();
             try {
-                // Parse /tiles/{z}/{x}/{y}.pbf
+                // Parse /tiles/{z}/{x}/{y}.pbf?detail=N
                 String path = uri.substring(7); // Remove "/tiles/"
+                
+                // Extract detail level from query param (0=low, 2=medium, 4=high)
+                int detailOffset = 0;
+                int queryIndex = path.indexOf('?');
+                if (queryIndex != -1) {
+                    String queryString = path.substring(queryIndex + 1);
+                    path = path.substring(0, queryIndex);
+                    
+                    // Parse query params
+                    for (String param : queryString.split("&")) {
+                        String[] keyValue = param.split("=");
+                        if (keyValue.length == 2 && "detail".equals(keyValue[0])) {
+                            try {
+                                detailOffset = Integer.parseInt(keyValue[1]);
+                                // Clamp to valid range
+                                detailOffset = Math.max(0, Math.min(4, detailOffset));
+                            } catch (NumberFormatException e) {
+                                Log.w(TAG, "Invalid detail param: " + keyValue[1]);
+                            }
+                        }
+                    }
+                }
+                
                 path = path.substring(0, path.length() - 4); // Remove ".pbf"
                 
                 String[] parts = path.split("/");
@@ -1203,7 +1268,8 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 int y = Integer.parseInt(parts[2]);
                 
                 // Find ALL charts that cover this tile, sorted by preference
-                List<String> candidateCharts = findChartsForTile(z, x, y);
+                // Pass detail offset to adjust zoom thresholds for tiered loading
+                List<String> candidateCharts = findChartsForTile(z, x, y, detailOffset);
                 tileRequestCount++;
                 
                 if (candidateCharts.isEmpty()) {
