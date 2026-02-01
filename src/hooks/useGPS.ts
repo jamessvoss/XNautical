@@ -72,8 +72,10 @@ export function useGPS(options: UseGPSOptions = {}) {
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
   const headingSubscription = useRef<Location.LocationSubscription | null>(null);
   const previousPosition = useRef<{ lat: number; lon: number; time: number } | null>(null);
+  const lastPositionUpdate = useRef<{ lat: number; lon: number } | null>(null);
   const lastHeadingUpdate = useRef<number>(0);
-  const HEADING_THROTTLE_MS = 200; // Limit heading updates to 5 times per second
+  const HEADING_THROTTLE_MS = 500; // Limit heading updates to 2 times per second (was 200ms/5Hz)
+  const MIN_POSITION_CHANGE_M = 1; // Minimum meters change to trigger position update
 
   // Calculate bearing between two points (for COG when GPS doesn't provide it)
   const calculateBearing = useCallback((lat1: number, lon1: number, lat2: number, lon2: number): number => {
@@ -87,6 +89,18 @@ export function useGPS(options: UseGPSOptions = {}) {
     
     let bearing = Math.atan2(y, x) * 180 / Math.PI;
     return (bearing + 360) % 360;
+  }, []);
+
+  // Calculate distance between two points in meters (Haversine formula)
+  const calculateDistance = useCallback((lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const R = 6371000; // Earth's radius in meters
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
   }, []);
 
   // Request permissions
@@ -136,6 +150,21 @@ export function useGPS(options: UseGPSOptions = {}) {
           const { latitude, longitude, altitude, speed, heading, accuracy } = location.coords;
           const timestamp = location.timestamp;
 
+          // Check if position changed enough to warrant an update
+          let positionChanged = true;
+          if (lastPositionUpdate.current) {
+            const distance = calculateDistance(
+              lastPositionUpdate.current.lat,
+              lastPositionUpdate.current.lon,
+              latitude,
+              longitude
+            );
+            positionChanged = distance >= MIN_POSITION_CHANGE_M;
+          }
+
+          // Skip update if position hasn't changed significantly
+          if (!positionChanged) return;
+
           // Calculate COG from movement if not provided by GPS
           let course = heading;
           if (course === null || course === -1) {
@@ -154,6 +183,7 @@ export function useGPS(options: UseGPSOptions = {}) {
 
           // Update previous position for COG calculation
           previousPosition.current = { lat: latitude, lon: longitude, time: timestamp };
+          lastPositionUpdate.current = { lat: latitude, lon: longitude };
 
           setGpsData(prev => ({
             ...prev,
@@ -171,16 +201,24 @@ export function useGPS(options: UseGPSOptions = {}) {
         }
       );
 
-      // Start heading updates (magnetometer) - throttled
+      // Start heading updates (magnetometer) - throttled with minimum change threshold
       if (enableHeading) {
+        let lastHeadingValue = 0;
+        const MIN_HEADING_CHANGE = 2; // Minimum degrees change to trigger update
+        
         headingSubscription.current = await Location.watchHeadingAsync((headingData) => {
           const now = Date.now();
-          // Throttle updates to reduce jitter
-          if (now - lastHeadingUpdate.current >= HEADING_THROTTLE_MS) {
+          const newHeading = headingData.magHeading;
+          const headingDiff = Math.abs(newHeading - lastHeadingValue);
+          
+          // Throttle updates and require minimum change to reduce jitter
+          if (now - lastHeadingUpdate.current >= HEADING_THROTTLE_MS && 
+              (headingDiff > MIN_HEADING_CHANGE || headingDiff > 358)) { // 358 handles wraparound at 0/360
             lastHeadingUpdate.current = now;
+            lastHeadingValue = newHeading;
             setGpsData(prev => ({
               ...prev,
-              heading: headingData.magHeading, // Magnetic heading
+              heading: newHeading, // Magnetic heading
             }));
           }
         });
@@ -194,7 +232,7 @@ export function useGPS(options: UseGPSOptions = {}) {
         error: 'Failed to start location tracking',
       }));
     }
-  }, [requestPermissions, distanceInterval, timeInterval, enableHeading, calculateBearing]);
+  }, [requestPermissions, distanceInterval, timeInterval, enableHeading, calculateBearing, calculateDistance]);
 
   // Stop tracking
   const stopTracking = useCallback(() => {
@@ -207,6 +245,7 @@ export function useGPS(options: UseGPSOptions = {}) {
       headingSubscription.current = null;
     }
     previousPosition.current = null;
+    lastPositionUpdate.current = null;
 
     setGpsData(prev => ({
       ...prev,

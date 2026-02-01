@@ -19,12 +19,14 @@ import * as chartCacheService from '../services/chartCacheService';
 import { formatBytes } from '../services/chartService';
 import * as displaySettingsService from '../services/displaySettingsService';
 import type { DisplaySettings } from '../services/displaySettingsService';
+import SystemInfoModal from '../components/SystemInfoModal';
 
 export default function SettingsScreen() {
   const [cacheSize, setCacheSize] = useState<number>(0);
   const [downloadedCount, setDownloadedCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
+  const [showSystemInfo, setShowSystemInfo] = useState(false);
   
   // Display settings
   const [displaySettings, setDisplaySettings] = useState<DisplaySettings>({
@@ -89,9 +91,40 @@ export default function SettingsScreen() {
     pipelineAreaStrokeScale: 1.0,
     fairwayStrokeScale: 1.0,
     dredgedAreaStrokeScale: 1.0,
+    // Symbol sizes (nominal values per S-52)
+    lightSymbolSizeScale: 2.0,    // 200% nominal
+    buoySymbolSizeScale: 2.0,     // 200% nominal
+    beaconSymbolSizeScale: 1.5,   // 150% nominal
+    wreckSymbolSizeScale: 1.5,
+    rockSymbolSizeScale: 1.5,
+    hazardSymbolSizeScale: 1.5,
+    landmarkSymbolSizeScale: 1.5,
+    mooringSymbolSizeScale: 1.5,
+    anchorSymbolSizeScale: 1.5,
+    // Symbol halos (white background per S-52)
+    lightSymbolHaloScale: 1.0,
+    buoySymbolHaloScale: 1.0,
+    beaconSymbolHaloScale: 1.0,
+    wreckSymbolHaloScale: 1.0,
+    rockSymbolHaloScale: 1.0,
+    hazardSymbolHaloScale: 1.0,
+    landmarkSymbolHaloScale: 1.0,
+    mooringSymbolHaloScale: 1.0,
+    anchorSymbolHaloScale: 1.0,
+    // Symbol opacities
+    lightSymbolOpacityScale: 1.0,
+    buoySymbolOpacityScale: 1.0,
+    beaconSymbolOpacityScale: 1.0,
+    wreckSymbolOpacityScale: 1.0,
+    rockSymbolOpacityScale: 1.0,
+    hazardSymbolOpacityScale: 1.0,
+    landmarkSymbolOpacityScale: 1.0,
+    mooringSymbolOpacityScale: 1.0,
+    anchorSymbolOpacityScale: 1.0,
     // Other settings
     dayNightMode: 'day',
     orientationMode: 'north-up',
+    depthUnits: 'meters',
   });
 
   useEffect(() => {
@@ -643,6 +676,362 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* Symbol Sizes Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Symbol Sizes</Text>
+          <View style={styles.card}>
+            {/* Lights Symbol Size */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Lights</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.lightSymbolSizeScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0.5}
+                maximumValue={3.0}
+                step={0.1}
+                value={displaySettings.lightSymbolSizeScale}
+                onValueChange={(value) => updateDisplaySetting('lightSymbolSizeScale', value)}
+                minimumTrackTintColor="#FF00FF"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#FF00FF"
+              />
+            </View>
+
+            {/* Buoys Symbol Size */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Buoys</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.buoySymbolSizeScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0.5}
+                maximumValue={3.0}
+                step={0.1}
+                value={displaySettings.buoySymbolSizeScale}
+                onValueChange={(value) => updateDisplaySetting('buoySymbolSizeScale', value)}
+                minimumTrackTintColor="#FF0000"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#FF0000"
+              />
+            </View>
+
+            {/* Beacons Symbol Size */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Beacons</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.beaconSymbolSizeScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0.5}
+                maximumValue={3.0}
+                step={0.1}
+                value={displaySettings.beaconSymbolSizeScale}
+                onValueChange={(value) => updateDisplaySetting('beaconSymbolSizeScale', value)}
+                minimumTrackTintColor="#00AA00"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#00AA00"
+              />
+            </View>
+
+            {/* Wrecks Symbol Size */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Wrecks</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.wreckSymbolSizeScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0.5}
+                maximumValue={3.0}
+                step={0.1}
+                value={displaySettings.wreckSymbolSizeScale}
+                onValueChange={(value) => updateDisplaySetting('wreckSymbolSizeScale', value)}
+                minimumTrackTintColor="#000000"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#000000"
+              />
+            </View>
+
+            {/* Rocks Symbol Size */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Rocks</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.rockSymbolSizeScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0.5}
+                maximumValue={3.0}
+                step={0.1}
+                value={displaySettings.rockSymbolSizeScale}
+                onValueChange={(value) => updateDisplaySetting('rockSymbolSizeScale', value)}
+                minimumTrackTintColor="#000000"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#000000"
+              />
+            </View>
+
+            {/* Hazards Symbol Size */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Hazards (Obstructions)</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.hazardSymbolSizeScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0.5}
+                maximumValue={3.0}
+                step={0.1}
+                value={displaySettings.hazardSymbolSizeScale}
+                onValueChange={(value) => updateDisplaySetting('hazardSymbolSizeScale', value)}
+                minimumTrackTintColor="#000000"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#000000"
+              />
+            </View>
+
+            {/* Landmarks Symbol Size */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Landmarks</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.landmarkSymbolSizeScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0.5}
+                maximumValue={3.0}
+                step={0.1}
+                value={displaySettings.landmarkSymbolSizeScale}
+                onValueChange={(value) => updateDisplaySetting('landmarkSymbolSizeScale', value)}
+                minimumTrackTintColor="#8B4513"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#8B4513"
+              />
+            </View>
+
+            {/* Moorings Symbol Size */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Moorings</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.mooringSymbolSizeScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0.5}
+                maximumValue={3.0}
+                step={0.1}
+                value={displaySettings.mooringSymbolSizeScale}
+                onValueChange={(value) => updateDisplaySetting('mooringSymbolSizeScale', value)}
+                minimumTrackTintColor="#800080"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#800080"
+              />
+            </View>
+
+            {/* Anchors Symbol Size */}
+            <View style={[styles.sliderRow, { borderBottomWidth: 0 }]}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Anchors</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.anchorSymbolSizeScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0.5}
+                maximumValue={3.0}
+                step={0.1}
+                value={displaySettings.anchorSymbolSizeScale}
+                onValueChange={(value) => updateDisplaySetting('anchorSymbolSizeScale', value)}
+                minimumTrackTintColor="#000080"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#000080"
+              />
+            </View>
+          </View>
+        </View>
+
+        {/* Symbol Halos Section - disabled for now, will implement with white symbol versions later */}
+        
+        {/* Symbol Opacity Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Symbol Opacity</Text>
+          <View style={styles.card}>
+            {/* Lights Symbol Opacity */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Lights</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.lightSymbolOpacityScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={1.0}
+                step={0.1}
+                value={displaySettings.lightSymbolOpacityScale}
+                onValueChange={(value) => updateDisplaySetting('lightSymbolOpacityScale', value)}
+                minimumTrackTintColor="#FFD700"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#FFD700"
+              />
+            </View>
+
+            {/* Buoys Symbol Opacity */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Buoys</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.buoySymbolOpacityScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={1.0}
+                step={0.1}
+                value={displaySettings.buoySymbolOpacityScale}
+                onValueChange={(value) => updateDisplaySetting('buoySymbolOpacityScale', value)}
+                minimumTrackTintColor="#FF6347"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#FF6347"
+              />
+            </View>
+
+            {/* Beacons Symbol Opacity */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Beacons</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.beaconSymbolOpacityScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={1.0}
+                step={0.1}
+                value={displaySettings.beaconSymbolOpacityScale}
+                onValueChange={(value) => updateDisplaySetting('beaconSymbolOpacityScale', value)}
+                minimumTrackTintColor="#32CD32"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#32CD32"
+              />
+            </View>
+
+            {/* Wrecks Symbol Opacity */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Wrecks</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.wreckSymbolOpacityScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={1.0}
+                step={0.1}
+                value={displaySettings.wreckSymbolOpacityScale}
+                onValueChange={(value) => updateDisplaySetting('wreckSymbolOpacityScale', value)}
+                minimumTrackTintColor="#8B4513"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#8B4513"
+              />
+            </View>
+
+            {/* Rocks Symbol Opacity */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Rocks</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.rockSymbolOpacityScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={1.0}
+                step={0.1}
+                value={displaySettings.rockSymbolOpacityScale}
+                onValueChange={(value) => updateDisplaySetting('rockSymbolOpacityScale', value)}
+                minimumTrackTintColor="#696969"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#696969"
+              />
+            </View>
+
+            {/* Hazards Symbol Opacity */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Hazards (Obstructions)</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.hazardSymbolOpacityScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={1.0}
+                step={0.1}
+                value={displaySettings.hazardSymbolOpacityScale}
+                onValueChange={(value) => updateDisplaySetting('hazardSymbolOpacityScale', value)}
+                minimumTrackTintColor="#DC143C"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#DC143C"
+              />
+            </View>
+
+            {/* Landmarks Symbol Opacity */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Landmarks</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.landmarkSymbolOpacityScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={1.0}
+                step={0.1}
+                value={displaySettings.landmarkSymbolOpacityScale}
+                onValueChange={(value) => updateDisplaySetting('landmarkSymbolOpacityScale', value)}
+                minimumTrackTintColor="#4682B4"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#4682B4"
+              />
+            </View>
+
+            {/* Moorings Symbol Opacity */}
+            <View style={styles.sliderRow}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Moorings</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.mooringSymbolOpacityScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={1.0}
+                step={0.1}
+                value={displaySettings.mooringSymbolOpacityScale}
+                onValueChange={(value) => updateDisplaySetting('mooringSymbolOpacityScale', value)}
+                minimumTrackTintColor="#4B0082"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#4B0082"
+              />
+            </View>
+
+            {/* Anchors Symbol Opacity */}
+            <View style={[styles.sliderRow, { borderBottomWidth: 0 }]}>
+              <View style={styles.sliderHeader}>
+                <Text style={styles.label}>Anchors</Text>
+                <Text style={styles.sliderValue}>{formatScale(displaySettings.anchorSymbolOpacityScale)}</Text>
+              </View>
+              <Slider
+                style={styles.slider}
+                minimumValue={0}
+                maximumValue={1.0}
+                step={0.1}
+                value={displaySettings.anchorSymbolOpacityScale}
+                onValueChange={(value) => updateDisplaySetting('anchorSymbolOpacityScale', value)}
+                minimumTrackTintColor="#000080"
+                maximumTrackTintColor="#ddd"
+                thumbTintColor="#000080"
+              />
+            </View>
+          </View>
+        </View>
+
         {/* Storage Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Storage</Text>
@@ -705,7 +1094,21 @@ export default function SettingsScreen() {
         <TouchableOpacity style={styles.refreshButton} onPress={loadCacheInfo}>
           <Text style={styles.refreshButtonText}>Refresh Cache Info</Text>
         </TouchableOpacity>
+        
+        {/* System Info Button */}
+        <TouchableOpacity 
+          style={styles.systemInfoButton} 
+          onPress={() => setShowSystemInfo(true)}
+        >
+          <Text style={styles.systemInfoButtonText}>System Information</Text>
+        </TouchableOpacity>
       </ScrollView>
+      
+      {/* System Info Modal */}
+      <SystemInfoModal 
+        visible={showSystemInfo} 
+        onClose={() => setShowSystemInfo(false)} 
+      />
     </SafeAreaView>
   );
 }
@@ -846,6 +1249,19 @@ const styles = StyleSheet.create({
   resetButtonText: {
     color: '#666',
     fontSize: 14,
+    fontWeight: '600',
+  },
+  systemInfoButton: {
+    margin: 16,
+    marginTop: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: 8,
+    backgroundColor: '#6c757d',
+  },
+  systemInfoButtonText: {
+    color: '#fff',
+    fontSize: 16,
     fontWeight: '600',
   },
 });

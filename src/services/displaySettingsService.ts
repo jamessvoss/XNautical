@@ -3,6 +3,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { logger, LogCategory } from './loggingService';
 
 const STORAGE_KEY = '@xnautical_display_settings';
 
@@ -76,9 +77,43 @@ export interface DisplaySettings {
   fairwayStrokeScale: number;
   dredgedAreaStrokeScale: number;
   
+  // Symbol/icon size multipliers (1.0 = nominal/default)
+  lightSymbolSizeScale: number;
+  buoySymbolSizeScale: number;
+  beaconSymbolSizeScale: number;
+  wreckSymbolSizeScale: number;
+  rockSymbolSizeScale: number;
+  hazardSymbolSizeScale: number;
+  landmarkSymbolSizeScale: number;
+  mooringSymbolSizeScale: number;
+  anchorSymbolSizeScale: number;
+  
+  // Symbol/icon halo multipliers (1.0 = default, 0 = no halo)
+  lightSymbolHaloScale: number;
+  buoySymbolHaloScale: number;
+  beaconSymbolHaloScale: number;
+  wreckSymbolHaloScale: number;
+  rockSymbolHaloScale: number;
+  hazardSymbolHaloScale: number;
+  landmarkSymbolHaloScale: number;
+  mooringSymbolHaloScale: number;
+  anchorSymbolHaloScale: number;
+  
+  // Symbol/icon opacity multipliers (1.0 = default)
+  lightSymbolOpacityScale: number;
+  buoySymbolOpacityScale: number;
+  beaconSymbolOpacityScale: number;
+  wreckSymbolOpacityScale: number;
+  rockSymbolOpacityScale: number;
+  hazardSymbolOpacityScale: number;
+  landmarkSymbolOpacityScale: number;
+  mooringSymbolOpacityScale: number;
+  anchorSymbolOpacityScale: number;
+  
   // Other settings
   dayNightMode: 'day' | 'night' | 'auto';
   orientationMode: 'north-up' | 'head-up' | 'course-up';
+  depthUnits: 'meters' | 'feet' | 'fathoms';
 }
 
 const DEFAULT_SETTINGS: DisplaySettings = {
@@ -143,9 +178,40 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   pipelineAreaStrokeScale: 1.0,
   fairwayStrokeScale: 1.0,
   dredgedAreaStrokeScale: 1.0,
+  // Symbol sizes (nominal values based on S-52 standard visibility)
+  lightSymbolSizeScale: 2.0,    // 200% nominal
+  buoySymbolSizeScale: 2.0,     // 200% nominal
+  beaconSymbolSizeScale: 1.5,   // 150% nominal
+  wreckSymbolSizeScale: 1.5,    // 150% nominal
+  rockSymbolSizeScale: 1.5,     // 150% nominal
+  hazardSymbolSizeScale: 1.5,   // 150% nominal
+  landmarkSymbolSizeScale: 1.5, // 150% nominal
+  mooringSymbolSizeScale: 1.5,  // 150% nominal
+  anchorSymbolSizeScale: 1.5,   // 150% nominal
+  // Symbol halos (white background for visibility per S-52)
+  lightSymbolHaloScale: 1.0,
+  buoySymbolHaloScale: 1.0,
+  beaconSymbolHaloScale: 1.0,
+  wreckSymbolHaloScale: 1.0,
+  rockSymbolHaloScale: 1.0,
+  hazardSymbolHaloScale: 1.0,
+  landmarkSymbolHaloScale: 1.0,
+  mooringSymbolHaloScale: 1.0,
+  anchorSymbolHaloScale: 1.0,
+  // Symbol opacities
+  lightSymbolOpacityScale: 1.0,
+  buoySymbolOpacityScale: 1.0,
+  beaconSymbolOpacityScale: 1.0,
+  wreckSymbolOpacityScale: 1.0,
+  rockSymbolOpacityScale: 1.0,
+  hazardSymbolOpacityScale: 1.0,
+  landmarkSymbolOpacityScale: 1.0,
+  mooringSymbolOpacityScale: 1.0,
+  anchorSymbolOpacityScale: 1.0,
   // Other settings
   dayNightMode: 'day',
   orientationMode: 'north-up',
+  depthUnits: 'meters',
 };
 
 // In-memory cache
@@ -160,27 +226,24 @@ const listeners: Set<SettingsListener> = new Set();
  */
 export async function loadSettings(): Promise<DisplaySettings> {
   try {
-    console.log('[DEBUG] displaySettingsService.loadSettings() called');
+    logger.debug(LogCategory.SETTINGS, 'Loading display settings');
     const stored = await AsyncStorage.getItem(STORAGE_KEY);
-    console.log('[DEBUG] Raw stored settings:', stored ? 'exists' : 'null');
     if (stored) {
       const parsed = JSON.parse(stored);
-      console.log('[DEBUG] Parsed stored settings keys:', Object.keys(parsed).length);
       cachedSettings = { ...DEFAULT_SETTINGS, ...parsed };
     } else {
-      console.log('[DEBUG] No stored settings, using defaults');
+      logger.debug(LogCategory.SETTINGS, 'No stored settings, using defaults');
       cachedSettings = { ...DEFAULT_SETTINGS };
     }
-    console.log('[DEBUG] Final settings keys:', Object.keys(cachedSettings).length);
     // Validate all required keys exist
     const requiredKeys = Object.keys(DEFAULT_SETTINGS);
     const missingKeys = requiredKeys.filter(key => cachedSettings![key as keyof DisplaySettings] === undefined);
     if (missingKeys.length > 0) {
-      console.warn('[DEBUG] Missing settings keys:', missingKeys);
+      logger.warn(LogCategory.SETTINGS, 'Missing settings keys', { keys: missingKeys });
     }
     return cachedSettings;
   } catch (error) {
-    console.error('Error loading display settings:', error);
+    logger.error(LogCategory.SETTINGS, 'Error loading display settings', error as Error);
     cachedSettings = { ...DEFAULT_SETTINGS };
     return cachedSettings;
   }
@@ -196,7 +259,7 @@ export async function saveSettings(settings: DisplaySettings): Promise<void> {
     // Notify all listeners
     listeners.forEach(listener => listener(settings));
   } catch (error) {
-    console.error('Error saving display settings:', error);
+    logger.error(LogCategory.SETTINGS, 'Error saving display settings', error as Error);
   }
 }
 
@@ -274,4 +337,42 @@ export function applyFontScaleToInterpolation(
   }
   
   return result;
+}
+
+/**
+ * Apply icon size scale to an interpolated size array
+ * Input: ['interpolate', ['linear'], ['zoom'], z1, s1, z2, s2, ...]
+ * Output: same structure with scaled sizes (no rounding for icon sizes which are fractional)
+ */
+export function applyIconSizeScale(
+  interpolation: any[],
+  scale: number
+): any[] {
+  if (!Array.isArray(interpolation) || interpolation[0] !== 'interpolate') {
+    // If it's just a number, scale it directly
+    if (typeof interpolation === 'number') {
+      return (interpolation as unknown as number) * scale;
+    }
+    return interpolation;
+  }
+  
+  // Copy the array
+  const result = [...interpolation];
+  
+  // Scale the size values (every other element starting from index 4: z1, s1, z2, s2...)
+  // The pattern is: ['interpolate', ['linear'], ['zoom'], zoom1, size1, zoom2, size2, ...]
+  for (let i = 4; i < result.length; i += 2) {
+    if (typeof result[i] === 'number') {
+      result[i] = result[i] * scale;
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * Apply opacity scale (clamp between 0 and 1)
+ */
+export function applyOpacityScale(baseOpacity: number, scale: number): number {
+  return Math.max(0, Math.min(1, baseOpacity * scale));
 }

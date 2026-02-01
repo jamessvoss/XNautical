@@ -44,9 +44,11 @@ import CompassOverlay from './CompassOverlay';
 import { useGPS } from '../hooks/useGPS';
 import * as displaySettingsService from '../services/displaySettingsService';
 import type { DisplaySettings } from '../services/displaySettingsService';
+import { logger, LogCategory } from '../services/loggingService';
+import { performanceTracker, StartupPhase, RuntimeMetric } from '../services/performanceTracker';
+import { stateReporter } from '../services/stateReporter';
 
 // MapLibre doesn't require an access token
-// Logger removed - not available in MapLibre React Native
 
 // Symbol images for navigation features
 const NAV_SYMBOLS: Record<string, any> = {
@@ -109,6 +111,17 @@ interface DisplayFeatureConfig {
   opacityKey?: keyof DisplaySettings;
 }
 
+// Symbol feature configuration for the Symbols tab
+interface SymbolFeatureConfig {
+  id: string;
+  label: string;
+  sizeKey: keyof DisplaySettings;
+  haloKey: keyof DisplaySettings;
+  opacityKey: keyof DisplaySettings;
+  color: string;  // S-52 compliant color for visual identification
+  hasHalo: boolean;  // Whether this symbol type supports halos (complex shapes like beacons don't)
+}
+
 // Depth unit conversion helpers
 const METERS_TO_FEET = 3.28084;
 const METERS_TO_FATHOMS = 0.546807;
@@ -154,6 +167,21 @@ const DISPLAY_FEATURES: DisplayFeatureConfig[] = [
   { id: 'pipelineAreas', label: 'Pipeline Areas', type: 'area', opacityKey: 'pipelineAreaOpacityScale', strokeKey: 'pipelineAreaStrokeScale' },
   { id: 'fairways', label: 'Fairways', type: 'area', opacityKey: 'fairwayOpacityScale', strokeKey: 'fairwayStrokeScale' },
   { id: 'dredgedAreas', label: 'Dredged Areas', type: 'area', opacityKey: 'dredgedAreaOpacityScale', strokeKey: 'dredgedAreaStrokeScale' },
+];
+
+// Symbol features configuration for the Symbols tab
+// Colors based on S-52 standard presentation library
+// Note: Halos disabled for all symbols - will implement with white symbol versions later
+const SYMBOL_FEATURES: SymbolFeatureConfig[] = [
+  { id: 'lights', label: 'Lights', sizeKey: 'lightSymbolSizeScale', haloKey: 'lightSymbolHaloScale', opacityKey: 'lightSymbolOpacityScale', color: '#FF00FF', hasHalo: false },
+  { id: 'buoys', label: 'Buoys', sizeKey: 'buoySymbolSizeScale', haloKey: 'buoySymbolHaloScale', opacityKey: 'buoySymbolOpacityScale', color: '#FF0000', hasHalo: false },
+  { id: 'beacons', label: 'Beacons', sizeKey: 'beaconSymbolSizeScale', haloKey: 'beaconSymbolHaloScale', opacityKey: 'beaconSymbolOpacityScale', color: '#00AA00', hasHalo: false },
+  { id: 'wrecks', label: 'Wrecks', sizeKey: 'wreckSymbolSizeScale', haloKey: 'wreckSymbolHaloScale', opacityKey: 'wreckSymbolOpacityScale', color: '#000000', hasHalo: false },
+  { id: 'rocks', label: 'Rocks', sizeKey: 'rockSymbolSizeScale', haloKey: 'rockSymbolHaloScale', opacityKey: 'rockSymbolOpacityScale', color: '#000000', hasHalo: false },
+  { id: 'hazards', label: 'Hazards', sizeKey: 'hazardSymbolSizeScale', haloKey: 'hazardSymbolHaloScale', opacityKey: 'hazardSymbolOpacityScale', color: '#000000', hasHalo: false },
+  { id: 'landmarks', label: 'Landmarks', sizeKey: 'landmarkSymbolSizeScale', haloKey: 'landmarkSymbolHaloScale', opacityKey: 'landmarkSymbolOpacityScale', color: '#8B4513', hasHalo: false },
+  { id: 'moorings', label: 'Moorings', sizeKey: 'mooringSymbolSizeScale', haloKey: 'mooringSymbolHaloScale', opacityKey: 'mooringSymbolOpacityScale', color: '#800080', hasHalo: false },
+  { id: 'anchors', label: 'Anchors', sizeKey: 'anchorSymbolSizeScale', haloKey: 'anchorSymbolHaloScale', opacityKey: 'anchorSymbolOpacityScale', color: '#800080', hasHalo: false },
 ];
 
 // Feature lookup optimization constants (moved outside component for performance)
@@ -506,6 +534,36 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     pipelineAreaStrokeScale: 1.0,
     fairwayStrokeScale: 1.0,
     dredgedAreaStrokeScale: 1.0,
+    // Symbol sizes (nominal values based on S-52 standard visibility)
+    lightSymbolSizeScale: 2.0,    // 200% nominal
+    buoySymbolSizeScale: 2.0,     // 200% nominal
+    beaconSymbolSizeScale: 1.5,   // 150% nominal
+    wreckSymbolSizeScale: 1.5,    // 150% nominal
+    rockSymbolSizeScale: 1.5,     // 150% nominal
+    hazardSymbolSizeScale: 1.5,   // 150% nominal
+    landmarkSymbolSizeScale: 1.5, // 150% nominal
+    mooringSymbolSizeScale: 1.5,  // 150% nominal
+    anchorSymbolSizeScale: 1.5,   // 150% nominal
+    // Symbol halos (white background for visibility per S-52)
+    lightSymbolHaloScale: 1.0,
+    buoySymbolHaloScale: 1.0,
+    beaconSymbolHaloScale: 1.0,
+    wreckSymbolHaloScale: 1.0,
+    rockSymbolHaloScale: 1.0,
+    hazardSymbolHaloScale: 1.0,
+    landmarkSymbolHaloScale: 1.0,
+    mooringSymbolHaloScale: 1.0,
+    anchorSymbolHaloScale: 1.0,
+    // Symbol opacities
+    lightSymbolOpacityScale: 1.0,
+    buoySymbolOpacityScale: 1.0,
+    beaconSymbolOpacityScale: 1.0,
+    wreckSymbolOpacityScale: 1.0,
+    rockSymbolOpacityScale: 1.0,
+    hazardSymbolOpacityScale: 1.0,
+    landmarkSymbolOpacityScale: 1.0,
+    mooringSymbolOpacityScale: 1.0,
+    anchorSymbolOpacityScale: 1.0,
     // Other settings
     dayNightMode: 'day',
     orientationMode: 'north-up',
@@ -681,43 +739,43 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Memoized scaled line halo widths (for shadow layers behind lines)
   const scaledDepthContourLineHalo = useMemo(() => {
     const val = 2.0 * (displaySettings.depthContourLineHaloScale ?? 1.0);
-    if (isNaN(val)) console.warn('[DEBUG] scaledDepthContourLineHalo is NaN!', displaySettings.depthContourLineHaloScale);
+    if (isNaN(val)) logger.warn(LogCategory.SETTINGS, 'scaledDepthContourLineHalo is NaN', { value: displaySettings.depthContourLineHaloScale });
     return val;
   }, [displaySettings.depthContourLineHaloScale]);
 
   const scaledCoastlineHalo = useMemo(() => {
     const val = 3.0 * (displaySettings.coastlineHaloScale ?? 1.0);
-    if (isNaN(val)) console.warn('[DEBUG] scaledCoastlineHalo is NaN!', displaySettings.coastlineHaloScale);
+    if (isNaN(val)) logger.warn(LogCategory.SETTINGS, 'scaledCoastlineHalo is NaN', { value: displaySettings.coastlineHaloScale });
     return val;
   }, [displaySettings.coastlineHaloScale]);
 
   const scaledCableLineHalo = useMemo(() => {
     const val = 2.5 * (displaySettings.cableLineHaloScale ?? 1.0);
-    if (isNaN(val)) console.warn('[DEBUG] scaledCableLineHalo is NaN!', displaySettings.cableLineHaloScale);
+    if (isNaN(val)) logger.warn(LogCategory.SETTINGS, 'scaledCableLineHalo is NaN', { value: displaySettings.cableLineHaloScale });
     return val;
   }, [displaySettings.cableLineHaloScale]);
 
   const scaledPipelineLineHalo = useMemo(() => {
     const val = 3.0 * (displaySettings.pipelineLineHaloScale ?? 1.0);
-    if (isNaN(val)) console.warn('[DEBUG] scaledPipelineLineHalo is NaN!', displaySettings.pipelineLineHaloScale);
+    if (isNaN(val)) logger.warn(LogCategory.SETTINGS, 'scaledPipelineLineHalo is NaN', { value: displaySettings.pipelineLineHaloScale });
     return val;
   }, [displaySettings.pipelineLineHaloScale]);
 
   const scaledBridgeLineHalo = useMemo(() => {
     const val = 4.0 * (displaySettings.bridgeLineHaloScale ?? 1.0);
-    if (isNaN(val)) console.warn('[DEBUG] scaledBridgeLineHalo is NaN!', displaySettings.bridgeLineHaloScale);
+    if (isNaN(val)) logger.warn(LogCategory.SETTINGS, 'scaledBridgeLineHalo is NaN', { value: displaySettings.bridgeLineHaloScale });
     return val;
   }, [displaySettings.bridgeLineHaloScale]);
 
   const scaledMooringLineHalo = useMemo(() => {
     const val = 3.0 * (displaySettings.mooringLineHaloScale ?? 1.0);
-    if (isNaN(val)) console.warn('[DEBUG] scaledMooringLineHalo is NaN!', displaySettings.mooringLineHaloScale);
+    if (isNaN(val)) logger.warn(LogCategory.SETTINGS, 'scaledMooringLineHalo is NaN', { value: displaySettings.mooringLineHaloScale });
     return val;
   }, [displaySettings.mooringLineHaloScale]);
 
   const scaledShorelineConstructionHalo = useMemo(() => {
     const val = 3.0 * (displaySettings.shorelineConstructionHaloScale ?? 1.0);
-    if (isNaN(val)) console.warn('[DEBUG] scaledShorelineConstructionHalo is NaN!', displaySettings.shorelineConstructionHaloScale);
+    if (isNaN(val)) logger.warn(LogCategory.SETTINGS, 'scaledShorelineConstructionHalo is NaN', { value: displaySettings.shorelineConstructionHaloScale });
     return val;
   }, [displaySettings.shorelineConstructionHaloScale]);
 
@@ -842,6 +900,123 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     Math.min(1, Math.max(0, 0.4 * displaySettings.dredgedAreaOpacityScale)),
     [displaySettings.dredgedAreaOpacityScale]
   );
+
+  // Memoized scaled symbol/icon sizes
+  const scaledLightIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.3 * displaySettings.lightSymbolSizeScale,
+    12, 0.5 * displaySettings.lightSymbolSizeScale,
+    16, 0.8 * displaySettings.lightSymbolSizeScale,
+  ], [displaySettings.lightSymbolSizeScale]);
+
+  const scaledBuoyIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.25 * displaySettings.buoySymbolSizeScale,
+    12, 0.4 * displaySettings.buoySymbolSizeScale,
+    16, 0.6 * displaySettings.buoySymbolSizeScale,
+  ], [displaySettings.buoySymbolSizeScale]);
+
+  const scaledBeaconIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.08 * displaySettings.beaconSymbolSizeScale,   // Much smaller at low zoom
+    10, 0.15 * displaySettings.beaconSymbolSizeScale,
+    12, 0.3 * displaySettings.beaconSymbolSizeScale,
+    14, 0.45 * displaySettings.beaconSymbolSizeScale,
+    16, 0.6 * displaySettings.beaconSymbolSizeScale,
+  ], [displaySettings.beaconSymbolSizeScale]);
+
+  const scaledWreckIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.3 * displaySettings.wreckSymbolSizeScale,
+    12, 0.5 * displaySettings.wreckSymbolSizeScale,
+    16, 0.7 * displaySettings.wreckSymbolSizeScale,
+  ], [displaySettings.wreckSymbolSizeScale]);
+
+  const scaledRockIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.25 * displaySettings.rockSymbolSizeScale,
+    12, 0.4 * displaySettings.rockSymbolSizeScale,
+    16, 0.6 * displaySettings.rockSymbolSizeScale,
+  ], [displaySettings.rockSymbolSizeScale]);
+
+  const scaledHazardIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.25 * displaySettings.hazardSymbolSizeScale,
+    12, 0.4 * displaySettings.hazardSymbolSizeScale,
+    16, 0.6 * displaySettings.hazardSymbolSizeScale,
+  ], [displaySettings.hazardSymbolSizeScale]);
+
+  const scaledLandmarkIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.2 * displaySettings.landmarkSymbolSizeScale,
+    10, 0.4 * displaySettings.landmarkSymbolSizeScale,
+    12, 0.65 * displaySettings.landmarkSymbolSizeScale,
+    14, 0.9 * displaySettings.landmarkSymbolSizeScale,
+    16, 1.2 * displaySettings.landmarkSymbolSizeScale,
+  ], [displaySettings.landmarkSymbolSizeScale]);
+
+  const scaledMooringIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.2 * displaySettings.mooringSymbolSizeScale,
+    12, 0.35 * displaySettings.mooringSymbolSizeScale,
+    16, 0.5 * displaySettings.mooringSymbolSizeScale,
+  ], [displaySettings.mooringSymbolSizeScale]);
+
+  const scaledAnchorIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.25 * displaySettings.anchorSymbolSizeScale,
+    12, 0.4 * displaySettings.anchorSymbolSizeScale,
+    16, 0.6 * displaySettings.anchorSymbolSizeScale,
+  ], [displaySettings.anchorSymbolSizeScale]);
+
+  // Memoized scaled symbol/icon opacities (clamped to 0-1 range)
+  const scaledLightSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.lightSymbolOpacityScale)),
+    [displaySettings.lightSymbolOpacityScale]
+  );
+
+  const scaledBuoySymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.buoySymbolOpacityScale)),
+    [displaySettings.buoySymbolOpacityScale]
+  );
+
+  const scaledBeaconSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.beaconSymbolOpacityScale)),
+    [displaySettings.beaconSymbolOpacityScale]
+  );
+
+  const scaledWreckSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.wreckSymbolOpacityScale)),
+    [displaySettings.wreckSymbolOpacityScale]
+  );
+
+  const scaledRockSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.rockSymbolOpacityScale)),
+    [displaySettings.rockSymbolOpacityScale]
+  );
+
+  const scaledHazardSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.hazardSymbolOpacityScale)),
+    [displaySettings.hazardSymbolOpacityScale]
+  );
+
+  const scaledLandmarkSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.landmarkSymbolOpacityScale)),
+    [displaySettings.landmarkSymbolOpacityScale]
+  );
+
+  const scaledMooringSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.mooringSymbolOpacityScale)),
+    [displaySettings.mooringSymbolOpacityScale]
+  );
+
+  const scaledAnchorSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.anchorSymbolOpacityScale)),
+    [displaySettings.anchorSymbolOpacityScale]
+  );
+
+  // Note: Symbol halos disabled - will implement with white symbol versions later
+  // The halo settings are preserved in DisplaySettings for future use
   
   // UI state
   const [currentZoom, setCurrentZoom] = useState(8);
@@ -851,9 +1026,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showControls, setShowControls] = useState(false);
   
   // Control panel tabs
-  type ControlPanelTab = 'basemap' | 'layers' | 'display' | 'other';
+  type ControlPanelTab = 'basemap' | 'layers' | 'display' | 'symbols' | 'other';
   const [activeTab, setActiveTab] = useState<ControlPanelTab>('basemap');
   const [selectedDisplayFeature, setSelectedDisplayFeature] = useState<string>('soundings');
+  const [selectedSymbolFeature, setSelectedSymbolFeature] = useState<string>('lights');
   
   // Layers sub-tabs
   type LayersSubTab = 'chart' | 'names' | 'sources';
@@ -888,20 +1064,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Wrapper for setMapStyle with timing logs
   const setMapStyle = useCallback((newStyle: MapStyleOption) => {
     const now = Date.now();
-    console.log('='.repeat(60));
-    console.log('[STYLE-SWITCH] === BASEMAP SWITCH INITIATED ===');
-    console.log(`[STYLE-SWITCH] From: "${mapStyle}" → To: "${newStyle}"`);
-    console.log(`[STYLE-SWITCH] Start time: ${new Date(now).toISOString()}`);
+    logger.info(LogCategory.UI, `Style switch: "${mapStyle}" → "${newStyle}"`);
+    performanceTracker.recordMetric(RuntimeMetric.STYLE_SWITCH);
     
     styleSwitchStartRef.current = now;
     styleSwitchFromRef.current = mapStyle;
     styleSwitchToRef.current = newStyle;
     styleSwitchRenderCountRef.current = 0;
     
-    console.log(`[STYLE-SWITCH] Calling setMapStyleInternal...`);
-    const stateStart = Date.now();
     setMapStyleInternal(newStyle);
-    console.log(`[STYLE-SWITCH] setMapStyleInternal returned: ${Date.now() - stateStart}ms`);
   }, [mapStyle]);
   
   // Glyphs URL for local font serving (Noto Sans fonts bundled in assets)
@@ -1007,100 +1178,61 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const tile = lonLatToTile(centerCoord[0], centerCoord[1], currentZoom);
     const url = `http://127.0.0.1:8765/tiles/${tile.z}/${tile.x}/${tile.y}.pbf`;
     
-    console.log('='.repeat(60));
-    console.log('[DEBUG-BTN] === FETCH TILE ===');
-    console.log(`[DEBUG-BTN] Center: ${centerCoord[0].toFixed(4)}, ${centerCoord[1].toFixed(4)}`);
-    console.log(`[DEBUG-BTN] Zoom: ${currentZoom.toFixed(2)} → Tile: z${tile.z}/${tile.x}/${tile.y}`);
-    console.log(`[DEBUG-BTN] URL: ${url}`);
+    logger.info(LogCategory.TILES, `Fetching tile z${tile.z}/${tile.x}/${tile.y}`);
     
     try {
       const start = Date.now();
       const response = await fetch(url);
       const elapsed = Date.now() - start;
       
-      console.log(`[DEBUG-BTN] Response: ${response.status} ${response.statusText}`);
-      console.log(`[DEBUG-BTN] Time: ${elapsed}ms`);
-      
-      const chartSource = response.headers.get('X-Chart-Source');
-      const chartsTried = response.headers.get('X-Charts-Tried');
-      console.log(`[DEBUG-BTN] X-Chart-Source: ${chartSource}`);
-      console.log(`[DEBUG-BTN] X-Charts-Tried: ${chartsTried}`);
-      
       if (response.ok) {
         const blob = await response.blob();
-        console.log(`[DEBUG-BTN] Tile size: ${blob.size} bytes`);
+        logger.info(LogCategory.TILES, `Tile fetched: ${blob.size} bytes in ${elapsed}ms`, {
+          chartSource: response.headers.get('X-Chart-Source'),
+          chartsTried: response.headers.get('X-Charts-Tried'),
+        });
       } else {
-        console.log(`[DEBUG-BTN] No tile data`);
+        logger.warn(LogCategory.TILES, `Tile fetch failed: ${response.status}`);
       }
     } catch (error) {
-      console.log(`[DEBUG-BTN] Error: ${error}`);
+      logger.error(LogCategory.TILES, 'Tile fetch error', error as Error);
     }
-    console.log('='.repeat(60));
   }, [centerCoord, currentZoom, lonLatToTile]);
 
   // Button 2: Fetch the TileJSON metadata
   const debugFetchTileJSON = useCallback(async () => {
     const url = 'http://127.0.0.1:8765/tiles.json';
-    
-    console.log('='.repeat(60));
-    console.log('[DEBUG-BTN] === FETCH TILEJSON ===');
-    console.log(`[DEBUG-BTN] URL: ${url}`);
+    logger.info(LogCategory.TILES, 'Fetching TileJSON...');
     
     try {
       const response = await fetch(url);
-      console.log(`[DEBUG-BTN] Response: ${response.status} ${response.statusText}`);
-      
       if (response.ok) {
         const json = await response.json();
-        console.log('[DEBUG-BTN] TileJSON contents:');
-        console.log(`[DEBUG-BTN]   name: ${json.name}`);
-        console.log(`[DEBUG-BTN]   minzoom: ${json.minzoom}`);
-        console.log(`[DEBUG-BTN]   maxzoom: ${json.maxzoom}`);
-        console.log(`[DEBUG-BTN]   bounds: ${JSON.stringify(json.bounds)}`);
-        console.log(`[DEBUG-BTN]   tiles: ${JSON.stringify(json.tiles)}`);
+        logger.info(LogCategory.TILES, 'TileJSON contents', {
+          name: json.name,
+          minzoom: json.minzoom,
+          maxzoom: json.maxzoom,
+          bounds: json.bounds,
+          tiles: json.tiles,
+        });
       } else {
-        console.log(`[DEBUG-BTN] Failed to fetch TileJSON`);
+        logger.warn(LogCategory.TILES, `Failed to fetch TileJSON: ${response.status}`);
       }
     } catch (error) {
-      console.log(`[DEBUG-BTN] Error: ${error}`);
+      logger.error(LogCategory.TILES, 'TileJSON fetch error', error as Error);
     }
-    console.log('='.repeat(60));
   }, []);
 
-  // Button 3: Log current map state
+  // Button 3: Log current map state - uses stateReporter.dumpState()
   const debugLogMapState = useCallback(async () => {
-    console.log('='.repeat(60));
-    console.log('[DEBUG-BTN] === MAP STATE ===');
-    console.log(`[DEBUG-BTN] Current zoom: ${currentZoom.toFixed(2)}`);
-    console.log(`[DEBUG-BTN] Center: [${centerCoord[0].toFixed(6)}, ${centerCoord[1].toFixed(6)}]`);
-    console.log(`[DEBUG-BTN] Tile server ready: ${tileServerReady}`);
-    console.log(`[DEBUG-BTN] Use composite tiles: ${useCompositeTiles}`);
-    console.log(`[DEBUG-BTN] Source reload key: ${sourceReloadKey}`);
-    
-    const tile = lonLatToTile(centerCoord[0], centerCoord[1], currentZoom);
-    console.log(`[DEBUG-BTN] Current tile: z${tile.z}/${tile.x}/${tile.y}`);
-    
-    if (mapRef.current) {
-      try {
-        const bounds = await mapRef.current.getVisibleBounds();
-        console.log(`[DEBUG-BTN] Visible bounds: ${JSON.stringify(bounds)}`);
-      } catch (e) {
-        console.log(`[DEBUG-BTN] Could not get bounds: ${e}`);
-      }
-    }
-    console.log('='.repeat(60));
-  }, [currentZoom, centerCoord, tileServerReady, useCompositeTiles, sourceReloadKey, lonLatToTile]);
+    // Use the state reporter for comprehensive state dump
+    await stateReporter.dumpState();
+  }, []);
 
   // Button 4: Force reload the VectorSource
   const debugForceReload = useCallback(() => {
-    console.log('='.repeat(60));
-    console.log('[DEBUG-BTN] === FORCE RELOAD SOURCE ===');
-    console.log(`[DEBUG-BTN] Old key: ${sourceReloadKey}`);
-    const newKey = sourceReloadKey + 1;
-    setSourceReloadKey(newKey);
-    console.log(`[DEBUG-BTN] New key: ${newKey}`);
-    console.log('[DEBUG-BTN] VectorSource will unmount and remount...');
-    console.log('='.repeat(60));
+    logger.info(LogCategory.CHARTS, `Force reload: key ${sourceReloadKey} → ${sourceReloadKey + 1}`);
+    setSourceReloadKey(sourceReloadKey + 1);
   }, [sourceReloadKey]);
 
   // Button 5: Scan files on device - list all files with sizes
@@ -1108,20 +1240,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const FileSystem = require('expo-file-system/legacy');
     const mbtilesDir = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
     
-    console.log('='.repeat(60));
-    console.log('[SCAN-FILES] === SCANNING DEVICE FILES ===');
-    console.log(`[SCAN-FILES] Directory: ${mbtilesDir}`);
+    logger.info(LogCategory.CHARTS, `Scanning files in ${mbtilesDir}`);
     
     try {
       const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
       if (!dirInfo.exists) {
-        console.log('[SCAN-FILES] Directory does not exist!');
-        console.log('='.repeat(60));
+        logger.warn(LogCategory.CHARTS, 'Directory does not exist');
         return;
       }
       
       const files = await FileSystem.readDirectoryAsync(mbtilesDir);
       let totalSize = 0;
+      const fileList: { name: string; sizeMB: string }[] = [];
       
       for (const filename of files) {
         const filePath = `${mbtilesDir}/${filename}`;
@@ -1129,34 +1259,29 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           const fileInfo = await FileSystem.getInfoAsync(filePath, { size: true });
           const size = fileInfo.size || 0;
           totalSize += size;
-          const sizeMB = (size / 1024 / 1024).toFixed(2);
-          console.log(`[SCAN-FILES]   ${filename}: ${sizeMB} MB`);
+          fileList.push({ name: filename, sizeMB: (size / 1024 / 1024).toFixed(2) });
         } catch (e) {
-          console.log(`[SCAN-FILES]   ${filename}: [error]`);
+          fileList.push({ name: filename, sizeMB: 'error' });
         }
       }
       
-      console.log(`[SCAN-FILES] Total: ${(totalSize / 1024 / 1024 / 1024).toFixed(2)} GB (${files.length} files)`);
+      logger.info(LogCategory.CHARTS, `Scan complete: ${files.length} files, ${(totalSize / 1024 / 1024 / 1024).toFixed(2)} GB total`);
       
-      // Check for manifest.json and show contents
+      // Check for manifest.json
       const manifestPath = `${mbtilesDir}/manifest.json`;
       const manifestInfo = await FileSystem.getInfoAsync(manifestPath);
       if (manifestInfo.exists) {
         const content = await FileSystem.readAsStringAsync(manifestPath);
         const manifest = JSON.parse(content);
-        console.log('[SCAN-FILES] --- manifest.json contents ---');
-        console.log(`[SCAN-FILES] Packs: ${manifest.packs?.length || 0}`);
-        manifest.packs?.forEach((p: any) => console.log(`[SCAN-FILES]   - ${p.id}: z${p.minZoom}-${p.maxZoom}`));
-        console.log(`[SCAN-FILES] BasePacks: ${manifest.basePacks?.length || 0}`);
-        manifest.basePacks?.forEach((p: any) => console.log(`[SCAN-FILES]   - ${p.id}`));
-      } else {
-        console.log('[SCAN-FILES] No manifest.json found');
+        logger.info(LogCategory.CHARTS, 'Manifest found', {
+          packs: manifest.packs?.length || 0,
+          basePacks: manifest.basePacks?.length || 0,
+        });
       }
       
     } catch (error) {
-      console.log(`[SCAN-FILES] Error: ${error}`);
+      logger.error(LogCategory.CHARTS, 'Scan error', error as Error);
     }
-    console.log('='.repeat(60));
   }, []);
 
   // Load cached charts
@@ -1172,25 +1297,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Load and subscribe to display settings
   useEffect(() => {
     const loadDisplaySettings = async () => {
-      console.log('[DEBUG] Loading display settings...');
+      performanceTracker.startPhase(StartupPhase.DISPLAY_SETTINGS);
       const settings = await displaySettingsService.loadSettings();
-      console.log('[DEBUG] Loaded display settings:', JSON.stringify(settings, null, 2));
-      // Validate all halo settings exist
-      const haloKeys = ['depthContourLineHaloScale', 'coastlineHaloScale', 'cableLineHaloScale', 
-                        'pipelineLineHaloScale', 'bridgeLineHaloScale', 'mooringLineHaloScale', 
-                        'shorelineConstructionHaloScale'];
-      haloKeys.forEach(key => {
-        if (settings[key as keyof typeof settings] === undefined) {
-          console.warn(`[DEBUG] Missing setting: ${key}`);
-        }
-      });
+      performanceTracker.endPhase(StartupPhase.DISPLAY_SETTINGS);
+      logger.debug(LogCategory.SETTINGS, 'Display settings loaded');
       setDisplaySettings(settings);
     };
     loadDisplaySettings();
     
     // Subscribe to changes from Settings screen
     const unsubscribe = displaySettingsService.subscribe((settings) => {
-      console.log('[DEBUG] Display settings updated via subscription');
+      logger.debug(LogCategory.SETTINGS, 'Display settings updated via subscription');
       setDisplaySettings(settings);
     });
     
@@ -1201,9 +1318,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   useEffect(() => {
     if (styleSwitchStartRef.current > 0) {
       const elapsed = Date.now() - styleSwitchStartRef.current;
-      console.log(`[STYLE-SWITCH] React state updated to "${mapStyle}" - elapsed: ${elapsed}ms`);
-      console.log(`[STYLE-SWITCH] styleURL will be: ${typeof mapStyleUrls[mapStyle] === 'string' ? mapStyleUrls[mapStyle] : 'inline JSON (local)'}`);
-      console.log(`[STYLE-SWITCH] Render phase starting - React will now reconcile JSX...`);
+      logger.debug(LogCategory.UI, `Style switch: React state updated to "${mapStyle}" (${elapsed}ms)`);
     }
   }, [mapStyle]);
   
@@ -1211,8 +1326,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   useLayoutEffect(() => {
     if (styleSwitchStartRef.current > 0) {
       const elapsed = Date.now() - styleSwitchStartRef.current;
-      console.log(`[STYLE-SWITCH] useLayoutEffect (render committed) - elapsed: ${elapsed}ms`);
-      console.log(`[STYLE-SWITCH] React has finished reconciling, native views being updated...`);
+      logger.debug(LogCategory.UI, `Style switch: render committed (${elapsed}ms)`);
     }
   }, [mapStyle]);
   
@@ -1258,27 +1372,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   useEffect(() => {
     // Skip progressive loading in composite mode - not needed
     if (useCompositeTiles) {
-      console.log(`[PROGRESSIVE] Skipped - using composite tile mode (single source)`);
+      logger.debug(LogCategory.CHARTS, 'Progressive loading skipped - using composite tile mode');
       setLoadingPhase('complete');
       return;
     }
     
-    // DEBUG: Log every time this effect runs
-    console.log(`[PROGRESSIVE] Effect triggered - phase=${loadingPhase}, tileServerReady=${tileServerReady}, mbtilesCharts=${mbtilesCharts.length}, chartsToRender=${chartsToRender.length}`);
+    logger.debug(LogCategory.CHARTS, `Progressive effect: phase=${loadingPhase}, serverReady=${tileServerReady}, charts=${mbtilesCharts.length}`);
     
     if (loadingPhase === 'us1' && tileServerReady && mbtilesCharts.length > 0) {
       // Prevent duplicate runs
       if (progressiveLoadingRef.current) {
-        console.log(`[PROGRESSIVE] Already loading, skipping`);
         return;
       }
       progressiveLoadingRef.current = true;
       
-      console.log(`[PROGRESSIVE] Scheduling Phase 2...`);
+      logger.debug(LogCategory.CHARTS, 'Progressive loading: scheduling Phase 2...');
       
       // Wait for any pending interactions/animations to complete
       const interactionHandle = InteractionManager.runAfterInteractions(async () => {
-        console.log(`[PROGRESSIVE] Phase 2 starting after interactions`);
+        logger.debug(LogCategory.CHARTS, 'Progressive loading: Phase 2 starting');
         
         // Get US1 charts (already rendered)
         const us1Charts = mbtilesCharts
@@ -1290,7 +1402,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           .filter(m => m.chartId.match(/^US[23]/))
           .map(m => m.chartId);
         
-        console.log(`[PERF] Phase 2: Adding ${us2us3Charts.length} US2+US3 charts in batches`);
+        logger.perf(LogCategory.CHARTS, `Phase 2: Adding ${us2us3Charts.length} US2+US3 charts`);
         
         // Add US2+US3 charts in batches
         const tier1All = await addChartsBatched(us1Charts, us2us3Charts, 8, 'Loading coastal charts');
@@ -1308,7 +1420,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           
           let phase3Total = tier1All;
           if (us4Charts.length > 0) {
-            console.log(`[PERF] Phase 3: Adding ${us4Charts.length} US4 charts in batches`);
+            logger.perf(LogCategory.CHARTS, `Phase 3: Adding ${us4Charts.length} US4 charts`);
             phase3Total = await addChartsBatched(tier1All, us4Charts, 10, 'Loading approach charts');
           }
           
@@ -1322,36 +1434,30 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               .slice(0, 150 - phase3Total.length); // Fill up to 150 total
             
             if (us5us6Charts.length > 0) {
-              console.log(`[PERF] Phase 4: Adding ${us5us6Charts.length} US5/US6 charts in batches`);
+              logger.perf(LogCategory.CHARTS, `Phase 4: Adding ${us5us6Charts.length} US5/US6 charts`);
               await addChartsBatched(phase3Total, us5us6Charts, 15, 'Loading harbor charts');
             }
             
             setChartLoadingProgress(null);
             setLoadingPhase('complete');
             progressiveLoadingRef.current = false;
-            console.log(`[PROGRESSIVE] All phases complete`);
+            logger.info(LogCategory.CHARTS, 'Progressive loading: all phases complete');
           }, 150);
         }, 200);
       });
       
       return () => {
-        console.log(`[PROGRESSIVE] Cleanup - cancelling interaction handle`);
         interactionHandle.cancel();
         progressiveLoadingRef.current = false;
       };
     }
-    
-    console.log(`[PROGRESSIVE] No action taken this run`);
   }, [loadingPhase, tileServerReady, mbtilesCharts, addChartsBatched, useCompositeTiles]);
   
-  // Start/stop GPS tracking when panel is shown/hidden
+  // Auto-start GPS tracking when map loads - always show user's location
   useEffect(() => {
-    if (showGPSPanel || showCompass) {
-      startTracking();
-    } else {
-      stopTracking();
-    }
-  }, [showGPSPanel, showCompass]);
+    startTracking();
+    // Don't stop tracking on unmount - let the hook handle cleanup
+  }, []);
   
   // NOTE: This effect is now REDUNDANT - the button handler already centers the map.
   // Keeping it disabled to avoid duplicate setCamera calls.
@@ -1380,9 +1486,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [followGPS]);
 
   const loadCharts = async () => {
-    const t0 = Date.now();
-    console.log('=== STARTUP PERFORMANCE ===');
-    console.log(`[PERF] Start: ${new Date().toISOString()}`);
+    // Start performance tracking
+    performanceTracker.beginStartup();
+    logger.setStartupParam('storagePath', 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles');
     
     try {
       setLoading(true);
@@ -1390,7 +1496,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const FileSystem = require('expo-file-system/legacy');
       
       // === PHASE 1: mbtiles directory - ALWAYS external storage (survives app uninstall) ===
-      const dirStart = Date.now();
+      performanceTracker.startPhase(StartupPhase.DIRECTORY_SETUP);
       const mbtilesDir = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
       
       // Ensure directory exists
@@ -1398,15 +1504,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
         if (!dirInfo.exists) {
           await FileSystem.makeDirectoryAsync(mbtilesDir, { intermediates: true });
-          console.log('[PERF] Created external mbtiles directory');
+          logger.debug(LogCategory.STARTUP, 'Created external mbtiles directory');
         }
       } catch (e) {
-        console.log('[PERF] Could not create mbtiles directory:', e);
+        logger.warn(LogCategory.STARTUP, 'Could not create mbtiles directory', { error: e });
       }
-      console.log(`[PERF] Using external storage: ${mbtilesDir} (${Date.now() - dirStart}ms)`);
+      performanceTracker.endPhase(StartupPhase.DIRECTORY_SETUP, { path: mbtilesDir });
       
       // === PHASE 2: Load manifest.json (chart pack index) ===
-      const indexStart = Date.now();
+      performanceTracker.startPhase(StartupPhase.MANIFEST_LOAD);
       let manifest: { packs?: { id: string; minZoom: number; maxZoom: number; fileSize?: number }[]; basePacks?: { id: string }[] } | null = null;
       let chartPacks: string[] = [];
       
@@ -1417,14 +1523,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           const content = await FileSystem.readAsStringAsync(manifestPath);
           manifest = JSON.parse(content);
           chartPacks = (manifest?.packs || []).map(p => p.id);
-          console.log(`[PERF] Loaded manifest.json with ${chartPacks.length} chart packs`);
+          logger.info(LogCategory.CHARTS, `Loaded manifest.json with ${chartPacks.length} chart packs`);
+          logger.setStartupParam('manifestLoaded', true);
         } else {
-          console.log('[PERF] No manifest.json found - will scan directory');
+          logger.info(LogCategory.CHARTS, 'No manifest.json found - will scan directory');
+          logger.setStartupParam('manifestLoaded', false);
         }
       } catch (e) {
-        console.log('[PERF] Error loading manifest.json:', e);
+        logger.warn(LogCategory.CHARTS, 'Error loading manifest.json', { error: e });
       }
-      console.log(`[PERF] Index load: ${Date.now() - indexStart}ms`);
+      performanceTracker.endPhase(StartupPhase.MANIFEST_LOAD, { packsCount: chartPacks.length });
       
       // Legacy variables kept for compatibility
       let tier1ChartIds: string[] = [];
@@ -1432,7 +1540,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       let totalChartCount = chartPacks.length;
       
       // === PHASE 3: Check for special files (GNIS, basemap, satellite) ===
-      const specialStart = Date.now();
+      performanceTracker.startPhase(StartupPhase.SPECIAL_FILES);
       const [gnisInfo, basemapInfo] = await Promise.all([
         FileSystem.getInfoAsync(`${mbtilesDir}/gnis_names_ak.mbtiles`),
         FileSystem.getInfoAsync(`${mbtilesDir}/basemap_alaska.mbtiles`),
@@ -1464,21 +1572,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         // Sort by minZoom for orderly rendering
         foundSatelliteSets.sort((a, b) => a.minZoom - b.minZoom);
       } catch (e) {
-        console.log('[PERF] Error scanning for satellite files:', e);
+        logger.warn(LogCategory.STARTUP, 'Error scanning for satellite files', { error: e });
       }
       
       setSatelliteTileSets(foundSatelliteSets);
       
-      console.log(`[PERF] Special files check: ${Date.now() - specialStart}ms (GNIS: ${gnisFound}, Basemap: ${basemapFound}, Satellite: ${foundSatelliteSets.length} sets)`);
+      // Store special files info
+      logger.setStartupParam('specialFiles', { gnis: gnisFound, basemap: basemapFound, satellite: foundSatelliteSets.length });
+      performanceTracker.endPhase(StartupPhase.SPECIAL_FILES, { gnis: gnisFound, basemap: basemapFound, satelliteCount: foundSatelliteSets.length });
       
       // === PHASE 4: Build chart list from manifest.json or directory scan ===
-      const buildStart = Date.now();
+      performanceTracker.startPhase(StartupPhase.CHART_DISCOVERY);
       const loadedMbtiles: LoadedMBTilesChart[] = [];
       const loadedRasters: LoadedRasterChart[] = [];
       
       if (manifest && chartPacks.length > 0) {
         // Using manifest.json for pack-based loading
-        console.log(`[PERF] Using manifest.json with ${chartPacks.length} chart packs`);
+        logger.info(LogCategory.CHARTS, `Using manifest.json with ${chartPacks.length} chart packs`);
         
         // Add chart packs to loaded list (only if file exists)
         for (const pack of manifest.packs || []) {
@@ -1490,7 +1600,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               path: packPath 
             });
           } else {
-            console.log(`[PERF] Skipping ${pack.id} - file not found`);
+            logger.debug(LogCategory.CHARTS, `Skipping ${pack.id} - file not found`);
           }
         }
         
@@ -1507,11 +1617,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           // Ignore scan errors for raster files
         }
         
-        console.log(`[PERF] Built chart list from manifest.json: ${Date.now() - buildStart}ms (${loadedMbtiles.length} packs)`);
+        logger.perf(LogCategory.CHARTS, `Built chart list from manifest.json`, { packs: loadedMbtiles.length });
       } else {
         // No manifest - scan directory for any mbtiles files
-        console.log('[PERF] Scanning directory for mbtiles files...');
-        const scanStart = Date.now();
+        logger.info(LogCategory.CHARTS, 'Scanning directory for mbtiles files...');
         try {
           const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
           for (const filename of filesInDir) {
@@ -1532,29 +1641,33 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             }
           }
         } catch (e) {
-          console.log('[PERF] Directory scan failed:', e);
+          logger.error(LogCategory.CHARTS, 'Directory scan failed', e as Error);
         }
-        console.log(`[PERF] Directory scan: ${Date.now() - scanStart}ms (${loadedMbtiles.length} charts)`);
+        logger.perf(LogCategory.CHARTS, `Directory scan complete`, { charts: loadedMbtiles.length });
       }
       
+      // End chart discovery phase
+      performanceTracker.endPhase(StartupPhase.CHART_DISCOVERY, { 
+        mode: manifest ? 'manifest' : 'scan', 
+        chartsFound: loadedMbtiles.length,
+        rastersFound: loadedRasters.length 
+      });
+      
       // Log chart/pack inventory
-      console.log(`[CHARTS] ========== CHART INVENTORY ==========`);
+      logger.info(LogCategory.CHARTS, '========== CHART INVENTORY ==========');
       if (manifest && chartPacks.length > 0) {
-        console.log(`[CHARTS] Mode: Chart Packs (from manifest.json)`);
-        console.log(`[CHARTS] Chart packs: ${chartPacks.length}`);
+        logger.info(LogCategory.CHARTS, `Mode: Chart Packs (from manifest.json)`);
+        logger.info(LogCategory.CHARTS, `Chart packs: ${chartPacks.length}`);
         for (const pack of manifest.packs || []) {
           const sizeMB = pack.fileSize ? Math.round(pack.fileSize / 1024 / 1024) : 0;
           const zoomRange = `z${pack.minZoom}-${pack.maxZoom}`;
-          console.log(`[CHARTS]   - ${pack.id}: ${sizeMB}MB ${zoomRange}`);
+          logger.debug(LogCategory.CHARTS, `  - ${pack.id}: ${sizeMB}MB ${zoomRange}`);
         }
       } else {
-        console.log(`[CHARTS] Mode: Directory scan`);
-        console.log(`[CHARTS] Total charts: ${loadedMbtiles.length}`);
-        for (const m of loadedMbtiles) {
-          console.log(`[CHARTS]   - ${m.chartId}`);
-        }
+        logger.info(LogCategory.CHARTS, `Mode: Directory scan`);
+        logger.info(LogCategory.CHARTS, `Total charts: ${loadedMbtiles.length}`);
       }
-      console.log(`[CHARTS] =======================================`);
+      logger.info(LogCategory.CHARTS, '=======================================');
       
       setMbtilesCharts(loadedMbtiles);
       
@@ -1562,7 +1675,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const allChartIds = loadedMbtiles.map(m => m.chartId);
       setChartsToRender(allChartIds);
       setLoadingPhase('complete');
-      console.log(`[CHARTS] Rendering ${allChartIds.length} charts: ${allChartIds.join(', ')}`);
+      logger.info(LogCategory.CHARTS, `Rendering ${allChartIds.length} charts`);
+      
+      // Store chart info for state reporting
+      logger.setStartupParam('chartsLoaded', loadedMbtiles.length);
+      logger.setStartupParam('chartTypes', { mbtiles: loadedMbtiles.length, raster: loadedRasters.length });
       
       setRasterCharts(loadedRasters);
       
@@ -1573,23 +1690,27 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       
       // === PHASE 5: Start tile server ===
       if (loadedMbtiles.length > 0 || loadedRasters.length > 0) {
-        const serverStart = Date.now();
+        performanceTracker.startPhase(StartupPhase.TILE_SERVER_START);
         
         try {
           const serverUrl = await tileServer.startTileServer({ mbtilesDir });
-          console.log(`[PERF] Tile server start: ${Date.now() - serverStart}ms`);
+          performanceTracker.endPhase(StartupPhase.TILE_SERVER_START, { url: serverUrl });
           
           if (serverUrl) {
             setTileServerReady(true);
+            logger.setStartupParam('tileServerPort', 8765);
+            logger.setStartupParam('tileServerStatus', 'running');
             
             const chartSummary = `${loadedMbtiles.length} charts`;
             setDebugInfo(`Server: ${serverUrl}\nCharts: ${chartSummary}\nDir: ${mbtilesDir}`);
           } else {
-            console.warn('[PERF] Failed to start tile server');
+            logger.warn(LogCategory.TILES, 'Failed to start tile server');
+            logger.setStartupParam('tileServerStatus', 'failed');
             setDebugInfo(`Failed to start tile server\nDir: ${mbtilesDir}`);
           }
         } catch (e) {
-          console.error('[PERF] Tile server error:', e);
+          logger.error(LogCategory.TILES, 'Tile server error', e as Error);
+          logger.setStartupParam('tileServerStatus', 'error');
           setDebugInfo(`Tile server error: ${e}`);
         }
       } else {
@@ -1597,7 +1718,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       }
       
       // === PHASE 6: Load legacy GeoJSON (if any) ===
-      const geoStart = Date.now();
+      performanceTracker.startPhase(StartupPhase.GEOJSON_LOAD);
       const downloadedIds = await chartCacheService.getDownloadedChartIds();
       const loadedCharts: LoadedChartData[] = [];
       
@@ -1611,23 +1732,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       }
       
       if (loadedCharts.length > 0) {
-        console.log(`[PERF] GeoJSON load: ${Date.now() - geoStart}ms (${loadedCharts.length} charts)`);
+        performanceTracker.endPhase(StartupPhase.GEOJSON_LOAD, { charts: loadedCharts.length });
+      } else {
+        performanceTracker.endPhase(StartupPhase.GEOJSON_LOAD, { charts: 0 });
       }
       setCharts(loadedCharts);
       
       // === FINAL SUMMARY ===
-      const totalTime = Date.now() - t0;
-      console.log('=== STARTUP COMPLETE ===');
-      console.log(`[PERF] Total startup: ${totalTime}ms`);
-      console.log(`[PERF] Tile mode: COMPOSITE (server-side quilting, ~20 layers)`);
-      console.log(`[PERF] Special: GNIS=${gnisFound}, Basemap=${basemapFound}`);
-      
-      if (totalTime > 5000) {
-        console.warn(`[PERF] ⚠️ Startup took ${(totalTime/1000).toFixed(1)}s - consider optimization`);
-      }
+      const totalTime = performanceTracker.completeStartup();
+      logger.info(LogCategory.STARTUP, `Tile mode: COMPOSITE (server-side quilting, ~20 layers)`);
+      logger.info(LogCategory.STARTUP, `Special files: GNIS=${gnisFound}, Basemap=${basemapFound}`);
       
     } catch (error) {
-      console.error('[PERF] STARTUP ERROR:', error);
+      logger.error(LogCategory.STARTUP, 'STARTUP ERROR', error as Error);
       Alert.alert('Error', 'Failed to load cached charts');
     } finally {
       setLoading(false);
@@ -1636,7 +1753,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // Combine features from all charts
   const combinedFeatures = useMemo(() => {
-    console.log('Combining features from', charts.length, 'charts');
+    if (charts.length > 0) {
+      logger.debug(LogCategory.CHARTS, `Combining features from ${charts.length} charts`);
+    }
     const combined: Partial<Record<FeatureType, GeoJSONFeatureCollection>> = {};
     
     for (const featureType of ALL_FEATURE_TYPES) {
@@ -1662,9 +1781,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       }
     }
     
-    console.log('Combined feature types:', Object.keys(combined));
-    for (const [type, data] of Object.entries(combined)) {
-      console.log(`  ${type}: ${data?.features?.length || 0} features`);
+    if (Object.keys(combined).length > 0) {
+      logger.debug(LogCategory.CHARTS, `Combined feature types: ${Object.keys(combined).join(', ')}`);
     }
     
     return combined;
@@ -1703,11 +1821,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     // === STYLE SWITCH: Log map idle during style switch ===
     if (styleSwitchStartRef.current > 0) {
       const elapsed = Date.now() - styleSwitchStartRef.current;
-      console.log(`[STYLE-SWITCH] onMapIdle fired - elapsed: ${elapsed}ms`);
-      console.log(`[STYLE-SWITCH] Map is now idle after switching to "${styleSwitchToRef.current}"`);
-      console.log(`[STYLE-SWITCH] === BASEMAP SWITCH COMPLETE ===`);
-      console.log(`[STYLE-SWITCH] Total time: ${elapsed}ms`);
-      console.log('='.repeat(60));
+      logger.perf(LogCategory.UI, `Style switch complete: ${elapsed}ms`);
+      performanceTracker.recordMetric(RuntimeMetric.STYLE_SWITCH, elapsed);
       // Reset tracking
       styleSwitchStartRef.current = 0;
     }
@@ -1723,11 +1838,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     if (!queryWarmupDoneRef.current && mapRef.current) {
       queryWarmupDoneRef.current = true;
       // Run a small query in the background to warm up Mapbox's spatial index
-      console.log('[PERF] Warming up query cache...');
+      logger.debug(LogCategory.STARTUP, 'Warming up query cache...');
       const warmupStart = Date.now();
       mapRef.current.queryRenderedFeaturesAtPoint([100, 100], undefined, [])
         .then(() => {
-          console.log(`[PERF] Query cache warmed up in ${Date.now() - warmupStart}ms`);
+          logger.perf(LogCategory.STARTUP, `Query cache warmed up in ${Date.now() - warmupStart}ms`);
         })
         .catch(() => {
           // Ignore errors - this is just a warmup
@@ -1899,7 +2014,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         ids.push(`mbtiles-${layerType}-${chartId}`);
       }
     }
-    console.log(`[MapPress] Built ${ids.length} queryable layer IDs for ${chartsAtZoom.length}/${allChartsToRender.length} charts at z${currentZoom.toFixed(1)} (${visibleTypes.length} layer types)`);
+    logger.debug(LogCategory.CHARTS, `Built ${ids.length} queryable layer IDs for ${chartsAtZoom.length}/${allChartsToRender.length} charts at z${currentZoom.toFixed(1)}`);
     return ids;
   }, [allChartsToRender, chartsToRender.length, currentZoom,
       showLights, showBuoys, showBeacons, showHazards, showLandmarks, showSoundings,
@@ -1913,32 +2028,27 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const handleMapPress = useCallback(async (e: any) => {
     const perfStart = Date.now();
     tapStartTimeRef.current = perfStart;  // Track for end-to-end timing
-    console.log('[PERF:MapPress] === TAP EVENT START ===');
+    const endTapMetric = performanceTracker.startMetric(RuntimeMetric.MAP_TAP);
     
     // Clear any previous selection/choices
     setFeatureChoices(null);
     setSelectedFeature(null);
     
     if (!mapRef.current) {
-      console.log('[PERF:MapPress] No map ref, aborting');
       return;
     }
     
     const { geometry } = e;
     if (!geometry?.coordinates) {
-      console.log('[PERF:MapPress] No coordinates, aborting');
       return;
     }
     
     const [longitude, latitude] = geometry.coordinates;
-    console.log(`[PERF:MapPress] Tap at: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+    logger.debug(LogCategory.UI, `Map tap at: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
     
     // Round screen coordinates to integers
     const screenX = Math.round(e.properties?.screenPointX || 0);
     const screenY = Math.round(e.properties?.screenPointY || 0);
-    
-    const coordsTime = Date.now();
-    console.log(`[PERF:MapPress] Coordinate extraction: ${coordsTime - perfStart}ms`);
     
     try {
       // Query features in a rectangle around the tap point (22px tolerance for finger taps)
@@ -1951,7 +2061,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       ];
       
       // Query ALL rendered features (no layer filter) - faster than specifying 1000+ layer IDs
-      console.log(`[PERF:MapPress] Querying all layers (filter in JS)...`);
       const queryStart = Date.now();
       
       const allFeatures = await mapRef.current.queryRenderedFeaturesInRect(
@@ -1960,18 +2069,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         []     // Empty array = query all layers (much faster than specifying 1000+ IDs)
       );
       
-      const queryEnd = Date.now();
-      console.log(`[PERF:MapPress] queryRenderedFeaturesInRect: ${queryEnd - queryStart}ms (found ${allFeatures?.features?.length || 0} raw features)`);
-      
-      // Debug: Log first 3 raw features to see what we're getting
-      if (allFeatures?.features?.length > 0) {
-        console.log('[PERF:MapPress] Raw feature samples:');
-        for (let i = 0; i < Math.min(3, allFeatures.features.length); i++) {
-          const f = allFeatures.features[i];
-          const layerName = getLayerName(f.properties);
-          console.log(`  [${i}] sourceLayer=${f.sourceLayerID || 'N/A'}, OBJL=${f.properties?.OBJL || 'N/A'} (${layerName}), props=${JSON.stringify(f.properties || {}).substring(0, 200)}`);
-        }
-      }
+      const queryTime = Date.now() - queryStart;
+      logger.debug(LogCategory.UI, `Feature query: ${queryTime}ms (${allFeatures?.features?.length || 0} raw features)`);
       
       // Filter to nautical features from ACTIVE/VISIBLE layers only
       const filterStart = Date.now();
@@ -2033,7 +2132,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         })
       };
       const filterEnd = Date.now();
-      console.log(`[PERF:MapPress] JS filter (visible layers only): ${filterEnd - filterStart}ms (${features.features.length} features from active layers)`);
       
       if (features?.features?.length > 0) {
         // Group features by layer type (OBJL) and deduplicate
@@ -2085,34 +2183,27 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         });
         
         const priorityEnd = Date.now();
-        console.log(`[PERF:MapPress] Grouped ${features.features.length} features into ${uniqueFeatures.length} unique types: ${priorityEnd - priorityStart}ms`);
+        logger.debug(LogCategory.UI, `Grouped ${features.features.length} → ${uniqueFeatures.length} unique types (${priorityEnd - priorityStart}ms)`);
         
         if (uniqueFeatures.length === 1) {
           // Single feature type - show it directly
-          console.log(`[PERF:MapPress] Single feature: ${uniqueFeatures[0].type}`);
           startTransition(() => {
             setFeatureChoices(null);
             setSelectedFeature(uniqueFeatures[0]);
           });
         } else if (uniqueFeatures.length > 1) {
           // Multiple feature types - let user choose
-          console.log(`[PERF:MapPress] Multiple features found: ${uniqueFeatures.map(f => f.type).join(', ')}`);
           startTransition(() => {
             setSelectedFeature(null);
             setFeatureChoices(uniqueFeatures);
           });
-        } else {
-          console.log('[PERF:MapPress] No suitable features found after grouping');
         }
-      } else {
-        console.log('[PERF:MapPress] No features found from active layers at tap location');
       }
     } catch (error) {
-      console.log('[PERF:MapPress] Error querying features:', error);
+      logger.error(LogCategory.UI, 'Error querying features', error as Error);
     }
     
-    const perfEnd = Date.now();
-    console.log(`[PERF:MapPress] === TOTAL TIME: ${perfEnd - perfStart}ms ===`);
+    const totalTime = endTapMetric();
   }, [queryableLayerIds, showLights, showBuoys, showBeacons, showHazards, showLandmarks, 
       showSoundings, showCables, showPipelines, showDepthContours, showCoastline,
       showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
@@ -2172,7 +2263,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       }
     }
     
-    console.log('Could not calculate center, using default');
+    logger.debug(LogCategory.CHARTS, 'Could not calculate center, using default');
     return [-152, 61] as [number, number];
   }, [charts, mbtilesCharts]);
 
@@ -2180,28 +2271,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // NOTE: Must be before early returns to comply with Rules of Hooks
   const formattedFeatureProps = useMemo(() => {
     if (!selectedFeature) return null;
-    const formatStart = Date.now();
-    console.log(`[PERF:Format] Starting formatFeatureProperties for: ${selectedFeature.type}`);
     const result = formatFeatureProperties(selectedFeature, displaySettings.depthUnits);
-    const formatEnd = Date.now();
-    console.log(`[PERF:Format] formatFeatureProperties: ${formatEnd - formatStart}ms`);
-    const entriesStart = Date.now();
     const entries = Object.entries(result);
-    const entriesEnd = Date.now();
-    console.log(`[PERF:Format] Object.entries (${entries.length} props): ${entriesEnd - entriesStart}ms`);
-    console.log(`[PERF:Format] Total useMemo: ${entriesEnd - formatStart}ms`);
-    // Log end-to-end time from tap to info box ready
-    if (tapStartTimeRef.current > 0) {
-      console.log(`[PERF:InfoBox] === TAP TO INFO BOX READY: ${entriesEnd - tapStartTimeRef.current}ms ===`);
-    }
     return entries;
   }, [selectedFeature]);
   
   // Log when info box actually renders (after React commit phase)
   useEffect(() => {
     if (selectedFeature && tapStartTimeRef.current > 0) {
-      const renderTime = Date.now() - tapStartTimeRef.current;
-      console.log(`[PERF:InfoBox] === TAP TO RENDER COMPLETE: ${renderTime}ms ===`);
       tapStartTimeRef.current = 0; // Reset for next tap
     }
   }, [selectedFeature]);
@@ -2211,47 +2288,32 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const handleWillStartLoadingMap = useCallback(() => {
     if (styleSwitchStartRef.current > 0) {
       const elapsed = Date.now() - styleSwitchStartRef.current;
-      console.log(`[STYLE-SWITCH] onWillStartLoadingMap - elapsed: ${elapsed}ms`);
+      logger.debug(LogCategory.UI, `Style switch: onWillStartLoadingMap (${elapsed}ms)`);
     }
   }, []);
   
   const handleDidFinishLoadingMap = useCallback(() => {
     if (styleSwitchStartRef.current > 0) {
       const elapsed = Date.now() - styleSwitchStartRef.current;
-      console.log(`[STYLE-SWITCH] onDidFinishLoadingMap - elapsed: ${elapsed}ms`);
+      logger.debug(LogCategory.UI, `Style switch: onDidFinishLoadingMap (${elapsed}ms)`);
     }
   }, []);
   
   const handleDidFailLoadingMap = useCallback((error: any) => {
     if (styleSwitchStartRef.current > 0) {
       const elapsed = Date.now() - styleSwitchStartRef.current;
-      console.log(`[STYLE-SWITCH] onDidFailLoadingMap - elapsed: ${elapsed}ms, error:`, error);
+      logger.error(LogCategory.UI, `Style switch failed (${elapsed}ms)`, error);
     }
   }, []);
   
   const handleDidFinishLoadingStyle = useCallback(() => {
     try {
-      console.log('[DEBUG] onDidFinishLoadingStyle - START');
-      console.log('[DEBUG] Current displaySettings:', JSON.stringify({
-        soundingsFontScale: displaySettings.soundingsFontScale,
-        cableLineScale: displaySettings.cableLineScale,
-        cableLineHaloScale: displaySettings.cableLineHaloScale,
-        depthContourLineHaloScale: displaySettings.depthContourLineHaloScale,
-      }));
-      console.log('[DEBUG] Scaled values:', {
-        scaledCableLineWidth,
-        scaledCableLineHalo,
-        scaledDepthContourLineHalo,
-        scaledCoastlineHalo,
-      });
       if (styleSwitchStartRef.current > 0) {
         const elapsed = Date.now() - styleSwitchStartRef.current;
-        console.log(`[STYLE-SWITCH] onDidFinishLoadingStyle - elapsed: ${elapsed}ms`);
-        console.log(`[STYLE-SWITCH] Style "${styleSwitchToRef.current}" has finished loading`);
+        logger.debug(LogCategory.UI, `Style switch: onDidFinishLoadingStyle (${elapsed}ms)`);
       }
-      console.log('[DEBUG] onDidFinishLoadingStyle - END (no error in callback)');
     } catch (error) {
-      console.error('[DEBUG] Error in handleDidFinishLoadingStyle callback:', error);
+      logger.error(LogCategory.UI, 'Error in handleDidFinishLoadingStyle callback', error as Error);
     }
   }, [displaySettings, scaledCableLineWidth, scaledCableLineHalo, scaledDepthContourLineHalo, scaledCoastlineHalo]);
   
@@ -2263,8 +2325,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       // Only log first few frames to avoid spam
       if (styleRenderFrameCountRef.current <= 3) {
         const elapsed = Date.now() - styleSwitchStartRef.current;
-        const fullyRendered = state?.properties?.renderMode === 'full';
-        console.log(`[STYLE-SWITCH] onDidFinishRenderingFrame #${styleRenderFrameCountRef.current} - elapsed: ${elapsed}ms, fullyRendered: ${fullyRendered}`);
+        logger.debug(LogCategory.UI, `Style switch: render frame #${styleRenderFrameCountRef.current} (${elapsed}ms)`);
       }
     }
   }, []);
@@ -2272,8 +2333,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const handleDidFinishRenderingFrameFully = useCallback(() => {
     if (styleSwitchStartRef.current > 0) {
       const elapsed = Date.now() - styleSwitchStartRef.current;
-      console.log(`[STYLE-SWITCH] onDidFinishRenderingFrameFully - elapsed: ${elapsed}ms`);
-      console.log(`[STYLE-SWITCH] Map fully rendered with new style`);
+      logger.debug(LogCategory.UI, `Style switch: fully rendered (${elapsed}ms)`);
       // Reset frame counter
       styleRenderFrameCountRef.current = 0;
     }
@@ -2387,8 +2447,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           const satelliteVisible = mapStyle === 'satellite' ? 1 : 0;
           // Log satellite visibility during style switch
           if (styleSwitchStartRef.current > 0 && mapStyle === 'satellite' && tileSet.minZoom === 0) {
-            const elapsed = Date.now() - styleSwitchStartRef.current;
-            console.log(`[STYLE-SWITCH] Rendering ${satelliteTileSets.length} satellite tile sets with opacity=${satelliteVisible} - elapsed: ${elapsed}ms`);
           }
           return (
             <MapLibre.RasterSource
@@ -2438,8 +2496,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           const basemapVisible = mapStyle === 'local' ? 'visible' : 'none';
           // === STYLE SWITCH: Log basemap visibility during render ===
           if (styleSwitchStartRef.current > 0) {
-            const elapsed = Date.now() - styleSwitchStartRef.current;
-            console.log(`[STYLE-SWITCH] Rendering local basemap with visibility="${basemapVisible}" - elapsed: ${elapsed}ms`);
           }
           return (
           <MapLibre.VectorSource
@@ -2836,10 +2892,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             minZoomLevel={0}
             maxZoomLevel={18}
             onPress={(e) => {
-              console.log('[COMPOSITE] Source press - processing features...');
               const features = e.features || [];
-              console.log(`[COMPOSITE] Found ${features.length} features at tap`);
-              
               if (features.length === 0) return;
               
               // Find best feature using OBJL-based priorities
@@ -2857,9 +2910,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   priority += 50;
                 }
                 
-                const layerName = getLayerName(feature.properties);
-                console.log(`[COMPOSITE]   ${layerName} (OBJL ${objl}): priority=${priority}`);
-                
                 if (priority > bestPriority) {
                   bestPriority = priority;
                   bestFeature = feature;
@@ -2868,7 +2918,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               
               if (bestFeature) {
                 const layer = getLayerName(bestFeature.properties);
-                console.log(`[COMPOSITE] Selected: ${layer} (OBJL ${bestFeature.properties?.OBJL}, priority ${bestPriority})`);
                 
                 setSelectedFeature({
                   type: LAYER_DISPLAY_NAMES[layer] || layer,
@@ -2880,7 +2929,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }
             }}
             // @ts-ignore - undocumented but useful for debugging
-            onMapboxError={(e: any) => console.error('[COMPOSITE] VectorSource error:', e)}
+            onMapboxError={(e: any) => logger.error(LogCategory.TILES, 'VectorSource error', e)}
           >
             {/* ============================================== */}
             {/* S-52 LAYER ORDER: Opaque Background Fills First */}
@@ -3163,7 +3212,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               ]}
               style={{
                 iconImage: 'mooring-buoy',
-                iconSize: ['interpolate', ['linear'], ['zoom'], 12, 0.4, 14, 0.6, 18, 0.8],
+                iconSize: scaledMooringIconSize,
+                iconOpacity: scaledMooringSymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showMoorings ? 'visible' : 'none',
               }}
@@ -3494,7 +3544,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   ['==', ['coalesce', ['get', 'WATLEV'], 3], 5], 'rock-awash',        // Awash
                   'rock-submerged',  // Default for any other value (including 1, 6, 7, null)
                 ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.4, 16, 0.6],
+                iconSize: scaledRockIconSize,
+                iconOpacity: scaledRockSymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showHazards ? 'visible' : 'none',
               }}
@@ -3519,7 +3570,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   5, 'wreck-uncovers',
                   'wreck-submerged',
                 ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.3, 12, 0.5, 16, 0.7],
+                iconSize: scaledWreckIconSize,
+                iconOpacity: scaledWreckSymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showHazards ? 'visible' : 'none',
               }}
@@ -3535,7 +3587,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               ]}
               style={{
                 iconImage: 'obstruction',
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.4, 16, 0.6],
+                iconSize: scaledHazardIconSize,
+                iconOpacity: scaledHazardSymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showHazards ? 'visible' : 'none',
               }}
@@ -3552,7 +3605,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               ]}
               style={{
                 iconImage: 'tide-rips',
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.15, 10, 0.2, 12, 0.3, 16, 0.5],
+                iconSize: scaledHazardIconSize,
+                iconOpacity: scaledHazardSymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showHazards ? 'visible' : 'none',
               }}
@@ -3588,13 +3642,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   7, 'buoy-super',
                   'buoy-pillar',
                 ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.4, 16, 0.6],
+                iconSize: scaledBuoyIconSize,
+                iconOpacity: scaledBuoySymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showBuoys ? 'visible' : 'none',
               }}
             />
             
             {/* Beacons - BCNLAT, BCNCAR, etc. */}
+            {/* Note: No halo for beacons - their complex lattice shapes don't work well with simple circles */}
             <MapLibre.SymbolLayer
               id="composite-beacons"
               sourceLayerID="charts"
@@ -3616,7 +3672,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   5, 'beacon-cairn',
                   'beacon-generic',
                 ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.3, 12, 0.5, 16, 0.7],
+                iconSize: scaledBeaconIconSize,
+                iconOpacity: scaledBeaconSymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showBeacons ? 'visible' : 'none',
               }}
@@ -3682,7 +3739,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   4, 'light-green',
                   'light-major',
                 ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.3, 12, 0.5, 16, 0.8],
+                iconSize: scaledLightIconSize,
+                iconOpacity: scaledLightSymbolOpacity,
                 iconRotate: ['coalesce', ['get', '_ORIENT'], 135],
                 iconRotationAlignment: 'map',
                 iconAnchor: 'bottom',
@@ -3719,7 +3777,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   28, 'landmark-radio-tower',
                   'landmark-tower',
                 ],
-                iconSize: ['interpolate', ['linear'], ['zoom'], 8, 0.25, 12, 0.45, 16, 0.7],
+                iconSize: scaledLandmarkIconSize,
+                iconOpacity: scaledLandmarkSymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showLandmarks ? 'visible' : 'none',
               }}
@@ -3769,7 +3828,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['==', ['get', 'OBJL'], 3]}
               style={{
                 iconImage: 'anchor',
-                iconSize: ['interpolate', ['linear'], ['zoom'], 4, 0.2, 8, 0.3, 12, 0.5, 16, 0.7],
+                iconSize: scaledAnchorIconSize,
+                iconOpacity: scaledAnchorSymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showAnchorBerths ? 'visible' : 'none',
               }}
@@ -4397,10 +4457,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             // When followGPS is false, Camera's centerCoordinate is undefined so user can pan freely
             followGPSRef.current = newFollowGPS;
             setFollowGPS(newFollowGPS);
-            
-            if (!showGPSPanel && !showCompass) {
-              startTracking();
-            }
+            // GPS tracking is now auto-started on mount, no need to start here
           }}
         >
           <Text style={styles.centerBtnText}>⌖</Text>
@@ -4590,12 +4647,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <TouchableOpacity 
               style={styles.debugActionBtn}
               onPress={async () => {
-                console.log('=== CLEAR CACHE & RELOAD ===');
+                logger.info(LogCategory.CHARTS, 'Clear cache & reload initiated');
                 // Stop tile server (closes all database connections)
-                console.log('Stopping tile server...');
                 await tileServer.stopTileServer();
                 // Clear all chart state
-                console.log('Clearing state...');
                 setMbtilesCharts([]);
                 setChartsToRender([]);
                 setLoadingPhase('us1');
@@ -4607,10 +4662,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 // Increment cache buster to force Mapbox to re-fetch tiles
                 setCacheBuster(prev => prev + 1);
                 // Small delay to ensure cleanup
-                console.log('Waiting for cleanup...');
                 await new Promise(r => setTimeout(r, 500));
                 // Reload everything fresh
-                console.log('Reloading charts...');
                 loadCharts();
               }}
             >
@@ -4675,6 +4728,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               onPress={() => setActiveTab('display')}
             >
               <Text style={[styles.tabButtonText, activeTab === 'display' && styles.tabButtonTextActive]}>Display</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.tabButton, activeTab === 'symbols' && styles.tabButtonActive]}
+              onPress={() => setActiveTab('symbols')}
+            >
+              <Text style={[styles.tabButtonText, activeTab === 'symbols' && styles.tabButtonTextActive]}>Symbols</Text>
             </TouchableOpacity>
             <TouchableOpacity 
               style={[styles.tabButton, activeTab === 'other' && styles.tabButtonActive]}
@@ -5140,7 +5199,168 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               </View>
             )}
 
-            {/* Tab 4: Other Settings */}
+            {/* Tab 4: Symbols */}
+            {activeTab === 'symbols' && (
+              <View style={styles.displayTabContainer}>
+                {/* Controls at top - full width */}
+                <View style={styles.displayControlsTop}>
+                  {(() => {
+                    const symbol = SYMBOL_FEATURES.find(s => s.id === selectedSymbolFeature);
+                    if (!symbol) return null;
+                    
+                    const formatPercent = (v: number) => `${Math.round(v * 100)}%`;
+                    
+                    // Get nominal size for this symbol type (lights/buoys: 2.0, others: 1.5)
+                    const getNominalSize = (id: string) => {
+                      if (id === 'lights' || id === 'buoys') return 2.0;
+                      return 1.5;
+                    };
+                    
+                    const updateValue = async (key: keyof DisplaySettings, value: number) => {
+                      const newSettings = { ...displaySettings, [key]: value };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    };
+                    
+                    const resetSymbol = async () => {
+                      const updates: Partial<DisplaySettings> = {};
+                      updates[symbol.sizeKey] = getNominalSize(symbol.id);
+                      if (symbol.hasHalo) {
+                        updates[symbol.haloKey] = 1.0;
+                      }
+                      updates[symbol.opacityKey] = 1.0;
+                      const newSettings = { ...displaySettings, ...updates };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    };
+                    
+                    return (
+                      <>
+                        <View style={styles.displayControlHeader}>
+                          <Text style={styles.displayFeatureName}>{symbol.label}</Text>
+                          <View style={styles.headerRightSection}>
+                            <View style={[styles.featureTypeBadge, { backgroundColor: symbol.color }]}>
+                              <Text style={styles.featureTypeBadgeLabel}>symbol</Text>
+                            </View>
+                            <TouchableOpacity 
+                              style={styles.resetIconBtn}
+                              onPress={resetSymbol}
+                            >
+                              <Text style={styles.resetIconText}>↺</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                        
+                        {/* Size slider */}
+                        <View style={styles.controlRow}>
+                          <Text style={styles.controlRowLabel}>Size</Text>
+                          <View style={styles.sliderContainerCompact}>
+                            <Text style={styles.sliderMinLabelSmall}>50%</Text>
+                            <Slider
+                              style={styles.displaySliderCompact}
+                              minimumValue={0.5}
+                              maximumValue={3.0}
+                              step={0.1}
+                              value={displaySettings[symbol.sizeKey] as number}
+                              onValueChange={(v) => updateValue(symbol.sizeKey, v)}
+                              minimumTrackTintColor={symbol.color}
+                              maximumTrackTintColor="rgba(255,255,255,0.3)"
+                              thumbTintColor={symbol.color}
+                            />
+                            <Text style={styles.sliderMaxLabelSmall}>300%</Text>
+                          </View>
+                          <Text style={styles.sliderValueCompact}>
+                            {formatPercent(displaySettings[symbol.sizeKey] as number)}
+                          </Text>
+                        </View>
+                        
+                        {/* Halo slider - only shown for symbols that support halos */}
+                        {symbol.hasHalo && (
+                          <View style={styles.controlRow}>
+                            <Text style={styles.controlRowLabel}>Halo</Text>
+                            <View style={styles.sliderContainerCompact}>
+                              <Text style={styles.sliderMinLabelSmall}>0%</Text>
+                              <Slider
+                                style={styles.displaySliderCompact}
+                                minimumValue={0}
+                                maximumValue={3.0}
+                                step={0.1}
+                                value={displaySettings[symbol.haloKey] as number}
+                                onValueChange={(v) => updateValue(symbol.haloKey, v)}
+                                minimumTrackTintColor="#E040FB"
+                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                thumbTintColor="#E040FB"
+                              />
+                              <Text style={styles.sliderMaxLabelSmall}>300%</Text>
+                            </View>
+                            <Text style={styles.sliderValueCompact}>
+                              {formatPercent(displaySettings[symbol.haloKey] as number)}
+                            </Text>
+                          </View>
+                        )}
+                        
+                        {/* Opacity slider */}
+                        <View style={styles.controlRow}>
+                          <Text style={styles.controlRowLabel}>Opacity</Text>
+                          <View style={styles.sliderContainerCompact}>
+                            <Text style={styles.sliderMinLabelSmall}>0%</Text>
+                            <Slider
+                              style={styles.displaySliderCompact}
+                              minimumValue={0}
+                              maximumValue={1.0}
+                              step={0.1}
+                              value={displaySettings[symbol.opacityKey] as number}
+                              onValueChange={(v) => updateValue(symbol.opacityKey, v)}
+                              minimumTrackTintColor="#81C784"
+                              maximumTrackTintColor="rgba(255,255,255,0.3)"
+                              thumbTintColor="#81C784"
+                            />
+                            <Text style={styles.sliderMaxLabelSmall}>100%</Text>
+                          </View>
+                          <Text style={styles.sliderValueCompact}>
+                            {formatPercent(displaySettings[symbol.opacityKey] as number)}
+                          </Text>
+                        </View>
+                      </>
+                    );
+                  })()}
+                </View>
+                
+                {/* Symbol selector below - horizontal scrollable */}
+                <View style={styles.featureSelectorContainer}>
+                  <ScrollView 
+                    style={styles.featureSelectorScroll}
+                    contentContainerStyle={styles.featureSelectorContent}
+                  >
+                    <View style={styles.featureSelectorGrid}>
+                      {SYMBOL_FEATURES.map((symbol) => (
+                        <TouchableOpacity
+                          key={symbol.id}
+                          style={[
+                            styles.featureSelectorChip,
+                            selectedSymbolFeature === symbol.id && styles.featureSelectorChipActive
+                          ]}
+                          onPress={() => setSelectedSymbolFeature(symbol.id)}
+                        >
+                          <View style={[
+                            styles.featureTypeIndicator,
+                            { backgroundColor: symbol.color },
+                          ]} />
+                          <Text style={[
+                            styles.featureSelectorChipText,
+                            selectedSymbolFeature === symbol.id && styles.featureSelectorChipTextActive
+                          ]}>
+                            {symbol.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </ScrollView>
+                </View>
+              </View>
+            )}
+
+            {/* Tab 5: Other Settings */}
             {activeTab === 'other' && (
               <ScrollView style={styles.tabScrollContent}>
                 <Text style={styles.panelSectionTitle}>Display Mode</Text>
@@ -5774,7 +5994,6 @@ const FeatureInspector = memo(function FeatureInspector({
     </View>
   );
   
-  console.log(`[PERF:FeatureInspector] Render: ${Date.now() - renderStart}ms`);
   return content;
 });
 
