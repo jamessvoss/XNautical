@@ -28,11 +28,21 @@ export default function SettingsScreen() {
   
   // Display settings
   const [displaySettings, setDisplaySettings] = useState<DisplaySettings>({
-    // Font sizes
-    soundingsFontScale: 1.0,
-    gnisFontScale: 1.0,
-    depthContourFontScale: 1.0,
-    chartLabelsFontScale: 1.0,
+    // Font sizes (1.5 = nominal 100%, range 1.0-3.0)
+    soundingsFontScale: 1.5,
+    gnisFontScale: 1.5,
+    depthContourFontScale: 1.5,
+    chartLabelsFontScale: 1.5,
+    // Text halo/stroke
+    soundingsHaloScale: 1.0,
+    gnisHaloScale: 1.0,
+    depthContourLabelHaloScale: 1.0,
+    chartLabelsHaloScale: 1.0,
+    // Text opacities
+    soundingsOpacityScale: 1.0,
+    gnisOpacityScale: 1.0,
+    depthContourLabelOpacityScale: 1.0,
+    chartLabelsOpacityScale: 1.0,
     // Line widths
     depthContourLineScale: 1.0,
     coastlineLineScale: 1.0,
@@ -41,6 +51,22 @@ export default function SettingsScreen() {
     bridgeLineScale: 1.0,
     mooringLineScale: 1.0,
     shorelineConstructionLineScale: 1.0,
+    // Line halos - temporarily disabled to debug crash
+    depthContourLineHaloScale: 0,
+    coastlineHaloScale: 0,
+    cableLineHaloScale: 0,
+    pipelineLineHaloScale: 0,
+    bridgeLineHaloScale: 0,
+    mooringLineHaloScale: 0,
+    shorelineConstructionHaloScale: 0,
+    // Line opacities
+    depthContourLineOpacityScale: 1.0,
+    coastlineOpacityScale: 1.0,
+    cableLineOpacityScale: 1.0,
+    pipelineLineOpacityScale: 1.0,
+    bridgeOpacityScale: 1.0,
+    mooringOpacityScale: 1.0,
+    shorelineConstructionOpacityScale: 1.0,
     // Area opacities
     depthAreaOpacityScale: 1.0,
     restrictedAreaOpacityScale: 1.0,
@@ -52,6 +78,20 @@ export default function SettingsScreen() {
     pipelineAreaOpacityScale: 1.0,
     fairwayOpacityScale: 1.0,
     dredgedAreaOpacityScale: 1.0,
+    // Area strokes
+    depthAreaStrokeScale: 1.0,
+    restrictedAreaStrokeScale: 1.0,
+    cautionAreaStrokeScale: 1.0,
+    militaryAreaStrokeScale: 1.0,
+    anchorageStrokeScale: 1.0,
+    marineFarmStrokeScale: 1.0,
+    cableAreaStrokeScale: 1.0,
+    pipelineAreaStrokeScale: 1.0,
+    fairwayStrokeScale: 1.0,
+    dredgedAreaStrokeScale: 1.0,
+    // Other settings
+    dayNightMode: 'day',
+    orientationMode: 'north-up',
   });
 
   useEffect(() => {

@@ -13,7 +13,9 @@ import {
   ActivityIndicator,
   Alert,
   InteractionManager,
+  Dimensions,
 } from 'react-native';
+import Slider from '@react-native-community/slider';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapLibre from '@maplibre/maplibre-react-native';
@@ -95,6 +97,44 @@ const NAV_SYMBOLS: Record<string, any> = {
   'landmark-windmill': require('../../assets/symbols/png/landmark-windmill.png'),
   'landmark-church': require('../../assets/symbols/png/landmark-church.png'),
 };
+
+// Display feature configuration for the Display Settings tab
+interface DisplayFeatureConfig {
+  id: string;
+  label: string;
+  type: 'text' | 'line' | 'area';
+  fontSizeKey?: keyof DisplaySettings;
+  haloKey?: keyof DisplaySettings;  // For text halo/stroke
+  strokeKey?: keyof DisplaySettings;  // For line width or area border
+  opacityKey?: keyof DisplaySettings;
+}
+
+const DISPLAY_FEATURES: DisplayFeatureConfig[] = [
+  // Text features (font size + halo + opacity)
+  { id: 'soundings', label: 'Soundings', type: 'text', fontSizeKey: 'soundingsFontScale', haloKey: 'soundingsHaloScale', opacityKey: 'soundingsOpacityScale' },
+  { id: 'gnis', label: 'Place Names (GNIS)', type: 'text', fontSizeKey: 'gnisFontScale', haloKey: 'gnisHaloScale', opacityKey: 'gnisOpacityScale' },
+  { id: 'depthContourLabels', label: 'Depth Contour Labels', type: 'text', fontSizeKey: 'depthContourFontScale', haloKey: 'depthContourLabelHaloScale', opacityKey: 'depthContourLabelOpacityScale' },
+  { id: 'chartLabels', label: 'Chart Labels', type: 'text', fontSizeKey: 'chartLabelsFontScale', haloKey: 'chartLabelsHaloScale', opacityKey: 'chartLabelsOpacityScale' },
+  // Line features (thickness + halo + opacity)
+  { id: 'depthContourLines', label: 'Depth Contour Lines', type: 'line', strokeKey: 'depthContourLineScale', haloKey: 'depthContourLineHaloScale', opacityKey: 'depthContourLineOpacityScale' },
+  { id: 'coastline', label: 'Coastline', type: 'line', strokeKey: 'coastlineLineScale', haloKey: 'coastlineHaloScale', opacityKey: 'coastlineOpacityScale' },
+  { id: 'cables', label: 'Cables', type: 'line', strokeKey: 'cableLineScale', haloKey: 'cableLineHaloScale', opacityKey: 'cableLineOpacityScale' },
+  { id: 'pipelines', label: 'Pipelines', type: 'line', strokeKey: 'pipelineLineScale', haloKey: 'pipelineLineHaloScale', opacityKey: 'pipelineLineOpacityScale' },
+  { id: 'bridges', label: 'Bridges', type: 'line', strokeKey: 'bridgeLineScale', haloKey: 'bridgeLineHaloScale', opacityKey: 'bridgeOpacityScale' },
+  { id: 'moorings', label: 'Moorings', type: 'line', strokeKey: 'mooringLineScale', haloKey: 'mooringLineHaloScale', opacityKey: 'mooringOpacityScale' },
+  { id: 'shorelineConstruction', label: 'Shoreline Construction', type: 'line', strokeKey: 'shorelineConstructionLineScale', haloKey: 'shorelineConstructionHaloScale', opacityKey: 'shorelineConstructionOpacityScale' },
+  // Area features (fill opacity + stroke width)
+  { id: 'depthAreas', label: 'Depth Areas', type: 'area', opacityKey: 'depthAreaOpacityScale', strokeKey: 'depthAreaStrokeScale' },
+  { id: 'restrictedAreas', label: 'Restricted Areas', type: 'area', opacityKey: 'restrictedAreaOpacityScale', strokeKey: 'restrictedAreaStrokeScale' },
+  { id: 'cautionAreas', label: 'Caution Areas', type: 'area', opacityKey: 'cautionAreaOpacityScale', strokeKey: 'cautionAreaStrokeScale' },
+  { id: 'militaryAreas', label: 'Military Areas', type: 'area', opacityKey: 'militaryAreaOpacityScale', strokeKey: 'militaryAreaStrokeScale' },
+  { id: 'anchorages', label: 'Anchorages', type: 'area', opacityKey: 'anchorageOpacityScale', strokeKey: 'anchorageStrokeScale' },
+  { id: 'marineFarms', label: 'Marine Farms', type: 'area', opacityKey: 'marineFarmOpacityScale', strokeKey: 'marineFarmStrokeScale' },
+  { id: 'cableAreas', label: 'Cable Areas', type: 'area', opacityKey: 'cableAreaOpacityScale', strokeKey: 'cableAreaStrokeScale' },
+  { id: 'pipelineAreas', label: 'Pipeline Areas', type: 'area', opacityKey: 'pipelineAreaOpacityScale', strokeKey: 'pipelineAreaStrokeScale' },
+  { id: 'fairways', label: 'Fairways', type: 'area', opacityKey: 'fairwayOpacityScale', strokeKey: 'fairwayStrokeScale' },
+  { id: 'dredgedAreas', label: 'Dredged Areas', type: 'area', opacityKey: 'dredgedAreaOpacityScale', strokeKey: 'dredgedAreaStrokeScale' },
+];
 
 // Feature lookup optimization constants (moved outside component for performance)
 // OBJL code to layer name mapping (S-57 standard)
@@ -299,6 +339,8 @@ function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityA
 }
 
 export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}) {
+  console.log('[DEBUG] DynamicChartViewer component start');
+  
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<any>(null);
@@ -307,6 +349,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // === STYLE SWITCH: Track render count ===
   const renderCountRef = useRef<number>(0);
   renderCountRef.current++;
+  console.log('[DEBUG] DynamicChartViewer render count:', renderCountRef.current);
   
   // Throttle refs for camera change handler (100ms throttle)
   const lastCameraUpdateRef = useRef<number>(0);
@@ -389,11 +432,21 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   
   // Display settings (font scales, line widths, area opacities)
   const [displaySettings, setDisplaySettings] = useState<DisplaySettings>({
-    // Font sizes
-    soundingsFontScale: 1.0,
-    gnisFontScale: 1.0,
-    depthContourFontScale: 1.0,
-    chartLabelsFontScale: 1.0,
+    // Font sizes (1.5 = nominal 100%, range 1.0-3.0)
+    soundingsFontScale: 1.5,
+    gnisFontScale: 1.5,
+    depthContourFontScale: 1.5,
+    chartLabelsFontScale: 1.5,
+    // Text halo/stroke
+    soundingsHaloScale: 1.0,
+    gnisHaloScale: 1.0,
+    depthContourLabelHaloScale: 1.0,
+    chartLabelsHaloScale: 1.0,
+    // Text opacities
+    soundingsOpacityScale: 1.0,
+    gnisOpacityScale: 1.0,
+    depthContourLabelOpacityScale: 1.0,
+    chartLabelsOpacityScale: 1.0,
     // Line widths
     depthContourLineScale: 1.0,
     coastlineLineScale: 1.0,
@@ -402,6 +455,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     bridgeLineScale: 1.0,
     mooringLineScale: 1.0,
     shorelineConstructionLineScale: 1.0,
+    // Line halos - temporarily disabled to debug crash
+    depthContourLineHaloScale: 0,
+    coastlineHaloScale: 0,
+    cableLineHaloScale: 0,
+    pipelineLineHaloScale: 0,
+    bridgeLineHaloScale: 0,
+    mooringLineHaloScale: 0,
+    shorelineConstructionHaloScale: 0,
+    // Line opacities
+    depthContourLineOpacityScale: 1.0,
+    coastlineOpacityScale: 1.0,
+    cableLineOpacityScale: 1.0,
+    pipelineLineOpacityScale: 1.0,
+    bridgeOpacityScale: 1.0,
+    mooringOpacityScale: 1.0,
+    shorelineConstructionOpacityScale: 1.0,
     // Area opacities
     depthAreaOpacityScale: 1.0,
     restrictedAreaOpacityScale: 1.0,
@@ -413,6 +482,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     pipelineAreaOpacityScale: 1.0,
     fairwayOpacityScale: 1.0,
     dredgedAreaOpacityScale: 1.0,
+    // Area strokes
+    depthAreaStrokeScale: 1.0,
+    restrictedAreaStrokeScale: 1.0,
+    cautionAreaStrokeScale: 1.0,
+    militaryAreaStrokeScale: 1.0,
+    anchorageStrokeScale: 1.0,
+    marineFarmStrokeScale: 1.0,
+    cableAreaStrokeScale: 1.0,
+    pipelineAreaStrokeScale: 1.0,
+    fairwayStrokeScale: 1.0,
+    dredgedAreaStrokeScale: 1.0,
+    // Other settings
+    dayNightMode: 'day',
+    orientationMode: 'north-up',
   });
 
   // Memoized scaled font sizes for performance
@@ -481,6 +564,48 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     ],
   }), [displaySettings.gnisFontScale]);
 
+  // Memoized scaled text halo widths
+  const scaledSoundingsHalo = useMemo(() => 
+    1.0 * displaySettings.soundingsHaloScale,
+    [displaySettings.soundingsHaloScale]
+  );
+
+  const scaledGnisHalo = useMemo(() => 
+    0.8 * displaySettings.gnisHaloScale,
+    [displaySettings.gnisHaloScale]
+  );
+
+  const scaledDepthContourLabelHalo = useMemo(() => 
+    0.7 * displaySettings.depthContourLabelHaloScale,
+    [displaySettings.depthContourLabelHaloScale]
+  );
+
+  const scaledChartLabelsHalo = useMemo(() => 
+    1.5 * displaySettings.chartLabelsHaloScale,
+    [displaySettings.chartLabelsHaloScale]
+  );
+
+  // Memoized scaled text opacities (clamped to 0-1 range)
+  const scaledSoundingsOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.soundingsOpacityScale)),
+    [displaySettings.soundingsOpacityScale]
+  );
+
+  const scaledGnisOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.gnisOpacityScale)),
+    [displaySettings.gnisOpacityScale]
+  );
+
+  const scaledDepthContourLabelOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.depthContourLabelOpacityScale)),
+    [displaySettings.depthContourLabelOpacityScale]
+  );
+
+  const scaledChartLabelsOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.chartLabelsOpacityScale)),
+    [displaySettings.chartLabelsOpacityScale]
+  );
+
   // Memoized scaled line widths
   const scaledDepthContourLineWidth = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
@@ -525,7 +650,116 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     18, 4 * displaySettings.shorelineConstructionLineScale,
   ], [displaySettings.shorelineConstructionLineScale]);
 
-  // Memoized scaled opacities (clamped to 0-1 range)
+  // Memoized scaled line halo widths (for shadow layers behind lines)
+  const scaledDepthContourLineHalo = useMemo(() => {
+    const val = 2.0 * (displaySettings.depthContourLineHaloScale ?? 1.0);
+    if (isNaN(val)) console.warn('[DEBUG] scaledDepthContourLineHalo is NaN!', displaySettings.depthContourLineHaloScale);
+    return val;
+  }, [displaySettings.depthContourLineHaloScale]);
+
+  const scaledCoastlineHalo = useMemo(() => {
+    const val = 3.0 * (displaySettings.coastlineHaloScale ?? 1.0);
+    if (isNaN(val)) console.warn('[DEBUG] scaledCoastlineHalo is NaN!', displaySettings.coastlineHaloScale);
+    return val;
+  }, [displaySettings.coastlineHaloScale]);
+
+  const scaledCableLineHalo = useMemo(() => {
+    const val = 2.5 * (displaySettings.cableLineHaloScale ?? 1.0);
+    if (isNaN(val)) console.warn('[DEBUG] scaledCableLineHalo is NaN!', displaySettings.cableLineHaloScale);
+    return val;
+  }, [displaySettings.cableLineHaloScale]);
+
+  const scaledPipelineLineHalo = useMemo(() => {
+    const val = 3.0 * (displaySettings.pipelineLineHaloScale ?? 1.0);
+    if (isNaN(val)) console.warn('[DEBUG] scaledPipelineLineHalo is NaN!', displaySettings.pipelineLineHaloScale);
+    return val;
+  }, [displaySettings.pipelineLineHaloScale]);
+
+  const scaledBridgeLineHalo = useMemo(() => {
+    const val = 4.0 * (displaySettings.bridgeLineHaloScale ?? 1.0);
+    if (isNaN(val)) console.warn('[DEBUG] scaledBridgeLineHalo is NaN!', displaySettings.bridgeLineHaloScale);
+    return val;
+  }, [displaySettings.bridgeLineHaloScale]);
+
+  const scaledMooringLineHalo = useMemo(() => {
+    const val = 3.0 * (displaySettings.mooringLineHaloScale ?? 1.0);
+    if (isNaN(val)) console.warn('[DEBUG] scaledMooringLineHalo is NaN!', displaySettings.mooringLineHaloScale);
+    return val;
+  }, [displaySettings.mooringLineHaloScale]);
+
+  const scaledShorelineConstructionHalo = useMemo(() => {
+    const val = 3.0 * (displaySettings.shorelineConstructionHaloScale ?? 1.0);
+    if (isNaN(val)) console.warn('[DEBUG] scaledShorelineConstructionHalo is NaN!', displaySettings.shorelineConstructionHaloScale);
+    return val;
+  }, [displaySettings.shorelineConstructionHaloScale]);
+
+  // Memoized halo widths for interpolated line layers (mooring, shoreline construction)
+  const scaledMooringLineHaloWidth = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    12, (1.5 * displaySettings.mooringLineScale) + scaledMooringLineHalo,
+    14, (2.5 * displaySettings.mooringLineScale) + scaledMooringLineHalo,
+    18, (4 * displaySettings.mooringLineScale) + scaledMooringLineHalo,
+  ], [displaySettings.mooringLineScale, scaledMooringLineHalo]);
+
+  const scaledShorelineConstructionHaloWidth = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    12, (1.5 * displaySettings.shorelineConstructionLineScale) + scaledShorelineConstructionHalo,
+    14, (2.5 * displaySettings.shorelineConstructionLineScale) + scaledShorelineConstructionHalo,
+    18, (4 * displaySettings.shorelineConstructionLineScale) + scaledShorelineConstructionHalo,
+  ], [displaySettings.shorelineConstructionLineScale, scaledShorelineConstructionHalo]);
+
+  // Halo widths for interpolated line widths (depth contours, coastline)
+  const scaledDepthContourLineHaloWidth = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, (0.3 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    12, (0.7 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    16, (1.0 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+  ], [displaySettings.depthContourLineScale, scaledDepthContourLineHalo]);
+
+  const scaledCoastlineHaloWidth = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, (0.5 * displaySettings.coastlineLineScale) + scaledCoastlineHalo,
+    12, (1.0 * displaySettings.coastlineLineScale) + scaledCoastlineHalo,
+    16, (1.5 * displaySettings.coastlineLineScale) + scaledCoastlineHalo,
+  ], [displaySettings.coastlineLineScale, scaledCoastlineHalo]);
+
+  // Memoized scaled line opacities (clamped to 0-1 range)
+  const scaledDepthContourLineOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.depthContourLineOpacityScale)),
+    [displaySettings.depthContourLineOpacityScale]
+  );
+
+  const scaledCoastlineOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.coastlineOpacityScale)),
+    [displaySettings.coastlineOpacityScale]
+  );
+
+  const scaledCableLineOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.cableLineOpacityScale)),
+    [displaySettings.cableLineOpacityScale]
+  );
+
+  const scaledPipelineLineOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.pipelineLineOpacityScale)),
+    [displaySettings.pipelineLineOpacityScale]
+  );
+
+  const scaledBridgeOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.bridgeOpacityScale)),
+    [displaySettings.bridgeOpacityScale]
+  );
+
+  const scaledMooringOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.mooringOpacityScale)),
+    [displaySettings.mooringOpacityScale]
+  );
+
+  const scaledShorelineConstructionOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.shorelineConstructionOpacityScale)),
+    [displaySettings.shorelineConstructionOpacityScale]
+  );
+
+  // Memoized scaled area opacities (clamped to 0-1 range)
   const scaledDepthAreaOpacity = useMemo(() => 
     Math.min(1, Math.max(0, 1.0 * displaySettings.depthAreaOpacityScale)),
     [displaySettings.depthAreaOpacityScale]
@@ -587,6 +821,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [selectedFeature, setSelectedFeature] = useState<FeatureInfo | null>(null);
   const [featureChoices, setFeatureChoices] = useState<FeatureInfo[] | null>(null); // Multiple features to choose from
   const [showControls, setShowControls] = useState(false);
+  
+  // Control panel tabs
+  type ControlPanelTab = 'basemap' | 'layers' | 'display' | 'other';
+  const [activeTab, setActiveTab] = useState<ControlPanelTab>('basemap');
+  const [selectedDisplayFeature, setSelectedDisplayFeature] = useState<string>('soundings');
+  
+  // Layers sub-tabs
+  type LayersSubTab = 'chart' | 'names' | 'sources';
+  const [layersSubTab, setLayersSubTab] = useState<LayersSubTab>('chart');
   
   // Debug: Force VectorSource reload
   const [sourceReloadKey, setSourceReloadKey] = useState(0);
@@ -897,13 +1140,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Load and subscribe to display settings
   useEffect(() => {
     const loadDisplaySettings = async () => {
+      console.log('[DEBUG] Loading display settings...');
       const settings = await displaySettingsService.loadSettings();
+      console.log('[DEBUG] Loaded display settings:', JSON.stringify(settings, null, 2));
+      // Validate all halo settings exist
+      const haloKeys = ['depthContourLineHaloScale', 'coastlineHaloScale', 'cableLineHaloScale', 
+                        'pipelineLineHaloScale', 'bridgeLineHaloScale', 'mooringLineHaloScale', 
+                        'shorelineConstructionHaloScale'];
+      haloKeys.forEach(key => {
+        if (settings[key as keyof typeof settings] === undefined) {
+          console.warn(`[DEBUG] Missing setting: ${key}`);
+        }
+      });
       setDisplaySettings(settings);
     };
     loadDisplaySettings();
     
     // Subscribe to changes from Settings screen
     const unsubscribe = displaySettingsService.subscribe((settings) => {
+      console.log('[DEBUG] Display settings updated via subscription');
       setDisplaySettings(settings);
     });
     
@@ -1914,12 +2169,30 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, []);
   
   const handleDidFinishLoadingStyle = useCallback(() => {
-    if (styleSwitchStartRef.current > 0) {
-      const elapsed = Date.now() - styleSwitchStartRef.current;
-      console.log(`[STYLE-SWITCH] onDidFinishLoadingStyle - elapsed: ${elapsed}ms`);
-      console.log(`[STYLE-SWITCH] Style "${styleSwitchToRef.current}" has finished loading`);
+    try {
+      console.log('[DEBUG] onDidFinishLoadingStyle - START');
+      console.log('[DEBUG] Current displaySettings:', JSON.stringify({
+        soundingsFontScale: displaySettings.soundingsFontScale,
+        cableLineScale: displaySettings.cableLineScale,
+        cableLineHaloScale: displaySettings.cableLineHaloScale,
+        depthContourLineHaloScale: displaySettings.depthContourLineHaloScale,
+      }));
+      console.log('[DEBUG] Scaled values:', {
+        scaledCableLineWidth,
+        scaledCableLineHalo,
+        scaledDepthContourLineHalo,
+        scaledCoastlineHalo,
+      });
+      if (styleSwitchStartRef.current > 0) {
+        const elapsed = Date.now() - styleSwitchStartRef.current;
+        console.log(`[STYLE-SWITCH] onDidFinishLoadingStyle - elapsed: ${elapsed}ms`);
+        console.log(`[STYLE-SWITCH] Style "${styleSwitchToRef.current}" has finished loading`);
+      }
+      console.log('[DEBUG] onDidFinishLoadingStyle - END (no error in callback)');
+    } catch (error) {
+      console.error('[DEBUG] Error in handleDidFinishLoadingStyle callback:', error);
     }
-  }, []);
+  }, [displaySettings, scaledCableLineWidth, scaledCableLineHalo, scaledDepthContourLineHalo, scaledCoastlineHalo]);
   
   // Track first render frame after style switch
   const styleRenderFrameCountRef = useRef<number>(0);
@@ -2726,6 +2999,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* ============================================== */}
             
             {/* BRIDGE - Bridges (line) */}
+            {/* BRIDGE - Bridges (lines) Halo */}
+            <MapLibre.LineLayer
+              id="composite-bridge-halo"
+              sourceLayerID="charts"
+              minZoomLevel={12}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 11],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#FFFFFF',
+                lineWidth: scaledBridgeLineWidth + scaledBridgeLineHalo,
+                lineOpacity: scaledBridgeLineHalo > 0 ? scaledBridgeOpacity * 0.8 : 0,
+                visibility: showBridges ? 'visible' : 'none',
+              }}
+            />
+            
             <MapLibre.LineLayer
               id="composite-bridge"
               sourceLayerID="charts"
@@ -2737,6 +3027,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 lineColor: '#696969',
                 lineWidth: scaledBridgeLineWidth,
+                lineOpacity: scaledBridgeOpacity,
                 visibility: showBridges ? 'visible' : 'none',
               }}
             />
@@ -2788,6 +3079,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             />
             
             {/* MORFAC - Mooring Facilities (line - dolphins, piers) */}
+            {/* MORFAC - Mooring Facilities (lines) Halo */}
+            <MapLibre.LineLayer
+              id="composite-morfac-line-halo"
+              sourceLayerID="charts"
+              minZoomLevel={12}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 84],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#FFFFFF',
+                lineWidth: scaledMooringLineHaloWidth,
+                lineOpacity: scaledMooringLineHalo > 0 ? scaledMooringOpacity * 0.8 : 0,
+                visibility: showMoorings ? 'visible' : 'none',
+              }}
+            />
+            
             <MapLibre.LineLayer
               id="composite-morfac-line"
               sourceLayerID="charts"
@@ -2799,6 +3107,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 lineColor: '#4B0082',
                 lineWidth: scaledMooringLineWidth,
+                lineOpacity: scaledMooringOpacity,
                 visibility: showMoorings ? 'visible' : 'none',
               }}
             />
@@ -2819,6 +3128,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
+            {/* SLCONS - Shoreline Construction (seawalls, breakwaters, etc) Halo */}
+            <MapLibre.LineLayer
+              id="composite-slcons-halo"
+              sourceLayerID="charts"
+              minZoomLevel={12}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 122],
+                ['==', ['geometry-type'], 'LineString']
+              ]}
+              style={{
+                lineColor: '#FFFFFF',
+                lineWidth: scaledShorelineConstructionHaloWidth,
+                lineOpacity: scaledShorelineConstructionHalo > 0 ? scaledShorelineConstructionOpacity * 0.8 : 0,
+                visibility: showShorelineConstruction ? 'visible' : 'none',
+              }}
+            />
+            
             {/* SLCONS - Shoreline Construction (seawalls, breakwaters, etc) */}
             <MapLibre.LineLayer
               id="composite-slcons"
@@ -2831,6 +3157,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 lineColor: '#5C4033',
                 lineWidth: scaledShorelineConstructionLineWidth,
+                lineOpacity: scaledShorelineConstructionOpacity,
                 visibility: showShorelineConstruction ? 'visible' : 'none',
               }}
             />
@@ -2872,6 +3199,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* S-52 LAYER ORDER: Line Features               */}
             {/* ============================================== */}
             
+            {/* DEPCNT - Depth Contours Halo */}
+            <MapLibre.LineLayer
+              id="composite-depcnt-halo"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 43]}
+              style={{
+                lineColor: '#FFFFFF',
+                lineWidth: scaledDepthContourLineHaloWidth,
+                lineOpacity: scaledDepthContourLineHalo > 0 ? 0.5 * scaledDepthContourLineOpacity : 0,
+                visibility: showDepthContours ? 'visible' : 'none',
+              }}
+            />
+            
             {/* DEPCNT - Depth Contours */}
             <MapLibre.LineLayer
               id="composite-depcnt"
@@ -2880,8 +3220,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 lineColor: '#4A90D9',
                 lineWidth: scaledDepthContourLineWidth,
-                lineOpacity: 0.7,
+                lineOpacity: 0.7 * scaledDepthContourLineOpacity,
                 visibility: showDepthContours ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* COALNE - Coastline Halo */}
+            <MapLibre.LineLayer
+              id="composite-coalne-halo"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 30]}
+              style={{
+                lineColor: '#FFFFFF',
+                lineWidth: scaledCoastlineHaloWidth,
+                lineOpacity: scaledCoastlineHalo > 0 ? scaledCoastlineOpacity * 0.8 : 0,
               }}
             />
             
@@ -2893,6 +3245,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 lineColor: '#8B4513',
                 lineWidth: scaledCoastlineLineWidth,
+                lineOpacity: scaledCoastlineOpacity,
+              }}
+            />
+            
+            {/* CBLSUB/CBLOHD - Cables Halo */}
+            <MapLibre.LineLayer
+              id="composite-cables-halo"
+              sourceLayerID="charts"
+              filter={['any',
+                ['==', ['get', 'OBJL'], 22],
+                ['==', ['get', 'OBJL'], 21]
+              ]}
+              style={{
+                lineColor: '#FFFFFF',
+                lineWidth: scaledCableLineWidth + scaledCableLineHalo,
+                lineOpacity: scaledCableLineHalo > 0 ? scaledCableLineOpacity * 0.8 : 0,
+                visibility: showCables ? 'visible' : 'none',
               }}
             />
             
@@ -2908,12 +3277,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 lineColor: '#800080',
                 lineWidth: scaledCableLineWidth,
                 lineDasharray: [3, 2],
+                lineOpacity: scaledCableLineOpacity,
                 visibility: showCables ? 'visible' : 'none',
               }}
             />
             
+            {/* PIPSOL - Pipelines Halo */}
+            <MapLibre.LineLayer
+              id="composite-pipsol-halo"
+              sourceLayerID="charts"
+              filter={['in', ['get', 'OBJL'], ['literal', [94, 98]]]}
+              style={{
+                lineColor: '#FFFFFF',
+                lineWidth: scaledPipelineLineWidth + scaledPipelineLineHalo,
+                lineOpacity: scaledPipelineLineHalo > 0 ? scaledPipelineLineOpacity * 0.8 : 0,
+                visibility: showPipelines ? 'visible' : 'none',
+              }}
+            />
+            
             {/* PIPSOL - Pipelines */}
-            {/* PIPSOL - Pipeline (OBJL 94, not 98 as some docs suggest) */}
             <MapLibre.LineLayer
               id="composite-pipsol"
               sourceLayerID="charts"
@@ -2922,6 +3304,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 lineColor: '#008000',
                 lineWidth: scaledPipelineLineWidth,
                 lineDasharray: [5, 3],
+                lineOpacity: scaledPipelineLineOpacity,
                 visibility: showPipelines ? 'visible' : 'none',
               }}
             />
@@ -2946,7 +3329,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textSize: scaledSoundingsFontSize,
                 textColor: '#000080',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 1,
+                textHaloWidth: scaledSoundingsHalo,
+                textOpacity: scaledSoundingsOpacity,
                 textAllowOverlap: false,
                 textPadding: [
                   'interpolate', ['linear'], ['zoom'],
@@ -3318,6 +3702,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
+            {/* CBLSUB - Submarine Cables Halo */}
+            <MapLibre.LineLayer
+              id="composite-cblsub-halo"
+              sourceLayerID="charts"
+              filter={['==', ['get', 'OBJL'], 22]}
+              style={{
+                lineColor: '#FFFFFF',
+                lineWidth: (scaledCableLineWidth * 1.33) + scaledCableLineHalo,
+                lineCap: 'round',
+                lineOpacity: scaledCableLineHalo > 0 ? scaledCableLineOpacity * 0.8 : 0,
+                visibility: showCables ? 'visible' : 'none',
+              }}
+            />
+            
             {/* CBLSUB - Submarine Cables (separate from combined cables layer) */}
             <MapLibre.LineLayer
               id="composite-cblsub"
@@ -3325,9 +3723,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['==', ['get', 'OBJL'], 22]}
               style={{
                 lineColor: '#800080',
-                lineWidth: 2,
+                lineWidth: scaledCableLineWidth * 1.33,
                 lineDasharray: [4, 2],
                 lineCap: 'round',
+                lineOpacity: scaledCableLineOpacity,
                 visibility: showCables ? 'visible' : 'none',
               }}
             />
@@ -3407,7 +3806,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textSize: scaledDepthContourFontSize,
                 textColor: '#1E3A5F',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 0.7,
+                textHaloWidth: scaledDepthContourLabelHalo,
+                textOpacity: scaledDepthContourLabelOpacity,
                 symbolPlacement: 'line',
                 symbolSpacing: 300,
                 textFont: ['Noto Sans Regular'],
@@ -3466,8 +3866,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['==', ['get', 'OBJL'], 20]}
               style={{
                 lineColor: '#800080',
-                lineWidth: 1.5,
+                lineWidth: scaledCableLineWidth,
                 lineDasharray: [4, 2],
+                lineOpacity: scaledCableLineOpacity,
                 visibility: showCables ? 'visible' : 'none',
               }}
             />
@@ -3479,8 +3880,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['==', ['get', 'OBJL'], 92]}
               style={{
                 lineColor: '#008000',
-                lineWidth: 1.5,
+                lineWidth: scaledPipelineLineWidth * 0.75,
                 lineDasharray: [6, 3],
+                lineOpacity: scaledPipelineLineOpacity,
                 visibility: showPipelines ? 'visible' : 'none',
               }}
             />
@@ -3601,7 +4003,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textSize: scaledGnisFontSizes.water,
                 textColor: '#0066CC',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 0.8,
+                textHaloWidth: scaledGnisHalo,
+                textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,  // Declutter - don't overlap other labels
                 textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
@@ -3624,7 +4027,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textSize: scaledGnisFontSizes.coastal,
                 textColor: '#5D4037',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 0.8,
+                textHaloWidth: scaledGnisHalo,
+                textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,  // Declutter - don't overlap other labels
                 textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
@@ -3647,7 +4051,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textSize: scaledGnisFontSizes.landmark,
                 textColor: '#666666',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 0.8,
+                textHaloWidth: scaledGnisHalo,
+                textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,  // Declutter - don't overlap other labels
                 textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
@@ -3670,7 +4075,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textSize: scaledGnisFontSizes.populated,
                 textColor: '#CC0000',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 1.0,
+                textHaloWidth: scaledGnisHalo * 1.25,
+                textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,  // Declutter - don't overlap other labels
                 textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
@@ -3693,7 +4099,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textSize: scaledGnisFontSizes.stream,
                 textColor: '#3399FF',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 0.7,
+                textHaloWidth: scaledGnisHalo * 0.875,
+                textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,  // Declutter - don't overlap other labels
                 textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
@@ -3716,7 +4123,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textSize: scaledGnisFontSizes.lake,
                 textColor: '#66CCFF',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 0.7,
+                textHaloWidth: scaledGnisHalo * 0.875,
+                textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,  // Declutter - don't overlap other labels
                 textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
@@ -3739,7 +4147,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textSize: scaledGnisFontSizes.terrain,
                 textColor: '#999966',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 0.7,
+                textHaloWidth: scaledGnisHalo * 0.875,
+                textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,  // Declutter - don't overlap other labels
                 textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
                 symbolPlacement: 'point',
@@ -3894,7 +4303,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </TouchableOpacity>
       </View>
 
-      {/* Quick Toggles Strip - bottom left of map (minimalist style) */}
+      {/* Quick Toggles Strip - bottom left of map (hidden when control panel is open) */}
+      {!showControls && (
       <View style={[styles.quickTogglesStrip, { bottom: showGPSPanel ? 210 : 90 }]}>
         {/* Layer toggles first */}
         <TouchableOpacity 
@@ -3961,6 +4371,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           <Text style={[styles.quickToggleBtnText, styles.quickToggleBtnTextLarge]}>−</Text>
         </TouchableOpacity>
       </View>
+      )}
 
 
       {/* Chart Debug Overlay - Shows active chart based on zoom, right of lat/long */}
@@ -4138,145 +4549,579 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </View>
       )}
 
-      {/* Layer Controls - ForeFlight style two-column dark translucent panel */}
+      {/* Bottom Control Panel - Tabbed interface */}
       {showControls && (
-        <View style={[styles.ffLayersPanel, { top: insets.top + 56 }]}>
-          <View style={styles.ffLayersPanelHeader}>
-            <Text style={styles.ffLayersPanelTitle}>Map Layers</Text>
-            <TouchableOpacity onPress={() => setShowControls(false)}>
-              <Text style={styles.ffLayersPanelClose}>✕</Text>
+        <View style={[styles.controlPanel, { bottom: 0 }]}>
+          {/* Tab Bar */}
+          <View style={styles.tabBar}>
+            <TouchableOpacity 
+              style={[styles.tabButton, activeTab === 'basemap' && styles.tabButtonActive]}
+              onPress={() => setActiveTab('basemap')}
+            >
+              <Text style={[styles.tabButtonText, activeTab === 'basemap' && styles.tabButtonTextActive]}>Base Map</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.tabButton, activeTab === 'layers' && styles.tabButtonActive]}
+              onPress={() => setActiveTab('layers')}
+            >
+              <Text style={[styles.tabButtonText, activeTab === 'layers' && styles.tabButtonTextActive]}>Layers</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.tabButton, activeTab === 'display' && styles.tabButtonActive]}
+              onPress={() => setActiveTab('display')}
+            >
+              <Text style={[styles.tabButtonText, activeTab === 'display' && styles.tabButtonTextActive]}>Display</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.tabButton, activeTab === 'other' && styles.tabButtonActive]}
+              onPress={() => setActiveTab('other')}
+            >
+              <Text style={[styles.tabButtonText, activeTab === 'other' && styles.tabButtonTextActive]}>Other</Text>
             </TouchableOpacity>
           </View>
-          
-          <View style={styles.ffLayersColumns}>
-            {/* Left Column - Basemap */}
-            <View style={styles.ffLayersColumnLeft}>
-              <Text style={styles.ffLayersSectionTitle}>Base Map</Text>
-              <TouchableOpacity
-                style={[styles.ffLayerOption, mapStyle === 'light' && styles.ffLayerOptionActive]}
-                onPress={() => setMapStyle('light')}
-              >
-                <Text style={[styles.ffLayerOptionText, mapStyle === 'light' && styles.ffLayerOptionTextActive]}>Light</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.ffLayerOption, mapStyle === 'dark' && styles.ffLayerOptionActive]}
-                onPress={() => setMapStyle('dark')}
-              >
-                <Text style={[styles.ffLayerOptionText, mapStyle === 'dark' && styles.ffLayerOptionTextActive]}>Dark</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.ffLayerOption, mapStyle === 'satellite' && styles.ffLayerOptionActive]}
-                onPress={() => setMapStyle('satellite')}
-              >
-                <Text style={[styles.ffLayerOptionText, mapStyle === 'satellite' && styles.ffLayerOptionTextActive]}>
-                  Satellite{satelliteTileSets.length > 0 ? ` ✓` : ''}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.ffLayerOption, mapStyle === 'outdoors' && styles.ffLayerOptionActive]}
-                onPress={() => setMapStyle('outdoors')}
-              >
-                <Text style={[styles.ffLayerOptionText, mapStyle === 'outdoors' && styles.ffLayerOptionTextActive]}>Outdoors</Text>
-              </TouchableOpacity>
-              {hasLocalBasemap && (
-                <TouchableOpacity
-                  style={[styles.ffLayerOption, mapStyle === 'local' && styles.ffLayerOptionActive]}
-                  onPress={() => setMapStyle('local')}
-                >
-                  <Text style={[styles.ffLayerOptionText, mapStyle === 'local' && styles.ffLayerOptionTextActive]}>Offline</Text>
-                </TouchableOpacity>
-              )}
-              
-              {/* Chart Info (moved from debug button) */}
-              <View style={styles.ffLayersDivider} />
-              <Text style={styles.ffLayersSectionTitle}>Chart Info</Text>
-              <TouchableOpacity
-                style={[styles.ffLayerOption, showChartDebug && styles.ffLayerOptionActive]}
-                onPress={() => setShowChartDebug(!showChartDebug)}
-              >
-                <Text style={[styles.ffLayerOptionText, showChartDebug && styles.ffLayerOptionTextActive]}>Show Active Chart</Text>
-              </TouchableOpacity>
-            </View>
-            
-            {/* Right Column - Data Sources & Layers */}
-            <ScrollView style={styles.ffLayersColumnRight}>
-              <Text style={styles.ffLayersSectionTitle}>Data Sources</Text>
-              <FFToggle label={`ENC Charts (${allChartsToRender.length})`} value={useMBTiles} onToggle={setUseMBTiles} />
-              {rasterCharts.length > 0 && (
-                <FFToggle label={`Bathymetry (${rasterCharts.length})`} value={showBathymetry} onToggle={() => toggleLayer('bathymetry')} />
-              )}
-              
-              {/* GNIS Place Names */}
-              {gnisAvailable && (
-                <>
-                  <View style={styles.ffLayersDivider} />
-                  <Text style={styles.ffLayersSectionTitle}>Place Names</Text>
-                  <FFToggle label="Show Names" value={showPlaceNames} onToggle={setShowPlaceNames} />
-                  {showPlaceNames && (
-                    <>
-                      <FFToggle label="Water" value={showWaterNames} onToggle={setShowWaterNames} indent />
-                      <FFToggle label="Coastal" value={showCoastalNames} onToggle={setShowCoastalNames} indent />
-                      <FFToggle label="Landmarks" value={showLandmarkNames} onToggle={setShowLandmarkNames} indent />
-                      <FFToggle label="Towns" value={showPopulatedNames} onToggle={setShowPopulatedNames} indent />
-                      <FFToggle label="Rivers" value={showStreamNames} onToggle={setShowStreamNames} indent />
-                      <FFToggle label="Lakes" value={showLakeNames} onToggle={setShowLakeNames} indent />
-                      <FFToggle label="Terrain" value={showTerrainNames} onToggle={setShowTerrainNames} indent />
-                    </>
+
+          {/* Tab Content */}
+          <View style={styles.tabContent}>
+            {/* Tab 1: Base Map */}
+            {activeTab === 'basemap' && (
+              <ScrollView style={styles.tabScrollContent}>
+                <Text style={styles.panelSectionTitle}>Base Map Style</Text>
+                <View style={styles.basemapGrid}>
+                  <TouchableOpacity
+                    style={[styles.basemapOption, mapStyle === 'light' && styles.basemapOptionActive]}
+                    onPress={() => setMapStyle('light')}
+                  >
+                    <Text style={[styles.basemapOptionText, mapStyle === 'light' && styles.basemapOptionTextActive]}>Light</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.basemapOption, mapStyle === 'dark' && styles.basemapOptionActive]}
+                    onPress={() => setMapStyle('dark')}
+                  >
+                    <Text style={[styles.basemapOptionText, mapStyle === 'dark' && styles.basemapOptionTextActive]}>Dark</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.basemapOption, mapStyle === 'satellite' && styles.basemapOptionActive]}
+                    onPress={() => setMapStyle('satellite')}
+                  >
+                    <Text style={[styles.basemapOptionText, mapStyle === 'satellite' && styles.basemapOptionTextActive]}>
+                      Satellite{satelliteTileSets.length > 0 ? ' ✓' : ''}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.basemapOption, mapStyle === 'outdoors' && styles.basemapOptionActive]}
+                    onPress={() => setMapStyle('outdoors')}
+                  >
+                    <Text style={[styles.basemapOptionText, mapStyle === 'outdoors' && styles.basemapOptionTextActive]}>Outdoors</Text>
+                  </TouchableOpacity>
+                  {hasLocalBasemap && (
+                    <TouchableOpacity
+                      style={[styles.basemapOption, mapStyle === 'local' && styles.basemapOptionActive]}
+                      onPress={() => setMapStyle('local')}
+                    >
+                      <Text style={[styles.basemapOptionText, mapStyle === 'local' && styles.basemapOptionTextActive]}>Offline</Text>
+                    </TouchableOpacity>
                   )}
-                </>
-              )}
-              
-              <View style={styles.ffLayersDivider} />
-              <Text style={styles.ffLayersSectionTitle}>Chart Layers</Text>
-              <View style={styles.ffAllToggleRow}>
-                <TouchableOpacity 
-                  style={styles.ffAllToggleBtn} 
-                  onPress={() => dispatchLayers({ type: 'SET_ALL', value: true })}
-                >
-                  <Text style={styles.ffAllToggleBtnText}>All On</Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.ffAllToggleBtn} 
-                  onPress={() => dispatchLayers({ type: 'SET_ALL', value: false })}
-                >
-                  <Text style={styles.ffAllToggleBtnText}>All Off</Text>
-                </TouchableOpacity>
+                </View>
+                
+                <View style={styles.panelDivider} />
+                <Text style={styles.panelSectionTitle}>Chart Info</Text>
+                <FFToggle 
+                  label="Show Active Chart" 
+                  value={showChartDebug} 
+                  onToggle={() => setShowChartDebug(!showChartDebug)} 
+                />
+                {showChartDebug && chartsAtZoom.length > 0 && (
+                  <View style={styles.activeChartInfo}>
+                    <Text style={styles.activeChartText}>
+                      Active: {chartsAtZoom[0]?.chartId || 'None'}
+                    </Text>
+                    <Text style={styles.activeChartSubtext}>
+                      Zoom: {currentZoom.toFixed(1)} | Charts: {chartsAtZoom.length}
+                    </Text>
+                  </View>
+                )}
+              </ScrollView>
+            )}
+
+            {/* Tab 2: Layers - with sub-tabs */}
+            {activeTab === 'layers' && (
+              <View style={styles.layersTabContainer}>
+                {/* Sub-tab bar */}
+                <View style={styles.subTabBar}>
+                  <TouchableOpacity 
+                    style={[styles.subTabButton, layersSubTab === 'chart' && styles.subTabButtonActive]}
+                    onPress={() => setLayersSubTab('chart')}
+                  >
+                    <Text style={[styles.subTabButtonText, layersSubTab === 'chart' && styles.subTabButtonTextActive]}>Chart Layers</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.subTabButton, layersSubTab === 'names' && styles.subTabButtonActive]}
+                    onPress={() => setLayersSubTab('names')}
+                  >
+                    <Text style={[styles.subTabButtonText, layersSubTab === 'names' && styles.subTabButtonTextActive]}>Names</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={[styles.subTabButton, layersSubTab === 'sources' && styles.subTabButtonActive]}
+                    onPress={() => setLayersSubTab('sources')}
+                  >
+                    <Text style={[styles.subTabButtonText, layersSubTab === 'sources' && styles.subTabButtonTextActive]}>Sources</Text>
+                  </TouchableOpacity>
+                </View>
+                
+                {/* Chart Layers sub-tab - multi-column */}
+                {layersSubTab === 'chart' && (
+                  <ScrollView style={styles.layersColumnsContainer} contentContainerStyle={styles.layersColumnsContent}>
+                    {/* All On/Off row at top */}
+                    <View style={styles.layersAllToggleRow}>
+                      <TouchableOpacity 
+                        style={styles.allToggleBtn} 
+                        onPress={() => dispatchLayers({ type: 'SET_ALL', value: true })}
+                      >
+                        <Text style={styles.allToggleBtnText}>All On</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                        style={styles.allToggleBtn} 
+                        onPress={() => dispatchLayers({ type: 'SET_ALL', value: false })}
+                      >
+                        <Text style={styles.allToggleBtnText}>All Off</Text>
+                      </TouchableOpacity>
+                    </View>
+                    
+                    {/* Three columns */}
+                    <View style={styles.layersThreeColumns}>
+                      {/* Column 1: Depth & Navigation */}
+                      <View style={styles.layersColumn}>
+                        <Text style={styles.layersColumnTitle}>Depth</Text>
+                        <FFToggle label="Depth Areas" value={showDepthAreas} onToggle={() => toggleLayer('depthAreas')} />
+                        <FFToggle label="Depth Contours" value={showDepthContours} onToggle={() => toggleLayer('depthContours')} />
+                        <FFToggle label="Soundings" value={showSoundings} onToggle={() => toggleLayer('soundings')} />
+                        <FFToggle label="Seabed" value={showSeabed} onToggle={() => toggleLayer('seabed')} />
+                        
+                        <Text style={[styles.layersColumnTitle, { marginTop: 12 }]}>Navigation</Text>
+                        <FFToggle label="Lights" value={showLights} onToggle={() => toggleLayer('lights')} />
+                        <FFToggle label="Sectors" value={showSectors} onToggle={() => toggleLayer('sectors')} />
+                        <FFToggle label="Buoys" value={showBuoys} onToggle={() => toggleLayer('buoys')} />
+                        <FFToggle label="Beacons" value={showBeacons} onToggle={() => toggleLayer('beacons')} />
+                      </View>
+                      
+                      {/* Column 2: Land & Areas */}
+                      <View style={styles.layersColumn}>
+                        <Text style={styles.layersColumnTitle}>Land</Text>
+                        <FFToggle label="Land" value={showLand} onToggle={() => toggleLayer('land')} />
+                        <FFToggle label="Coastline" value={showCoastline} onToggle={() => toggleLayer('coastline')} />
+                        <FFToggle label="Landmarks" value={showLandmarks} onToggle={() => toggleLayer('landmarks')} />
+                        
+                        <Text style={[styles.layersColumnTitle, { marginTop: 12 }]}>Areas</Text>
+                        <FFToggle label="Restricted" value={showRestrictedAreas} onToggle={() => toggleLayer('restrictedAreas')} />
+                        <FFToggle label="Caution" value={showCautionAreas} onToggle={() => toggleLayer('cautionAreas')} />
+                        <FFToggle label="Military" value={showMilitaryAreas} onToggle={() => toggleLayer('militaryAreas')} />
+                        <FFToggle label="Anchorages" value={showAnchorages} onToggle={() => toggleLayer('anchorages')} />
+                        <FFToggle label="Anchor Berths" value={showAnchorBerths} onToggle={() => toggleLayer('anchorBerths')} />
+                      </View>
+                      
+                      {/* Column 3: Infrastructure & Hazards */}
+                      <View style={styles.layersColumn}>
+                        <Text style={styles.layersColumnTitle}>Infrastructure</Text>
+                        <FFToggle label="Bridges" value={showBridges} onToggle={() => toggleLayer('bridges')} />
+                        <FFToggle label="Buildings" value={showBuildings} onToggle={() => toggleLayer('buildings')} />
+                        <FFToggle label="Moorings" value={showMoorings} onToggle={() => toggleLayer('moorings')} />
+                        <FFToggle label="Shore Const." value={showShorelineConstruction} onToggle={() => toggleLayer('shorelineConstruction')} />
+                        
+                        <Text style={[styles.layersColumnTitle, { marginTop: 12 }]}>Hazards & Utilities</Text>
+                        <FFToggle label="Hazards" value={showHazards} onToggle={() => toggleLayer('hazards')} />
+                        <FFToggle label="Cables" value={showCables} onToggle={() => toggleLayer('cables')} />
+                        <FFToggle label="Pipelines" value={showPipelines} onToggle={() => toggleLayer('pipelines')} />
+                        <FFToggle label="Marine Farms" value={showMarineFarms} onToggle={() => toggleLayer('marineFarms')} />
+                      </View>
+                    </View>
+                  </ScrollView>
+                )}
+                
+                {/* Names sub-tab */}
+                {layersSubTab === 'names' && (
+                  <ScrollView style={styles.layersColumnsContainer} contentContainerStyle={styles.layersColumnsContent}>
+                    <View style={styles.layersTwoColumns}>
+                      {/* Column 1: GNIS Place Names */}
+                      <View style={styles.layersColumn}>
+                        <Text style={styles.layersColumnTitle}>Place Names (GNIS)</Text>
+                        {gnisAvailable ? (
+                          <>
+                            <FFToggle label="Show All Names" value={showPlaceNames} onToggle={setShowPlaceNames} />
+                            <View style={styles.layersIndentGroup}>
+                              <FFToggle label="Water Bodies" value={showWaterNames} onToggle={setShowWaterNames} />
+                              <FFToggle label="Coastal Features" value={showCoastalNames} onToggle={setShowCoastalNames} />
+                              <FFToggle label="Landmarks" value={showLandmarkNames} onToggle={setShowLandmarkNames} />
+                              <FFToggle label="Towns & Ports" value={showPopulatedNames} onToggle={setShowPopulatedNames} />
+                            </View>
+                          </>
+                        ) : (
+                          <Text style={styles.layersDisabledText}>GNIS data not available</Text>
+                        )}
+                      </View>
+                      
+                      {/* Column 2: More GNIS & Chart Labels */}
+                      <View style={styles.layersColumn}>
+                        <Text style={styles.layersColumnTitle}>More Place Names</Text>
+                        {gnisAvailable ? (
+                          <View style={styles.layersIndentGroup}>
+                            <FFToggle label="Rivers & Streams" value={showStreamNames} onToggle={setShowStreamNames} />
+                            <FFToggle label="Lakes" value={showLakeNames} onToggle={setShowLakeNames} />
+                            <FFToggle label="Terrain Features" value={showTerrainNames} onToggle={setShowTerrainNames} />
+                          </View>
+                        ) : (
+                          <Text style={styles.layersDisabledText}>GNIS data not available</Text>
+                        )}
+                        
+                        <Text style={[styles.layersColumnTitle, { marginTop: 16 }]}>Chart Labels</Text>
+                        <FFToggle label="Sea Area Names" value={showSeaAreaNames} onToggle={() => toggleLayer('seaAreaNames')} />
+                        <FFToggle label="Land Regions" value={showLandRegions} onToggle={() => toggleLayer('landRegions')} />
+                      </View>
+                    </View>
+                  </ScrollView>
+                )}
+                
+                {/* Data Sources sub-tab */}
+                {layersSubTab === 'sources' && (
+                  <ScrollView style={styles.layersColumnsContainer} contentContainerStyle={styles.layersColumnsContent}>
+                    <View style={styles.layersTwoColumns}>
+                      {/* Column 1: Chart Data */}
+                      <View style={styles.layersColumn}>
+                        <Text style={styles.layersColumnTitle}>Chart Data</Text>
+                        <FFToggle label={`ENC Charts (${allChartsToRender.length})`} value={useMBTiles} onToggle={setUseMBTiles} />
+                        {rasterCharts.length > 0 && (
+                          <FFToggle label={`Bathymetry (${rasterCharts.length})`} value={showBathymetry} onToggle={() => toggleLayer('bathymetry')} />
+                        )}
+                        
+                        <Text style={[styles.layersColumnTitle, { marginTop: 16 }]}>Zoom Settings</Text>
+                        <FFToggle 
+                          label={`Limit zoom (max z${maxAvailableZoom})`} 
+                          value={limitZoomToCharts} 
+                          onToggle={setLimitZoomToCharts} 
+                        />
+                      </View>
+                      
+                      {/* Column 2: Info */}
+                      <View style={styles.layersColumn}>
+                        <Text style={styles.layersColumnTitle}>Loaded Data</Text>
+                        <View style={styles.dataInfoBox}>
+                          <Text style={styles.dataInfoLabel}>MBTiles Charts</Text>
+                          <Text style={styles.dataInfoValue}>{mbtilesCharts.length}</Text>
+                        </View>
+                        <View style={styles.dataInfoBox}>
+                          <Text style={styles.dataInfoLabel}>Charts at Zoom</Text>
+                          <Text style={styles.dataInfoValue}>{chartsAtZoom.length}</Text>
+                        </View>
+                        {rasterCharts.length > 0 && (
+                          <View style={styles.dataInfoBox}>
+                            <Text style={styles.dataInfoLabel}>Bathymetry Tiles</Text>
+                            <Text style={styles.dataInfoValue}>{rasterCharts.length}</Text>
+                          </View>
+                        )}
+                        {satelliteTileSets.length > 0 && (
+                          <View style={styles.dataInfoBox}>
+                            <Text style={styles.dataInfoLabel}>Satellite Tiles</Text>
+                            <Text style={styles.dataInfoValue}>{satelliteTileSets.length}</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  </ScrollView>
+                )}
               </View>
-              <FFToggle label="Land" value={showLand} onToggle={() => toggleLayer('land')} />
-              <FFToggle label="Coastline" value={showCoastline} onToggle={() => toggleLayer('coastline')} />
-              <FFToggle label="Buoys" value={showBuoys} onToggle={() => toggleLayer('buoys')} />
-              <FFToggle label="Beacons" value={showBeacons} onToggle={() => toggleLayer('beacons')} />
-              <FFToggle label="Landmarks" value={showLandmarks} onToggle={() => toggleLayer('landmarks')} />
-              <FFToggle label="Hazards" value={showHazards} onToggle={() => toggleLayer('hazards')} />
-              <FFToggle label="Cables" value={showCables} onToggle={() => toggleLayer('cables')} />
-              <FFToggle label="Pipelines" value={showPipelines} onToggle={() => toggleLayer('pipelines')} />
-              <FFToggle label="Restricted Areas" value={showRestrictedAreas} onToggle={() => toggleLayer('restrictedAreas')} />
-              <FFToggle label="Caution Areas" value={showCautionAreas} onToggle={() => toggleLayer('cautionAreas')} />
-              <FFToggle label="Military Areas" value={showMilitaryAreas} onToggle={() => toggleLayer('militaryAreas')} />
-              <FFToggle label="Anchorages" value={showAnchorages} onToggle={() => toggleLayer('anchorages')} />
-              <FFToggle label="Anchor Berths" value={showAnchorBerths} onToggle={() => toggleLayer('anchorBerths')} />
-              <FFToggle label="Marine Farms" value={showMarineFarms} onToggle={() => toggleLayer('marineFarms')} />
-              
-              <View style={styles.ffLayersDivider} />
-              <Text style={styles.ffLayersSectionTitle}>Infrastructure</Text>
-              <FFToggle label="Bridges" value={showBridges} onToggle={() => toggleLayer('bridges')} />
-              <FFToggle label="Buildings" value={showBuildings} onToggle={() => toggleLayer('buildings')} />
-              <FFToggle label="Moorings" value={showMoorings} onToggle={() => toggleLayer('moorings')} />
-              <FFToggle label="Shoreline Construction" value={showShorelineConstruction} onToggle={() => toggleLayer('shorelineConstruction')} />
-              
-              <View style={styles.ffLayersDivider} />
-              <Text style={styles.ffLayersSectionTitle}>Labels</Text>
-              <FFToggle label="Sea Area Names" value={showSeaAreaNames} onToggle={() => toggleLayer('seaAreaNames')} />
-              <FFToggle label="Land Regions" value={showLandRegions} onToggle={() => toggleLayer('landRegions')} />
-              
-              <View style={styles.ffLayersDivider} />
-              <Text style={styles.ffLayersSectionTitle}>Settings</Text>
-              <FFToggle 
-                label={`Limit zoom (max z${maxAvailableZoom})`} 
-                value={limitZoomToCharts} 
-                onToggle={setLimitZoomToCharts} 
-              />
-            </ScrollView>
+            )}
+
+            {/* Tab 3: Display Settings */}
+            {activeTab === 'display' && (
+              <View style={styles.displayTabContainer}>
+                {/* Controls at top - full width */}
+                <View style={styles.displayControlsTop}>
+                  {(() => {
+                    const feature = DISPLAY_FEATURES.find(f => f.id === selectedDisplayFeature);
+                    if (!feature) return null;
+                    
+                    const formatPercent = (v: number) => `${Math.round(v * 100)}%`;
+                    
+                    const updateValue = async (key: keyof DisplaySettings, value: number) => {
+                      const newSettings = { ...displaySettings, [key]: value };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    };
+                    
+                    const resetFeature = async () => {
+                      const updates: Partial<DisplaySettings> = {};
+                      if (feature.fontSizeKey) updates[feature.fontSizeKey] = 1.5;  // 1.5 is nominal 100%
+                      if (feature.haloKey) updates[feature.haloKey] = 1.0;
+                      if (feature.strokeKey) updates[feature.strokeKey] = 1.0;
+                      if (feature.opacityKey) updates[feature.opacityKey] = 1.0;
+                      const newSettings = { ...displaySettings, ...updates };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    };
+                    
+                    return (
+                      <>
+                        <View style={styles.displayControlHeader}>
+                          <Text style={styles.displayFeatureName}>{feature.label}</Text>
+                          <View style={styles.headerRightSection}>
+                            <View style={[
+                              styles.featureTypeBadge,
+                              feature.type === 'text' && styles.featureTypeBadgeText,
+                              feature.type === 'line' && styles.featureTypeBadgeLine,
+                              feature.type === 'area' && styles.featureTypeBadgeArea,
+                            ]}>
+                              <Text style={styles.featureTypeBadgeLabel}>{feature.type}</Text>
+                            </View>
+                            <TouchableOpacity 
+                              style={styles.resetIconBtn}
+                              onPress={resetFeature}
+                            >
+                              <Text style={styles.resetIconText}>↺</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                        
+                        {/* Font Size slider - for text features */}
+                        {feature.fontSizeKey && (
+                          <View style={styles.controlRow}>
+                            <Text style={styles.controlRowLabel}>Font Size</Text>
+                            <View style={styles.sliderContainerCompact}>
+                              <Text style={styles.sliderMinLabelSmall}>67%</Text>
+                              <Slider
+                                style={styles.displaySliderCompact}
+                                minimumValue={1.0}
+                                maximumValue={3.0}
+                                step={0.1}
+                                value={displaySettings[feature.fontSizeKey] as number}
+                                onValueChange={(v) => updateValue(feature.fontSizeKey!, v)}
+                                minimumTrackTintColor="#4FC3F7"
+                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                thumbTintColor="#4FC3F7"
+                              />
+                              <Text style={styles.sliderMaxLabelSmall}>200%</Text>
+                            </View>
+                            <Text style={styles.sliderValueCompact}>
+                              {Math.round((displaySettings[feature.fontSizeKey] as number) / 1.5 * 100)}%
+                            </Text>
+                          </View>
+                        )}
+                        
+                        {/* Halo/Stroke slider - for text features */}
+                        {feature.haloKey && (
+                          <View style={styles.controlRow}>
+                            <Text style={styles.controlRowLabel}>Halo</Text>
+                            <View style={styles.sliderContainerCompact}>
+                              <Text style={styles.sliderMinLabelSmall}>0%</Text>
+                              <Slider
+                                style={styles.displaySliderCompact}
+                                minimumValue={0}
+                                maximumValue={3.0}
+                                step={0.1}
+                                value={displaySettings[feature.haloKey] as number}
+                                onValueChange={(v) => updateValue(feature.haloKey!, v)}
+                                minimumTrackTintColor="#E040FB"
+                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                thumbTintColor="#E040FB"
+                              />
+                              <Text style={styles.sliderMaxLabelSmall}>300%</Text>
+                            </View>
+                            <Text style={styles.sliderValueCompact}>
+                              {formatPercent(displaySettings[feature.haloKey] as number)}
+                            </Text>
+                          </View>
+                        )}
+                        
+                        {/* Stroke/Line Width slider - for line and area features */}
+                        {feature.strokeKey && (
+                          <View style={styles.controlRow}>
+                            <Text style={styles.controlRowLabel}>
+                              {feature.type === 'line' ? 'Thickness' : 'Border'}
+                            </Text>
+                            <View style={styles.sliderContainerCompact}>
+                              <Text style={styles.sliderMinLabelSmall}>50%</Text>
+                              <Slider
+                                style={styles.displaySliderCompact}
+                                minimumValue={0.5}
+                                maximumValue={2.0}
+                                step={0.1}
+                                value={displaySettings[feature.strokeKey] as number}
+                                onValueChange={(v) => updateValue(feature.strokeKey!, v)}
+                                minimumTrackTintColor="#FFB74D"
+                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                thumbTintColor="#FFB74D"
+                              />
+                              <Text style={styles.sliderMaxLabelSmall}>200%</Text>
+                            </View>
+                            <Text style={styles.sliderValueCompact}>
+                              {formatPercent(displaySettings[feature.strokeKey] as number)}
+                            </Text>
+                          </View>
+                        )}
+                        
+                        {/* Opacity slider - for all features */}
+                        {feature.opacityKey && (
+                          <View style={styles.controlRow}>
+                            <Text style={styles.controlRowLabel}>Opacity</Text>
+                            <View style={styles.sliderContainerCompact}>
+                              <Text style={styles.sliderMinLabelSmall}>0%</Text>
+                              <Slider
+                                style={styles.displaySliderCompact}
+                                minimumValue={0}
+                                maximumValue={1.0}
+                                step={0.1}
+                                value={displaySettings[feature.opacityKey] as number}
+                                onValueChange={(v) => updateValue(feature.opacityKey!, v)}
+                                minimumTrackTintColor="#81C784"
+                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                thumbTintColor="#81C784"
+                              />
+                              <Text style={styles.sliderMaxLabelSmall}>100%</Text>
+                            </View>
+                            <Text style={styles.sliderValueCompact}>
+                              {formatPercent(displaySettings[feature.opacityKey] as number)}
+                            </Text>
+                          </View>
+                        )}
+                      </>
+                    );
+                  })()}
+                </View>
+                
+                {/* Feature selector below - horizontal scrollable with legend */}
+                <View style={styles.featureSelectorContainer}>
+                  <View style={styles.displayLegendInline}>
+                    <View style={styles.legendItem}>
+                      <View style={[styles.featureTypeIndicator, styles.featureTypeText]} />
+                      <Text style={styles.legendText}>Text</Text>
+                    </View>
+                    <View style={styles.legendItem}>
+                      <View style={[styles.featureTypeIndicator, styles.featureTypeLine]} />
+                      <Text style={styles.legendText}>Line</Text>
+                    </View>
+                    <View style={styles.legendItem}>
+                      <View style={[styles.featureTypeIndicator, styles.featureTypeArea]} />
+                      <Text style={styles.legendText}>Area</Text>
+                    </View>
+                  </View>
+                  <ScrollView 
+                    style={styles.featureSelectorScroll}
+                    contentContainerStyle={styles.featureSelectorContent}
+                  >
+                    <View style={styles.featureSelectorGrid}>
+                      {DISPLAY_FEATURES.map((feature) => (
+                        <TouchableOpacity
+                          key={feature.id}
+                          style={[
+                            styles.featureSelectorChip,
+                            selectedDisplayFeature === feature.id && styles.featureSelectorChipActive
+                          ]}
+                          onPress={() => setSelectedDisplayFeature(feature.id)}
+                        >
+                          <View style={[
+                            styles.featureTypeIndicator,
+                            feature.type === 'text' && styles.featureTypeText,
+                            feature.type === 'line' && styles.featureTypeLine,
+                            feature.type === 'area' && styles.featureTypeArea,
+                          ]} />
+                          <Text style={[
+                            styles.featureSelectorChipText,
+                            selectedDisplayFeature === feature.id && styles.featureSelectorChipTextActive
+                          ]}>
+                            {feature.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </ScrollView>
+                </View>
+              </View>
+            )}
+
+            {/* Tab 4: Other Settings */}
+            {activeTab === 'other' && (
+              <ScrollView style={styles.tabScrollContent}>
+                <Text style={styles.panelSectionTitle}>Display Mode</Text>
+                <View style={styles.segmentedControl}>
+                  <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.dayNightMode === 'day' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, dayNightMode: 'day' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, displaySettings.dayNightMode === 'day' && styles.segmentOptionTextActive]}>Day</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.dayNightMode === 'night' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, dayNightMode: 'night' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, displaySettings.dayNightMode === 'night' && styles.segmentOptionTextActive]}>Night</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.dayNightMode === 'auto' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, dayNightMode: 'auto' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, displaySettings.dayNightMode === 'auto' && styles.segmentOptionTextActive]}>Auto</Text>
+                  </TouchableOpacity>
+                </View>
+                
+                <View style={styles.panelDivider} />
+                <Text style={styles.panelSectionTitle}>Map Orientation</Text>
+                <View style={styles.segmentedControl}>
+                  <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.orientationMode === 'north-up' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, orientationMode: 'north-up' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, displaySettings.orientationMode === 'north-up' && styles.segmentOptionTextActive]}>North Up</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.orientationMode === 'head-up' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, orientationMode: 'head-up' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, displaySettings.orientationMode === 'head-up' && styles.segmentOptionTextActive]}>Head Up</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.orientationMode === 'course-up' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, orientationMode: 'course-up' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, displaySettings.orientationMode === 'course-up' && styles.segmentOptionTextActive]}>Course Up</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.settingNote}>Note: Head Up and Course Up require GPS heading data</Text>
+                
+                <View style={styles.panelDivider} />
+                <TouchableOpacity 
+                  style={styles.resetAllBtn}
+                  onPress={async () => {
+                    await displaySettingsService.resetSettings();
+                    const settings = await displaySettingsService.loadSettings();
+                    setDisplaySettings(settings);
+                  }}
+                >
+                  <Text style={styles.resetAllBtnText}>Reset All Settings to Defaults</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            )}
           </View>
         </View>
       )}
@@ -5382,80 +6227,422 @@ const styles = StyleSheet.create({
   },
   
   
-  // Layers panel - dark translucent two-column
-  ffLayersPanel: {
+  // Bottom Control Panel - tabbed interface
+  controlPanel: {
     position: 'absolute',
-    left: 12,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: '40%',
+    minHeight: 280,
+    maxHeight: 450,
     backgroundColor: 'rgba(20, 25, 35, 0.95)',
-    borderRadius: 12,
-    maxHeight: 500,
-    width: 340,
-    overflow: 'hidden',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
   },
-  ffLayersPanelHeader: {
+  tabBar: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
-  ffLayersPanelTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  ffLayersPanelClose: {
-    fontSize: 18,
-    color: 'rgba(255, 255, 255, 0.6)',
-    padding: 4,
-  },
-  ffLayersColumns: {
-    flexDirection: 'row',
-    maxHeight: 440,
-  },
-  ffLayersColumnLeft: {
-    width: 130,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRightWidth: 1,
-    borderRightColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  ffLayersColumnRight: {
+  tabButton: {
     flex: 1,
     paddingVertical: 12,
-    paddingHorizontal: 12,
+    alignItems: 'center',
   },
-  ffLayersSectionTitle: {
+  tabButtonActive: {
+    borderBottomWidth: 2,
+    borderBottomColor: '#4FC3F7',
+  },
+  tabButtonText: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '500',
+  },
+  tabButtonTextActive: {
+    color: '#4FC3F7',
+    fontWeight: '600',
+  },
+  tabContent: {
+    flex: 1,
+    overflow: 'hidden',
+  },
+  tabScrollContent: {
+    flex: 1,
+    padding: 16,
+  },
+  panelSectionTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.5)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 10,
+    marginTop: 4,
+  },
+  panelDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    marginVertical: 12,
+  },
+  
+  // Base Map tab
+  basemapGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  basemapOption: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    minWidth: 80,
+    alignItems: 'center',
+  },
+  basemapOptionActive: {
+    backgroundColor: 'rgba(79, 195, 247, 0.3)',
+  },
+  basemapOptionText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.8)',
+  },
+  basemapOptionTextActive: {
+    color: '#4FC3F7',
+    fontWeight: '600',
+  },
+  activeChartInfo: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  activeChartText: {
+    color: '#4FC3F7',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  activeChartSubtext: {
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  
+  // Layers tab container
+  layersTabContainer: {
+    flex: 1,
+  },
+  subTabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 8,
+  },
+  subTabButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    marginRight: 4,
+  },
+  subTabButtonActive: {
+    borderBottomWidth: 2,
+    borderBottomColor: '#4FC3F7',
+  },
+  subTabButtonText: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '500',
+  },
+  subTabButtonTextActive: {
+    color: '#4FC3F7',
+    fontWeight: '600',
+  },
+  layersColumnsContainer: {
+    flex: 1,
+  },
+  layersColumnsContent: {
+    padding: 12,
+    paddingBottom: 20,
+  },
+  layersAllToggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+    paddingHorizontal: 4,
+  },
+  layersThreeColumns: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  layersTwoColumns: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  layersColumn: {
+    flex: 1,
+    paddingHorizontal: 8,
+  },
+  layersColumnTitle: {
     fontSize: 11,
     fontWeight: '700',
     color: 'rgba(255, 255, 255, 0.5)',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 8,
+  },
+  layersIndentGroup: {
+    paddingLeft: 8,
+    borderLeftWidth: 2,
+    borderLeftColor: 'rgba(79, 195, 247, 0.3)',
+    marginLeft: 4,
     marginTop: 4,
   },
-  ffLayersDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    marginVertical: 12,
+  layersDisabledText: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.3)',
+    fontStyle: 'italic',
+    marginTop: 4,
   },
-  ffLayerOption: {
-    paddingVertical: 10,
-    paddingHorizontal: 8,
+  dataInfoBox: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    padding: 10,
     borderRadius: 6,
-    marginBottom: 2,
+    marginBottom: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  ffLayerOptionActive: {
-    backgroundColor: 'rgba(79, 195, 247, 0.2)',
+  dataInfoLabel: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
   },
-  ffLayerOptionText: {
+  dataInfoValue: {
     fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.8)',
-  },
-  ffLayerOptionTextActive: {
     color: '#4FC3F7',
+    fontWeight: '600',
+  },
+  
+  // Layers tab - All On/Off buttons
+  allToggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  allToggleBtn: {
+    flex: 1,
+    backgroundColor: 'rgba(79, 195, 247, 0.2)',
+    paddingVertical: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  allToggleBtnText: {
+    color: '#4FC3F7',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  
+  // Display tab - vertical layout
+  displayTabContainer: {
+    flex: 1,
+    flexDirection: 'column',
+  },
+  displayControlsTop: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  displayControlHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  displayFeatureName: {
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: '600',
+  },
+  headerRightSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  featureTypeBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  resetIconBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  resetIconText: {
+    fontSize: 18,
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+  featureTypeBadgeText: {
+    backgroundColor: 'rgba(79, 195, 247, 0.3)',
+  },
+  featureTypeBadgeLine: {
+    backgroundColor: 'rgba(255, 183, 77, 0.3)',
+  },
+  featureTypeBadgeArea: {
+    backgroundColor: 'rgba(129, 199, 132, 0.3)',
+  },
+  featureTypeBadgeLabel: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.8)',
+    textTransform: 'uppercase',
+  },
+  controlRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  controlRowLabel: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+    width: 65,
+  },
+  sliderContainerCompact: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  displaySliderCompact: {
+    flex: 1,
+    height: 32,
+  },
+  sliderMinLabelSmall: {
+    fontSize: 9,
+    color: 'rgba(255, 255, 255, 0.4)',
+    width: 26,
+  },
+  sliderMaxLabelSmall: {
+    fontSize: 9,
+    color: 'rgba(255, 255, 255, 0.4)',
+    width: 26,
+    textAlign: 'right',
+  },
+  sliderValueCompact: {
+    fontSize: 13,
+    color: '#fff',
+    fontWeight: '600',
+    width: 45,
+    textAlign: 'right',
+  },
+  // Feature selector - grid below controls
+  featureSelectorContainer: {
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+  },
+  displayLegendInline: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 20,
+    marginBottom: 10,
+  },
+  featureSelectorScroll: {
+    flex: 1,
+  },
+  featureSelectorContent: {
+    paddingBottom: 16,
+  },
+  featureSelectorGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  featureSelectorChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+  },
+  featureSelectorChipActive: {
+    backgroundColor: 'rgba(79, 195, 247, 0.25)',
+  },
+  featureSelectorChipText: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.7)',
+  },
+  featureSelectorChipTextActive: {
+    color: '#fff',
+    fontWeight: '500',
+  },
+  featureTypeIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
+  },
+  featureTypeText: {
+    backgroundColor: '#4FC3F7',
+  },
+  featureTypeLine: {
+    backgroundColor: '#FFB74D',
+  },
+  featureTypeArea: {
+    backgroundColor: '#81C784',
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  legendText: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.5)',
+    marginLeft: 4,
+  },
+  
+  // Other tab
+  segmentedControl: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    padding: 4,
+  },
+  segmentOption: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 6,
+  },
+  segmentOptionActive: {
+    backgroundColor: 'rgba(79, 195, 247, 0.3)',
+  },
+  segmentOptionText: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.6)',
+  },
+  segmentOptionTextActive: {
+    color: '#4FC3F7',
+    fontWeight: '600',
+  },
+  settingNote: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
+  resetAllBtn: {
+    backgroundColor: 'rgba(244, 67, 54, 0.2)',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  resetAllBtnText: {
+    color: '#EF5350',
+    fontSize: 14,
     fontWeight: '600',
   },
   
@@ -5490,23 +6677,6 @@ const styles = StyleSheet.create({
   ffToggleLabel: {
     fontSize: 13,
     color: 'rgba(255, 255, 255, 0.85)',
-  },
-  ffAllToggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-  },
-  ffAllToggleBtn: {
-    flex: 1,
-    backgroundColor: 'rgba(79, 195, 247, 0.2)',
-    paddingVertical: 8,
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  ffAllToggleBtnText: {
-    color: '#4FC3F7',
-    fontSize: 12,
-    fontWeight: '600',
   },
   
   // Feature Picker - for selecting between multiple features at tap location
