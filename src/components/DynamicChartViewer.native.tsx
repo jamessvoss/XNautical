@@ -109,6 +109,26 @@ interface DisplayFeatureConfig {
   opacityKey?: keyof DisplaySettings;
 }
 
+// Depth unit conversion helpers
+const METERS_TO_FEET = 3.28084;
+const METERS_TO_FATHOMS = 0.546807;
+
+const convertDepth = (meters: number, unit: 'meters' | 'feet' | 'fathoms'): number => {
+  switch (unit) {
+    case 'feet': return meters * METERS_TO_FEET;
+    case 'fathoms': return meters * METERS_TO_FATHOMS;
+    default: return meters;
+  }
+};
+
+const getDepthUnitSuffix = (unit: 'meters' | 'feet' | 'fathoms'): string => {
+  switch (unit) {
+    case 'feet': return 'ft';
+    case 'fathoms': return 'fm';
+    default: return 'm';
+  }
+};
+
 const DISPLAY_FEATURES: DisplayFeatureConfig[] = [
   // Text features (font size + halo + opacity)
   { id: 'soundings', label: 'Soundings', type: 'text', fontSizeKey: 'soundingsFontScale', haloKey: 'soundingsHaloScale', opacityKey: 'soundingsOpacityScale' },
@@ -339,17 +359,10 @@ function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityA
 }
 
 export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}) {
-  console.log('[DEBUG] DynamicChartViewer component start');
-  
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
-  
-  // === STYLE SWITCH: Track render count ===
-  const renderCountRef = useRef<number>(0);
-  renderCountRef.current++;
-  console.log('[DEBUG] DynamicChartViewer render count:', renderCountRef.current);
   
   // Throttle refs for camera change handler (100ms throttle)
   const lastCameraUpdateRef = useRef<number>(0);
@@ -496,7 +509,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     // Other settings
     dayNightMode: 'day',
     orientationMode: 'north-up',
+    depthUnits: 'meters',
   });
+
+  // Memoized depth text field expression based on unit setting
+  const depthTextFieldExpression = useMemo(() => {
+    const unit = displaySettings.depthUnits;
+    if (unit === 'feet') {
+      // Convert meters to feet: depth * 3.28084
+      return ['to-string', ['round', ['*', ['get', 'DEPTH'], 3.28084]]];
+    } else if (unit === 'fathoms') {
+      // Convert meters to fathoms: depth * 0.546807
+      return ['to-string', ['round', ['*', ['get', 'DEPTH'], 0.546807]]];
+    }
+    // Default: meters
+    return ['to-string', ['round', ['get', 'DEPTH']]];
+  }, [displaySettings.depthUnits]);
 
   // Memoized scaled font sizes for performance
   const scaledSoundingsFontSize = useMemo(() => [
@@ -914,7 +942,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showGPSPanel, setShowGPSPanel] = useState(false);
   const [showCompass, setShowCompass] = useState(false);
   const [followGPS, setFollowGPS] = useState(false); // Follow mode - center map on position
+  const followGPSRef = useRef(false); // Ref for immediate follow mode check (avoids race condition)
+  const pendingCameraMoveTimeout = useRef<NodeJS.Timeout | null>(null); // Track pending camera moves
+  const isProgrammaticCameraMove = useRef(false); // Flag to distinguish programmatic vs user camera moves
   const { gpsData, startTracking, stopTracking, toggleTracking } = useGPS();
+  
   
   // Zoom limiting - constrain zoom to available chart detail
   const [limitZoomToCharts, setLimitZoomToCharts] = useState(true);
@@ -1171,7 +1203,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const elapsed = Date.now() - styleSwitchStartRef.current;
       console.log(`[STYLE-SWITCH] React state updated to "${mapStyle}" - elapsed: ${elapsed}ms`);
       console.log(`[STYLE-SWITCH] styleURL will be: ${typeof mapStyleUrls[mapStyle] === 'string' ? mapStyleUrls[mapStyle] : 'inline JSON (local)'}`);
-      console.log(`[STYLE-SWITCH] Component render count: ${renderCountRef.current}`);
       console.log(`[STYLE-SWITCH] Render phase starting - React will now reconcile JSX...`);
     }
   }, [mapStyle]);
@@ -1322,15 +1353,31 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }
   }, [showGPSPanel, showCompass]);
   
-  // Follow GPS position when enabled
+  // NOTE: This effect is now REDUNDANT - the button handler already centers the map.
+  // Keeping it disabled to avoid duplicate setCamera calls.
+  // The button handler at line ~4443 handles the initial center.
+  // useEffect(() => {
+  //   if (followGPS && gpsData.latitude !== null && gpsData.longitude !== null) {
+  //     console.log('[GPS-FOLLOW] Follow mode enabled, initial center');
+  //     isProgrammaticCameraMove.current = true;
+  //     cameraRef.current?.setCamera({
+  //       centerCoordinate: [gpsData.longitude, gpsData.latitude],
+  //       animationDuration: 0,
+  //     });
+  //     setTimeout(() => {
+  //       isProgrammaticCameraMove.current = false;
+  //     }, 100);
+  //   }
+  // }, [followGPS]);
+  
+  // GPS centering is now handled by the Camera component's centerCoordinate prop
+  // When followGPS is true, the prop is set to GPS coords; when false, it's undefined
+  // This means we don't need to call any camera methods for GPS following
+  
+  // Sync ref with state for UI updates
   useEffect(() => {
-    if (followGPS && gpsData.latitude !== null && gpsData.longitude !== null) {
-      cameraRef.current?.setCamera({
-        centerCoordinate: [gpsData.longitude, gpsData.latitude],
-        animationDuration: 500,
-      });
-    }
-  }, [followGPS, gpsData.latitude, gpsData.longitude]);
+    followGPSRef.current = followGPS;
+  }, [followGPS]);
 
   const loadCharts = async () => {
     const t0 = Date.now();
@@ -1706,6 +1753,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       setIsAtMaxZoom(limitZoomToCharts && roundedZoom >= effectiveMaxZoom - 0.1);
     }
   }, [limitZoomToCharts, effectiveMaxZoom]);
+  
+  // Detect when user starts panning (region will change)
+  // This serves as a backup to the touch capture handlers
+  const handleRegionWillChange = useCallback(() => {
+    // Skip if this is a programmatic camera move (GPS centering)
+    if (isProgrammaticCameraMove.current) {
+      return;
+    }
+    // Disable follow mode if user is panning
+    if (followGPSRef.current) {
+      followGPSRef.current = false;
+      setFollowGPS(false);
+    }
+  }, []);
 
   // Handle camera changes - throttled to max once per 100ms to reduce re-renders during pan/zoom
   // MapLibre uses onRegionDidChange/onRegionIsChanging which sends a GeoJSON Feature
@@ -2121,7 +2182,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     if (!selectedFeature) return null;
     const formatStart = Date.now();
     console.log(`[PERF:Format] Starting formatFeatureProperties for: ${selectedFeature.type}`);
-    const result = formatFeatureProperties(selectedFeature);
+    const result = formatFeatureProperties(selectedFeature, displaySettings.depthUnits);
     const formatEnd = Date.now();
     console.log(`[PERF:Format] formatFeatureProperties: ${formatEnd - formatStart}ms`);
     const entriesStart = Date.now();
@@ -2254,12 +2315,34 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   return (
     <View style={styles.container}>
+      <View 
+        style={styles.mapTouchWrapper}
+        onStartShouldSetResponderCapture={() => {
+          // Capture phase - fires BEFORE MapView processes the touch
+          if (followGPSRef.current) {
+            followGPSRef.current = false;
+            setFollowGPS(false);
+            isProgrammaticCameraMove.current = false;
+          }
+          return false; // Don't capture - let MapView handle the touch
+        }}
+        onMoveShouldSetResponderCapture={() => {
+          // Also check on move in case start was missed
+          if (followGPSRef.current) {
+            followGPSRef.current = false;
+            isProgrammaticCameraMove.current = false;
+            setFollowGPS(false);
+          }
+          return false; // Don't capture - let MapView handle the touch
+        }}
+      >
       <MapLibre.MapView
         ref={mapRef}
         style={styles.map}
         styleURL={typeof mapStyleUrls[mapStyle] === 'string' ? mapStyleUrls[mapStyle] : undefined}
         styleJSON={typeof mapStyleUrls[mapStyle] === 'object' ? JSON.stringify(mapStyleUrls[mapStyle]) : undefined}
         onMapIdle={handleMapIdle}
+        onRegionWillChange={handleRegionWillChange}
         onRegionDidChange={handleCameraChanged}
         onRegionIsChanging={handleCameraChanged}
         onPress={handleMapPress}
@@ -2274,7 +2357,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         onDidFinishRenderingFrame={handleDidFinishRenderingFrame}
         onDidFinishRenderingFrameFully={handleDidFinishRenderingFrameFully}
         scaleBarEnabled={true}
-        scaleBarPosition={{ bottom: 16, right: 70 }}
+        scaleBarPosition={{ bottom: 100, right: 16 }}
         logoEnabled={false}
         attributionEnabled={false}
       >
@@ -2284,6 +2367,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             zoomLevel: 8,  // Start at z8 where US1 overview charts are visible
             centerCoordinate: [-151.55, 59.64],  // HARDCODED: Homer, Alaska
           }}
+          // CONTROLLED centerCoordinate: only set when following GPS, undefined otherwise
+          // This lets the user pan freely when not following
+          centerCoordinate={
+            followGPS && gpsData.latitude !== null && gpsData.longitude !== null
+              ? [gpsData.longitude, gpsData.latitude]
+              : undefined
+          }
+          animationDuration={0}
           maxZoomLevel={effectiveMaxZoom}
           minZoomLevel={0}
         />
@@ -3325,7 +3416,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 ['==', ['geometry-type'], 'Point']
               ]}
               style={{
-                textField: ['to-string', ['round', ['get', 'DEPTH']]],
+                textField: depthTextFieldExpression,
                 textSize: scaledSoundingsFontSize,
                 textColor: '#000080',
                 textHaloColor: '#FFFFFF',
@@ -4161,40 +4252,51 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </MapLibre.VectorSource>
         )}
 
-        {/* GPS Ship Position Marker */}
-        {(showGPSPanel || showCompass) && gpsData.latitude !== null && gpsData.longitude !== null && (
-          <MapLibre.PointAnnotation
-            id="gps-ship-position"
+        {/* GPS Position Marker - always show when GPS available */}
+        {gpsData.latitude !== null && gpsData.longitude !== null && (
+          <MapLibre.MarkerView
             coordinate={[gpsData.longitude, gpsData.latitude]}
+            anchor={{ x: 0.5, y: 0.5 }}
           >
             <View style={styles.shipMarker}>
-              <View 
-                style={[
-                  styles.shipIcon,
-                  gpsData.heading !== null && { 
-                    transform: [{ rotate: `${gpsData.heading}deg` }] 
-                  }
-                ]}
-              >
-                <View style={styles.shipBow} />
-                <View style={styles.shipBody} />
-              </View>
-              {/* Accuracy circle indicator */}
-              {gpsData.accuracy !== null && gpsData.accuracy > 10 && (
-                <View style={[
-                  styles.accuracyRing,
-                  { 
-                    width: Math.min(gpsData.accuracy * 2, 100),
-                    height: Math.min(gpsData.accuracy * 2, 100),
-                    borderRadius: Math.min(gpsData.accuracy, 50),
-                  }
-                ]} />
+              {/* Show ship icon when GPS panel/compass active, blue dot otherwise (including follow mode) */}
+              {(showGPSPanel || showCompass) ? (
+                <>
+                  <View 
+                    style={[
+                      styles.shipIcon,
+                      gpsData.heading !== null && { 
+                        transform: [{ rotate: `${gpsData.heading}deg` }] 
+                      }
+                    ]}
+                  >
+                    <View style={styles.shipBow} />
+                    <View style={styles.shipBody} />
+                  </View>
+                  {/* Accuracy circle indicator */}
+                  {gpsData.accuracy !== null && gpsData.accuracy > 10 && (
+                    <View style={[
+                      styles.accuracyRing,
+                      { 
+                        width: Math.min(gpsData.accuracy * 2, 100),
+                        height: Math.min(gpsData.accuracy * 2, 100),
+                        borderRadius: Math.min(gpsData.accuracy, 50),
+                      }
+                    ]} />
+                  )}
+                </>
+              ) : (
+                /* Simple blue dot when GPS panel is not active */
+                <View style={styles.locationDot}>
+                  <View style={styles.locationDotInner} />
+                </View>
               )}
             </View>
-          </MapLibre.PointAnnotation>
+          </MapLibre.MarkerView>
         )}
 
       </MapLibre.MapView>
+      </View>
 
       {/* Chart Loading Progress Indicator - shows during background chart loading */}
       {chartLoadingProgress && (
@@ -4286,14 +4388,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       <View style={[styles.centerBtnContainer, { top: insets.top + 8, right: 12 }]}>
         <TouchableOpacity 
           style={[styles.topMenuBtn, followGPS && styles.topMenuBtnActive]}
+          key={followGPS ? 'active' : 'inactive'} // Force re-render when state changes
           onPress={() => {
-            if (gpsData.latitude !== null && gpsData.longitude !== null) {
-              cameraRef.current?.setCamera({
-                centerCoordinate: [gpsData.longitude, gpsData.latitude],
-                animationDuration: 500,
-              });
-            }
-            setFollowGPS(!followGPS);
+            const newFollowGPS = !followGPS;
+            
+            // Just update state - the Camera component's centerCoordinate prop handles the rest
+            // When followGPS is true, Camera will center on GPS coords
+            // When followGPS is false, Camera's centerCoordinate is undefined so user can pan freely
+            followGPSRef.current = newFollowGPS;
+            setFollowGPS(newFollowGPS);
+            
             if (!showGPSPanel && !showCompass) {
               startTracking();
             }
@@ -5110,6 +5214,41 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 <Text style={styles.settingNote}>Note: Head Up and Course Up require GPS heading data</Text>
                 
                 <View style={styles.panelDivider} />
+                <Text style={styles.panelSectionTitle}>Depth Units</Text>
+                <View style={styles.segmentedControl}>
+                  <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.depthUnits === 'meters' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, depthUnits: 'meters' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, displaySettings.depthUnits === 'meters' && styles.segmentOptionTextActive]}>Meters</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.depthUnits === 'feet' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, depthUnits: 'feet' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, displaySettings.depthUnits === 'feet' && styles.segmentOptionTextActive]}>Feet</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.depthUnits === 'fathoms' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, depthUnits: 'fathoms' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, displaySettings.depthUnits === 'fathoms' && styles.segmentOptionTextActive]}>Fathoms</Text>
+                  </TouchableOpacity>
+                </View>
+                
+                <View style={styles.panelDivider} />
                 <TouchableOpacity 
                   style={styles.resetAllBtn}
                   onPress={async () => {
@@ -5197,7 +5336,15 @@ function getFeatureId(feature: FeatureInfo): string {
 }
 
 // Helper to format properties based on feature type
-function formatFeatureProperties(feature: FeatureInfo): Record<string, string> {
+function formatFeatureProperties(feature: FeatureInfo, depthUnit: 'meters' | 'feet' | 'fathoms' = 'meters'): Record<string, string> {
+  // Depth unit conversion helpers
+  const convertDepthValue = (meters: number): string => {
+    switch (depthUnit) {
+      case 'feet': return `${(meters * 3.28084).toFixed(1)}ft`;
+      case 'fathoms': return `${(meters * 0.546807).toFixed(1)}fm`;
+      default: return `${meters}m`;
+    }
+  };
   const props = feature.properties;
   const formatted: Record<string, string> = {};
   
@@ -5251,22 +5398,22 @@ function formatFeatureProperties(feature: FeatureInfo): Record<string, string> {
     
     case 'Sounding':
       if (props.DEPTH !== undefined) {
-        formatted['Depth'] = `${props.DEPTH}m`;
+        formatted['Depth'] = convertDepthValue(Number(props.DEPTH));
       }
       return formatted;
     
     case 'Depth Area':
       if (props.DRVAL1 !== undefined) {
-        formatted['Shallow depth'] = `${props.DRVAL1}m`;
+        formatted['Shallow depth'] = convertDepthValue(Number(props.DRVAL1));
       }
       if (props.DRVAL2 !== undefined) {
-        formatted['Deep depth'] = `${props.DRVAL2}m`;
+        formatted['Deep depth'] = convertDepthValue(Number(props.DRVAL2));
       }
       return formatted;
     
     case 'Depth Contour':
       if (props.VALDCO !== undefined) {
-        formatted['Depth'] = `${props.VALDCO}m`;
+        formatted['Depth'] = convertDepthValue(Number(props.VALDCO));
       }
       return formatted;
     
@@ -5660,6 +5807,7 @@ function FFToggle({ label, value, onToggle, indent = false }: { label: string; v
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  mapTouchWrapper: { flex: 1 },
   map: { flex: 1 },
   loadingContainer: {
     flex: 1,
@@ -6099,6 +6247,22 @@ const styles = StyleSheet.create({
   shipIcon: {
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  locationDot: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 122, 255, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  locationDotInner: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#007AFF',
   },
   shipBow: {
     width: 0,
