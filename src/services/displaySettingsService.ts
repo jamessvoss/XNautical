@@ -4,6 +4,8 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logger, LogCategory } from './loggingService';
+import * as themeService from './themeService';
+import type { S52DisplayMode } from './themeService';
 
 const STORAGE_KEY = '@xnautical_display_settings';
 
@@ -111,7 +113,7 @@ export interface DisplaySettings {
   anchorSymbolOpacityScale: number;
   
   // Other settings
-  dayNightMode: 'day' | 'night' | 'auto';
+  dayNightMode: 'day' | 'dusk' | 'night' | 'auto';
   orientationMode: 'north-up' | 'head-up' | 'course-up';
   depthUnits: 'meters' | 'feet' | 'fathoms';
 }
@@ -209,7 +211,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   mooringSymbolOpacityScale: 1.0,
   anchorSymbolOpacityScale: 1.0,
   // Other settings
-  dayNightMode: 'day',
+  dayNightMode: 'dusk',  // S-52 default - dark background suitable for day and twilight
   orientationMode: 'north-up',
   depthUnits: 'meters',
 };
@@ -241,6 +243,12 @@ export async function loadSettings(): Promise<DisplaySettings> {
     if (missingKeys.length > 0) {
       logger.warn(LogCategory.SETTINGS, 'Missing settings keys', { keys: missingKeys });
     }
+    
+    // Sync theme service with loaded dayNightMode (if not 'auto')
+    if (cachedSettings.dayNightMode !== 'auto') {
+      await themeService.setDisplayMode(cachedSettings.dayNightMode as S52DisplayMode);
+    }
+    
     return cachedSettings;
   } catch (error) {
     logger.error(LogCategory.SETTINGS, 'Error loading display settings', error as Error);
@@ -256,6 +264,12 @@ export async function saveSettings(settings: DisplaySettings): Promise<void> {
   try {
     cachedSettings = settings;
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    
+    // Sync theme service if dayNightMode changed (not 'auto')
+    if (settings.dayNightMode !== 'auto') {
+      await themeService.setDisplayMode(settings.dayNightMode as S52DisplayMode);
+    }
+    
     // Notify all listeners
     listeners.forEach(listener => listener(settings));
   } catch (error) {

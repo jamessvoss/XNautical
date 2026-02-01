@@ -10,7 +10,7 @@
  * - Accuracy (GPS accuracy in meters)
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -25,6 +25,8 @@ import {
   formatCourse,
   formatAccuracy,
 } from '../hooks/useGPS';
+import * as themeService from '../services/themeService';
+import type { UITheme } from '../services/themeService';
 
 interface Props {
   gpsData: GPSData;
@@ -45,6 +47,15 @@ export default function GPSInfoPanel({
   nextWaypoint = null,
 }: Props) {
   const insets = useSafeAreaInsets();
+  const [uiTheme, setUITheme] = useState<UITheme>(themeService.getUITheme());
+  
+  // Subscribe to theme changes
+  useEffect(() => {
+    const unsubscribe = themeService.subscribeToModeChanges((mode) => {
+      setUITheme(themeService.getUITheme(mode));
+    });
+    return unsubscribe;
+  }, []);
 
   if (!visible) return null;
 
@@ -90,18 +101,48 @@ export default function GPSInfoPanel({
 
   const signal = getSignalQuality();
 
+  // Themed styles
+  const themedContainer = {
+    backgroundColor: uiTheme.panelBackground,
+    borderTopColor: uiTheme.border,
+  };
+  const themedPrimaryRow = {
+    borderBottomColor: uiTheme.divider,
+  };
+  const themedPrimaryLabel = {
+    color: uiTheme.textSecondary,
+  };
+  const themedPrimaryValue = {
+    color: uiTheme.textPrimary,
+  };
+  const themedSecondaryLabel = {
+    color: uiTheme.textMuted,
+  };
+  const themedSecondaryValue = {
+    color: uiTheme.textSecondary,
+  };
+  const themedCardinalText = {
+    color: uiTheme.textSecondary,
+  };
+  const themedDivider = {
+    backgroundColor: uiTheme.divider,
+  };
+  const themedSignalBar = {
+    backgroundColor: uiTheme.border,
+  };
+
   return (
-    <View style={[styles.container, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+    <View style={[styles.container, themedContainer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
       {/* Top row - DTN/ETE (larger, primary info) */}
-      <View style={styles.primaryRow}>
+      <View style={[styles.primaryRow, themedPrimaryRow]}>
         <View style={styles.primaryItem}>
-          <Text style={styles.primaryLabel}>DTN</Text>
-          <Text style={styles.primaryValue}>{formatDTN()}</Text>
+          <Text style={[styles.primaryLabel, themedPrimaryLabel]}>DTN</Text>
+          <Text style={[styles.primaryValue, themedPrimaryValue]}>{formatDTN()}</Text>
         </View>
-        <View style={styles.divider} />
+        <View style={[styles.divider, themedDivider]} />
         <View style={styles.primaryItem}>
-          <Text style={styles.primaryLabel}>ETE</Text>
-          <Text style={styles.primaryValue}>{formatETE()}</Text>
+          <Text style={[styles.primaryLabel, themedPrimaryLabel]}>ETE</Text>
+          <Text style={[styles.primaryValue, themedPrimaryValue]}>{formatETE()}</Text>
         </View>
       </View>
 
@@ -109,35 +150,35 @@ export default function GPSInfoPanel({
       <View style={styles.secondaryRow}>
         {/* Speed */}
         <View style={styles.secondaryItem}>
-          <Text style={styles.secondaryLabel}>SPD</Text>
-          <Text style={styles.secondaryValue}>{formatSpeed(gpsData.speedKnots)}</Text>
+          <Text style={[styles.secondaryLabel, themedSecondaryLabel]}>SPD</Text>
+          <Text style={[styles.secondaryValue, themedSecondaryValue]}>{formatSpeed(gpsData.speedKnots)}</Text>
         </View>
 
         {/* Heading (magnetic) */}
         <View style={styles.secondaryItem}>
-          <Text style={styles.secondaryLabel}>HDG</Text>
+          <Text style={[styles.secondaryLabel, themedSecondaryLabel]}>HDG</Text>
           <View style={styles.headingContainer}>
-            <Text style={styles.secondaryValue}>{formatHeading(gpsData.heading)}</Text>
+            <Text style={[styles.secondaryValue, themedSecondaryValue]}>{formatHeading(gpsData.heading)}</Text>
             {gpsData.heading !== null && (
-              <Text style={styles.cardinalText}>{getCardinal(gpsData.heading)}</Text>
+              <Text style={[styles.cardinalText, themedCardinalText]}>{getCardinal(gpsData.heading)}</Text>
             )}
           </View>
         </View>
 
         {/* Course Over Ground */}
         <View style={styles.secondaryItem}>
-          <Text style={styles.secondaryLabel}>COG</Text>
+          <Text style={[styles.secondaryLabel, themedSecondaryLabel]}>COG</Text>
           <View style={styles.headingContainer}>
-            <Text style={styles.secondaryValue}>{formatCourse(gpsData.course)}</Text>
+            <Text style={[styles.secondaryValue, themedSecondaryValue]}>{formatCourse(gpsData.course)}</Text>
             {gpsData.course !== null && (
-              <Text style={styles.cardinalText}>{getCardinal(gpsData.course)}</Text>
+              <Text style={[styles.cardinalText, themedCardinalText]}>{getCardinal(gpsData.course)}</Text>
             )}
           </View>
         </View>
 
         {/* Accuracy with signal indicator */}
         <View style={styles.secondaryItem}>
-          <Text style={styles.secondaryLabel}>ACC</Text>
+          <Text style={[styles.secondaryLabel, themedSecondaryLabel]}>ACC</Text>
           <View style={styles.accuracyContainer}>
             <Text style={[styles.secondaryValue, { color: signal.color }]}>
               {formatAccuracy(gpsData.accuracy)}
@@ -148,6 +189,7 @@ export default function GPSInfoPanel({
                   key={bar}
                   style={[
                     styles.signalBar,
+                    themedSignalBar,
                     { height: 4 + bar * 3 },
                     bar <= signal.bars && { backgroundColor: signal.color },
                   ]} 
@@ -160,8 +202,8 @@ export default function GPSInfoPanel({
 
       {/* Status indicator */}
       {!gpsData.isTracking && (
-        <View style={styles.statusBadge}>
-          <Text style={styles.statusText}>GPS OFF</Text>
+        <View style={[styles.statusBadge, { backgroundColor: uiTheme.cardBackground }]}>
+          <Text style={[styles.statusText, { color: uiTheme.textMuted }]}>GPS OFF</Text>
         </View>
       )}
 

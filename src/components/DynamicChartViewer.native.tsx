@@ -47,6 +47,8 @@ import type { DisplaySettings } from '../services/displaySettingsService';
 import { logger, LogCategory } from '../services/loggingService';
 import { performanceTracker, StartupPhase, RuntimeMetric } from '../services/performanceTracker';
 import { stateReporter } from '../services/stateReporter';
+import * as themeService from '../services/themeService';
+import type { S52DisplayMode } from '../services/themeService';
 
 // MapLibre doesn't require an access token
 
@@ -1047,10 +1049,239 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const styleSwitchToRef = useRef<string>('');
   const styleSwitchRenderCountRef = useRef<number>(0);
   
-  // Map style options
-  type MapStyleOption = 'light' | 'dark' | 'satellite' | 'outdoors' | 'local';
+  // S-52 Display Mode (Day/Dusk/Night)
+  const [s52Mode, setS52ModeInternal] = useState<S52DisplayMode>('dusk');
+  const [uiTheme, setUITheme] = useState(themeService.getUITheme('dusk'));
+  
+  // Map style options (satellite vs chart-based)
+  type MapStyleOption = 'satellite' | 'chart';
   const [mapStyle, setMapStyleInternal] = useState<MapStyleOption>('satellite');
   const [hasLocalBasemap, setHasLocalBasemap] = useState(false);
+  
+  // Set S-52 display mode and update theme
+  const setS52Mode = useCallback(async (mode: S52DisplayMode) => {
+    await themeService.setDisplayMode(mode);
+    setS52ModeInternal(mode);
+    setUITheme(themeService.getUITheme(mode));
+  }, []);
+  
+  // Dynamic themed styles - overrides for theme-aware UI
+  const themedStyles = useMemo(() => ({
+    // Control panel backgrounds
+    controlPanel: {
+      backgroundColor: uiTheme.panelBackground,
+      borderColor: uiTheme.border,
+    },
+    // Tab bar
+    tabBar: {
+      backgroundColor: uiTheme.cardBackground,
+      borderBottomColor: uiTheme.divider,
+    },
+    tabButton: {
+      backgroundColor: uiTheme.tabBackground,
+    },
+    tabButtonActive: {
+      backgroundColor: uiTheme.tabBackgroundActive,
+    },
+    tabButtonText: {
+      color: uiTheme.tabText,
+    },
+    tabButtonTextActive: {
+      color: uiTheme.tabTextActive,
+    },
+    // Section titles and text
+    panelSectionTitle: {
+      color: uiTheme.textPrimary,
+    },
+    // Basemap option buttons
+    basemapOption: {
+      backgroundColor: uiTheme.buttonBackground,
+      borderColor: uiTheme.border,
+    },
+    basemapOptionActive: {
+      backgroundColor: uiTheme.buttonBackgroundActive,
+      borderColor: uiTheme.accentPrimary,
+    },
+    basemapOptionText: {
+      color: uiTheme.buttonText,
+    },
+    basemapOptionTextActive: {
+      color: uiTheme.buttonTextActive,
+    },
+    // Dividers
+    panelDivider: {
+      backgroundColor: uiTheme.divider,
+    },
+    // Toggle labels
+    toggleLabel: {
+      color: uiTheme.textPrimary,
+    },
+    // Slider
+    sliderTrack: {
+      color: uiTheme.sliderTrack,
+    },
+    sliderTrackActive: {
+      color: uiTheme.sliderTrackActive,
+    },
+    sliderThumb: {
+      color: uiTheme.sliderThumb,
+    },
+    // Sub-tabs (layers)
+    subTabBar: {
+      backgroundColor: uiTheme.cardBackground,
+      borderBottomColor: uiTheme.divider,
+    },
+    subTabButtonText: {
+      color: uiTheme.tabText,
+    },
+    subTabButtonTextActive: {
+      color: uiTheme.tabTextActive,
+    },
+    // Chart info
+    activeChartText: {
+      color: uiTheme.textPrimary,
+    },
+    activeChartSubtext: {
+      color: uiTheme.textSecondary,
+    },
+    // Scroll content
+    tabScrollContent: {
+      flex: 1,
+      backgroundColor: uiTheme.panelBackgroundSolid,
+    },
+    // Layer rows
+    layerRow: {
+      borderBottomColor: uiTheme.divider,
+    },
+    layerName: {
+      color: uiTheme.textPrimary,
+    },
+    // Symbol items
+    symbolItem: {
+      borderBottomColor: uiTheme.divider,
+    },
+    symbolName: {
+      color: uiTheme.textPrimary,
+    },
+    symbolRow: {
+      borderBottomColor: uiTheme.divider,
+    },
+    // GPS button
+    centerButton: {
+      backgroundColor: uiTheme.panelBackground,
+      borderColor: uiTheme.border,
+    },
+    centerButtonActive: {
+      backgroundColor: uiTheme.accentPrimary,
+    },
+    // Loading overlay
+    chartLoadingContainer: {
+      backgroundColor: uiTheme.overlayBackground,
+    },
+    chartLoadingText: {
+      color: uiTheme.textPrimary,
+    },
+    chartLoadingProgress: {
+      color: uiTheme.textSecondary,
+    },
+    // Feature popup
+    featurePopup: {
+      backgroundColor: uiTheme.panelBackground,
+      borderColor: uiTheme.border,
+    },
+    featurePopupTitle: {
+      color: uiTheme.textPrimary,
+    },
+    featurePopupText: {
+      color: uiTheme.textSecondary,
+    },
+    // Zoom badge
+    zoomBadge: {
+      backgroundColor: s52Mode === 'day' ? 'rgba(0,0,0,0.5)' : uiTheme.cardBackground,
+    },
+    zoomText: {
+      color: uiTheme.textPrimary,
+    },
+    coordBadge: {
+      backgroundColor: s52Mode === 'day' ? 'rgba(0,0,0,0.5)' : uiTheme.cardBackground,
+    },
+    coordText: {
+      color: uiTheme.textPrimary,
+    },
+    // Layers tab
+    layersColumnTitle: {
+      color: uiTheme.textPrimary,
+    },
+    dataInfoLabel: {
+      color: uiTheme.textMuted,
+    },
+    dataInfoValue: {
+      color: uiTheme.textPrimary,
+    },
+    // Display/Symbols tab
+    displayFeatureName: {
+      color: uiTheme.textPrimary,
+    },
+    sliderLabel: {
+      color: uiTheme.textSecondary,
+    },
+    sliderValueText: {
+      color: uiTheme.textPrimary,
+    },
+    // Feature list items
+    featureItem: {
+      borderBottomColor: uiTheme.divider,
+    },
+    featureItemSelected: {
+      backgroundColor: uiTheme.tabBackgroundActive,
+    },
+    featureItemText: {
+      color: uiTheme.textPrimary,
+    },
+    featureItemTextSelected: {
+      color: uiTheme.tabTextActive,
+    },
+    // FFToggle
+    ffToggleLabel: {
+      color: uiTheme.textPrimary,
+    },
+    // Control rows (Display/Symbols tabs)
+    controlRowLabel: {
+      color: uiTheme.textSecondary,
+    },
+    sliderMinMaxLabel: {
+      color: uiTheme.textMuted,
+    },
+    sliderValueCompact: {
+      color: uiTheme.textPrimary,
+    },
+    legendText: {
+      color: uiTheme.textSecondary,
+    },
+    // Feature selector chips
+    featureSelectorChipText: {
+      color: uiTheme.textSecondary,
+    },
+    featureSelectorChipTextActive: {
+      color: uiTheme.textPrimary,
+    },
+    // Segmented controls (Other tab)
+    segmentOption: {
+      borderColor: uiTheme.border,
+    },
+    segmentOptionActive: {
+      backgroundColor: uiTheme.accentPrimary,
+    },
+    segmentOptionText: {
+      color: uiTheme.textSecondary,
+    },
+    segmentOptionTextActive: {
+      color: uiTheme.textOnAccent,
+    },
+    settingNote: {
+      color: uiTheme.textMuted,
+    },
+  }), [uiTheme, s52Mode]);
   
   // Satellite tile sets - each file covers specific zoom levels
   // Format: satellite_z8.mbtiles, satellite_z0-5.mbtiles, etc.
@@ -1078,8 +1309,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Glyphs URL for local font serving (Noto Sans fonts bundled in assets)
   const glyphsUrl = 'http://localhost:8080/fonts/{fontstack}/{range}.pbf';
   
+  // Get S-52 colors for current mode
+  const s52Colors = useMemo(() => themeService.getS52ColorTable(s52Mode), [s52Mode]);
+  
   // Minimal offline style - land colored background, water rendered on top
-  const localOfflineStyle = {
+  // Uses S-52 color tokens for proper day/dusk/night support
+  const localOfflineStyle = useMemo(() => ({
     version: 8,
     name: 'Local Offline',
     glyphs: glyphsUrl,
@@ -1088,19 +1323,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       {
         id: 'background',
         type: 'background',
-        paint: { 'background-color': '#f0ede9' } // Light tan/beige for land
+        paint: { 'background-color': s52Colors.LANDA } // Land color from S-52 theme
       }
     ]
-  };
+  }), [s52Colors, glyphsUrl]);
   
-  // MapLibre uses OpenMapTiles-compatible styles with local font serving
-  const mapStyleUrls: Record<MapStyleOption, string | object> = {
-    light: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f0f0f0' } }] },
-    dark: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a1a2e' } }] },
-    satellite: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#2d3436' } }] },
-    outdoors: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#dfe6e9' } }] },
-    local: localOfflineStyle, // Inline style object for offline mode
-  };
+  // MapLibre uses S-52 themed backgrounds
+  const mapStyleUrls = useMemo<Record<MapStyleOption, string | object>>(() => ({
+    satellite: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.DEPDW } }] },
+    chart: localOfflineStyle, // Use local offline style for chart mode
+  }), [s52Colors, localOfflineStyle, glyphsUrl]);
 
   // Debug state
   const [debugInfo, setDebugInfo] = useState<string>('');
@@ -1305,13 +1537,32 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
     loadDisplaySettings();
     
+    // Load saved S-52 theme mode
+    const loadThemeMode = async () => {
+      const savedMode = await themeService.loadSavedMode();
+      setS52ModeInternal(savedMode);
+      setUITheme(themeService.getUITheme(savedMode));
+      logger.debug(LogCategory.SETTINGS, `S-52 display mode loaded: ${savedMode}`);
+    };
+    loadThemeMode();
+    
     // Subscribe to changes from Settings screen
     const unsubscribe = displaySettingsService.subscribe((settings) => {
       logger.debug(LogCategory.SETTINGS, 'Display settings updated via subscription');
       setDisplaySettings(settings);
     });
     
-    return unsubscribe;
+    // Subscribe to theme mode changes
+    const unsubscribeTheme = themeService.subscribeToModeChanges((mode) => {
+      setS52ModeInternal(mode);
+      setUITheme(themeService.getUITheme(mode));
+      logger.debug(LogCategory.SETTINGS, `S-52 display mode changed: ${mode}`);
+    });
+    
+    return () => {
+      unsubscribe();
+      unsubscribeTheme();
+    };
   }, []);
   
   // === STYLE SWITCH TRACKING: Log when mapStyle state actually updates ===
@@ -2493,7 +2744,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Local Offline Basemap - OpenMapTiles vector tiles */}
         {/* PERF: Always mounted when available, visibility toggled for instant switching */}
         {tileServerReady && hasLocalBasemap && (() => {
-          const basemapVisible = mapStyle === 'local' ? 'visible' : 'none';
+          const basemapVisible = mapStyle === 'chart' ? 'visible' : 'none';
+          // S-52 themed basemap colors - adapt all basemap features to theme
+          const waterColor = s52Colors.WATRW;
+          const landColor = s52Colors.LANDA;
+          const textColor = s52Colors.CHBLK;
+          const textHaloColor = s52Mode === 'day' ? '#FFFFFF' : s52Colors.LANDA;
+          const gridColor = s52Colors.CHGRD;
+          const roadFillColor = s52Colors.ROADF;
+          const roadCasingColor = s52Colors.ROADC;
+          const builtUpColor = s52Colors.CHBRN;
+          // Land cover colors - adjust opacity and saturation based on mode
+          const landCoverOpacity = s52Mode === 'day' ? 0.6 : s52Mode === 'dusk' ? 0.3 : 0.1;
+          const buildingOpacity = s52Mode === 'day' ? 0.8 : s52Mode === 'dusk' ? 0.4 : 0.15;
+          const parkOpacity = s52Mode === 'day' ? 0.4 : s52Mode === 'dusk' ? 0.2 : 0.08;
           // === STYLE SWITCH: Log basemap visibility during render ===
           if (styleSwitchStartRef.current > 0) {
           }
@@ -2504,12 +2768,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             minZoomLevel={0}
             maxZoomLevel={14}
           >
-            {/* === WATER (renders on top of tan background = land) === */}
+            {/* === WATER (renders on top of land background) === */}
             <MapLibre.FillLayer
               id="basemap-water"
               sourceLayerID="water"
               style={{
-                fillColor: '#a0cfe8',
+                fillColor: waterColor,
                 fillOpacity: 1,
                 visibility: basemapVisible,
               }}
@@ -2520,7 +2784,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               id="basemap-waterway"
               sourceLayerID="waterway"
               style={{
-                lineColor: '#a0cfe8',
+                lineColor: waterColor,
                 lineWidth: [
                   'interpolate', ['linear'], ['zoom'],
                   8, 0.5,
@@ -2531,14 +2795,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
-            {/* === LAND COVER === */}
+            {/* === LAND COVER - S-52 themed === */}
             <MapLibre.FillLayer
               id="basemap-landcover-ice"
               sourceLayerID="landcover"
               filter={['==', ['get', 'class'], 'ice']}
               style={{
-                fillColor: '#ffffff',
-                fillOpacity: 0.9,
+                fillColor: s52Mode === 'day' ? '#ffffff' : s52Mode === 'dusk' ? '#404050' : '#202028',
+                fillOpacity: s52Mode === 'day' ? 0.9 : 0.5,
                 visibility: basemapVisible,
               }}
             />
@@ -2547,8 +2811,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="landcover"
               filter={['==', ['get', 'class'], 'grass']}
               style={{
-                fillColor: '#d8e8c8',
-                fillOpacity: 0.6,
+                fillColor: s52Mode === 'day' ? '#d8e8c8' : s52Mode === 'dusk' ? '#2a3a28' : '#181c18',
+                fillOpacity: landCoverOpacity,
                 visibility: basemapVisible,
               }}
             />
@@ -2557,8 +2821,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="landcover"
               filter={['any', ['==', ['get', 'class'], 'wood'], ['==', ['get', 'class'], 'forest']]}
               style={{
-                fillColor: '#c5ddb0',
-                fillOpacity: 0.6,
+                fillColor: s52Mode === 'day' ? '#c5ddb0' : s52Mode === 'dusk' ? '#283820' : '#141c14',
+                fillOpacity: landCoverOpacity,
                 visibility: basemapVisible,
               }}
             />
@@ -2567,21 +2831,21 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="landcover"
               filter={['==', ['get', 'class'], 'wetland']}
               style={{
-                fillColor: '#d0e8d8',
-                fillOpacity: 0.5,
+                fillColor: s52Mode === 'day' ? '#d0e8d8' : s52Mode === 'dusk' ? '#203830' : '#101814',
+                fillOpacity: landCoverOpacity,
                 visibility: basemapVisible,
               }}
             />
             
-            {/* === LAND USE === */}
+            {/* === LAND USE - S-52 themed === */}
             <MapLibre.FillLayer
               id="basemap-landuse-residential"
               sourceLayerID="landuse"
               filter={['==', ['get', 'class'], 'residential']}
               minZoomLevel={10}
               style={{
-                fillColor: '#e8e0d8',
-                fillOpacity: 0.5,
+                fillColor: builtUpColor,
+                fillOpacity: landCoverOpacity * 0.8,
                 visibility: basemapVisible,
               }}
             />
@@ -2591,62 +2855,63 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['any', ['==', ['get', 'class'], 'industrial'], ['==', ['get', 'class'], 'commercial']]}
               minZoomLevel={10}
               style={{
-                fillColor: '#ddd8d0',
-                fillOpacity: 0.4,
+                fillColor: builtUpColor,
+                fillOpacity: landCoverOpacity * 0.6,
                 visibility: basemapVisible,
               }}
             />
             
-            {/* === PARKS & PROTECTED AREAS === */}
+            {/* === PARKS & PROTECTED AREAS - S-52 themed === */}
             <MapLibre.FillLayer
               id="basemap-park"
               sourceLayerID="park"
               style={{
-                fillColor: '#c8e6c9',
-                fillOpacity: 0.4,
+                fillColor: s52Mode === 'day' ? '#c8e6c9' : s52Mode === 'dusk' ? '#203828' : '#101810',
+                fillOpacity: parkOpacity,
                 visibility: basemapVisible,
               }}
             />
             
-            {/* === BUILDINGS (high zoom) === */}
+            {/* === BUILDINGS (high zoom) - S-52 themed === */}
             <MapLibre.FillLayer
               id="basemap-building"
               sourceLayerID="building"
               minZoomLevel={13}
               style={{
-                fillColor: '#d9d0c9',
-                fillOpacity: 0.8,
+                fillColor: builtUpColor,
+                fillOpacity: buildingOpacity,
                 visibility: basemapVisible,
               }}
             />
             
-            {/* === BOUNDARIES === */}
+            {/* === BOUNDARIES - S-52 themed === */}
             <MapLibre.LineLayer
               id="basemap-boundary-state"
               sourceLayerID="boundary"
               filter={['==', ['get', 'admin_level'], 4]}
               style={{
-                lineColor: '#9e9cab',
+                lineColor: gridColor,
                 lineWidth: 1,
                 lineDasharray: [3, 2],
-                lineOpacity: 0.6,
+                lineOpacity: s52Mode === 'day' ? 0.6 : s52Mode === 'dusk' ? 0.4 : 0.2,
                 visibility: basemapVisible,
               }}
             />
             
-            {/* === TRANSPORTATION === */}
+            {/* === TRANSPORTATION - S-52 themed === */}
             <MapLibre.LineLayer
               id="basemap-roads-motorway-casing"
               sourceLayerID="transportation"
               filter={['==', ['get', 'class'], 'motorway']}
               style={{
-                lineColor: '#e07850',
+                lineColor: roadCasingColor,
                 lineWidth: [
                   'interpolate', ['linear'], ['zoom'],
                   6, 1,
                   10, 3,
                   14, 6,
                 ],
+                lineOpacity: s52Mode === 'night' ? 0.5 : 1,
                 visibility: basemapVisible,
               }}
             />
@@ -2655,13 +2920,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="transportation"
               filter={['==', ['get', 'class'], 'motorway']}
               style={{
-                lineColor: '#ffa060',
+                lineColor: roadFillColor,
                 lineWidth: [
                   'interpolate', ['linear'], ['zoom'],
                   6, 0.5,
                   10, 2,
                   14, 4,
                 ],
+                lineOpacity: s52Mode === 'night' ? 0.4 : 1,
                 visibility: basemapVisible,
               }}
             />
@@ -2670,13 +2936,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="transportation"
               filter={['==', ['get', 'class'], 'trunk']}
               style={{
-                lineColor: '#d09050',
+                lineColor: roadCasingColor,
                 lineWidth: [
                   'interpolate', ['linear'], ['zoom'],
                   6, 0.8,
                   10, 2.5,
                   14, 5,
                 ],
+                lineOpacity: s52Mode === 'night' ? 0.4 : 0.8,
                 visibility: basemapVisible,
               }}
             />
@@ -2685,13 +2952,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="transportation"
               filter={['==', ['get', 'class'], 'trunk']}
               style={{
-                lineColor: '#f9d29c',
+                lineColor: roadFillColor,
                 lineWidth: [
                   'interpolate', ['linear'], ['zoom'],
                   6, 0.4,
                   10, 1.5,
                   14, 3,
                 ],
+                lineOpacity: s52Mode === 'night' ? 0.3 : 0.8,
                 visibility: basemapVisible,
               }}
             />
@@ -2700,13 +2968,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="transportation"
               filter={['==', ['get', 'class'], 'primary']}
               style={{
-                lineColor: '#ffeebb',
+                lineColor: roadFillColor,
                 lineWidth: [
                   'interpolate', ['linear'], ['zoom'],
                   6, 0.3,
                   10, 1,
                   14, 2.5,
                 ],
+                lineOpacity: s52Mode === 'night' ? 0.3 : 0.7,
                 visibility: basemapVisible,
               }}
             />
@@ -2716,12 +2985,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['==', ['get', 'class'], 'secondary']}
               minZoomLevel={9}
               style={{
-                lineColor: '#ffffff',
+                lineColor: roadFillColor,
                 lineWidth: [
                   'interpolate', ['linear'], ['zoom'],
                   9, 0.5,
                   14, 2,
                 ],
+                lineOpacity: s52Mode === 'night' ? 0.25 : 0.6,
                 visibility: basemapVisible,
               }}
             />
@@ -2731,12 +3001,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['==', ['get', 'class'], 'tertiary']}
               minZoomLevel={11}
               style={{
-                lineColor: '#ffffff',
+                lineColor: roadFillColor,
                 lineWidth: [
                   'interpolate', ['linear'], ['zoom'],
                   11, 0.4,
                   14, 1.5,
                 ],
+                lineOpacity: s52Mode === 'night' ? 0.2 : 0.5,
                 visibility: basemapVisible,
               }}
             />
@@ -2746,22 +3017,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['any', ['==', ['get', 'class'], 'minor'], ['==', ['get', 'class'], 'service']]}
               minZoomLevel={13}
               style={{
-                lineColor: '#ffffff',
+                lineColor: roadFillColor,
                 lineWidth: 1,
-                lineOpacity: 0.8,
+                lineOpacity: s52Mode === 'night' ? 0.15 : s52Mode === 'dusk' ? 0.5 : 0.8,
                 visibility: basemapVisible,
               }}
             />
             
-            {/* === AIRPORTS === */}
+            {/* === AIRPORTS - S-52 themed === */}
             <MapLibre.FillLayer
               id="basemap-aeroway-area"
               sourceLayerID="aeroway"
               filter={['==', ['geometry-type'], 'Polygon']}
               minZoomLevel={10}
               style={{
-                fillColor: '#e0dce0',
-                fillOpacity: 0.7,
+                fillColor: builtUpColor,
+                fillOpacity: s52Mode === 'night' ? 0.2 : s52Mode === 'dusk' ? 0.4 : 0.7,
                 visibility: basemapVisible,
               }}
             />
@@ -2771,17 +3042,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['==', ['get', 'class'], 'runway']}
               minZoomLevel={10}
               style={{
-                lineColor: '#bdbdbd',
+                lineColor: gridColor,
                 lineWidth: [
                   'interpolate', ['linear'], ['zoom'],
                   10, 2,
                   14, 8,
                 ],
+                lineOpacity: s52Mode === 'night' ? 0.3 : s52Mode === 'dusk' ? 0.6 : 1,
                 visibility: basemapVisible,
               }}
             />
             
-            {/* === LABELS === */}
+            {/* === LABELS - S-52 themed === */}
             <MapLibre.SymbolLayer
               id="basemap-place-city"
               sourceLayerID="place"
@@ -2793,8 +3065,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   4, 12,
                   10, 20,
                 ],
-                textColor: '#333333',
-                textHaloColor: '#ffffff',
+                textColor: textColor,
+                textHaloColor: textHaloColor,
                 textHaloWidth: 2,
                 textFont: ['Noto Sans Bold'],
                 textTransform: 'uppercase',
@@ -2814,8 +3086,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   6, 10,
                   12, 14,
                 ],
-                textColor: '#444444',
-                textHaloColor: '#ffffff',
+                textColor: textColor,
+                textHaloColor: textHaloColor,
                 textHaloWidth: 1.5,
                 textFont: ['Noto Sans Bold'],
                 visibility: basemapVisible,
@@ -2833,8 +3105,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   9, 9,
                   14, 12,
                 ],
-                textColor: '#555555',
-                textHaloColor: '#ffffff',
+                textColor: textColor,
+                textHaloColor: textHaloColor,
                 textHaloWidth: 1,
                 textFont: ['Noto Sans Regular'],
                 visibility: basemapVisible,
@@ -2847,8 +3119,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 textField: ['get', 'name'],
                 textSize: 11,
-                textColor: '#5d8cae',
-                textHaloColor: '#ffffff',
+                textColor: s52Mode === 'day' ? '#5d8cae' : s52Mode === 'dusk' ? '#6080a0' : '#304050',
+                textHaloColor: textHaloColor,
                 textHaloWidth: 1,
                 textFont: ['Noto Sans Italic'],
                 visibility: basemapVisible,
@@ -2862,8 +3134,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'name'],
                 textSize: 10,
                 symbolPlacement: 'line',
-                textColor: '#555555',
-                textHaloColor: '#ffffff',
+                textColor: textColor,
+                textHaloColor: textHaloColor,
                 textHaloWidth: 1,
                 textFont: ['Noto Sans Regular'],
                 visibility: basemapVisible,
@@ -4406,42 +4678,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         >
           <Text style={styles.topMenuBtnText}>⏱</Text>
         </TouchableOpacity>
-        <View style={styles.topMenuDivider} />
-        
-        {/* GPS Coordinates toggle */}
-        <TouchableOpacity 
-          style={[styles.topMenuBtn, showCoords && styles.topMenuBtnActive]}
-          onPress={() => setShowCoords(!showCoords)}
-        >
-          <Text style={styles.topMenuBtnText}>🌐</Text>
-        </TouchableOpacity>
-        <View style={styles.topMenuDivider} />
-        
-        {/* Zoom Level toggle */}
-        <TouchableOpacity 
-          style={[styles.topMenuBtn, showZoomLevel && styles.topMenuBtnActive]}
-          onPress={() => setShowZoomLevel(!showZoomLevel)}
-        >
-          <Text style={[styles.topMenuBtnText, { fontSize: 18, fontWeight: '700' }]}>N°</Text>
-        </TouchableOpacity>
-        <View style={styles.topMenuDivider} />
-        
-        {/* Chart Info toggle */}
-        <TouchableOpacity 
-          style={[styles.topMenuBtn, showChartDebug && styles.topMenuBtnActive]}
-          onPress={() => setShowChartDebug(!showChartDebug)}
-        >
-          <Text style={styles.topMenuBtnText}>#</Text>
-        </TouchableOpacity>
-        <View style={styles.topMenuDivider} />
-        
-        {/* Scan Files button */}
-        <TouchableOpacity 
-          style={styles.topMenuBtn}
-          onPress={debugScanFiles}
-        >
-          <Text style={styles.topMenuBtnText}>📂</Text>
-        </TouchableOpacity>
       </View>
       
       {/* Center on location button - upper right (same style as other controls) */}
@@ -4708,38 +4944,38 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
       {/* Bottom Control Panel - Tabbed interface */}
       {showControls && (
-        <View style={[styles.controlPanel, { bottom: 0 }]}>
+        <View style={[styles.controlPanel, themedStyles.controlPanel]}>
           {/* Tab Bar */}
-          <View style={styles.tabBar}>
+          <View style={[styles.tabBar, themedStyles.tabBar]}>
             <TouchableOpacity 
-              style={[styles.tabButton, activeTab === 'basemap' && styles.tabButtonActive]}
+              style={[styles.tabButton, themedStyles.tabButton, activeTab === 'basemap' && styles.tabButtonActive, activeTab === 'basemap' && themedStyles.tabButtonActive]}
               onPress={() => setActiveTab('basemap')}
             >
-              <Text style={[styles.tabButtonText, activeTab === 'basemap' && styles.tabButtonTextActive]}>Base Map</Text>
+              <Text style={[styles.tabButtonText, themedStyles.tabButtonText, activeTab === 'basemap' && styles.tabButtonTextActive, activeTab === 'basemap' && themedStyles.tabButtonTextActive]}>Base Map</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              style={[styles.tabButton, activeTab === 'layers' && styles.tabButtonActive]}
+              style={[styles.tabButton, themedStyles.tabButton, activeTab === 'layers' && styles.tabButtonActive, activeTab === 'layers' && themedStyles.tabButtonActive]}
               onPress={() => setActiveTab('layers')}
             >
-              <Text style={[styles.tabButtonText, activeTab === 'layers' && styles.tabButtonTextActive]}>Layers</Text>
+              <Text style={[styles.tabButtonText, themedStyles.tabButtonText, activeTab === 'layers' && styles.tabButtonTextActive, activeTab === 'layers' && themedStyles.tabButtonTextActive]}>Layers</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              style={[styles.tabButton, activeTab === 'display' && styles.tabButtonActive]}
+              style={[styles.tabButton, themedStyles.tabButton, activeTab === 'display' && styles.tabButtonActive, activeTab === 'display' && themedStyles.tabButtonActive]}
               onPress={() => setActiveTab('display')}
             >
-              <Text style={[styles.tabButtonText, activeTab === 'display' && styles.tabButtonTextActive]}>Display</Text>
+              <Text style={[styles.tabButtonText, themedStyles.tabButtonText, activeTab === 'display' && styles.tabButtonTextActive, activeTab === 'display' && themedStyles.tabButtonTextActive]}>Display</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              style={[styles.tabButton, activeTab === 'symbols' && styles.tabButtonActive]}
+              style={[styles.tabButton, themedStyles.tabButton, activeTab === 'symbols' && styles.tabButtonActive, activeTab === 'symbols' && themedStyles.tabButtonActive]}
               onPress={() => setActiveTab('symbols')}
             >
-              <Text style={[styles.tabButtonText, activeTab === 'symbols' && styles.tabButtonTextActive]}>Symbols</Text>
+              <Text style={[styles.tabButtonText, themedStyles.tabButtonText, activeTab === 'symbols' && styles.tabButtonTextActive, activeTab === 'symbols' && themedStyles.tabButtonTextActive]}>Symbols</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              style={[styles.tabButton, activeTab === 'other' && styles.tabButtonActive]}
+              style={[styles.tabButton, themedStyles.tabButton, activeTab === 'other' && styles.tabButtonActive, activeTab === 'other' && themedStyles.tabButtonActive]}
               onPress={() => setActiveTab('other')}
             >
-              <Text style={[styles.tabButtonText, activeTab === 'other' && styles.tabButtonTextActive]}>Other</Text>
+              <Text style={[styles.tabButtonText, themedStyles.tabButtonText, activeTab === 'other' && styles.tabButtonTextActive, activeTab === 'other' && themedStyles.tabButtonTextActive]}>Other</Text>
             </TouchableOpacity>
           </View>
 
@@ -4747,47 +4983,65 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           <View style={styles.tabContent}>
             {/* Tab 1: Base Map */}
             {activeTab === 'basemap' && (
-              <ScrollView style={styles.tabScrollContent}>
-                <Text style={styles.panelSectionTitle}>Base Map Style</Text>
+              <ScrollView style={themedStyles.tabScrollContent} contentContainerStyle={styles.tabScrollContent}>
+                {/* S-52 Display Mode Selector */}
+                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Display Mode (S-52)</Text>
                 <View style={styles.basemapGrid}>
                   <TouchableOpacity
-                    style={[styles.basemapOption, mapStyle === 'light' && styles.basemapOptionActive]}
-                    onPress={() => setMapStyle('light')}
+                    style={[styles.basemapOption, themedStyles.basemapOption, s52Mode === 'day' && styles.basemapOptionActive, s52Mode === 'day' && themedStyles.basemapOptionActive]}
+                    onPress={() => setS52Mode('day')}
                   >
-                    <Text style={[styles.basemapOptionText, mapStyle === 'light' && styles.basemapOptionTextActive]}>Light</Text>
+                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, s52Mode === 'day' && styles.basemapOptionTextActive, s52Mode === 'day' && themedStyles.basemapOptionTextActive]}>Day</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.basemapOption, mapStyle === 'dark' && styles.basemapOptionActive]}
-                    onPress={() => setMapStyle('dark')}
+                    style={[styles.basemapOption, themedStyles.basemapOption, s52Mode === 'dusk' && styles.basemapOptionActive, s52Mode === 'dusk' && themedStyles.basemapOptionActive]}
+                    onPress={() => setS52Mode('dusk')}
                   >
-                    <Text style={[styles.basemapOptionText, mapStyle === 'dark' && styles.basemapOptionTextActive]}>Dark</Text>
+                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, s52Mode === 'dusk' && styles.basemapOptionTextActive, s52Mode === 'dusk' && themedStyles.basemapOptionTextActive]}>Dusk</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.basemapOption, mapStyle === 'satellite' && styles.basemapOptionActive]}
+                    style={[styles.basemapOption, themedStyles.basemapOption, s52Mode === 'night' && styles.basemapOptionActive, s52Mode === 'night' && themedStyles.basemapOptionActive]}
+                    onPress={() => setS52Mode('night')}
+                  >
+                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, s52Mode === 'night' && styles.basemapOptionTextActive, s52Mode === 'night' && themedStyles.basemapOptionTextActive]}>Night</Text>
+                  </TouchableOpacity>
+                </View>
+                
+                <View style={[styles.panelDivider, themedStyles.panelDivider]} />
+                
+                {/* Base Map Type Selector */}
+                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Base Map</Text>
+                <View style={styles.basemapGrid}>
+                  <TouchableOpacity
+                    style={[styles.basemapOption, themedStyles.basemapOption, mapStyle === 'satellite' && styles.basemapOptionActive, mapStyle === 'satellite' && themedStyles.basemapOptionActive]}
                     onPress={() => setMapStyle('satellite')}
                   >
-                    <Text style={[styles.basemapOptionText, mapStyle === 'satellite' && styles.basemapOptionTextActive]}>
+                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, mapStyle === 'satellite' && styles.basemapOptionTextActive, mapStyle === 'satellite' && themedStyles.basemapOptionTextActive]}>
                       Satellite{satelliteTileSets.length > 0 ? ' ✓' : ''}
                     </Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.basemapOption, mapStyle === 'outdoors' && styles.basemapOptionActive]}
-                    onPress={() => setMapStyle('outdoors')}
-                  >
-                    <Text style={[styles.basemapOptionText, mapStyle === 'outdoors' && styles.basemapOptionTextActive]}>Outdoors</Text>
-                  </TouchableOpacity>
                   {hasLocalBasemap && (
                     <TouchableOpacity
-                      style={[styles.basemapOption, mapStyle === 'local' && styles.basemapOptionActive]}
-                      onPress={() => setMapStyle('local')}
+                      style={[styles.basemapOption, themedStyles.basemapOption, mapStyle === 'chart' && styles.basemapOptionActive, mapStyle === 'chart' && themedStyles.basemapOptionActive]}
+                      onPress={() => setMapStyle('chart')}
                     >
-                      <Text style={[styles.basemapOptionText, mapStyle === 'local' && styles.basemapOptionTextActive]}>Offline</Text>
+                      <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, mapStyle === 'chart' && styles.basemapOptionTextActive, mapStyle === 'chart' && themedStyles.basemapOptionTextActive]}>Chart</Text>
                     </TouchableOpacity>
                   )}
                 </View>
                 
-                <View style={styles.panelDivider} />
-                <Text style={styles.panelSectionTitle}>Chart Info</Text>
+                <View style={[styles.panelDivider, themedStyles.panelDivider]} />
+                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Display Overlays</Text>
+                <FFToggle 
+                  label="Show Coordinates" 
+                  value={showCoords} 
+                  onToggle={() => setShowCoords(!showCoords)} 
+                />
+                <FFToggle 
+                  label="Show Zoom Level" 
+                  value={showZoomLevel} 
+                  onToggle={() => setShowZoomLevel(!showZoomLevel)} 
+                />
                 <FFToggle 
                   label="Show Active Chart" 
                   value={showChartDebug} 
@@ -4854,13 +5108,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     <View style={styles.layersThreeColumns}>
                       {/* Column 1: Depth & Navigation */}
                       <View style={styles.layersColumn}>
-                        <Text style={styles.layersColumnTitle}>Depth</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Depth</Text>
                         <FFToggle label="Depth Areas" value={showDepthAreas} onToggle={() => toggleLayer('depthAreas')} />
                         <FFToggle label="Depth Contours" value={showDepthContours} onToggle={() => toggleLayer('depthContours')} />
                         <FFToggle label="Soundings" value={showSoundings} onToggle={() => toggleLayer('soundings')} />
                         <FFToggle label="Seabed" value={showSeabed} onToggle={() => toggleLayer('seabed')} />
                         
-                        <Text style={[styles.layersColumnTitle, { marginTop: 12 }]}>Navigation</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 12 }]}>Navigation</Text>
                         <FFToggle label="Lights" value={showLights} onToggle={() => toggleLayer('lights')} />
                         <FFToggle label="Sectors" value={showSectors} onToggle={() => toggleLayer('sectors')} />
                         <FFToggle label="Buoys" value={showBuoys} onToggle={() => toggleLayer('buoys')} />
@@ -4869,12 +5123,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       
                       {/* Column 2: Land & Areas */}
                       <View style={styles.layersColumn}>
-                        <Text style={styles.layersColumnTitle}>Land</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Land</Text>
                         <FFToggle label="Land" value={showLand} onToggle={() => toggleLayer('land')} />
                         <FFToggle label="Coastline" value={showCoastline} onToggle={() => toggleLayer('coastline')} />
                         <FFToggle label="Landmarks" value={showLandmarks} onToggle={() => toggleLayer('landmarks')} />
                         
-                        <Text style={[styles.layersColumnTitle, { marginTop: 12 }]}>Areas</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 12 }]}>Areas</Text>
                         <FFToggle label="Restricted" value={showRestrictedAreas} onToggle={() => toggleLayer('restrictedAreas')} />
                         <FFToggle label="Caution" value={showCautionAreas} onToggle={() => toggleLayer('cautionAreas')} />
                         <FFToggle label="Military" value={showMilitaryAreas} onToggle={() => toggleLayer('militaryAreas')} />
@@ -4884,13 +5138,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       
                       {/* Column 3: Infrastructure & Hazards */}
                       <View style={styles.layersColumn}>
-                        <Text style={styles.layersColumnTitle}>Infrastructure</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Infrastructure</Text>
                         <FFToggle label="Bridges" value={showBridges} onToggle={() => toggleLayer('bridges')} />
                         <FFToggle label="Buildings" value={showBuildings} onToggle={() => toggleLayer('buildings')} />
                         <FFToggle label="Moorings" value={showMoorings} onToggle={() => toggleLayer('moorings')} />
                         <FFToggle label="Shore Const." value={showShorelineConstruction} onToggle={() => toggleLayer('shorelineConstruction')} />
                         
-                        <Text style={[styles.layersColumnTitle, { marginTop: 12 }]}>Hazards & Utilities</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 12 }]}>Hazards & Utilities</Text>
                         <FFToggle label="Hazards" value={showHazards} onToggle={() => toggleLayer('hazards')} />
                         <FFToggle label="Cables" value={showCables} onToggle={() => toggleLayer('cables')} />
                         <FFToggle label="Pipelines" value={showPipelines} onToggle={() => toggleLayer('pipelines')} />
@@ -4906,7 +5160,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     <View style={styles.layersTwoColumns}>
                       {/* Column 1: GNIS Place Names */}
                       <View style={styles.layersColumn}>
-                        <Text style={styles.layersColumnTitle}>Place Names (GNIS)</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Place Names (GNIS)</Text>
                         {gnisAvailable ? (
                           <>
                             <FFToggle label="Show All Names" value={showPlaceNames} onToggle={setShowPlaceNames} />
@@ -4924,7 +5178,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       
                       {/* Column 2: More GNIS & Chart Labels */}
                       <View style={styles.layersColumn}>
-                        <Text style={styles.layersColumnTitle}>More Place Names</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>More Place Names</Text>
                         {gnisAvailable ? (
                           <View style={styles.layersIndentGroup}>
                             <FFToggle label="Rivers & Streams" value={showStreamNames} onToggle={setShowStreamNames} />
@@ -4935,7 +5189,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                           <Text style={styles.layersDisabledText}>GNIS data not available</Text>
                         )}
                         
-                        <Text style={[styles.layersColumnTitle, { marginTop: 16 }]}>Chart Labels</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 16 }]}>Chart Labels</Text>
                         <FFToggle label="Sea Area Names" value={showSeaAreaNames} onToggle={() => toggleLayer('seaAreaNames')} />
                         <FFToggle label="Land Regions" value={showLandRegions} onToggle={() => toggleLayer('landRegions')} />
                       </View>
@@ -4949,13 +5203,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     <View style={styles.layersTwoColumns}>
                       {/* Column 1: Chart Data */}
                       <View style={styles.layersColumn}>
-                        <Text style={styles.layersColumnTitle}>Chart Data</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Chart Data</Text>
                         <FFToggle label={`ENC Charts (${allChartsToRender.length})`} value={useMBTiles} onToggle={setUseMBTiles} />
                         {rasterCharts.length > 0 && (
                           <FFToggle label={`Bathymetry (${rasterCharts.length})`} value={showBathymetry} onToggle={() => toggleLayer('bathymetry')} />
                         )}
                         
-                        <Text style={[styles.layersColumnTitle, { marginTop: 16 }]}>Zoom Settings</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 16 }]}>Zoom Settings</Text>
                         <FFToggle 
                           label={`Limit zoom (max z${maxAvailableZoom})`} 
                           value={limitZoomToCharts} 
@@ -4965,25 +5219,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       
                       {/* Column 2: Info */}
                       <View style={styles.layersColumn}>
-                        <Text style={styles.layersColumnTitle}>Loaded Data</Text>
+                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Loaded Data</Text>
                         <View style={styles.dataInfoBox}>
-                          <Text style={styles.dataInfoLabel}>MBTiles Charts</Text>
-                          <Text style={styles.dataInfoValue}>{mbtilesCharts.length}</Text>
+                          <Text style={[styles.dataInfoLabel, themedStyles.dataInfoLabel]}>MBTiles Charts</Text>
+                          <Text style={[styles.dataInfoValue, themedStyles.dataInfoValue]}>{mbtilesCharts.length}</Text>
                         </View>
                         <View style={styles.dataInfoBox}>
-                          <Text style={styles.dataInfoLabel}>Charts at Zoom</Text>
-                          <Text style={styles.dataInfoValue}>{chartsAtZoom.length}</Text>
+                          <Text style={[styles.dataInfoLabel, themedStyles.dataInfoLabel]}>Charts at Zoom</Text>
+                          <Text style={[styles.dataInfoValue, themedStyles.dataInfoValue]}>{chartsAtZoom.length}</Text>
                         </View>
                         {rasterCharts.length > 0 && (
                           <View style={styles.dataInfoBox}>
-                            <Text style={styles.dataInfoLabel}>Bathymetry Tiles</Text>
-                            <Text style={styles.dataInfoValue}>{rasterCharts.length}</Text>
+                            <Text style={[styles.dataInfoLabel, themedStyles.dataInfoLabel]}>Bathymetry Tiles</Text>
+                            <Text style={[styles.dataInfoValue, themedStyles.dataInfoValue]}>{rasterCharts.length}</Text>
                           </View>
                         )}
                         {satelliteTileSets.length > 0 && (
                           <View style={styles.dataInfoBox}>
-                            <Text style={styles.dataInfoLabel}>Satellite Tiles</Text>
-                            <Text style={styles.dataInfoValue}>{satelliteTileSets.length}</Text>
+                            <Text style={[styles.dataInfoLabel, themedStyles.dataInfoLabel]}>Satellite Tiles</Text>
+                            <Text style={[styles.dataInfoValue, themedStyles.dataInfoValue]}>{satelliteTileSets.length}</Text>
                           </View>
                         )}
                       </View>
@@ -5024,7 +5278,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     return (
                       <>
                         <View style={styles.displayControlHeader}>
-                          <Text style={styles.displayFeatureName}>{feature.label}</Text>
+                          <Text style={[styles.displayFeatureName, themedStyles.displayFeatureName]}>{feature.label}</Text>
                           <View style={styles.headerRightSection}>
                             <View style={[
                               styles.featureTypeBadge,
@@ -5046,9 +5300,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                         {/* Font Size slider - for text features */}
                         {feature.fontSizeKey && (
                           <View style={styles.controlRow}>
-                            <Text style={styles.controlRowLabel}>Font Size</Text>
+                            <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Font Size</Text>
                             <View style={styles.sliderContainerCompact}>
-                              <Text style={styles.sliderMinLabelSmall}>67%</Text>
+                              <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>67%</Text>
                               <Slider
                                 style={styles.displaySliderCompact}
                                 minimumValue={1.0}
@@ -5057,12 +5311,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                                 value={displaySettings[feature.fontSizeKey] as number}
                                 onValueChange={(v) => updateValue(feature.fontSizeKey!, v)}
                                 minimumTrackTintColor="#4FC3F7"
-                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                maximumTrackTintColor={uiTheme.sliderTrack}
                                 thumbTintColor="#4FC3F7"
                               />
-                              <Text style={styles.sliderMaxLabelSmall}>200%</Text>
+                              <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>200%</Text>
                             </View>
-                            <Text style={styles.sliderValueCompact}>
+                            <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
                               {Math.round((displaySettings[feature.fontSizeKey] as number) / 1.5 * 100)}%
                             </Text>
                           </View>
@@ -5071,9 +5325,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                         {/* Halo/Stroke slider - for text features */}
                         {feature.haloKey && (
                           <View style={styles.controlRow}>
-                            <Text style={styles.controlRowLabel}>Halo</Text>
+                            <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Halo</Text>
                             <View style={styles.sliderContainerCompact}>
-                              <Text style={styles.sliderMinLabelSmall}>0%</Text>
+                              <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
                               <Slider
                                 style={styles.displaySliderCompact}
                                 minimumValue={0}
@@ -5082,12 +5336,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                                 value={displaySettings[feature.haloKey] as number}
                                 onValueChange={(v) => updateValue(feature.haloKey!, v)}
                                 minimumTrackTintColor="#E040FB"
-                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                maximumTrackTintColor={uiTheme.sliderTrack}
                                 thumbTintColor="#E040FB"
                               />
-                              <Text style={styles.sliderMaxLabelSmall}>300%</Text>
+                              <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>300%</Text>
                             </View>
-                            <Text style={styles.sliderValueCompact}>
+                            <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
                               {formatPercent(displaySettings[feature.haloKey] as number)}
                             </Text>
                           </View>
@@ -5096,11 +5350,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                         {/* Stroke/Line Width slider - for line and area features */}
                         {feature.strokeKey && (
                           <View style={styles.controlRow}>
-                            <Text style={styles.controlRowLabel}>
+                            <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>
                               {feature.type === 'line' ? 'Thickness' : 'Border'}
                             </Text>
                             <View style={styles.sliderContainerCompact}>
-                              <Text style={styles.sliderMinLabelSmall}>50%</Text>
+                              <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>50%</Text>
                               <Slider
                                 style={styles.displaySliderCompact}
                                 minimumValue={0.5}
@@ -5109,12 +5363,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                                 value={displaySettings[feature.strokeKey] as number}
                                 onValueChange={(v) => updateValue(feature.strokeKey!, v)}
                                 minimumTrackTintColor="#FFB74D"
-                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                maximumTrackTintColor={uiTheme.sliderTrack}
                                 thumbTintColor="#FFB74D"
                               />
-                              <Text style={styles.sliderMaxLabelSmall}>200%</Text>
+                              <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>200%</Text>
                             </View>
-                            <Text style={styles.sliderValueCompact}>
+                            <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
                               {formatPercent(displaySettings[feature.strokeKey] as number)}
                             </Text>
                           </View>
@@ -5123,9 +5377,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                         {/* Opacity slider - for all features */}
                         {feature.opacityKey && (
                           <View style={styles.controlRow}>
-                            <Text style={styles.controlRowLabel}>Opacity</Text>
+                            <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Opacity</Text>
                             <View style={styles.sliderContainerCompact}>
-                              <Text style={styles.sliderMinLabelSmall}>0%</Text>
+                              <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
                               <Slider
                                 style={styles.displaySliderCompact}
                                 minimumValue={0}
@@ -5134,12 +5388,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                                 value={displaySettings[feature.opacityKey] as number}
                                 onValueChange={(v) => updateValue(feature.opacityKey!, v)}
                                 minimumTrackTintColor="#81C784"
-                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                maximumTrackTintColor={uiTheme.sliderTrack}
                                 thumbTintColor="#81C784"
                               />
-                              <Text style={styles.sliderMaxLabelSmall}>100%</Text>
+                              <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>100%</Text>
                             </View>
-                            <Text style={styles.sliderValueCompact}>
+                            <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
                               {formatPercent(displaySettings[feature.opacityKey] as number)}
                             </Text>
                           </View>
@@ -5154,15 +5408,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   <View style={styles.displayLegendInline}>
                     <View style={styles.legendItem}>
                       <View style={[styles.featureTypeIndicator, styles.featureTypeText]} />
-                      <Text style={styles.legendText}>Text</Text>
+                      <Text style={[styles.legendText, themedStyles.legendText]}>Text</Text>
                     </View>
                     <View style={styles.legendItem}>
                       <View style={[styles.featureTypeIndicator, styles.featureTypeLine]} />
-                      <Text style={styles.legendText}>Line</Text>
+                      <Text style={[styles.legendText, themedStyles.legendText]}>Line</Text>
                     </View>
                     <View style={styles.legendItem}>
                       <View style={[styles.featureTypeIndicator, styles.featureTypeArea]} />
-                      <Text style={styles.legendText}>Area</Text>
+                      <Text style={[styles.legendText, themedStyles.legendText]}>Area</Text>
                     </View>
                   </View>
                   <ScrollView 
@@ -5187,7 +5441,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                           ]} />
                           <Text style={[
                             styles.featureSelectorChipText,
-                            selectedDisplayFeature === feature.id && styles.featureSelectorChipTextActive
+                            themedStyles.featureSelectorChipText,
+                            selectedDisplayFeature === feature.id && styles.featureSelectorChipTextActive,
+                            selectedDisplayFeature === feature.id && themedStyles.featureSelectorChipTextActive
                           ]}>
                             {feature.label}
                           </Text>
@@ -5237,7 +5493,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     return (
                       <>
                         <View style={styles.displayControlHeader}>
-                          <Text style={styles.displayFeatureName}>{symbol.label}</Text>
+                          <Text style={[styles.displayFeatureName, themedStyles.displayFeatureName]}>{symbol.label}</Text>
                           <View style={styles.headerRightSection}>
                             <View style={[styles.featureTypeBadge, { backgroundColor: symbol.color }]}>
                               <Text style={styles.featureTypeBadgeLabel}>symbol</Text>
@@ -5253,9 +5509,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                         
                         {/* Size slider */}
                         <View style={styles.controlRow}>
-                          <Text style={styles.controlRowLabel}>Size</Text>
+                          <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Size</Text>
                           <View style={styles.sliderContainerCompact}>
-                            <Text style={styles.sliderMinLabelSmall}>50%</Text>
+                            <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>50%</Text>
                             <Slider
                               style={styles.displaySliderCompact}
                               minimumValue={0.5}
@@ -5264,12 +5520,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                               value={displaySettings[symbol.sizeKey] as number}
                               onValueChange={(v) => updateValue(symbol.sizeKey, v)}
                               minimumTrackTintColor={symbol.color}
-                              maximumTrackTintColor="rgba(255,255,255,0.3)"
+                              maximumTrackTintColor={uiTheme.sliderTrack}
                               thumbTintColor={symbol.color}
                             />
-                            <Text style={styles.sliderMaxLabelSmall}>300%</Text>
+                            <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>300%</Text>
                           </View>
-                          <Text style={styles.sliderValueCompact}>
+                          <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
                             {formatPercent(displaySettings[symbol.sizeKey] as number)}
                           </Text>
                         </View>
@@ -5277,9 +5533,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                         {/* Halo slider - only shown for symbols that support halos */}
                         {symbol.hasHalo && (
                           <View style={styles.controlRow}>
-                            <Text style={styles.controlRowLabel}>Halo</Text>
+                            <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Halo</Text>
                             <View style={styles.sliderContainerCompact}>
-                              <Text style={styles.sliderMinLabelSmall}>0%</Text>
+                              <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
                               <Slider
                                 style={styles.displaySliderCompact}
                                 minimumValue={0}
@@ -5288,12 +5544,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                                 value={displaySettings[symbol.haloKey] as number}
                                 onValueChange={(v) => updateValue(symbol.haloKey, v)}
                                 minimumTrackTintColor="#E040FB"
-                                maximumTrackTintColor="rgba(255,255,255,0.3)"
+                                maximumTrackTintColor={uiTheme.sliderTrack}
                                 thumbTintColor="#E040FB"
                               />
-                              <Text style={styles.sliderMaxLabelSmall}>300%</Text>
+                              <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>300%</Text>
                             </View>
-                            <Text style={styles.sliderValueCompact}>
+                            <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
                               {formatPercent(displaySettings[symbol.haloKey] as number)}
                             </Text>
                           </View>
@@ -5301,9 +5557,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                         
                         {/* Opacity slider */}
                         <View style={styles.controlRow}>
-                          <Text style={styles.controlRowLabel}>Opacity</Text>
+                          <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Opacity</Text>
                           <View style={styles.sliderContainerCompact}>
-                            <Text style={styles.sliderMinLabelSmall}>0%</Text>
+                            <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
                             <Slider
                               style={styles.displaySliderCompact}
                               minimumValue={0}
@@ -5312,12 +5568,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                               value={displaySettings[symbol.opacityKey] as number}
                               onValueChange={(v) => updateValue(symbol.opacityKey, v)}
                               minimumTrackTintColor="#81C784"
-                              maximumTrackTintColor="rgba(255,255,255,0.3)"
+                              maximumTrackTintColor={uiTheme.sliderTrack}
                               thumbTintColor="#81C784"
                             />
-                            <Text style={styles.sliderMaxLabelSmall}>100%</Text>
+                            <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>100%</Text>
                           </View>
-                          <Text style={styles.sliderValueCompact}>
+                          <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
                             {formatPercent(displaySettings[symbol.opacityKey] as number)}
                           </Text>
                         </View>
@@ -5348,7 +5604,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                           ]} />
                           <Text style={[
                             styles.featureSelectorChipText,
-                            selectedSymbolFeature === symbol.id && styles.featureSelectorChipTextActive
+                            themedStyles.featureSelectorChipText,
+                            selectedSymbolFeature === symbol.id && styles.featureSelectorChipTextActive,
+                            selectedSymbolFeature === symbol.id && themedStyles.featureSelectorChipTextActive
                           ]}>
                             {symbol.label}
                           </Text>
@@ -5362,8 +5620,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
             {/* Tab 5: Other Settings */}
             {activeTab === 'other' && (
-              <ScrollView style={styles.tabScrollContent}>
-                <Text style={styles.panelSectionTitle}>Display Mode</Text>
+              <ScrollView style={themedStyles.tabScrollContent} contentContainerStyle={styles.tabScrollContent}>
+                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Display Mode</Text>
                 <View style={styles.segmentedControl}>
                   <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.dayNightMode === 'day' && styles.segmentOptionActive]}
@@ -5373,7 +5631,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     }}
                   >
-                    <Text style={[styles.segmentOptionText, displaySettings.dayNightMode === 'day' && styles.segmentOptionTextActive]}>Day</Text>
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.dayNightMode === 'day' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Day</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.dayNightMode === 'night' && styles.segmentOptionActive]}
@@ -5383,7 +5641,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     }}
                   >
-                    <Text style={[styles.segmentOptionText, displaySettings.dayNightMode === 'night' && styles.segmentOptionTextActive]}>Night</Text>
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.dayNightMode === 'night' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Night</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.dayNightMode === 'auto' && styles.segmentOptionActive]}
@@ -5393,12 +5651,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     }}
                   >
-                    <Text style={[styles.segmentOptionText, displaySettings.dayNightMode === 'auto' && styles.segmentOptionTextActive]}>Auto</Text>
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.dayNightMode === 'auto' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Auto</Text>
                   </TouchableOpacity>
                 </View>
                 
-                <View style={styles.panelDivider} />
-                <Text style={styles.panelSectionTitle}>Map Orientation</Text>
+                <View style={[styles.panelDivider, themedStyles.panelDivider]} />
+                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Map Orientation</Text>
                 <View style={styles.segmentedControl}>
                   <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.orientationMode === 'north-up' && styles.segmentOptionActive]}
@@ -5408,7 +5666,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     }}
                   >
-                    <Text style={[styles.segmentOptionText, displaySettings.orientationMode === 'north-up' && styles.segmentOptionTextActive]}>North Up</Text>
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.orientationMode === 'north-up' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>North Up</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.orientationMode === 'head-up' && styles.segmentOptionActive]}
@@ -5418,7 +5676,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     }}
                   >
-                    <Text style={[styles.segmentOptionText, displaySettings.orientationMode === 'head-up' && styles.segmentOptionTextActive]}>Head Up</Text>
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.orientationMode === 'head-up' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Head Up</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.orientationMode === 'course-up' && styles.segmentOptionActive]}
@@ -5428,13 +5686,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     }}
                   >
-                    <Text style={[styles.segmentOptionText, displaySettings.orientationMode === 'course-up' && styles.segmentOptionTextActive]}>Course Up</Text>
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.orientationMode === 'course-up' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Course Up</Text>
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.settingNote}>Note: Head Up and Course Up require GPS heading data</Text>
+                <Text style={[styles.settingNote, themedStyles.settingNote]}>Note: Head Up and Course Up require GPS heading data</Text>
                 
-                <View style={styles.panelDivider} />
-                <Text style={styles.panelSectionTitle}>Depth Units</Text>
+                <View style={[styles.panelDivider, themedStyles.panelDivider]} />
+                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Depth Units</Text>
                 <View style={styles.segmentedControl}>
                   <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.depthUnits === 'meters' && styles.segmentOptionActive]}
@@ -5444,7 +5702,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     }}
                   >
-                    <Text style={[styles.segmentOptionText, displaySettings.depthUnits === 'meters' && styles.segmentOptionTextActive]}>Meters</Text>
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.depthUnits === 'meters' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Meters</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.depthUnits === 'feet' && styles.segmentOptionActive]}
@@ -5454,7 +5712,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     }}
                   >
-                    <Text style={[styles.segmentOptionText, displaySettings.depthUnits === 'feet' && styles.segmentOptionTextActive]}>Feet</Text>
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.depthUnits === 'feet' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Feet</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.depthUnits === 'fathoms' && styles.segmentOptionActive]}
@@ -5464,11 +5722,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     }}
                   >
-                    <Text style={[styles.segmentOptionText, displaySettings.depthUnits === 'fathoms' && styles.segmentOptionTextActive]}>Fathoms</Text>
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.depthUnits === 'fathoms' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Fathoms</Text>
                   </TouchableOpacity>
                 </View>
                 
-                <View style={styles.panelDivider} />
+                <View style={[styles.panelDivider, themedStyles.panelDivider]} />
                 <TouchableOpacity 
                   style={styles.resetAllBtn}
                   onPress={async () => {
@@ -6011,15 +6269,18 @@ function Toggle({ label, value, onToggle }: { label: string; value: boolean; onT
 
 // ForeFlight-style Toggle component for dark translucent panels
 function FFToggle({ label, value, onToggle, indent = false }: { label: string; value: boolean; onToggle: (v: boolean) => void; indent?: boolean }) {
+  // Get current theme colors
+  const theme = themeService.getUITheme();
+  
   return (
     <TouchableOpacity 
       style={[styles.ffToggle, indent && styles.ffToggleIndent]} 
       onPress={() => onToggle(!value)}
     >
-      <View style={[styles.ffToggleBox, value && styles.ffToggleBoxActive]}>
-        {value && <Text style={styles.ffToggleCheck}>✓</Text>}
+      <View style={[styles.ffToggleBox, value && styles.ffToggleBoxActive, { borderColor: theme.border }]}>
+        {value && <Text style={[styles.ffToggleCheck, { color: theme.accentPrimary }]}>✓</Text>}
       </View>
-      <Text style={styles.ffToggleLabel}>{label}</Text>
+      <Text style={[styles.ffToggleLabel, { color: theme.textPrimary }]}>{label}</Text>
     </TouchableOpacity>
   );
 }
@@ -6622,6 +6883,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(20, 25, 35, 0.95)',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
+    zIndex: 9999,
+    elevation: 20, // Android
   },
   tabBar: {
     flexDirection: 'row',
@@ -6651,8 +6914,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   tabScrollContent: {
-    flex: 1,
     padding: 16,
+    paddingBottom: 64,
   },
   panelSectionTitle: {
     fontSize: 11,

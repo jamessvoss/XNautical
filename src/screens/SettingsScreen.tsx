@@ -2,7 +2,7 @@
  * Settings Screen - App configuration and cache management
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,8 @@ import { formatBytes } from '../services/chartService';
 import * as displaySettingsService from '../services/displaySettingsService';
 import type { DisplaySettings } from '../services/displaySettingsService';
 import SystemInfoModal from '../components/SystemInfoModal';
+import * as themeService from '../services/themeService';
+import type { UITheme } from '../services/themeService';
 
 export default function SettingsScreen() {
   const [cacheSize, setCacheSize] = useState<number>(0);
@@ -27,6 +29,52 @@ export default function SettingsScreen() {
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
   const [showSystemInfo, setShowSystemInfo] = useState(false);
+  
+  // Theme state
+  const [uiTheme, setUITheme] = useState<UITheme>(themeService.getUITheme());
+  
+  // Subscribe to theme changes
+  useEffect(() => {
+    const unsubscribe = themeService.subscribeToModeChanges((mode) => {
+      setUITheme(themeService.getUITheme(mode));
+    });
+    return unsubscribe;
+  }, []);
+  
+  // Dynamic themed styles
+  const themedStyles = useMemo(() => ({
+    container: {
+      backgroundColor: uiTheme.panelBackgroundSolid,
+    },
+    header: {
+      backgroundColor: uiTheme.cardBackground,
+      borderBottomColor: uiTheme.divider,
+    },
+    headerTitle: {
+      color: uiTheme.textPrimary,
+    },
+    sectionTitle: {
+      color: uiTheme.textSecondary,
+    },
+    card: {
+      backgroundColor: uiTheme.cardBackground,
+    },
+    row: {
+      borderBottomColor: uiTheme.divider,
+    },
+    label: {
+      color: uiTheme.textPrimary,
+    },
+    value: {
+      color: uiTheme.textSecondary,
+    },
+    valueSmall: {
+      color: uiTheme.textMuted,
+    },
+    sliderTrack: uiTheme.sliderTrack,
+    sliderTrackActive: uiTheme.sliderTrackActive,
+    sliderThumb: uiTheme.sliderThumb,
+  }), [uiTheme]);
   
   // Display settings
   const [displaySettings, setDisplaySettings] = useState<DisplaySettings>({
@@ -122,7 +170,7 @@ export default function SettingsScreen() {
     mooringSymbolOpacityScale: 1.0,
     anchorSymbolOpacityScale: 1.0,
     // Other settings
-    dayNightMode: 'day',
+    dayNightMode: 'dusk',
     orientationMode: 'north-up',
     depthUnits: 'meters',
   });
@@ -235,19 +283,19 @@ export default function SettingsScreen() {
   const user = getAuth().currentUser;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Settings</Text>
+    <SafeAreaView style={[styles.container, themedStyles.container]} edges={['top']}>
+      <View style={[styles.header, themedStyles.header]}>
+        <Text style={[styles.headerTitle, themedStyles.headerTitle]}>Settings</Text>
       </View>
 
       <ScrollView style={styles.content}>
         {/* Account Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Account</Text>
-          <View style={styles.card}>
-            <View style={styles.row}>
-              <Text style={styles.label}>Email</Text>
-              <Text style={styles.value}>{user?.email || 'Not logged in'}</Text>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Account</Text>
+          <View style={[styles.card, themedStyles.card]}>
+            <View style={[styles.row, themedStyles.row]}>
+              <Text style={[styles.label, themedStyles.label]}>Email</Text>
+              <Text style={[styles.value, themedStyles.value]}>{user?.email || 'Not logged in'}</Text>
             </View>
             <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
               <Text style={styles.logoutButtonText}>Logout</Text>
@@ -257,13 +305,13 @@ export default function SettingsScreen() {
 
         {/* Text Sizes Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Text Sizes</Text>
-          <View style={styles.card}>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Text Sizes</Text>
+          <View style={[styles.card, themedStyles.card]}>
             {/* Soundings Font Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Soundings</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.soundingsFontScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Soundings</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.soundingsFontScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -273,7 +321,7 @@ export default function SettingsScreen() {
                 value={displaySettings.soundingsFontScale}
                 onValueChange={(value) => updateDisplaySetting('soundingsFontScale', value)}
                 minimumTrackTintColor="#007AFF"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#007AFF"
               />
             </View>
@@ -281,8 +329,8 @@ export default function SettingsScreen() {
             {/* GNIS Place Names Font Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Place Names (GNIS)</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.gnisFontScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Place Names (GNIS)</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.gnisFontScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -292,7 +340,7 @@ export default function SettingsScreen() {
                 value={displaySettings.gnisFontScale}
                 onValueChange={(value) => updateDisplaySetting('gnisFontScale', value)}
                 minimumTrackTintColor="#007AFF"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#007AFF"
               />
             </View>
@@ -300,8 +348,8 @@ export default function SettingsScreen() {
             {/* Depth Contour Labels Font Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Depth Contours</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.depthContourFontScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Depth Contours</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.depthContourFontScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -311,7 +359,7 @@ export default function SettingsScreen() {
                 value={displaySettings.depthContourFontScale}
                 onValueChange={(value) => updateDisplaySetting('depthContourFontScale', value)}
                 minimumTrackTintColor="#007AFF"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#007AFF"
               />
             </View>
@@ -319,8 +367,8 @@ export default function SettingsScreen() {
             {/* Chart Labels Font Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Chart Labels</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.chartLabelsFontScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Chart Labels</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.chartLabelsFontScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -330,7 +378,7 @@ export default function SettingsScreen() {
                 value={displaySettings.chartLabelsFontScale}
                 onValueChange={(value) => updateDisplaySetting('chartLabelsFontScale', value)}
                 minimumTrackTintColor="#007AFF"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#007AFF"
               />
             </View>
@@ -339,13 +387,13 @@ export default function SettingsScreen() {
 
         {/* Line Widths Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Line Widths</Text>
-          <View style={styles.card}>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Line Widths</Text>
+          <View style={[styles.card, themedStyles.card]}>
             {/* Depth Contours Line Width */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Depth Contours</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.depthContourLineScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Depth Contours</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.depthContourLineScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -355,7 +403,7 @@ export default function SettingsScreen() {
                 value={displaySettings.depthContourLineScale}
                 onValueChange={(value) => updateDisplaySetting('depthContourLineScale', value)}
                 minimumTrackTintColor="#4A90D9"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#4A90D9"
               />
             </View>
@@ -363,8 +411,8 @@ export default function SettingsScreen() {
             {/* Coastline Line Width */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Coastline</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.coastlineLineScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Coastline</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.coastlineLineScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -374,7 +422,7 @@ export default function SettingsScreen() {
                 value={displaySettings.coastlineLineScale}
                 onValueChange={(value) => updateDisplaySetting('coastlineLineScale', value)}
                 minimumTrackTintColor="#8B4513"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#8B4513"
               />
             </View>
@@ -382,8 +430,8 @@ export default function SettingsScreen() {
             {/* Cables Line Width */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Cables</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.cableLineScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Cables</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.cableLineScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -393,7 +441,7 @@ export default function SettingsScreen() {
                 value={displaySettings.cableLineScale}
                 onValueChange={(value) => updateDisplaySetting('cableLineScale', value)}
                 minimumTrackTintColor="#800080"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#800080"
               />
             </View>
@@ -401,8 +449,8 @@ export default function SettingsScreen() {
             {/* Pipelines Line Width */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Pipelines</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.pipelineLineScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Pipelines</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.pipelineLineScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -412,7 +460,7 @@ export default function SettingsScreen() {
                 value={displaySettings.pipelineLineScale}
                 onValueChange={(value) => updateDisplaySetting('pipelineLineScale', value)}
                 minimumTrackTintColor="#008000"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#008000"
               />
             </View>
@@ -420,8 +468,8 @@ export default function SettingsScreen() {
             {/* Bridges Line Width */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Bridges</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.bridgeLineScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Bridges</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.bridgeLineScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -431,7 +479,7 @@ export default function SettingsScreen() {
                 value={displaySettings.bridgeLineScale}
                 onValueChange={(value) => updateDisplaySetting('bridgeLineScale', value)}
                 minimumTrackTintColor="#696969"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#696969"
               />
             </View>
@@ -439,8 +487,8 @@ export default function SettingsScreen() {
             {/* Moorings Line Width */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Moorings</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.mooringLineScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Moorings</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.mooringLineScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -450,7 +498,7 @@ export default function SettingsScreen() {
                 value={displaySettings.mooringLineScale}
                 onValueChange={(value) => updateDisplaySetting('mooringLineScale', value)}
                 minimumTrackTintColor="#4B0082"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#4B0082"
               />
             </View>
@@ -458,8 +506,8 @@ export default function SettingsScreen() {
             {/* Shoreline Construction Line Width */}
             <View style={[styles.sliderRow, { borderBottomWidth: 0 }]}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Shoreline Construction</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.shorelineConstructionLineScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Shoreline Construction</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.shorelineConstructionLineScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -469,7 +517,7 @@ export default function SettingsScreen() {
                 value={displaySettings.shorelineConstructionLineScale}
                 onValueChange={(value) => updateDisplaySetting('shorelineConstructionLineScale', value)}
                 minimumTrackTintColor="#5C4033"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#5C4033"
               />
             </View>
@@ -478,13 +526,13 @@ export default function SettingsScreen() {
 
         {/* Area Opacity Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Area Opacity</Text>
-          <View style={styles.card}>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Area Opacity</Text>
+          <View style={[styles.card, themedStyles.card]}>
             {/* Depth Areas Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Depth Areas</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.depthAreaOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Depth Areas</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.depthAreaOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -494,7 +542,7 @@ export default function SettingsScreen() {
                 value={displaySettings.depthAreaOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('depthAreaOpacityScale', value)}
                 minimumTrackTintColor="#5BB4D6"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#5BB4D6"
               />
             </View>
@@ -502,8 +550,8 @@ export default function SettingsScreen() {
             {/* Restricted Areas Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Restricted Areas</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.restrictedAreaOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Restricted Areas</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.restrictedAreaOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -513,7 +561,7 @@ export default function SettingsScreen() {
                 value={displaySettings.restrictedAreaOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('restrictedAreaOpacityScale', value)}
                 minimumTrackTintColor="#00AA00"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#00AA00"
               />
             </View>
@@ -521,8 +569,8 @@ export default function SettingsScreen() {
             {/* Caution Areas Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Caution Areas</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.cautionAreaOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Caution Areas</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.cautionAreaOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -532,7 +580,7 @@ export default function SettingsScreen() {
                 value={displaySettings.cautionAreaOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('cautionAreaOpacityScale', value)}
                 minimumTrackTintColor="#FFD700"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#FFD700"
               />
             </View>
@@ -540,8 +588,8 @@ export default function SettingsScreen() {
             {/* Military Areas Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Military Areas</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.militaryAreaOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Military Areas</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.militaryAreaOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -551,7 +599,7 @@ export default function SettingsScreen() {
                 value={displaySettings.militaryAreaOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('militaryAreaOpacityScale', value)}
                 minimumTrackTintColor="#FF0000"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#FF0000"
               />
             </View>
@@ -559,8 +607,8 @@ export default function SettingsScreen() {
             {/* Anchorages Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Anchorages</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.anchorageOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Anchorages</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.anchorageOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -570,7 +618,7 @@ export default function SettingsScreen() {
                 value={displaySettings.anchorageOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('anchorageOpacityScale', value)}
                 minimumTrackTintColor="#4169E1"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#4169E1"
               />
             </View>
@@ -578,8 +626,8 @@ export default function SettingsScreen() {
             {/* Marine Farms Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Marine Farms</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.marineFarmOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Marine Farms</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.marineFarmOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -589,7 +637,7 @@ export default function SettingsScreen() {
                 value={displaySettings.marineFarmOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('marineFarmOpacityScale', value)}
                 minimumTrackTintColor="#228B22"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#228B22"
               />
             </View>
@@ -597,8 +645,8 @@ export default function SettingsScreen() {
             {/* Cable Areas Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Cable Areas</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.cableAreaOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Cable Areas</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.cableAreaOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -608,7 +656,7 @@ export default function SettingsScreen() {
                 value={displaySettings.cableAreaOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('cableAreaOpacityScale', value)}
                 minimumTrackTintColor="#800080"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#800080"
               />
             </View>
@@ -616,8 +664,8 @@ export default function SettingsScreen() {
             {/* Pipeline Areas Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Pipeline Areas</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.pipelineAreaOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Pipeline Areas</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.pipelineAreaOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -627,7 +675,7 @@ export default function SettingsScreen() {
                 value={displaySettings.pipelineAreaOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('pipelineAreaOpacityScale', value)}
                 minimumTrackTintColor="#008000"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#008000"
               />
             </View>
@@ -635,8 +683,8 @@ export default function SettingsScreen() {
             {/* Fairways Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Fairways</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.fairwayOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Fairways</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.fairwayOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -646,7 +694,7 @@ export default function SettingsScreen() {
                 value={displaySettings.fairwayOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('fairwayOpacityScale', value)}
                 minimumTrackTintColor="#E6E6FA"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#9370DB"
               />
             </View>
@@ -654,8 +702,8 @@ export default function SettingsScreen() {
             {/* Dredged Areas Opacity */}
             <View style={[styles.sliderRow, { borderBottomWidth: 0 }]}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Dredged Areas</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.dredgedAreaOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Dredged Areas</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.dredgedAreaOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -665,7 +713,7 @@ export default function SettingsScreen() {
                 value={displaySettings.dredgedAreaOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('dredgedAreaOpacityScale', value)}
                 minimumTrackTintColor="#87CEEB"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#87CEEB"
               />
             </View>
@@ -678,13 +726,13 @@ export default function SettingsScreen() {
 
         {/* Symbol Sizes Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Symbol Sizes</Text>
-          <View style={styles.card}>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Symbol Sizes</Text>
+          <View style={[styles.card, themedStyles.card]}>
             {/* Lights Symbol Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Lights</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.lightSymbolSizeScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Lights</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.lightSymbolSizeScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -694,7 +742,7 @@ export default function SettingsScreen() {
                 value={displaySettings.lightSymbolSizeScale}
                 onValueChange={(value) => updateDisplaySetting('lightSymbolSizeScale', value)}
                 minimumTrackTintColor="#FF00FF"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#FF00FF"
               />
             </View>
@@ -702,8 +750,8 @@ export default function SettingsScreen() {
             {/* Buoys Symbol Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Buoys</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.buoySymbolSizeScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Buoys</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.buoySymbolSizeScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -713,7 +761,7 @@ export default function SettingsScreen() {
                 value={displaySettings.buoySymbolSizeScale}
                 onValueChange={(value) => updateDisplaySetting('buoySymbolSizeScale', value)}
                 minimumTrackTintColor="#FF0000"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#FF0000"
               />
             </View>
@@ -721,8 +769,8 @@ export default function SettingsScreen() {
             {/* Beacons Symbol Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Beacons</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.beaconSymbolSizeScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Beacons</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.beaconSymbolSizeScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -732,7 +780,7 @@ export default function SettingsScreen() {
                 value={displaySettings.beaconSymbolSizeScale}
                 onValueChange={(value) => updateDisplaySetting('beaconSymbolSizeScale', value)}
                 minimumTrackTintColor="#00AA00"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#00AA00"
               />
             </View>
@@ -740,8 +788,8 @@ export default function SettingsScreen() {
             {/* Wrecks Symbol Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Wrecks</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.wreckSymbolSizeScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Wrecks</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.wreckSymbolSizeScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -751,7 +799,7 @@ export default function SettingsScreen() {
                 value={displaySettings.wreckSymbolSizeScale}
                 onValueChange={(value) => updateDisplaySetting('wreckSymbolSizeScale', value)}
                 minimumTrackTintColor="#000000"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#000000"
               />
             </View>
@@ -759,8 +807,8 @@ export default function SettingsScreen() {
             {/* Rocks Symbol Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Rocks</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.rockSymbolSizeScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Rocks</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.rockSymbolSizeScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -770,7 +818,7 @@ export default function SettingsScreen() {
                 value={displaySettings.rockSymbolSizeScale}
                 onValueChange={(value) => updateDisplaySetting('rockSymbolSizeScale', value)}
                 minimumTrackTintColor="#000000"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#000000"
               />
             </View>
@@ -778,8 +826,8 @@ export default function SettingsScreen() {
             {/* Hazards Symbol Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Hazards (Obstructions)</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.hazardSymbolSizeScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Hazards (Obstructions)</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.hazardSymbolSizeScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -789,7 +837,7 @@ export default function SettingsScreen() {
                 value={displaySettings.hazardSymbolSizeScale}
                 onValueChange={(value) => updateDisplaySetting('hazardSymbolSizeScale', value)}
                 minimumTrackTintColor="#000000"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#000000"
               />
             </View>
@@ -797,8 +845,8 @@ export default function SettingsScreen() {
             {/* Landmarks Symbol Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Landmarks</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.landmarkSymbolSizeScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Landmarks</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.landmarkSymbolSizeScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -808,7 +856,7 @@ export default function SettingsScreen() {
                 value={displaySettings.landmarkSymbolSizeScale}
                 onValueChange={(value) => updateDisplaySetting('landmarkSymbolSizeScale', value)}
                 minimumTrackTintColor="#8B4513"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#8B4513"
               />
             </View>
@@ -816,8 +864,8 @@ export default function SettingsScreen() {
             {/* Moorings Symbol Size */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Moorings</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.mooringSymbolSizeScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Moorings</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.mooringSymbolSizeScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -827,7 +875,7 @@ export default function SettingsScreen() {
                 value={displaySettings.mooringSymbolSizeScale}
                 onValueChange={(value) => updateDisplaySetting('mooringSymbolSizeScale', value)}
                 minimumTrackTintColor="#800080"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#800080"
               />
             </View>
@@ -835,8 +883,8 @@ export default function SettingsScreen() {
             {/* Anchors Symbol Size */}
             <View style={[styles.sliderRow, { borderBottomWidth: 0 }]}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Anchors</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.anchorSymbolSizeScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Anchors</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.anchorSymbolSizeScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -846,7 +894,7 @@ export default function SettingsScreen() {
                 value={displaySettings.anchorSymbolSizeScale}
                 onValueChange={(value) => updateDisplaySetting('anchorSymbolSizeScale', value)}
                 minimumTrackTintColor="#000080"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#000080"
               />
             </View>
@@ -857,13 +905,13 @@ export default function SettingsScreen() {
         
         {/* Symbol Opacity Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Symbol Opacity</Text>
-          <View style={styles.card}>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Symbol Opacity</Text>
+          <View style={[styles.card, themedStyles.card]}>
             {/* Lights Symbol Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Lights</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.lightSymbolOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Lights</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.lightSymbolOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -873,7 +921,7 @@ export default function SettingsScreen() {
                 value={displaySettings.lightSymbolOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('lightSymbolOpacityScale', value)}
                 minimumTrackTintColor="#FFD700"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#FFD700"
               />
             </View>
@@ -881,8 +929,8 @@ export default function SettingsScreen() {
             {/* Buoys Symbol Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Buoys</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.buoySymbolOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Buoys</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.buoySymbolOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -892,7 +940,7 @@ export default function SettingsScreen() {
                 value={displaySettings.buoySymbolOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('buoySymbolOpacityScale', value)}
                 minimumTrackTintColor="#FF6347"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#FF6347"
               />
             </View>
@@ -900,8 +948,8 @@ export default function SettingsScreen() {
             {/* Beacons Symbol Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Beacons</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.beaconSymbolOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Beacons</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.beaconSymbolOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -911,7 +959,7 @@ export default function SettingsScreen() {
                 value={displaySettings.beaconSymbolOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('beaconSymbolOpacityScale', value)}
                 minimumTrackTintColor="#32CD32"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#32CD32"
               />
             </View>
@@ -919,8 +967,8 @@ export default function SettingsScreen() {
             {/* Wrecks Symbol Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Wrecks</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.wreckSymbolOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Wrecks</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.wreckSymbolOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -930,7 +978,7 @@ export default function SettingsScreen() {
                 value={displaySettings.wreckSymbolOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('wreckSymbolOpacityScale', value)}
                 minimumTrackTintColor="#8B4513"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#8B4513"
               />
             </View>
@@ -938,8 +986,8 @@ export default function SettingsScreen() {
             {/* Rocks Symbol Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Rocks</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.rockSymbolOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Rocks</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.rockSymbolOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -949,7 +997,7 @@ export default function SettingsScreen() {
                 value={displaySettings.rockSymbolOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('rockSymbolOpacityScale', value)}
                 minimumTrackTintColor="#696969"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#696969"
               />
             </View>
@@ -957,8 +1005,8 @@ export default function SettingsScreen() {
             {/* Hazards Symbol Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Hazards (Obstructions)</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.hazardSymbolOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Hazards (Obstructions)</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.hazardSymbolOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -968,7 +1016,7 @@ export default function SettingsScreen() {
                 value={displaySettings.hazardSymbolOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('hazardSymbolOpacityScale', value)}
                 minimumTrackTintColor="#DC143C"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#DC143C"
               />
             </View>
@@ -976,8 +1024,8 @@ export default function SettingsScreen() {
             {/* Landmarks Symbol Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Landmarks</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.landmarkSymbolOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Landmarks</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.landmarkSymbolOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -987,7 +1035,7 @@ export default function SettingsScreen() {
                 value={displaySettings.landmarkSymbolOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('landmarkSymbolOpacityScale', value)}
                 minimumTrackTintColor="#4682B4"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#4682B4"
               />
             </View>
@@ -995,8 +1043,8 @@ export default function SettingsScreen() {
             {/* Moorings Symbol Opacity */}
             <View style={styles.sliderRow}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Moorings</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.mooringSymbolOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Moorings</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.mooringSymbolOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -1006,7 +1054,7 @@ export default function SettingsScreen() {
                 value={displaySettings.mooringSymbolOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('mooringSymbolOpacityScale', value)}
                 minimumTrackTintColor="#4B0082"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#4B0082"
               />
             </View>
@@ -1014,8 +1062,8 @@ export default function SettingsScreen() {
             {/* Anchors Symbol Opacity */}
             <View style={[styles.sliderRow, { borderBottomWidth: 0 }]}>
               <View style={styles.sliderHeader}>
-                <Text style={styles.label}>Anchors</Text>
-                <Text style={styles.sliderValue}>{formatScale(displaySettings.anchorSymbolOpacityScale)}</Text>
+                <Text style={[styles.label, themedStyles.label]}>Anchors</Text>
+                <Text style={[styles.sliderValue, themedStyles.value]}>{formatScale(displaySettings.anchorSymbolOpacityScale)}</Text>
               </View>
               <Slider
                 style={styles.slider}
@@ -1025,7 +1073,7 @@ export default function SettingsScreen() {
                 value={displaySettings.anchorSymbolOpacityScale}
                 onValueChange={(value) => updateDisplaySetting('anchorSymbolOpacityScale', value)}
                 minimumTrackTintColor="#000080"
-                maximumTrackTintColor="#ddd"
+                maximumTrackTintColor={themedStyles.sliderTrack}
                 thumbTintColor="#000080"
               />
             </View>
@@ -1034,19 +1082,19 @@ export default function SettingsScreen() {
 
         {/* Storage Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Storage</Text>
-          <View style={styles.card}>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Storage</Text>
+          <View style={[styles.card, themedStyles.card]}>
             {loading ? (
               <ActivityIndicator size="small" color="#007AFF" />
             ) : (
               <>
-                <View style={styles.row}>
-                  <Text style={styles.label}>Downloaded Charts</Text>
-                  <Text style={styles.value}>{downloadedCount}</Text>
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Downloaded Charts</Text>
+                  <Text style={[styles.value, themedStyles.value]}>{downloadedCount}</Text>
                 </View>
-                <View style={styles.row}>
-                  <Text style={styles.label}>Cache Size</Text>
-                  <Text style={styles.value}>{formatBytes(cacheSize)}</Text>
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Cache Size</Text>
+                  <Text style={[styles.value, themedStyles.value]}>{formatBytes(cacheSize)}</Text>
                 </View>
                 <TouchableOpacity
                   style={[styles.clearButton, clearing && styles.clearButtonDisabled]}
@@ -1066,26 +1114,26 @@ export default function SettingsScreen() {
 
         {/* About Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>About</Text>
-          <View style={styles.card}>
-            <View style={styles.row}>
-              <Text style={styles.label}>App Version</Text>
-              <Text style={styles.value}>1.0.0</Text>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>About</Text>
+          <View style={[styles.card, themedStyles.card]}>
+            <View style={[styles.row, themedStyles.row]}>
+              <Text style={[styles.label, themedStyles.label]}>App Version</Text>
+              <Text style={[styles.value, themedStyles.value]}>1.0.0</Text>
             </View>
-            <View style={styles.row}>
-              <Text style={styles.label}>Data Source</Text>
-              <Text style={styles.value}>NOAA ENC</Text>
+            <View style={[styles.row, themedStyles.row]}>
+              <Text style={[styles.label, themedStyles.label]}>Data Source</Text>
+              <Text style={[styles.value, themedStyles.value]}>NOAA ENC</Text>
             </View>
           </View>
         </View>
 
         {/* Developer Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Developer</Text>
-          <View style={styles.card}>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Developer</Text>
+          <View style={[styles.card, themedStyles.card]}>
             <View style={[styles.row, { borderBottomWidth: 0 }]}>
-              <Text style={styles.label}>Technical Debug</Text>
-              <Text style={styles.valueSmall}>Available in Layers menu{'\n'}under "Show Active Chart"</Text>
+              <Text style={[styles.label, themedStyles.label]}>Technical Debug</Text>
+              <Text style={[styles.valueSmall, themedStyles.valueSmall]}>Available in Layers menu{'\n'}under "Show Active Chart"</Text>
             </View>
           </View>
         </View>

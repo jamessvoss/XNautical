@@ -5,9 +5,10 @@
  * - Uses Animated.View with useNativeDriver for smooth 60fps rotation
  * - Memoizes static SVG content to prevent re-renders
  * - Separates rotating elements from fixed elements
+ * - Supports S-52 Day/Dusk/Night theming
  */
 
-import React, { useEffect, useRef, useMemo, memo } from 'react';
+import React, { useEffect, useRef, useMemo, memo, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -22,6 +23,8 @@ import Svg, {
   G,
   Path,
 } from 'react-native-svg';
+import * as themeService from '../services/themeService';
+import type { S52DisplayMode } from '../services/themeService';
 
 interface Props {
   heading: number | null;  // Magnetic heading in degrees
@@ -29,8 +32,39 @@ interface Props {
   visible: boolean;
 }
 
-// Memoized rotating compass rose - only re-renders when size changes
-const CompassRose = memo(({ size }: { size: number }) => {
+// Color scheme for different display modes
+interface CompassColors {
+  outline: string;      // Tick outline and ring
+  fill: string;         // Tick fill and text
+  textOutline: string;  // Text halo
+}
+
+// Get colors for current display mode
+const getCompassColors = (mode: S52DisplayMode): CompassColors => {
+  switch (mode) {
+    case 'day':
+      return {
+        outline: '#FFFFFF',
+        fill: '#000000',
+        textOutline: '#FFFFFF',
+      };
+    case 'dusk':
+      return {
+        outline: '#000000',
+        fill: '#E0E0E0',
+        textOutline: '#000000',
+      };
+    case 'night':
+      return {
+        outline: '#101010',
+        fill: '#404040',
+        textOutline: '#101010',
+      };
+  }
+};
+
+// Memoized rotating compass rose - only re-renders when size or colors change
+const CompassRose = memo(({ size, colors }: { size: number; colors: CompassColors }) => {
   const center = size / 2;
   const outerRadius = size / 2 - 2;
   const tickOuterRadius = outerRadius - 4;
@@ -84,7 +118,7 @@ const CompassRose = memo(({ size }: { size: number }) => {
 
   return (
     <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      {/* Tick marks - white outline */}
+      {/* Tick marks - outline */}
       {ticks.map((tick, i) => (
         <Line
           key={`to-${i}`}
@@ -92,13 +126,13 @@ const CompassRose = memo(({ size }: { size: number }) => {
           y1={tick.y1}
           x2={tick.x2}
           y2={tick.y2}
-          stroke="#FFFFFF"
+          stroke={colors.outline}
           strokeWidth={tick.width + 2}
           strokeLinecap="round"
         />
       ))}
       
-      {/* Tick marks - black fill */}
+      {/* Tick marks - fill */}
       {ticks.map((tick, i) => (
         <Line
           key={`t-${i}`}
@@ -106,7 +140,7 @@ const CompassRose = memo(({ size }: { size: number }) => {
           y1={tick.y1}
           x2={tick.x2}
           y2={tick.y2}
-          stroke="#000000"
+          stroke={colors.fill}
           strokeWidth={tick.width}
           strokeLinecap="round"
         />
@@ -124,7 +158,7 @@ const CompassRose = memo(({ size }: { size: number }) => {
               x={x}
               y={y}
               fill="none"
-              stroke="#FFFFFF"
+              stroke={colors.textOutline}
               strokeWidth={3}
               fontSize={fontSize}
               fontWeight="bold"
@@ -136,7 +170,7 @@ const CompassRose = memo(({ size }: { size: number }) => {
             <SvgText
               x={x}
               y={y}
-              fill="#000000"
+              fill={colors.fill}
               fontSize={fontSize}
               fontWeight="bold"
               textAnchor="middle"
@@ -161,7 +195,7 @@ const CompassRose = memo(({ size }: { size: number }) => {
               x={x}
               y={y}
               fill="none"
-              stroke="#FFFFFF"
+              stroke={colors.textOutline}
               strokeWidth={2.5}
               fontSize={14}
               fontWeight="600"
@@ -173,7 +207,7 @@ const CompassRose = memo(({ size }: { size: number }) => {
             <SvgText
               x={x}
               y={y}
-              fill="#000000"
+              fill={colors.fill}
               fontSize={14}
               fontWeight="600"
               textAnchor="middle"
@@ -191,7 +225,7 @@ const CompassRose = memo(({ size }: { size: number }) => {
 CompassRose.displayName = 'CompassRose';
 
 // Memoized fixed elements (outer ring, lubber line, ship icon)
-const FixedElements = memo(({ size, cogRotation }: { size: number; cogRotation: number | null }) => {
+const FixedElements = memo(({ size, cogRotation, colors }: { size: number; cogRotation: number | null; colors: CompassColors }) => {
   const center = size / 2;
   const outerRadius = size / 2 - 2;
   const innerClearRadius = size / 2 - 80;
@@ -203,13 +237,13 @@ const FixedElements = memo(({ size, cogRotation }: { size: number; cogRotation: 
       viewBox={`0 0 ${size} ${size}`}
       style={StyleSheet.absoluteFill}
     >
-      {/* Outer ring - white outline */}
+      {/* Outer ring - outline */}
       <Circle
         cx={center}
         cy={center}
         r={outerRadius}
         fill="none"
-        stroke="#FFFFFF"
+        stroke={colors.outline}
         strokeWidth={4}
       />
       <Circle
@@ -217,7 +251,7 @@ const FixedElements = memo(({ size, cogRotation }: { size: number; cogRotation: 
         cy={center}
         r={outerRadius}
         fill="none"
-        stroke="#000000"
+        stroke={colors.fill}
         strokeWidth={2}
       />
 
@@ -227,7 +261,7 @@ const FixedElements = memo(({ size, cogRotation }: { size: number; cogRotation: 
         y1={8}
         x2={center}
         y2={35}
-        stroke="#FFFFFF"
+        stroke={colors.outline}
         strokeWidth={7}
         strokeLinecap="round"
       />
@@ -236,7 +270,7 @@ const FixedElements = memo(({ size, cogRotation }: { size: number; cogRotation: 
         y1={8}
         x2={center}
         y2={35}
-        stroke="#000000"
+        stroke={colors.fill}
         strokeWidth={4}
         strokeLinecap="round"
       />
@@ -309,6 +343,18 @@ export default function CompassOverlay({
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
   const size = Math.min(screenWidth, screenHeight) - 20;
   const center = size / 2;
+  
+  // Theme state
+  const [displayMode, setDisplayMode] = useState<S52DisplayMode>(themeService.getCurrentMode());
+  const compassColors = useMemo(() => getCompassColors(displayMode), [displayMode]);
+  
+  // Subscribe to theme changes
+  useEffect(() => {
+    const unsubscribe = themeService.subscribeToModeChanges((mode) => {
+      setDisplayMode(mode);
+    });
+    return unsubscribe;
+  }, []);
   
   // Animation ref - persists across renders
   const animatedRotation = useRef(new Animated.Value(0)).current;
@@ -383,11 +429,11 @@ export default function CompassOverlay({
             { transform: [{ rotate: rotateInterpolate }] }
           ]}
         >
-          <CompassRose size={size} />
+          <CompassRose size={size} colors={compassColors} />
         </Animated.View>
         
         {/* Fixed elements on top */}
-        <FixedElements size={size} cogRotation={cogRotation} />
+        <FixedElements size={size} cogRotation={cogRotation} colors={compassColors} />
       </View>
     </View>
   );
