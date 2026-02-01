@@ -8,12 +8,15 @@ import { FirebaseAuthTypes, getAuth, onAuthStateChanged } from '@react-native-fi
 
 // Platform-specific imports
 import ChartViewer from './src/components/ChartViewer';
+import { OverlayProvider, useOverlay } from './src/contexts/OverlayContext';
 
 // Only import Firebase-based components on native platforms
 let LoginScreen: React.ComponentType<{ onLoginSuccess: () => void }> | null = null;
 let MapSelectionScreen: React.ComponentType | null = null;
 let DynamicChartViewer: React.ComponentType<{ onNavigateToDownloads?: () => void }> | null = null;
 let SettingsScreen: React.ComponentType | null = null;
+let CompassModal: React.ComponentType<{ visible: boolean; heading: number | null; course: number | null }> | null = null;
+let GPSInfoModal: React.ComponentType<{ visible: boolean; gpsData: any }> | null = null;
 
 // Modular Crashlytics API (v22+ requires passing instance as first param)
 let crashlyticsInstance: any = null;
@@ -30,6 +33,8 @@ if (Platform.OS !== 'web') {
   MapSelectionScreen = require('./src/screens/MapSelectionScreen').default;
   DynamicChartViewer = require('./src/components/DynamicChartViewer.native').default;
   SettingsScreen = require('./src/screens/SettingsScreen').default;
+  CompassModal = require('./src/components/CompassModal').default;
+  GPSInfoModal = require('./src/components/GPSInfoModal').default;
   
   // Initialize Crashlytics for native platforms (modular API)
   try {
@@ -178,6 +183,29 @@ function SettingsTab() {
   return <SettingsScreen />;
 }
 
+// Renders overlays outside the navigation hierarchy to avoid MapLibre conflicts
+function OverlayRenderer() {
+  const { showCompass, showGPSPanel, heading, course, gpsData } = useOverlay();
+  
+  return (
+    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} pointerEvents="box-none">
+      {CompassModal && showCompass && (
+        <CompassModal
+          visible={true}
+          heading={heading}
+          course={course}
+        />
+      )}
+      {GPSInfoModal && showGPSPanel && (
+        <GPSInfoModal
+          visible={true}
+          gpsData={gpsData}
+        />
+      )}
+    </View>
+  );
+}
+
 function AppContent() {
   const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -251,51 +279,55 @@ function AppContent() {
   // Main app with tab navigation
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
-        <Tab.Navigator
-          initialRouteName="Viewer"
-          screenOptions={({ route }) => ({
-            headerShown: false,
-            tabBarIcon: ({ focused }) => (
-              <TabIcon name={route.name} focused={focused} />
-            ),
-            tabBarActiveTintColor: '#4FC3F7',
-            tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.5)',
-            tabBarStyle: {
-              backgroundColor: 'rgba(20, 25, 35, 0.92)',
-              borderTopColor: 'rgba(255, 255, 255, 0.1)',
-              borderTopWidth: 0.5,
-              paddingBottom: 6,
-            },
-            tabBarItemStyle: {
-              paddingTop: 2,
-              paddingBottom: 2,
-            },
-            tabBarLabelStyle: {
-              fontSize: 11,
-              fontWeight: '600',
-            },
-            tabBarHideOnKeyboard: true,
-          })}
-        >
-          <Tab.Screen 
-            name="Viewer" 
-            component={ViewerTab}
-            options={{ tabBarLabel: 'Maps' }}
-          />
-          <Tab.Screen 
-            name="Charts" 
-            component={ChartsTab}
-            options={{ tabBarLabel: 'Documents' }}
-          />
-          <Tab.Screen 
-            name="Settings" 
-            component={SettingsTab}
-            options={{ tabBarLabel: 'Settings' }}
-          />
-        </Tab.Navigator>
-      </NavigationContainer>
-      <StatusBar style="light" />
+      <OverlayProvider>
+        <NavigationContainer>
+          <Tab.Navigator
+            initialRouteName="Viewer"
+            screenOptions={({ route }) => ({
+              headerShown: false,
+              tabBarIcon: ({ focused }) => (
+                <TabIcon name={route.name} focused={focused} />
+              ),
+              tabBarActiveTintColor: '#4FC3F7',
+              tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.5)',
+              tabBarStyle: {
+                backgroundColor: 'rgba(20, 25, 35, 0.92)',
+                borderTopColor: 'rgba(255, 255, 255, 0.1)',
+                borderTopWidth: 0.5,
+                paddingBottom: 6,
+              },
+              tabBarItemStyle: {
+                paddingTop: 2,
+                paddingBottom: 2,
+              },
+              tabBarLabelStyle: {
+                fontSize: 11,
+                fontWeight: '600',
+              },
+              tabBarHideOnKeyboard: true,
+            })}
+          >
+            <Tab.Screen 
+              name="Viewer" 
+              component={ViewerTab}
+              options={{ tabBarLabel: 'Maps' }}
+            />
+            <Tab.Screen 
+              name="Charts" 
+              component={ChartsTab}
+              options={{ tabBarLabel: 'Documents' }}
+            />
+            <Tab.Screen 
+              name="Settings" 
+              component={SettingsTab}
+              options={{ tabBarLabel: 'Settings' }}
+            />
+          </Tab.Navigator>
+        </NavigationContainer>
+        {/* Overlays rendered OUTSIDE NavigationContainer to avoid MapLibre view conflicts */}
+        <OverlayRenderer />
+        <StatusBar style="light" />
+      </OverlayProvider>
     </SafeAreaProvider>
   );
 }

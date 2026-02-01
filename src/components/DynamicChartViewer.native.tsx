@@ -39,9 +39,8 @@ import {
   formatDepthInfo,
 } from '../utils/chartRendering';
 import ChartDebugOverlay from './ChartDebugOverlay';
-import GPSInfoPanel from './GPSInfoPanel';
-import CompassOverlay from './CompassOverlay';
 import { useGPS } from '../hooks/useGPS';
+import { useOverlay } from '../contexts/OverlayContext';
 import * as displaySettingsService from '../services/displaySettingsService';
 import type { DisplaySettings } from '../services/displaySettingsService';
 import { logger, LogCategory } from '../services/loggingService';
@@ -1053,8 +1052,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [s52Mode, setS52ModeInternal] = useState<S52DisplayMode>('dusk');
   const [uiTheme, setUITheme] = useState(themeService.getUITheme('dusk'));
   
-  // Map style options (satellite vs chart-based)
-  type MapStyleOption = 'satellite' | 'chart';
+  // Map style options (satellite, light basemap, or chart-based)
+  type MapStyleOption = 'satellite' | 'light' | 'chart';
   const [mapStyle, setMapStyleInternal] = useState<MapStyleOption>('satellite');
   const [hasLocalBasemap, setHasLocalBasemap] = useState(false);
   
@@ -1069,7 +1068,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const themedStyles = useMemo(() => ({
     // Control panel backgrounds
     controlPanel: {
-      backgroundColor: uiTheme.panelBackground,
+      backgroundColor: uiTheme.panelBackgroundSolid,
       borderColor: uiTheme.border,
     },
     // Tab bar
@@ -1142,6 +1141,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       color: uiTheme.textPrimary,
     },
     activeChartSubtext: {
+      color: uiTheme.textSecondary,
+    },
+    chartScaleLabel: {
+      color: uiTheme.accentPrimary,
+    },
+    chartScaleCount: {
       color: uiTheme.textSecondary,
     },
     // Scroll content
@@ -1331,6 +1336,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // MapLibre uses S-52 themed backgrounds
   const mapStyleUrls = useMemo<Record<MapStyleOption, string | object>>(() => ({
     satellite: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.DEPDW } }] },
+    light: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f0f0f0' } }] },
     chart: localOfflineStyle, // Use local offline style for chart mode
   }), [s52Colors, localOfflineStyle, glyphsUrl]);
 
@@ -1341,15 +1347,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showCoords, setShowCoords] = useState(true);
   const [showZoomLevel, setShowZoomLevel] = useState(true);
   
-  // GPS and Navigation state
-  const [showGPSPanel, setShowGPSPanel] = useState(false);
-  const [showCompass, setShowCompass] = useState(false);
+  // GPS and Navigation state - overlay visibility from context (rendered in App.tsx)
+  const { showGPSPanel, setShowGPSPanel, showCompass, setShowCompass, updateGPSData } = useOverlay();
   const [followGPS, setFollowGPS] = useState(false); // Follow mode - center map on position
   const followGPSRef = useRef(false); // Ref for immediate follow mode check (avoids race condition)
   const pendingCameraMoveTimeout = useRef<NodeJS.Timeout | null>(null); // Track pending camera moves
   const isProgrammaticCameraMove = useRef(false); // Flag to distinguish programmatic vs user camera moves
   const { gpsData, startTracking, stopTracking, toggleTracking } = useGPS();
   
+  // Update overlay context with GPS data
+  useEffect(() => {
+    updateGPSData(gpsData);
+  }, [gpsData, updateGPSData]);
   
   // Zoom limiting - constrain zoom to available chart detail
   const [limitZoomToCharts, setLimitZoomToCharts] = useState(true);
@@ -2193,30 +2202,38 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     return [...new Set(chartsToRender)]; // Remove any duplicates
   }, [chartsToRender]);
 
+  // Helper to check if a chart is rendered at current zoom
+  // Returns true if chart's zoom range overlaps with current view
+  const isChartVisibleAtZoom = useCallback((chartId: string, zoom: number): boolean => {
+    // Match US scale number - can be prefixed (alaska_US1) or standalone (US1)
+    const match = chartId.match(/US(\d)/);
+    if (!match) return true; // Include unknown charts
+    const scale = parseInt(match[1], 10);
+    
+    // Chart zoom ranges (from tippecanoe settings in convert.py)
+    // US1: z0-8, US2: z8-10, US3: z10-13, US4: z13-15, US5: z15-17, US6: z17-18
+    // Include ±2 zoom buffer for overzoom tolerance
+    switch (scale) {
+      case 1: return zoom <= 10;  // US1: z0-8, buffer to z10
+      case 2: return zoom >= 6 && zoom <= 12;  // US2: z8-10, buffer ±2
+      case 3: return zoom >= 8 && zoom <= 15;  // US3: z10-13, buffer ±2
+      case 4: return zoom >= 11;  // US4: z13-15, buffer to z11+
+      case 5: return zoom >= 13;  // US5: z15-17, buffer to z13+
+      default: return zoom >= 15; // US6+: z17-18, buffer to z15+
+    }
+  }, []);
+
+  // Charts visible at current zoom level - for display and debugging
+  const chartsAtZoom = useMemo(() => {
+    return allChartsToRender
+      .filter(chartId => isChartVisibleAtZoom(chartId, currentZoom))
+      .map(chartId => ({ chartId }));
+  }, [allChartsToRender, currentZoom, isChartVisibleAtZoom]);
+
   // Build list of queryable layer IDs from loaded charts
   // OPTIMIZED: Only query tappable features at current zoom level
   // Skip large background fills, labels, and charts not rendered at this zoom
   const queryableLayerIds = useMemo(() => {
-    // Helper to check if a chart is rendered at current zoom
-    // Returns true if chart's zoom range overlaps with current view
-    const isChartVisibleAtZoom = (chartId: string, zoom: number): boolean => {
-      const match = chartId.match(/^US(\d)/);
-      if (!match) return true; // Include unknown charts
-      const scale = parseInt(match[1], 10);
-      
-      // Chart zoom ranges (from tippecanoe settings in convert.py)
-      // US1: z0-8, US2: z0-10, US3: z4-13, US4: z6-16, US5: z8-18, US6: z10-18
-      // Include ±2 zoom buffer for overzoom tolerance
-      switch (scale) {
-        case 1: return zoom <= 10;  // US1: z0-8, buffer to z10
-        case 2: return zoom <= 12;  // US2: z0-10, buffer to z12
-        case 3: return zoom >= 2 && zoom <= 15;  // US3: z4-13, buffer ±2
-        case 4: return zoom >= 4;   // US4: z6-16, buffer to z4+
-        case 5: return zoom >= 6;   // US5: z8-18, buffer to z6+
-        default: return zoom >= 8;  // US6+: z10-18, buffer to z8+
-      }
-    };
-    
     // Only include layers that are useful to tap on
     // Exclude: large fills (depare, lndare, fairwy, drgare), labels, outlines
     const layerTypes: { type: string; visible: boolean }[] = [
@@ -2257,17 +2274,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     // Only include visible layers
     const visibleTypes = layerTypes.filter(l => l.visible).map(l => l.type);
     
-    // Filter charts by zoom level, then build layer IDs
-    const chartsAtZoom = allChartsToRender.filter(chartId => isChartVisibleAtZoom(chartId, currentZoom));
-    
-    for (const chartId of chartsAtZoom) {
+    // Use component-level chartsAtZoom (already filtered by zoom)
+    for (const chart of chartsAtZoom) {
       for (const layerType of visibleTypes) {
-        ids.push(`mbtiles-${layerType}-${chartId}`);
+        ids.push(`mbtiles-${layerType}-${chart.chartId}`);
       }
     }
     logger.debug(LogCategory.CHARTS, `Built ${ids.length} queryable layer IDs for ${chartsAtZoom.length}/${allChartsToRender.length} charts at z${currentZoom.toFixed(1)}`);
     return ids;
-  }, [allChartsToRender, chartsToRender.length, currentZoom,
+  }, [allChartsToRender, chartsAtZoom, currentZoom,
       showLights, showBuoys, showBeacons, showHazards, showLandmarks, showSoundings,
       showCables, showPipelines, showDepthContours, showCoastline,
       showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
@@ -2648,6 +2663,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       >
       <MapLibre.MapView
+        key={`map-${mapStyle}-${s52Mode}`}
         ref={mapRef}
         style={styles.map}
         styleURL={typeof mapStyleUrls[mapStyle] === 'string' ? mapStyleUrls[mapStyle] : undefined}
@@ -2763,6 +2779,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           }
           return (
           <MapLibre.VectorSource
+            key={`local-basemap-source-${s52Mode}`}
             id="local-basemap-source"
             tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/basemap_alaska/{z}/{x}/{y}.pbf`]}
             minZoomLevel={0}
@@ -3158,7 +3175,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           const tileUrl = `${tileServer.getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf`;
           return (
           <MapLibre.VectorSource
-            key="composite-charts"
+            key={`composite-charts-${s52Mode}`}
             id="composite-charts"
             tileUrlTemplates={[tileUrl]}
             minZoomLevel={0}
@@ -3207,7 +3224,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* S-52 LAYER ORDER: Opaque Background Fills First */}
             {/* ============================================== */}
             
-            {/* DEPARE - Depth Areas (S-52: Opaque background) */}
+            {/* DEPARE - Depth Areas (S-52: Opaque background, themed by mode) */}
             <MapLibre.FillLayer
               id="composite-depare"
               sourceLayerID="charts"
@@ -3217,13 +3234,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 fillColor: [
                   'step',
                   ['coalesce', ['get', 'DRVAL1'], 0],
-                  '#C8D6A3', 0,    // Drying/negative depth - greenish
-                  '#B5E3F0', 2,    // 0-2m - very light blue
-                  '#9DD5E8', 5,    // 2-5m - light blue
-                  '#7EC8E3', 10,   // 5-10m - medium light blue
-                  '#5BB4D6', 20,   // 10-20m - medium blue
-                  '#3A9FC9', 50,   // 20-50m - darker blue
-                  '#2185B5',       // 50m+ - deep blue
+                  s52Colors.DEPIT,       // < 0m - Drying/intertidal
+                  0, s52Colors.DEPVS,    // 0-2m - very shallow
+                  2, s52Colors.DEPMS,    // 2-5m - medium shallow
+                  5, s52Colors.DEPMD,    // 5-10m - medium deep
+                  10, s52Colors.DEPDW,   // 10m+ - deep water
                 ],
                 fillOpacity: mapStyle === 'satellite' ? scaledDepthAreaOpacitySatellite : scaledDepthAreaOpacity,
                 visibility: (showDepthAreas && mapStyle !== 'satellite') ? 'visible' : 'none',
@@ -3236,7 +3251,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="charts"
               filter={['==', ['get', 'OBJL'], 71]}
               style={{
-                fillColor: '#F5DEB3',
+                fillColor: s52Colors.LANDA,
                 fillOpacity: mapStyle === 'satellite' ? 0.2 : 1,
                 visibility: (showLand && mapStyle !== 'satellite') ? 'visible' : 'none',
               }}
@@ -3618,7 +3633,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="charts"
               filter={['==', ['get', 'OBJL'], 43]}
               style={{
-                lineColor: '#FFFFFF',
+                lineColor: s52Mode === 'day' ? '#FFFFFF' : s52Colors.DEPDW,
                 lineWidth: scaledDepthContourLineHaloWidth,
                 lineOpacity: scaledDepthContourLineHalo > 0 ? 0.5 * scaledDepthContourLineOpacity : 0,
                 visibility: showDepthContours ? 'visible' : 'none',
@@ -3631,7 +3646,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="charts"
               filter={['==', ['get', 'OBJL'], 43]}
               style={{
-                lineColor: '#4A90D9',
+                lineColor: s52Colors.CHGRD,
                 lineWidth: scaledDepthContourLineWidth,
                 lineOpacity: 0.7 * scaledDepthContourLineOpacity,
                 visibility: showDepthContours ? 'visible' : 'none',
@@ -3644,7 +3659,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="charts"
               filter={['==', ['get', 'OBJL'], 30]}
               style={{
-                lineColor: '#FFFFFF',
+                lineColor: s52Mode === 'day' ? '#FFFFFF' : s52Colors.DEPDW,
                 lineWidth: scaledCoastlineHaloWidth,
                 lineOpacity: scaledCoastlineHalo > 0 ? scaledCoastlineOpacity * 0.8 : 0,
               }}
@@ -3656,7 +3671,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="charts"
               filter={['==', ['get', 'OBJL'], 30]}
               style={{
-                lineColor: '#8B4513',
+                lineColor: s52Colors.CSTLN,
                 lineWidth: scaledCoastlineLineWidth,
                 lineOpacity: scaledCoastlineOpacity,
               }}
@@ -4591,38 +4606,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             anchor={{ x: 0.5, y: 0.5 }}
           >
             <View style={styles.shipMarker}>
-              {/* Show ship icon when GPS panel/compass active, blue dot otherwise (including follow mode) */}
-              {(showGPSPanel || showCompass) ? (
-                <>
-                  <View 
-                    style={[
-                      styles.shipIcon,
-                      gpsData.heading !== null && { 
-                        transform: [{ rotate: `${gpsData.heading}deg` }] 
-                      }
-                    ]}
-                  >
-                    <View style={styles.shipBow} />
-                    <View style={styles.shipBody} />
-                  </View>
-                  {/* Accuracy circle indicator */}
-                  {gpsData.accuracy !== null && gpsData.accuracy > 10 && (
-                    <View style={[
-                      styles.accuracyRing,
-                      { 
-                        width: Math.min(gpsData.accuracy * 2, 100),
-                        height: Math.min(gpsData.accuracy * 2, 100),
-                        borderRadius: Math.min(gpsData.accuracy, 50),
-                      }
-                    ]} />
-                  )}
-                </>
-              ) : (
-                /* Simple blue dot when GPS panel is not active */
-                <View style={styles.locationDot}>
-                  <View style={styles.locationDotInner} />
-                </View>
-              )}
+              {/* Always show ship icon - conditional rendering inside MarkerView causes crashes */}
+              <View 
+                style={[
+                  styles.shipIcon,
+                  gpsData.heading !== null && { 
+                    transform: [{ rotate: `${gpsData.heading}deg` }] 
+                  }
+                ]}
+              >
+                <View style={styles.shipBow} />
+                <View style={styles.shipBody} />
+              </View>
             </View>
           </MapLibre.MarkerView>
         )}
@@ -4665,7 +4660,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Compass button */}
         <TouchableOpacity 
           style={[styles.topMenuBtn, showCompass && styles.topMenuBtnActive]}
-          onPress={() => setShowCompass(!showCompass)}
+          onPress={() => {
+            console.log(`[DynamicChartViewer] Toggling compass: ${showCompass} -> ${!showCompass}`);
+            setShowCompass(!showCompass);
+          }}
         >
           <Text style={styles.topMenuBtnText}>🧭</Text>
         </TouchableOpacity>
@@ -4674,14 +4672,34 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Telemetry button */}
         <TouchableOpacity 
           style={[styles.topMenuBtn, showGPSPanel && styles.topMenuBtnActive]}
-          onPress={() => setShowGPSPanel(!showGPSPanel)}
+          onPress={() => {
+            console.log(`[DynamicChartViewer] Toggling GPS panel: ${showGPSPanel} -> ${!showGPSPanel}`);
+            setShowGPSPanel(!showGPSPanel);
+          }}
         >
           <Text style={styles.topMenuBtnText}>⏱</Text>
         </TouchableOpacity>
       </View>
       
-      {/* Center on location button - upper right (same style as other controls) */}
-      <View style={[styles.centerBtnContainer, { top: insets.top + 8, right: 12 }]}>
+      {/* Upper right controls - Center on location + Day/Dusk/Night toggle */}
+      <View style={[styles.upperRightControls, { top: insets.top + 8, right: 12 }]}>
+        {/* Day/Dusk/Night cycle button */}
+        <TouchableOpacity 
+          style={styles.topMenuBtn}
+          onPress={() => {
+            // Cycle through modes: day -> dusk -> night -> day
+            const nextMode = s52Mode === 'day' ? 'dusk' : s52Mode === 'dusk' ? 'night' : 'day';
+            setS52Mode(nextMode);
+          }}
+        >
+          <Text style={styles.modeToggleText}>
+            {s52Mode === 'day' ? '☀️' : s52Mode === 'dusk' ? '🌅' : '🌙'}
+          </Text>
+        </TouchableOpacity>
+        
+        <View style={styles.upperRightDivider} />
+        
+        {/* Center on location button */}
         <TouchableOpacity 
           style={[styles.topMenuBtn, followGPS && styles.topMenuBtnActive]}
           key={followGPS ? 'active' : 'inactive'} // Force re-render when state changes
@@ -5020,6 +5038,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       Satellite{satelliteTileSets.length > 0 ? ' ✓' : ''}
                     </Text>
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.basemapOption, themedStyles.basemapOption, mapStyle === 'light' && styles.basemapOptionActive, mapStyle === 'light' && themedStyles.basemapOptionActive]}
+                    onPress={() => setMapStyle('light')}
+                  >
+                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, mapStyle === 'light' && styles.basemapOptionTextActive, mapStyle === 'light' && themedStyles.basemapOptionTextActive]}>Light</Text>
+                  </TouchableOpacity>
                   {hasLocalBasemap && (
                     <TouchableOpacity
                       style={[styles.basemapOption, themedStyles.basemapOption, mapStyle === 'chart' && styles.basemapOptionActive, mapStyle === 'chart' && themedStyles.basemapOptionActive]}
@@ -5047,14 +5071,78 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   value={showChartDebug} 
                   onToggle={() => setShowChartDebug(!showChartDebug)} 
                 />
-                {showChartDebug && chartsAtZoom.length > 0 && (
+                {showChartDebug && (
                   <View style={styles.activeChartInfo}>
-                    <Text style={styles.activeChartText}>
-                      Active: {chartsAtZoom[0]?.chartId || 'None'}
+                    <Text style={[styles.activeChartSubtext, themedStyles.activeChartSubtext]}>
+                      Zoom: {currentZoom.toFixed(1)} | Loaded Files: {allChartsToRender.length}
                     </Text>
-                    <Text style={styles.activeChartSubtext}>
-                      Zoom: {currentZoom.toFixed(1)} | Charts: {chartsAtZoom.length}
-                    </Text>
+                    {/* Show loaded chart files */}
+                    {(() => {
+                      // Categorize charts: merged regional vs direct scale
+                      const mergedCharts = allChartsToRender.filter(id => id.includes('_US') && !id.match(/^US\d/));
+                      const directCharts = allChartsToRender.filter(id => id.match(/^US\d/));
+                      
+                      // Determine expected scale at current zoom
+                      const CHART_SCALES = [
+                        { prefix: 'US1', name: 'Overview', minZoom: 0, maxZoom: 8 },
+                        { prefix: 'US2', name: 'General', minZoom: 8, maxZoom: 10 },
+                        { prefix: 'US3', name: 'Coastal', minZoom: 10, maxZoom: 13 },
+                        { prefix: 'US4', name: 'Approach', minZoom: 11, maxZoom: 16 },
+                        { prefix: 'US5', name: 'Harbor', minZoom: 13, maxZoom: 18 },
+                      ];
+                      const expectedScale = CHART_SCALES.find(
+                        s => currentZoom >= s.minZoom && currentZoom <= s.maxZoom
+                      );
+                      
+                      return (
+                        <View style={styles.chartScaleList}>
+                          {/* Expected scale at current zoom */}
+                          {expectedScale && (
+                            <View style={[styles.chartScaleRow, { backgroundColor: 'rgba(76, 175, 80, 0.2)' }]}>
+                              <Text style={[styles.chartScaleLabel, themedStyles.chartScaleLabel]}>
+                                {expectedScale.prefix}
+                              </Text>
+                              <Text style={[styles.chartScaleCount, themedStyles.chartScaleCount]}>
+                                {expectedScale.name} (z{expectedScale.minZoom}-{expectedScale.maxZoom})
+                              </Text>
+                            </View>
+                          )}
+                          
+                          {/* Merged regional charts */}
+                          {mergedCharts.length > 0 && (
+                            <View style={styles.chartScaleRow}>
+                              <Text style={[styles.chartScaleLabel, { color: '#4FC3F7' }]}>📦</Text>
+                              <Text style={[styles.chartScaleCount, themedStyles.chartScaleCount]}>
+                                {mergedCharts.length} regional (multi-scale)
+                              </Text>
+                            </View>
+                          )}
+                          
+                          {/* Direct scale charts grouped */}
+                          {directCharts.length > 0 && (() => {
+                            const byScale: Record<string, string[]> = {};
+                            directCharts.forEach(id => {
+                              const match = id.match(/^(US\d)/);
+                              const scale = match ? match[1] : 'Other';
+                              if (!byScale[scale]) byScale[scale] = [];
+                              byScale[scale].push(id);
+                            });
+                            return Object.keys(byScale).sort().map(scale => (
+                              <View key={scale} style={styles.chartScaleRow}>
+                                <Text style={[styles.chartScaleLabel, themedStyles.chartScaleLabel]}>{scale}</Text>
+                                <Text style={[styles.chartScaleCount, themedStyles.chartScaleCount]}>
+                                  {byScale[scale].length} chart{byScale[scale].length !== 1 ? 's' : ''}
+                                </Text>
+                              </View>
+                            ));
+                          })()}
+                          
+                          {allChartsToRender.length === 0 && (
+                            <Text style={[styles.activeChartSubtext, themedStyles.activeChartSubtext]}>No charts loaded</Text>
+                          )}
+                        </View>
+                      );
+                    })()}
                   </View>
                 )}
               </ScrollView>
@@ -5784,18 +5872,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         />
       )}
 
-      {/* Compass Overlay - Full viewport HUD */}
-      <CompassOverlay
-        heading={gpsData.heading}
-        course={gpsData.course}
-        visible={showCompass}
-      />
-
-      {/* GPS Info Panel */}
-      <GPSInfoPanel
-        gpsData={gpsData}
-        visible={showGPSPanel}
-      />
+      {/* Compass and GPS overlays are now rendered in App.tsx outside MapLibre hierarchy */}
 
     </View>
   );
@@ -6821,12 +6898,22 @@ const styles = StyleSheet.create({
     borderRadius: 1,
   },
   
-  // Center button container - upper right (same style as other controls)
-  centerBtnContainer: {
+  // Upper right controls container - Day/Dusk/Night + Center on location
+  upperRightControls: {
     position: 'absolute',
+    flexDirection: 'row',
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
     borderRadius: 8,
     overflow: 'hidden',
+    alignItems: 'center',
+  },
+  upperRightDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  modeToggleText: {
+    fontSize: 20,
   },
   centerBtnText: {
     fontSize: 28,
@@ -6972,6 +7059,29 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.5)',
     fontSize: 12,
     marginTop: 4,
+  },
+  chartScaleList: {
+    marginTop: 8,
+  },
+  chartScaleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 4,
+    marginBottom: 4,
+  },
+  chartScaleLabel: {
+    color: '#4FC3F7',
+    fontSize: 14,
+    fontWeight: '600',
+    fontFamily: 'monospace',
+  },
+  chartScaleCount: {
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontSize: 12,
   },
   
   // Layers tab container

@@ -74,7 +74,7 @@ export function useGPS(options: UseGPSOptions = {}) {
   const previousPosition = useRef<{ lat: number; lon: number; time: number } | null>(null);
   const lastPositionUpdate = useRef<{ lat: number; lon: number } | null>(null);
   const lastHeadingUpdate = useRef<number>(0);
-  const HEADING_THROTTLE_MS = 500; // Limit heading updates to 2 times per second (was 200ms/5Hz)
+  const HEADING_THROTTLE_MS = 1000; // Limit heading updates to 1Hz (boats don't need faster)
   const MIN_POSITION_CHANGE_M = 1; // Minimum meters change to trigger position update
 
   // Calculate bearing between two points (for COG when GPS doesn't provide it)
@@ -204,7 +204,7 @@ export function useGPS(options: UseGPSOptions = {}) {
       // Start heading updates (magnetometer) - throttled with minimum change threshold
       if (enableHeading) {
         let lastHeadingValue = 0;
-        const MIN_HEADING_CHANGE = 2; // Minimum degrees change to trigger update
+        const MIN_HEADING_CHANGE = 8; // Minimum degrees change to trigger update (heavily filtered)
         
         headingSubscription.current = await Location.watchHeadingAsync((headingData) => {
           const now = Date.now();
