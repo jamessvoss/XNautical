@@ -43,51 +43,54 @@ const db = admin.firestore();
  * Get all tide and current station locations (without predictions)
  * Returns compact JSON with just the metadata needed for map display
  */
-export const getStationLocations = functions.https.onCall(async (data, context) => {
-  try {
-    console.log('Fetching station locations...');
-    
-    // Fetch both collections in parallel
-    const [tideSnapshot, currentSnapshot] = await Promise.all([
-      db.collection('tidal-stations').get(),
-      db.collection('current-stations-packed').get(),
-    ]);
-    
-    // Extract only the fields we need (no predictions!)
-    const tideStations = tideSnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
+export const getStationLocations = functions
+  .runWith({
+    memory: '512MB', // Increase memory to handle loading all documents
+    timeoutSeconds: 60,
+  })
+  .https.onCall(async (data, context) => {
+    try {
+      console.log('Fetching station locations...');
+      
+      // Fetch both collections in parallel, but only select the fields we need
+      const [tideSnapshot, currentSnapshot] = await Promise.all([
+        db.collection('tidal-stations')
+          .select('name', 'lat', 'lng', 'type') // Only fetch these fields, not predictions
+          .get(),
+        db.collection('current-stations-packed')
+          .select('name', 'lat', 'lng', 'bin') // Only fetch these fields, not predictions
+          .get(),
+      ]);
+      
+      // Extract data
+      const tideStations = tideSnapshot.docs.map(doc => ({
         id: doc.id,
-        name: data.name || 'Unknown',
-        lat: data.lat || 0,
-        lng: data.lng || 0,
-        type: data.type || 'S',
-      };
-    });
-    
-    const currentStations = currentSnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
+        name: doc.get('name') || 'Unknown',
+        lat: doc.get('lat') || 0,
+        lng: doc.get('lng') || 0,
+        type: doc.get('type') || 'S',
+      }));
+      
+      const currentStations = currentSnapshot.docs.map(doc => ({
         id: doc.id,
-        name: data.name || 'Unknown',
-        lat: data.lat || 0,
-        lng: data.lng || 0,
-        bin: data.bin || 0,
+        name: doc.get('name') || 'Unknown',
+        lat: doc.get('lat') || 0,
+        lng: doc.get('lng') || 0,
+        bin: doc.get('bin') || 0,
+      }));
+      
+      console.log(`Returning ${tideStations.length} tide stations and ${currentStations.length} current stations`);
+      
+      return {
+        tideStations,
+        currentStations,
+        timestamp: new Date().toISOString(),
       };
-    });
-    
-    console.log(`Returning ${tideStations.length} tide stations and ${currentStations.length} current stations`);
-    
-    return {
-      tideStations,
-      currentStations,
-      timestamp: new Date().toISOString(),
-    };
-  } catch (error) {
-    console.error('Error fetching station locations:', error);
-    throw new functions.https.HttpsError('internal', 'Failed to fetch station locations');
-  }
-});
+    } catch (error) {
+      console.error('Error fetching station locations:', error);
+      throw new functions.https.HttpsError('internal', 'Failed to fetch station locations');
+    }
+  });
 
 // ============================================================================
 // EMAIL NOTIFICATION SYSTEM
