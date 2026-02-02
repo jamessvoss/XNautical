@@ -1631,8 +1631,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
   }, []);
 
-  // Load tide and current stations from storage/cache on startup
-  // Data persists in AsyncStorage after user presses "Refresh Tide Data" in Settings
+  // Load tide and current stations from AsyncStorage on startup
+  // Data persists after user presses "Refresh Tide Data" in Settings
   useEffect(() => {
     const loadStations = async () => {
       try {
@@ -1643,35 +1643,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         ]);
         
         if (tides.length > 0 || currents.length > 0) {
-          logger.info(LogCategory.DATA, `Loading ${tides.length} tide stations and ${currents.length} current stations from storage`);
+          logger.info(LogCategory.DATA, `Loaded ${tides.length} tide stations and ${currents.length} current stations from storage`);
           setTideStations(tides);
           setCurrentStations(currents);
           console.log(`[MAP] Loaded ${tides.length} tide stations and ${currents.length} current stations into map state`);
         } else {
-          console.log('[MAP] No stations available - user needs to press "Refresh Tide Data" in Settings');
+          console.log('[MAP] No stations in storage - user needs to press "Refresh Tide Data" in Settings');
         }
       } catch (error) {
         logger.error(LogCategory.DATA, 'Error loading stations', error as Error);
       }
     };
     
-    // Load immediately
+    // Load once on mount
     loadStations();
-    
-    // Also poll for updates every 5 seconds in case user loads data in Settings
-    const interval = setInterval(async () => {
-      const tides = getCachedTideStations();
-      const currents = getCachedCurrentStations();
-      
-      if ((tides.length > 0 || currents.length > 0) && 
-          (tides.length !== tideStations.length || currents.length !== currentStations.length)) {
-        console.log(`[MAP] Detected new station data: ${tides.length} tides, ${currents.length} currents`);
-        setTideStations(tides);
-        setCurrentStations(currents);
-      }
-    }, 5000);
-    
-    return () => clearInterval(interval);
   }, []);
 
   // Load and subscribe to display settings
