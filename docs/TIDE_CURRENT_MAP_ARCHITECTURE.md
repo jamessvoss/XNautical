@@ -8,6 +8,29 @@ The system uses a **multi-layered architecture** combining Cloud Functions, loca
 
 ## Architecture Overview
 
+```mermaid
+flowchart TD
+    User[User presses Refresh Tide Data]
+    CloudFunc[Cloud Function getStationLocations]
+    Firestore[(Firestore Database)]
+    AsyncStorage[(AsyncStorage on Device)]
+    MapView[MapLibre Map View]
+    
+    User -->|Triggers| Settings[Settings Screen]
+    Settings -->|Calls| StationService[stationService.ts]
+    StationService -->|Invokes| CloudFunc
+    CloudFunc -->|select name lat lng type| Firestore
+    CloudFunc -->|Returns JSON ~50KB| StationService
+    StationService -->|Persists| AsyncStorage
+    StationService -->|Updates cache| Memory[In-Memory Cache]
+    
+    AppLaunch[App Launch] -->|Loads from| AsyncStorage
+    AsyncStorage -->|Hydrates| Memory
+    Memory -->|Provides data| MapComponent[DynamicChartViewer]
+    MapComponent -->|Creates GeoJSON| MapView
+    MapView -->|Renders circles and labels| Display[Blue circles = Tide<br/>Magenta circles = Current]
+```
+
 **Data Flow:**
 1. User triggers "Refresh Tide Data" in Settings Screen
 2. stationService.ts calls Cloud Function `getStationLocations()`
@@ -163,6 +186,38 @@ Same structure as tide stations but with:
    - Positioned above the circle
 
 ## Data Flow Sequence
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant S as Settings Screen
+    participant SS as stationService
+    participant CF as Cloud Function
+    participant AS as AsyncStorage
+    participant M as Map Component
+    participant ML as MapLibre
+    
+    Note over U,ML: First Time Setup
+    U->>S: Press "Refresh Tide Data"
+    S->>SS: clearCache() + fetch()
+    SS->>CF: getStationLocations()
+    CF-->>SS: 578 tides + 937 currents
+    SS->>AS: Save to storage (~50KB)
+    SS->>SS: Cache in memory
+    U->>M: Navigate to map
+    M->>SS: fetchTideStations()
+    SS-->>M: Return cached data
+    M->>ML: Create GeoJSON + Layers
+    ML-->>U: Display circles
+    
+    Note over U,ML: Subsequent App Launch
+    M->>SS: fetchTideStations()
+    SS->>AS: Load from storage
+    AS-->>SS: Return persisted data
+    SS-->>M: Return data
+    M->>ML: Create GeoJSON + Layers
+    ML-->>U: Display circles (instant)
+```
 
 **First Time Setup:**
 1. User presses "Refresh Tide Data" in Settings Screen
