@@ -1,10 +1,15 @@
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { app } from '../config/firebase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Initialize Firebase Functions
 const functions = getFunctions(app);
 
 console.log('Using Cloud Function for station locations (single optimized call)');
+
+const STORAGE_KEY_TIDE_STATIONS = '@XNautical:tideStations';
+const STORAGE_KEY_CURRENT_STATIONS = '@XNautical:currentStations';
+const STORAGE_KEY_STATIONS_TIMESTAMP = '@XNautical:stationsTimestamp';
 
 export interface TideEvent {
   time: string;      // "HH:MM"
@@ -40,6 +45,59 @@ export interface CurrentStation {
 let cachedTideStations: TideStation[] | null = null;
 let cachedCurrentStations: CurrentStation[] | null = null;
 let fetchPromise: Promise<void> | null = null;
+let loadedFromStorage = false;
+
+/**
+ * Load stations from AsyncStorage
+ */
+async function loadFromStorage(): Promise<void> {
+  if (loadedFromStorage) return;
+  
+  try {
+    console.log('Loading stations from AsyncStorage...');
+    const [tidesJson, currentsJson, timestamp] = await Promise.all([
+      AsyncStorage.getItem(STORAGE_KEY_TIDE_STATIONS),
+      AsyncStorage.getItem(STORAGE_KEY_CURRENT_STATIONS),
+      AsyncStorage.getItem(STORAGE_KEY_STATIONS_TIMESTAMP),
+    ]);
+    
+    if (tidesJson && currentsJson) {
+      cachedTideStations = JSON.parse(tidesJson);
+      cachedCurrentStations = JSON.parse(currentsJson);
+      console.log(`Loaded ${cachedTideStations?.length || 0} tide stations and ${cachedCurrentStations?.length || 0} current stations from storage`);
+      
+      if (timestamp) {
+        const age = Date.now() - parseInt(timestamp);
+        console.log(`Station data is ${Math.round(age / 1000 / 60 / 60)} hours old`);
+      }
+    } else {
+      console.log('No stations found in storage');
+    }
+  } catch (error) {
+    console.error('Error loading stations from storage:', error);
+  } finally {
+    loadedFromStorage = true;
+  }
+}
+
+/**
+ * Save stations to AsyncStorage
+ */
+async function saveToStorage(): Promise<void> {
+  if (!cachedTideStations || !cachedCurrentStations) return;
+  
+  try {
+    console.log('Saving stations to AsyncStorage...');
+    await Promise.all([
+      AsyncStorage.setItem(STORAGE_KEY_TIDE_STATIONS, JSON.stringify(cachedTideStations)),
+      AsyncStorage.setItem(STORAGE_KEY_CURRENT_STATIONS, JSON.stringify(cachedCurrentStations)),
+      AsyncStorage.setItem(STORAGE_KEY_STATIONS_TIMESTAMP, Date.now().toString()),
+    ]);
+    console.log(`Saved ${cachedTideStations.length} tide stations and ${cachedCurrentStations.length} current stations to storage`);
+  } catch (error) {
+    console.error('Error saving stations to storage:', error);
+  }
+}
 
 /**
  * Internal function to fetch both tide and current stations from Cloud Function
@@ -47,14 +105,17 @@ let fetchPromise: Promise<void> | null = null;
  * they share the same data and only make one Cloud Function call
  */
 async function fetchAllStations(): Promise<void> {
+  // First, try loading from storage
+  await loadFromStorage();
+  
+  // If already in memory cache, return immediately
+  if (cachedTideStations && cachedCurrentStations) {
+    return Promise.resolve();
+  }
+
   // If already fetching, wait for that to complete
   if (fetchPromise) {
     return fetchPromise;
-  }
-
-  // If already cached, return immediately
-  if (cachedTideStations && cachedCurrentStations) {
-    return Promise.resolve();
   }
 
   // Create the fetch promise
@@ -87,7 +148,10 @@ async function fetchAllStations(): Promise<void> {
         predictions: undefined,
       }));
       
-      console.log(`Cached ${cachedTideStations.length} tide stations and ${cachedCurrentStations.length} current stations`);
+      console.log(`Cached ${cachedTideStations.length} tide stations and ${cachedCurrentStations.length} current stations in memory`);
+      
+      // Save to AsyncStorage for persistence
+      await saveToStorage();
     } catch (error) {
       console.error('Error fetching station locations:', error);
       console.error('Error details:', JSON.stringify(error, null, 2));
@@ -136,8 +200,19 @@ export async function fetchCurrentStations(includePredictions: boolean = false):
  * Clear cached stations (useful for testing/refresh)
  */
 export function clearStationCache() {
+  console.log('Clearing station cache from memory and storage...');
   cachedTideStations = null;
   cachedCurrentStations = null;
+  loadedFromStorage = false;
+  
+  // Also clear from AsyncStorage
+  AsyncStorage.multiRemove([
+    STORAGE_KEY_TIDE_STATIONS,
+    STORAGE_KEY_CURRENT_STATIONS,
+    STORAGE_KEY_STATIONS_TIMESTAMP,
+  ]).catch(error => {
+    console.error('Error clearing station cache from storage:', error);
+  });
 }
 
 /**

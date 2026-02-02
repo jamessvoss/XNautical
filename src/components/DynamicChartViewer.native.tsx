@@ -1631,31 +1631,46 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
   }, []);
 
-  // Load tide and current stations from cache (if available from Settings screen)
-  // Data is loaded when user presses "Refresh Tide Data" in Settings
+  // Load tide and current stations from storage/cache on startup
+  // Data persists in AsyncStorage after user presses "Refresh Tide Data" in Settings
   useEffect(() => {
-    const loadStations = () => {
+    const loadStations = async () => {
       try {
-        const tides = getCachedTideStations();
-        const currents = getCachedCurrentStations();
+        // This will load from AsyncStorage if available
+        const [tides, currents] = await Promise.all([
+          fetchTideStations(),
+          fetchCurrentStations(),
+        ]);
         
         if (tides.length > 0 || currents.length > 0) {
-          logger.info(LogCategory.DATA, `Loading ${tides.length} tide stations and ${currents.length} current stations from cache`);
+          logger.info(LogCategory.DATA, `Loading ${tides.length} tide stations and ${currents.length} current stations from storage`);
           setTideStations(tides);
           setCurrentStations(currents);
           console.log(`[MAP] Loaded ${tides.length} tide stations and ${currents.length} current stations into map state`);
         } else {
-          console.log('[MAP] No cached stations available yet');
+          console.log('[MAP] No stations available - user needs to press "Refresh Tide Data" in Settings');
         }
       } catch (error) {
-        logger.error(LogCategory.DATA, 'Error loading cached stations', error as Error);
+        logger.error(LogCategory.DATA, 'Error loading stations', error as Error);
       }
     };
     
+    // Load immediately
     loadStations();
     
-    // Poll for updates every 2 seconds to pick up data loaded in Settings
-    const interval = setInterval(loadStations, 2000);
+    // Also poll for updates every 5 seconds in case user loads data in Settings
+    const interval = setInterval(async () => {
+      const tides = getCachedTideStations();
+      const currents = getCachedCurrentStations();
+      
+      if ((tides.length > 0 || currents.length > 0) && 
+          (tides.length !== tideStations.length || currents.length !== currentStations.length)) {
+        console.log(`[MAP] Detected new station data: ${tides.length} tides, ${currents.length} currents`);
+        setTideStations(tides);
+        setCurrentStations(currents);
+      }
+    }, 5000);
+    
     return () => clearInterval(interval);
   }, []);
 
