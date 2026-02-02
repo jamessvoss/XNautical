@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getStorage } from 'firebase/storage';
+import { getFirestore } from 'firebase/firestore';
 import { Platform } from 'react-native';
 
 // XNautical Firebase configuration
@@ -20,6 +21,9 @@ const app = initializeApp(firebaseConfig);
 
 // Initialize Storage for chart GeoJSON files
 const storage = getStorage(app);
+
+// Initialize Firestore for tide/current data
+const firestore = getFirestore(app);
 
 // Native Firebase Auth - modular API (React Native Firebase v22+)
 let nativeAuthInstance: any = null;
@@ -114,4 +118,4 @@ export function getAuth() {
   return nativeAuthInstance;
 }
 
-export { app, storage, nativeAuth };
+export { app, storage, firestore, nativeAuth };

@@ -48,6 +48,7 @@ import { performanceTracker, StartupPhase, RuntimeMetric } from '../services/per
 import { stateReporter } from '../services/stateReporter';
 import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
+import { fetchTideStations, fetchCurrentStations, TideStation, CurrentStation } from '../services/stationService';
 
 // MapLibre doesn't require an access token
 
@@ -360,6 +361,9 @@ interface LayerVisibility {
   shorelineConstruction: boolean;
   seaAreaNames: boolean;
   landRegions: boolean;
+  gnisNames: boolean;  // Master toggle for all GNIS place names
+  tideStations: boolean;  // Tide station markers
+  currentStations: boolean;  // Current station markers
 }
 
 type LayerVisibilityAction = 
@@ -396,6 +400,9 @@ const initialLayerVisibility: LayerVisibility = {
   shorelineConstruction: true,
   seaAreaNames: true,
   landRegions: true,
+  gnisNames: true,  // Master toggle for all GNIS place names
+  tideStations: true,  // Show tide stations by default
+  currentStations: true,  // Show current stations by default
 };
 
 function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityAction): LayerVisibility {
@@ -487,6 +494,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     shorelineConstruction: showShorelineConstruction,
     seaAreaNames: showSeaAreaNames,
     landRegions: showLandRegions,
+    gnisNames: showGNISNames,
+    tideStations: showTideStations,
+    currentStations: showCurrentStations,
   } = layers;
   
   // GNIS Place Names layer toggles
@@ -495,6 +505,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showWaterNames, setShowWaterNames] = useState(true);      // Bays, channels, sounds
   const [showCoastalNames, setShowCoastalNames] = useState(true);  // Capes, islands, beaches
   const [showLandmarkNames, setShowLandmarkNames] = useState(true); // Summits, glaciers
+  
+  // Tide and Current station data
+  const [tideStations, setTideStations] = useState<TideStation[]>([]);
+  const [currentStations, setCurrentStations] = useState<CurrentStation[]>([]);
   const [showPopulatedNames, setShowPopulatedNames] = useState(true); // Towns, ports
   const [showStreamNames, setShowStreamNames] = useState(false);    // Rivers, creeks (off by default - too many)
   const [showLakeNames, setShowLakeNames] = useState(false);        // Lakes (off by default)
@@ -1615,6 +1629,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     return () => {
       tileServer.stopTileServer();
     };
+  }, []);
+
+  // Load tide and current stations from Firestore
+  useEffect(() => {
+    const loadStations = async () => {
+      try {
+        logger.info(LogCategory.DATA, 'Loading tide and current stations from Firestore...');
+        const [tides, currents] = await Promise.all([
+          fetchTideStations(),
+          fetchCurrentStations(),
+        ]);
+        setTideStations(tides);
+        setCurrentStations(currents);
+        logger.info(LogCategory.DATA, `Loaded ${tides.length} tide stations and ${currents.length} current stations`);
+      } catch (error) {
+        logger.error(LogCategory.DATA, 'Failed to load stations', error as Error);
+      }
+    };
+    loadStations();
   }, []);
 
   // Load and subscribe to display settings
@@ -4617,7 +4650,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* IMPORTANT: maxZoomLevel must match tippecanoe --maximum-zoom (14) */}
         {/* to prevent overzoom rendering issues */}
         {/* NOTE: These layers use aboveLayerID to ensure they appear above all chart content */}
-        {tileServerReady && gnisAvailable && showPlaceNames && (
+        {tileServerReady && gnisAvailable && showGNISNames && showPlaceNames && (
           <MapLibre.VectorSource
             id="gnis-names-source"
             tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/gnis_names_ak/{z}/{x}/{y}.pbf`]}
@@ -4794,6 +4827,100 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </MapLibre.VectorSource>
         )}
 
+        {/* Tide Stations Layer */}
+        {showTideStations && tideStations.length > 0 && (
+          <MapLibre.ShapeSource
+            id="tide-stations-source"
+            shape={{
+              type: 'FeatureCollection',
+              features: tideStations.map(station => ({
+                type: 'Feature',
+                geometry: {
+                  type: 'Point',
+                  coordinates: [station.lng, station.lat],
+                },
+                properties: {
+                  id: station.id,
+                  name: station.name,
+                  type: station.type,
+                },
+              })),
+            }}
+          >
+            <MapLibre.CircleLayer
+              id="tide-stations-circle"
+              style={{
+                circleRadius: 8,
+                circleColor: '#0066CC',
+                circleStrokeWidth: 2,
+                circleStrokeColor: '#FFFFFF',
+                circleOpacity: 0.9,
+              }}
+            />
+            <MapLibre.SymbolLayer
+              id="tide-stations-label"
+              minZoomLevel={10}
+              style={{
+                textField: ['get', 'name'],
+                textFont: ['Noto Sans Regular'],
+                textSize: 11,
+                textColor: '#0066CC',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 2,
+                textOffset: [0, 1.5],
+                textAnchor: 'top',
+              }}
+            />
+          </MapLibre.ShapeSource>
+        )}
+
+        {/* Current Stations Layer */}
+        {showCurrentStations && currentStations.length > 0 && (
+          <MapLibre.ShapeSource
+            id="current-stations-source"
+            shape={{
+              type: 'FeatureCollection',
+              features: currentStations.map(station => ({
+                type: 'Feature',
+                geometry: {
+                  type: 'Point',
+                  coordinates: [station.lng, station.lat],
+                },
+                properties: {
+                  id: station.id,
+                  name: station.name,
+                  bin: station.bin,
+                },
+              })),
+            }}
+          >
+            <MapLibre.CircleLayer
+              id="current-stations-circle"
+              style={{
+                circleRadius: 8,
+                circleColor: '#CC0066',
+                circleStrokeWidth: 2,
+                circleStrokeColor: '#FFFFFF',
+                circleOpacity: 0.9,
+              }}
+            />
+            <MapLibre.SymbolLayer
+              id="current-stations-label"
+              minZoomLevel={10}
+              style={{
+                textField: ['get', 'name'],
+                textFont: ['Noto Sans Regular'],
+                textSize: 11,
+                textColor: '#CC0066',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: 2,
+                textOffset: [0, 1.5],
+                textAnchor: 'top',
+              }}
+            />
+          </MapLibre.ShapeSource>
+        )}
+
         {/* GPS Position Marker - always show when GPS available */}
         {gpsData.latitude !== null && gpsData.longitude !== null && (
           <MapLibre.MarkerView
@@ -4950,6 +5077,34 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           onPress={() => toggleLayer('seabed')}
         >
           <Text style={styles.quickToggleBtnText}>SBD</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showBuoys && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('buoys')}
+        >
+          <Text style={styles.quickToggleBtnText}>BOY</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showGNISNames && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('gnisNames')}
+        >
+          <Text style={styles.quickToggleBtnText}>NAM</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showTideStations && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('tideStations')}
+        >
+          <Text style={styles.quickToggleBtnText}>TID</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDivider} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtn, showCurrentStations && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('currentStations')}
+        >
+          <Text style={styles.quickToggleBtnText}>CUR</Text>
         </TouchableOpacity>
         
         {/* Zoom controls */}
