@@ -54,14 +54,15 @@ export function getCachedCurrentStations(): CurrentStation[] {
 
 /**
  * Fetch all tidal stations with predictions from Firestore
+ * @param includesPredictions - If false, only loads station metadata (faster)
  */
-export async function fetchTideStations(): Promise<TideStation[]> {
+export async function fetchTideStations(includePredictions: boolean = false): Promise<TideStation[]> {
   if (cachedTideStations) {
     return cachedTideStations;
   }
 
   try {
-    console.log('fetchTideStations: Starting...');
+    console.log('fetchTideStations: Starting...', includePredictions ? 'with predictions' : 'metadata only');
     const stations: TideStation[] = [];
     
     const querySnapshot = await getDocs(collection(firestore, 'tidal-stations'));
@@ -79,12 +80,12 @@ export async function fetchTideStations(): Promise<TideStation[]> {
         lat: data.lat || 0,
         lng: data.lng || 0,
         type: data.type || 'S',
-        predictions: data.predictions || {}, // Include all predictions
+        predictions: includePredictions ? (data.predictions || {}) : undefined, // Only include if requested
       });
     });
     
     cachedTideStations = stations;
-    console.log(`Loaded ${stations.length} tide stations with predictions from Firestore`);
+    console.log(`Loaded ${stations.length} tide stations ${includePredictions ? 'with predictions' : '(metadata only)'} from Firestore`);
     
     // Log prediction data stats
     const stationsWithData = stations.filter(s => s.predictions && Object.keys(s.predictions).length > 0);
@@ -105,14 +106,15 @@ export async function fetchTideStations(): Promise<TideStation[]> {
 
 /**
  * Fetch all current stations with predictions from Firestore
+ * @param includesPredictions - If false, only loads station metadata (faster)
  */
-export async function fetchCurrentStations(): Promise<CurrentStation[]> {
+export async function fetchCurrentStations(includePredictions: boolean = false): Promise<CurrentStation[]> {
   if (cachedCurrentStations) {
     return cachedCurrentStations;
   }
 
   try {
-    console.log('fetchCurrentStations: Starting...');
+    console.log('fetchCurrentStations: Starting...', includePredictions ? 'with predictions' : 'metadata only');
     const stations: CurrentStation[] = [];
     
     const querySnapshot = await getDocs(collection(firestore, 'current-stations-packed'));
@@ -130,12 +132,12 @@ export async function fetchCurrentStations(): Promise<CurrentStation[]> {
         lat: data.lat || 0,
         lng: data.lng || 0,
         bin: data.bin || 0,
-        predictions: data.predictions || {}, // Include all predictions
+        predictions: includePredictions ? (data.predictions || {}) : undefined, // Only include if requested
       });
     });
     
     cachedCurrentStations = stations;
-    console.log(`Loaded ${stations.length} current stations with predictions from Firestore`);
+    console.log(`Loaded ${stations.length} current stations ${includePredictions ? 'with predictions' : '(metadata only)'} from Firestore`);
     
     // Log prediction data stats
     const stationsWithData = stations.filter(s => s.predictions && Object.keys(s.predictions).length > 0);

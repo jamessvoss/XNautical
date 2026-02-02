@@ -210,12 +210,15 @@ export default function SettingsScreen() {
   const loadTideData = async () => {
     try {
       setTidesLoading(true);
-      console.log('Loading tide/current data...');
+      console.log('Loading tide/current station locations (metadata only)...');
+      
+      // Load only metadata first (much faster, avoids string length errors)
       const [tides, currents] = await Promise.all([
-        fetchTideStations(),
-        fetchCurrentStations(),
+        fetchTideStations(false), // false = metadata only, no predictions
+        fetchCurrentStations(false), // false = metadata only, no predictions
       ]);
-      console.log(`Loaded ${tides.length} tide stations, ${currents.length} current stations`);
+      
+      console.log(`Loaded ${tides.length} tide stations, ${currents.length} current stations (locations only)`);
       setTideStations(tides);
       setCurrentStations(currents);
     } catch (error) {
@@ -437,8 +440,8 @@ export default function SettingsScreen() {
                   <Text style={[styles.label, themedStyles.label, { fontWeight: '600' }]}>Total Memory</Text>
                   <Text style={[styles.value, themedStyles.value, { fontWeight: '600' }]}>
                     {formatBytes(
-                      JSON.stringify(tideStations.map(s => s.predictions)).length +
-                      JSON.stringify(currentStations.map(s => s.predictions)).length
+                      JSON.stringify(tideStations.filter(s => s.predictions).map(s => s.predictions)).length +
+                      JSON.stringify(currentStations.filter(s => s.predictions).map(s => s.predictions)).length
                     )}
                   </Text>
                 </View>
