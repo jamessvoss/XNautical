@@ -40,5 +40,17 @@ service cloud.firestore {
     match /users/{userId}/downloads/{downloadId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
+    
+    // Tidal stations - read-only for authenticated users
+    match /tidal-stations/{stationId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only admin/Cloud Functions can write
+    }
+    
+    // Current stations - read-only for authenticated users
+    match /current-stations-packed/{stationId} {
+      allow read: if request.auth != null;
+      allow write: if false; // Only admin/Cloud Functions can write
+    }
   }
 }
