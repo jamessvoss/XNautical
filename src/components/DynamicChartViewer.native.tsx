@@ -1636,22 +1636,45 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   useEffect(() => {
     const loadStations = async () => {
       try {
+        console.log('[MAP] Starting to load stations from storage...');
         // This will load from AsyncStorage if available
         const [tides, currents] = await Promise.all([
           fetchTideStations(),
           fetchCurrentStations(),
         ]);
         
+        console.log(`[MAP] Fetched ${tides.length} tide stations and ${currents.length} current stations`);
+        
         if (tides.length > 0 || currents.length > 0) {
           logger.info(LogCategory.DATA, `Loaded ${tides.length} tide stations and ${currents.length} current stations from storage`);
+          
+          // Log sample coordinates to verify
+          if (tides.length > 0) {
+            console.log('[MAP] Sample tide station:', { 
+              id: tides[0].id, 
+              name: tides[0].name, 
+              lat: tides[0].lat, 
+              lng: tides[0].lng 
+            });
+          }
+          if (currents.length > 0) {
+            console.log('[MAP] Sample current station:', { 
+              id: currents[0].id, 
+              name: currents[0].name, 
+              lat: currents[0].lat, 
+              lng: currents[0].lng 
+            });
+          }
+          
           setTideStations(tides);
           setCurrentStations(currents);
-          console.log(`[MAP] Loaded ${tides.length} tide stations and ${currents.length} current stations into map state`);
+          console.log(`[MAP] Successfully set ${tides.length} tide stations and ${currents.length} current stations into state`);
         } else {
           console.log('[MAP] No stations in storage - user needs to press "Refresh Tide Data" in Settings');
         }
       } catch (error) {
         logger.error(LogCategory.DATA, 'Error loading stations', error as Error);
+        console.error('[MAP] Error loading stations:', error);
       }
     };
     
@@ -4838,7 +4861,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
         {/* Tide Stations Layer */}
         {showTideStations && tideStations.length > 0 && (
-          <MapLibre.ShapeSource
+          <>
+            {console.log(`[MAP] Rendering tide stations layer: ${tideStations.length} stations, showTideStations=${showTideStations}`)}
+            <MapLibre.ShapeSource
             id="tide-stations-source"
             shape={{
               type: 'FeatureCollection',
@@ -4885,7 +4910,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
         {/* Current Stations Layer */}
         {showCurrentStations && currentStations.length > 0 && (
-          <MapLibre.ShapeSource
+          <>
+            {console.log(`[MAP] Rendering current stations layer: ${currentStations.length} stations, showCurrentStations=${showCurrentStations}`)}
+            <MapLibre.ShapeSource
             id="current-stations-source"
             shape={{
               type: 'FeatureCollection',
