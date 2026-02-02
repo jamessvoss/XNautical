@@ -210,14 +210,21 @@ export default function SettingsScreen() {
   const loadTideData = async () => {
     try {
       setTidesLoading(true);
+      console.log('Loading tide/current data...');
       const [tides, currents] = await Promise.all([
         fetchTideStations(),
         fetchCurrentStations(),
       ]);
+      console.log(`Loaded ${tides.length} tide stations, ${currents.length} current stations`);
       setTideStations(tides);
       setCurrentStations(currents);
     } catch (error) {
       console.error('Error loading tide/current data:', error);
+      Alert.alert(
+        'Error Loading Data',
+        `Failed to load tide/current data: ${error instanceof Error ? error.message : 'Unknown error'}\n\nPlease check your internet connection and try again.`,
+        [{ text: 'OK' }]
+      );
     } finally {
       setTidesLoading(false);
     }
@@ -379,7 +386,10 @@ export default function SettingsScreen() {
           <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Tides & Currents</Text>
           <View style={[styles.card, themedStyles.card]}>
             {tidesLoading ? (
-              <ActivityIndicator size="small" color="#007AFF" />
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#007AFF" />
+                <Text style={[styles.loadingText, themedStyles.label]}>Loading tide data...</Text>
+              </View>
             ) : (
               <>
                 {/* Tide Stations */}
@@ -439,7 +449,7 @@ export default function SettingsScreen() {
                   disabled={tidesLoading}
                 >
                   <Text style={styles.refreshTideButtonText}>
-                    {tidesLoading ? 'Loading...' : 'Refresh Tide Data'}
+                    Refresh Tide Data
                   </Text>
                 </TouchableOpacity>
               </>
@@ -690,5 +700,15 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  loadingContainer: {
+    paddingVertical: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#666',
   },
 });

@@ -6,9 +6,11 @@ import { Platform } from 'react-native';
 let nativeFirestore: any = null;
 if (Platform.OS !== 'web') {
   try {
-    nativeFirestore = require('@react-native-firebase/firestore').default();
+    const firestoreModule = require('@react-native-firebase/firestore');
+    nativeFirestore = firestoreModule.default();
+    console.log('Native Firestore SDK initialized successfully');
   } catch (e) {
-    console.log('Native Firestore not available, using JS SDK');
+    console.warn('Native Firestore not available, will use JS SDK:', e);
   }
 }
 
@@ -57,9 +59,13 @@ export async function fetchTideStations(): Promise<TideStation[]> {
   try {
     const stations: TideStation[] = [];
     
+    console.log('fetchTideStations: Using', nativeFirestore ? 'native SDK' : 'JS SDK');
+    
     // Use native Firestore SDK on React Native for proper authentication
     if (nativeFirestore) {
+      console.log('Fetching from native Firestore...');
       const querySnapshot = await nativeFirestore.collection('tidal-stations').get();
+      console.log(`Native query returned ${querySnapshot.size} documents`);
       
       querySnapshot.forEach((doc: any) => {
         const data = doc.data();
@@ -74,7 +80,9 @@ export async function fetchTideStations(): Promise<TideStation[]> {
       });
     } else {
       // Fallback to JS SDK (web)
+      console.log('Fetching from JS SDK Firestore...');
       const querySnapshot = await getDocs(collection(firestore, 'tidal-stations'));
+      console.log(`JS SDK query returned ${querySnapshot.size} documents`);
       
       querySnapshot.forEach((doc) => {
         const data = doc.data();
@@ -104,7 +112,8 @@ export async function fetchTideStations(): Promise<TideStation[]> {
     return stations;
   } catch (error) {
     console.error('Error fetching tide stations:', error);
-    return [];
+    console.error('Error details:', JSON.stringify(error, null, 2));
+    throw error; // Re-throw so Settings screen can show the error
   }
 }
 
@@ -119,9 +128,13 @@ export async function fetchCurrentStations(): Promise<CurrentStation[]> {
   try {
     const stations: CurrentStation[] = [];
     
+    console.log('fetchCurrentStations: Using', nativeFirestore ? 'native SDK' : 'JS SDK');
+    
     // Use native Firestore SDK on React Native for proper authentication
     if (nativeFirestore) {
+      console.log('Fetching from native Firestore...');
       const querySnapshot = await nativeFirestore.collection('current-stations-packed').get();
+      console.log(`Native query returned ${querySnapshot.size} documents`);
       
       querySnapshot.forEach((doc: any) => {
         const data = doc.data();
@@ -136,7 +149,9 @@ export async function fetchCurrentStations(): Promise<CurrentStation[]> {
       });
     } else {
       // Fallback to JS SDK (web)
+      console.log('Fetching from JS SDK Firestore...');
       const querySnapshot = await getDocs(collection(firestore, 'current-stations-packed'));
+      console.log(`JS SDK query returned ${querySnapshot.size} documents`);
       
       querySnapshot.forEach((doc) => {
         const data = doc.data();
@@ -166,7 +181,8 @@ export async function fetchCurrentStations(): Promise<CurrentStation[]> {
     return stations;
   } catch (error) {
     console.error('Error fetching current stations:', error);
-    return [];
+    console.error('Error details:', JSON.stringify(error, null, 2));
+    throw error; // Re-throw so Settings screen can show the error
   }
 }
 
