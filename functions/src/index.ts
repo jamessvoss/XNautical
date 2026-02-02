@@ -36,6 +36,60 @@ admin.initializeApp();
 const db = admin.firestore();
 
 // ============================================================================
+// TIDE & CURRENT STATION LOCATIONS
+// ============================================================================
+
+/**
+ * Get all tide and current station locations (without predictions)
+ * Returns compact JSON with just the metadata needed for map display
+ */
+export const getStationLocations = functions.https.onCall(async (data, context) => {
+  try {
+    console.log('Fetching station locations...');
+    
+    // Fetch both collections in parallel
+    const [tideSnapshot, currentSnapshot] = await Promise.all([
+      db.collection('tidal-stations').get(),
+      db.collection('current-stations-packed').get(),
+    ]);
+    
+    // Extract only the fields we need (no predictions!)
+    const tideStations = tideSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        name: data.name || 'Unknown',
+        lat: data.lat || 0,
+        lng: data.lng || 0,
+        type: data.type || 'S',
+      };
+    });
+    
+    const currentStations = currentSnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        name: data.name || 'Unknown',
+        lat: data.lat || 0,
+        lng: data.lng || 0,
+        bin: data.bin || 0,
+      };
+    });
+    
+    console.log(`Returning ${tideStations.length} tide stations and ${currentStations.length} current stations`);
+    
+    return {
+      tideStations,
+      currentStations,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (error) {
+    console.error('Error fetching station locations:', error);
+    throw new functions.https.HttpsError('internal', 'Failed to fetch station locations');
+  }
+});
+
+// ============================================================================
 // EMAIL NOTIFICATION SYSTEM
 // ============================================================================
 

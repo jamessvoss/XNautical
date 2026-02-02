@@ -1,8 +1,10 @@
-import { collection, getDocs } from 'firebase/firestore';
-import { firestore } from '../config/firebase';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { app } from '../config/firebase';
 
-// Use JS SDK for all platforms - it's more reliable and works with existing auth
-console.log('Using Firebase JS SDK for Firestore on all platforms');
+// Initialize Firebase Functions
+const functions = getFunctions(app);
+
+console.log('Using Cloud Function for station locations (single optimized call)');
 
 export interface TideEvent {
   time: string;      // "HH:MM"
@@ -53,8 +55,8 @@ export function getCachedCurrentStations(): CurrentStation[] {
 }
 
 /**
- * Fetch all tidal stations with predictions from Firestore
- * @param includesPredictions - If false, only loads station metadata (faster)
+ * Fetch all tide and current station locations from Cloud Function
+ * Single optimized call returns both collections
  */
 export async function fetchTideStations(includePredictions: boolean = false): Promise<TideStation[]> {
   if (cachedTideStations) {
@@ -62,51 +64,36 @@ export async function fetchTideStations(includePredictions: boolean = false): Pr
   }
 
   try {
-    console.log('fetchTideStations: Starting...', includePredictions ? 'with predictions' : 'metadata only');
-    const stations: TideStation[] = [];
+    console.log('Calling getStationLocations Cloud Function...');
+    const getLocations = httpsCallable(functions, 'getStationLocations');
+    const result = await getLocations({});
+    const data = result.data as any;
     
-    const querySnapshot = await getDocs(collection(firestore, 'tidal-stations'));
-    console.log(`Firestore query returned ${querySnapshot.size} documents`);
+    console.log(`Received ${data.tideStations.length} tide stations from Cloud Function`);
     
-    if (querySnapshot.empty) {
-      console.warn('Firestore collection "tidal-stations" is empty!');
-    }
-    
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
-      stations.push({
-        id: doc.id,
-        name: data.name || 'Unknown',
-        lat: data.lat || 0,
-        lng: data.lng || 0,
-        type: data.type || 'S',
-        predictions: includePredictions ? (data.predictions || {}) : undefined, // Only include if requested
-      });
-    });
+    const stations: TideStation[] = data.tideStations.map((station: any) => ({
+      id: station.id,
+      name: station.name,
+      lat: station.lat,
+      lng: station.lng,
+      type: station.type,
+      predictions: undefined, // Predictions not included
+    }));
     
     cachedTideStations = stations;
-    console.log(`Loaded ${stations.length} tide stations ${includePredictions ? 'with predictions' : '(metadata only)'} from Firestore`);
-    
-    // Log prediction data stats
-    const stationsWithData = stations.filter(s => s.predictions && Object.keys(s.predictions).length > 0);
-    console.log(`  - Stations with prediction data: ${stationsWithData.length}`);
-    if (stationsWithData.length > 0) {
-      const sampleStation = stationsWithData[0];
-      const dateCount = Object.keys(sampleStation.predictions!).length;
-      console.log(`  - Sample station has ${dateCount} days of predictions`);
-    }
+    console.log(`Loaded ${stations.length} tide station locations`);
     
     return stations;
   } catch (error) {
     console.error('Error fetching tide stations:', error);
     console.error('Error details:', JSON.stringify(error, null, 2));
-    throw error; // Re-throw so Settings screen can show the error
+    throw error;
   }
 }
 
 /**
- * Fetch all current stations with predictions from Firestore
- * @param includesPredictions - If false, only loads station metadata (faster)
+ * Fetch all current station locations from Cloud Function
+ * Single optimized call returns both collections
  */
 export async function fetchCurrentStations(includePredictions: boolean = false): Promise<CurrentStation[]> {
   if (cachedCurrentStations) {
@@ -114,45 +101,30 @@ export async function fetchCurrentStations(includePredictions: boolean = false):
   }
 
   try {
-    console.log('fetchCurrentStations: Starting...', includePredictions ? 'with predictions' : 'metadata only');
-    const stations: CurrentStation[] = [];
+    console.log('Calling getStationLocations Cloud Function...');
+    const getLocations = httpsCallable(functions, 'getStationLocations');
+    const result = await getLocations({});
+    const data = result.data as any;
     
-    const querySnapshot = await getDocs(collection(firestore, 'current-stations-packed'));
-    console.log(`Firestore query returned ${querySnapshot.size} documents`);
+    console.log(`Received ${data.currentStations.length} current stations from Cloud Function`);
     
-    if (querySnapshot.empty) {
-      console.warn('Firestore collection "current-stations-packed" is empty!');
-    }
-    
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
-      stations.push({
-        id: doc.id,
-        name: data.name || 'Unknown',
-        lat: data.lat || 0,
-        lng: data.lng || 0,
-        bin: data.bin || 0,
-        predictions: includePredictions ? (data.predictions || {}) : undefined, // Only include if requested
-      });
-    });
+    const stations: CurrentStation[] = data.currentStations.map((station: any) => ({
+      id: station.id,
+      name: station.name,
+      lat: station.lat,
+      lng: station.lng,
+      bin: station.bin,
+      predictions: undefined, // Predictions not included
+    }));
     
     cachedCurrentStations = stations;
-    console.log(`Loaded ${stations.length} current stations ${includePredictions ? 'with predictions' : '(metadata only)'} from Firestore`);
-    
-    // Log prediction data stats
-    const stationsWithData = stations.filter(s => s.predictions && Object.keys(s.predictions).length > 0);
-    console.log(`  - Stations with prediction data: ${stationsWithData.length}`);
-    if (stationsWithData.length > 0) {
-      const sampleStation = stationsWithData[0];
-      const dateCount = Object.keys(sampleStation.predictions!).length;
-      console.log(`  - Sample station has ${dateCount} days of predictions`);
-    }
+    console.log(`Loaded ${stations.length} current station locations`);
     
     return stations;
   } catch (error) {
     console.error('Error fetching current stations:', error);
     console.error('Error details:', JSON.stringify(error, null, 2));
-    throw error; // Re-throw so Settings screen can show the error
+    throw error;
   }
 }
 
