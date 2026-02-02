@@ -39,6 +39,20 @@ let cachedTideStations: TideStation[] | null = null;
 let cachedCurrentStations: CurrentStation[] | null = null;
 
 /**
+ * Get cached tide stations without fetching
+ */
+export function getCachedTideStations(): TideStation[] {
+  return cachedTideStations || [];
+}
+
+/**
+ * Get cached current stations without fetching
+ */
+export function getCachedCurrentStations(): CurrentStation[] {
+  return cachedCurrentStations || [];
+}
+
+/**
  * Fetch all tidal stations with predictions from Firestore
  */
 export async function fetchTideStations(): Promise<TideStation[]> {

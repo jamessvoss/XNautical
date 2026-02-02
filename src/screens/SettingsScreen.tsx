@@ -185,7 +185,7 @@ export default function SettingsScreen() {
   useEffect(() => {
     loadCacheInfo();
     loadDisplaySettings();
-    loadTideData();
+    // Don't load tide data on startup - only when user presses "Refresh Tide Data" button
   }, []);
 
   const loadCacheInfo = async () => {

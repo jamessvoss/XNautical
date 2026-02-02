@@ -48,7 +48,7 @@ import { performanceTracker, StartupPhase, RuntimeMetric } from '../services/per
 import { stateReporter } from '../services/stateReporter';
 import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
-import { fetchTideStations, fetchCurrentStations, TideStation, CurrentStation } from '../services/stationService';
+import { fetchTideStations, fetchCurrentStations, getCachedTideStations, getCachedCurrentStations, TideStation, CurrentStation } from '../services/stationService';
 
 // MapLibre doesn't require an access token
 
@@ -1631,23 +1631,29 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
   }, []);
 
-  // Load tide and current stations from Firestore
+  // Load tide and current stations from cache (if available from Settings screen)
+  // Data is loaded when user presses "Refresh Tide Data" in Settings
   useEffect(() => {
-    const loadStations = async () => {
+    const loadStations = () => {
       try {
-        logger.info(LogCategory.DATA, 'Loading tide and current stations from Firestore...');
-        const [tides, currents] = await Promise.all([
-          fetchTideStations(),
-          fetchCurrentStations(),
-        ]);
-        setTideStations(tides);
-        setCurrentStations(currents);
-        logger.info(LogCategory.DATA, `Loaded ${tides.length} tide stations and ${currents.length} current stations`);
+        const tides = getCachedTideStations();
+        const currents = getCachedCurrentStations();
+        
+        if (tides.length > 0 || currents.length > 0) {
+          logger.info(LogCategory.DATA, `Loading ${tides.length} tide stations and ${currents.length} current stations from cache`);
+          setTideStations(tides);
+          setCurrentStations(currents);
+        }
       } catch (error) {
-        logger.error(LogCategory.DATA, 'Failed to load stations', error as Error);
+        logger.error(LogCategory.DATA, 'Error loading cached stations', error as Error);
       }
     };
+    
     loadStations();
+    
+    // Poll for updates every 2 seconds to pick up data loaded in Settings
+    const interval = setInterval(loadStations, 2000);
+    return () => clearInterval(interval);
   }, []);
 
   // Load and subscribe to display settings
