@@ -1643,6 +1643,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           logger.info(LogCategory.DATA, `Loading ${tides.length} tide stations and ${currents.length} current stations from cache`);
           setTideStations(tides);
           setCurrentStations(currents);
+          console.log(`[MAP] Loaded ${tides.length} tide stations and ${currents.length} current stations into map state`);
+        } else {
+          console.log('[MAP] No cached stations available yet');
         }
       } catch (error) {
         logger.error(LogCategory.DATA, 'Error loading cached stations', error as Error);
