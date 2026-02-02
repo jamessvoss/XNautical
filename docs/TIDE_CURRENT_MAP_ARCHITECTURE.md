@@ -6,30 +6,17 @@ This document explains the methodology used to display tide and current station 
 
 The system uses a **multi-layered architecture** combining Cloud Functions, local storage, and MapLibre GL rendering to display 1,515 station locations (578 tide + 937 current) efficiently with minimal storage (~50KB) and instant offline access.
 
-## Architecture Diagram
+## Architecture Overview
 
-```mermaid
-flowchart TD
-    User[User presses Refresh Tide Data]
-    CloudFunc[Cloud Function getStationLocations]
-    Firestore[(Firestore Database)]
-    AsyncStorage[(AsyncStorage on Device)]
-    MapView[MapLibre Map View]
-    
-    User -->|Triggers| Settings[Settings Screen]
-    Settings -->|Calls| StationService[stationService.ts]
-    StationService -->|Invokes| CloudFunc
-    CloudFunc -->|select name lat lng type| Firestore
-    CloudFunc -->|Returns JSON ~50KB| StationService
-    StationService -->|Persists| AsyncStorage
-    StationService -->|Updates cache| Memory[In-Memory Cache]
-    
-    AppLaunch[App Launch] -->|Loads from| AsyncStorage
-    AsyncStorage -->|Hydrates| Memory
-    Memory -->|Provides data| MapComponent[DynamicChartViewer]
-    MapComponent -->|Creates GeoJSON| MapView
-    MapView -->|Renders circles and labels| Display[Blue circles = Tide<br/>Magenta circles = Current]
-```
+**Data Flow:**
+1. User triggers "Refresh Tide Data" in Settings Screen
+2. stationService.ts calls Cloud Function `getStationLocations()`
+3. Cloud Function queries Firestore with field selection (name, lat, lng, type)
+4. Returns ~50KB JSON to device
+5. stationService persists to AsyncStorage and updates in-memory cache
+6. On app launch, data loads from AsyncStorage → Memory → DynamicChartViewer
+7. Map component creates GeoJSON and renders with MapLibre
+8. Display shows blue circles (tide) and magenta circles (current)
 
 ## Component Breakdown
 
@@ -177,37 +164,24 @@ Same structure as tide stations but with:
 
 ## Data Flow Sequence
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant S as Settings Screen
-    participant SS as stationService
-    participant CF as Cloud Function
-    participant AS as AsyncStorage
-    participant M as Map Component
-    participant ML as MapLibre
-    
-    Note over U,ML: First Time Setup
-    U->>S: Press "Refresh Tide Data"
-    S->>SS: clearCache() + fetch()
-    SS->>CF: getStationLocations()
-    CF-->>SS: 578 tides + 937 currents
-    SS->>AS: Save to storage (~50KB)
-    SS->>SS: Cache in memory
-    U->>M: Navigate to map
-    M->>SS: fetchTideStations()
-    SS-->>M: Return cached data
-    M->>ML: Create GeoJSON + Layers
-    ML-->>U: Display circles
-    
-    Note over U,ML: Subsequent App Launch
-    M->>SS: fetchTideStations()
-    SS->>AS: Load from storage
-    AS-->>SS: Return persisted data
-    SS-->>M: Return data
-    M->>ML: Create GeoJSON + Layers
-    ML-->>U: Display circles (instant)
-```
+**First Time Setup:**
+1. User presses "Refresh Tide Data" in Settings Screen
+2. Settings calls stationService.clearCache() + fetch()
+3. stationService invokes Cloud Function getStationLocations()
+4. Cloud Function returns 578 tide + 937 current stations
+5. stationService saves to AsyncStorage (~50KB) and caches in memory
+6. User navigates to Map Component
+7. Map calls fetchTideStations() → returns cached data
+8. Map creates GeoJSON + MapLibre Layers
+9. MapLibre displays circles to user
+
+**Subsequent App Launch:**
+1. Map Component calls fetchTideStations()
+2. stationService loads from AsyncStorage
+3. AsyncStorage returns persisted data to stationService
+4. stationService returns data to Map
+5. Map creates GeoJSON + MapLibre Layers
+6. MapLibre displays circles instantly (no network call)
 
 ## User Interaction
 
