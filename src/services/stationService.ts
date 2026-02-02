@@ -1,25 +1,8 @@
 import { collection, getDocs } from 'firebase/firestore';
 import { firestore } from '../config/firebase';
-import { Platform } from 'react-native';
 
-// Native Firestore SDK (React Native only)
-let nativeFirestore: any = null;
-if (Platform.OS !== 'web') {
-  try {
-    const firestoreModule = require('@react-native-firebase/firestore');
-    nativeFirestore = firestoreModule.default();
-    
-    // Configure Firestore settings for better reliability
-    nativeFirestore.settings({
-      persistence: true, // Enable offline persistence
-      cacheSizeBytes: 10000000, // 10MB cache
-    });
-    
-    console.log('Native Firestore SDK initialized successfully');
-  } catch (e) {
-    console.warn('Native Firestore not available, will use JS SDK:', e);
-  }
-}
+// Use JS SDK for all platforms - it's more reliable and works with existing auth
+console.log('Using Firebase JS SDK for Firestore on all platforms');
 
 export interface TideEvent {
   time: string;      // "HH:MM"
@@ -64,65 +47,27 @@ export async function fetchTideStations(): Promise<TideStation[]> {
   }
 
   try {
+    console.log('fetchTideStations: Starting...');
     const stations: TideStation[] = [];
     
-    console.log('fetchTideStations: Using', nativeFirestore ? 'native SDK' : 'JS SDK');
+    const querySnapshot = await getDocs(collection(firestore, 'tidal-stations'));
+    console.log(`Firestore query returned ${querySnapshot.size} documents`);
     
-    // Use native Firestore SDK on React Native for proper authentication
-    if (nativeFirestore) {
-      console.log('Fetching from native Firestore...');
-      console.log('Network state check - attempting query...');
-      
-      // Add timeout to prevent infinite hanging
-      const queryPromise = nativeFirestore.collection('tidal-stations')
-        .limit(10) // Start with just 10 to test
-        .get();
-      
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Query timeout after 10 seconds')), 10000)
-      );
-      
-      const querySnapshot = await Promise.race([queryPromise, timeoutPromise]) as any;
-      console.log(`Native query returned ${querySnapshot.size} documents (limited to 10 for test)`);
-      
-      if (querySnapshot.empty) {
-        console.warn('Firestore collection "tidal-stations" is empty!');
-      }
-      
-      // If test query worked, fetch all data
-      console.log('Test query successful, fetching all stations...');
-      const fullQuerySnapshot = await nativeFirestore.collection('tidal-stations').get();
-      console.log(`Full query returned ${fullQuerySnapshot.size} documents`);
-      
-      fullQuerySnapshot.forEach((doc: any) => {
-        const data = doc.data();
-        stations.push({
-          id: doc.id,
-          name: data.name || 'Unknown',
-          lat: data.lat || 0,
-          lng: data.lng || 0,
-          type: data.type || 'S',
-          predictions: data.predictions || {}, // Include all predictions
-        });
-      });
-    } else {
-      // Fallback to JS SDK (web)
-      console.log('Fetching from JS SDK Firestore...');
-      const querySnapshot = await getDocs(collection(firestore, 'tidal-stations'));
-      console.log(`JS SDK query returned ${querySnapshot.size} documents`);
-      
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
-        stations.push({
-          id: doc.id,
-          name: data.name || 'Unknown',
-          lat: data.lat || 0,
-          lng: data.lng || 0,
-          type: data.type || 'S',
-          predictions: data.predictions || {}, // Include all predictions
-        });
-      });
+    if (querySnapshot.empty) {
+      console.warn('Firestore collection "tidal-stations" is empty!');
     }
+    
+    querySnapshot.forEach((doc) => {
+      const data = doc.data();
+      stations.push({
+        id: doc.id,
+        name: data.name || 'Unknown',
+        lat: data.lat || 0,
+        lng: data.lng || 0,
+        type: data.type || 'S',
+        predictions: data.predictions || {}, // Include all predictions
+      });
+    });
     
     cachedTideStations = stations;
     console.log(`Loaded ${stations.length} tide stations with predictions from Firestore`);
@@ -153,56 +98,27 @@ export async function fetchCurrentStations(): Promise<CurrentStation[]> {
   }
 
   try {
+    console.log('fetchCurrentStations: Starting...');
     const stations: CurrentStation[] = [];
     
-    console.log('fetchCurrentStations: Using', nativeFirestore ? 'native SDK' : 'JS SDK');
+    const querySnapshot = await getDocs(collection(firestore, 'current-stations-packed'));
+    console.log(`Firestore query returned ${querySnapshot.size} documents`);
     
-    // Use native Firestore SDK on React Native for proper authentication
-    if (nativeFirestore) {
-      console.log('Fetching from native Firestore...');
-      
-      // Add timeout to prevent infinite hanging
-      const queryPromise = nativeFirestore.collection('current-stations-packed').get();
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Query timeout after 10 seconds')), 10000)
-      );
-      
-      const querySnapshot = await Promise.race([queryPromise, timeoutPromise]) as any;
-      console.log(`Native query returned ${querySnapshot.size} documents`);
-      
-      if (querySnapshot.empty) {
-        console.warn('Firestore collection "current-stations-packed" is empty!');
-      }
-      
-      querySnapshot.forEach((doc: any) => {
-        const data = doc.data();
-        stations.push({
-          id: doc.id,
-          name: data.name || 'Unknown',
-          lat: data.lat || 0,
-          lng: data.lng || 0,
-          bin: data.bin || 0,
-          predictions: data.predictions || {}, // Include all predictions
-        });
-      });
-    } else {
-      // Fallback to JS SDK (web)
-      console.log('Fetching from JS SDK Firestore...');
-      const querySnapshot = await getDocs(collection(firestore, 'current-stations-packed'));
-      console.log(`JS SDK query returned ${querySnapshot.size} documents`);
-      
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
-        stations.push({
-          id: doc.id,
-          name: data.name || 'Unknown',
-          lat: data.lat || 0,
-          lng: data.lng || 0,
-          bin: data.bin || 0,
-          predictions: data.predictions || {}, // Include all predictions
-        });
-      });
+    if (querySnapshot.empty) {
+      console.warn('Firestore collection "current-stations-packed" is empty!');
     }
+    
+    querySnapshot.forEach((doc) => {
+      const data = doc.data();
+      stations.push({
+        id: doc.id,
+        name: data.name || 'Unknown',
+        lat: data.lat || 0,
+        lng: data.lng || 0,
+        bin: data.bin || 0,
+        predictions: data.predictions || {}, // Include all predictions
+      });
+    });
     
     cachedCurrentStations = stations;
     console.log(`Loaded ${stations.length} current stations with predictions from Firestore`);

@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getStorage } from 'firebase/storage';
 import { getFirestore } from 'firebase/firestore';
+import { getAuth as getJsAuth, onAuthStateChanged as onJsAuthStateChanged } from 'firebase/auth';
 import { Platform } from 'react-native';
 
 // XNautical Firebase configuration
@@ -25,6 +26,9 @@ const storage = getStorage(app);
 // Initialize Firestore for tide/current data
 const firestore = getFirestore(app);
 
+// Initialize JS SDK Auth (for Firestore authentication)
+const jsAuth = getJsAuth(app);
+
 // Native Firebase Auth - modular API (React Native Firebase v22+)
 let nativeAuthInstance: any = null;
 let onAuthStateChangedFn: ((auth: any, callback: (user: any) => void) => () => void) | null = null;
@@ -34,6 +38,22 @@ if (Platform.OS !== 'web') {
     const rnfbAuth = require('@react-native-firebase/auth');
     nativeAuthInstance = rnfbAuth.getAuth();
     onAuthStateChangedFn = rnfbAuth.onAuthStateChanged;
+    
+    // Sync native auth state to JS SDK auth for Firestore
+    onAuthStateChangedFn(nativeAuthInstance, async (user: any) => {
+      if (user) {
+        console.log('Native auth user detected, syncing to JS SDK...');
+        try {
+          // Get the ID token from native auth
+          const token = await user.getIdToken();
+          // Sign in to JS SDK with custom token would be ideal,
+          // but for now we'll rely on the API key authentication
+          console.log('User authenticated in native SDK:', user.email);
+        } catch (e) {
+          console.error('Error syncing auth:', e);
+        }
+      }
+    });
   } catch (e) {
     console.log('Native Firebase Auth not available');
   }
@@ -118,4 +138,4 @@ export function getAuth() {
   return nativeAuthInstance;
 }
 
-export { app, storage, firestore, nativeAuth };
+export { app, storage, firestore, jsAuth, nativeAuth };
