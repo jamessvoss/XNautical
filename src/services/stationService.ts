@@ -39,6 +39,66 @@ export interface CurrentStation {
 
 let cachedTideStations: TideStation[] | null = null;
 let cachedCurrentStations: CurrentStation[] | null = null;
+let fetchPromise: Promise<void> | null = null;
+
+/**
+ * Internal function to fetch both tide and current stations from Cloud Function
+ * This is called by both fetchTideStations and fetchCurrentStations to ensure
+ * they share the same data and only make one Cloud Function call
+ */
+async function fetchAllStations(): Promise<void> {
+  // If already fetching, wait for that to complete
+  if (fetchPromise) {
+    return fetchPromise;
+  }
+
+  // If already cached, return immediately
+  if (cachedTideStations && cachedCurrentStations) {
+    return Promise.resolve();
+  }
+
+  // Create the fetch promise
+  fetchPromise = (async () => {
+    try {
+      console.log('Calling getStationLocations Cloud Function...');
+      const getLocations = httpsCallable(functions, 'getStationLocations');
+      const result = await getLocations({});
+      const data = result.data as any;
+      
+      console.log(`Received ${data.tideStations.length} tide stations and ${data.currentStations.length} current stations from Cloud Function`);
+      
+      // Cache tide stations
+      cachedTideStations = data.tideStations.map((station: any) => ({
+        id: station.id,
+        name: station.name,
+        lat: station.lat,
+        lng: station.lng,
+        type: station.type,
+        predictions: undefined,
+      }));
+      
+      // Cache current stations
+      cachedCurrentStations = data.currentStations.map((station: any) => ({
+        id: station.id,
+        name: station.name,
+        lat: station.lat,
+        lng: station.lng,
+        bin: station.bin,
+        predictions: undefined,
+      }));
+      
+      console.log(`Cached ${cachedTideStations.length} tide stations and ${cachedCurrentStations.length} current stations`);
+    } catch (error) {
+      console.error('Error fetching station locations:', error);
+      console.error('Error details:', JSON.stringify(error, null, 2));
+      throw error;
+    } finally {
+      fetchPromise = null;
+    }
+  })();
+
+  return fetchPromise;
+}
 
 /**
  * Get cached tide stations without fetching
@@ -59,36 +119,8 @@ export function getCachedCurrentStations(): CurrentStation[] {
  * Single optimized call returns both collections
  */
 export async function fetchTideStations(includePredictions: boolean = false): Promise<TideStation[]> {
-  if (cachedTideStations) {
-    return cachedTideStations;
-  }
-
-  try {
-    console.log('Calling getStationLocations Cloud Function...');
-    const getLocations = httpsCallable(functions, 'getStationLocations');
-    const result = await getLocations({});
-    const data = result.data as any;
-    
-    console.log(`Received ${data.tideStations.length} tide stations from Cloud Function`);
-    
-    const stations: TideStation[] = data.tideStations.map((station: any) => ({
-      id: station.id,
-      name: station.name,
-      lat: station.lat,
-      lng: station.lng,
-      type: station.type,
-      predictions: undefined, // Predictions not included
-    }));
-    
-    cachedTideStations = stations;
-    console.log(`Loaded ${stations.length} tide station locations`);
-    
-    return stations;
-  } catch (error) {
-    console.error('Error fetching tide stations:', error);
-    console.error('Error details:', JSON.stringify(error, null, 2));
-    throw error;
-  }
+  await fetchAllStations();
+  return cachedTideStations || [];
 }
 
 /**
@@ -96,36 +128,8 @@ export async function fetchTideStations(includePredictions: boolean = false): Pr
  * Single optimized call returns both collections
  */
 export async function fetchCurrentStations(includePredictions: boolean = false): Promise<CurrentStation[]> {
-  if (cachedCurrentStations) {
-    return cachedCurrentStations;
-  }
-
-  try {
-    console.log('Calling getStationLocations Cloud Function...');
-    const getLocations = httpsCallable(functions, 'getStationLocations');
-    const result = await getLocations({});
-    const data = result.data as any;
-    
-    console.log(`Received ${data.currentStations.length} current stations from Cloud Function`);
-    
-    const stations: CurrentStation[] = data.currentStations.map((station: any) => ({
-      id: station.id,
-      name: station.name,
-      lat: station.lat,
-      lng: station.lng,
-      bin: station.bin,
-      predictions: undefined, // Predictions not included
-    }));
-    
-    cachedCurrentStations = stations;
-    console.log(`Loaded ${stations.length} current station locations`);
-    
-    return stations;
-  } catch (error) {
-    console.error('Error fetching current stations:', error);
-    console.error('Error details:', JSON.stringify(error, null, 2));
-    throw error;
-  }
+  await fetchAllStations();
+  return cachedCurrentStations || [];
 }
 
 /**
