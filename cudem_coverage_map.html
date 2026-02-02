@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CUDEM High-Resolution Bathymetry Coverage - Alaska</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        
+        .info-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            max-width: 350px;
+        }
+        .info-panel h2 { margin: 0 0 10px 0; color: #2c3e50; }
+        .info-panel p { margin: 5px 0; color: #555; font-size: 14px; }
+        
+        .legend {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+        }
+        .legend-box {
+            width: 24px;
+            height: 24px;
+            margin-right: 10px;
+            border-radius: 4px;
+            border: 2px solid rgba(0,0,0,0.3);
+        }
+        
+        .coverage-available { background: rgba(0, 150, 0, 0.4); border-color: #006600; }
+        .coverage-unavailable { background: rgba(200, 200, 200, 0.3); border-color: #999; }
+        
+        .stats {
+            margin-top: 15px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 6px;
+        }
+        .stats h4 { margin: 0 0 8px 0; color: #2c3e50; }
+        .stat-row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
+        .stat-value { font-weight: bold; color: #27ae60; }
+        
+        .label-tooltip {
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            font-weight: bold;
+            font-size: 12px;
+            color: #333;
+        }
+        
+        .tile-popup { font-size: 13px; }
+        .tile-popup b { color: #2c3e50; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="info-panel">
+        <h2>🗺️ CUDEM Coverage</h2>
+        <p><strong>Resolution:</strong> ~3 meters (1/9 arc-second)</p>
+        <p><strong>Data Source:</strong> NOAA NCEI</p>
+        <p>High-resolution bathymetry/topography is only available in surveyed coastal areas shown in green.</p>
+        
+        <div class="legend">
+            <div class="legend-item">
+                <div class="legend-box coverage-available"></div>
+                <span>CUDEM Available (~3m resolution)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-box coverage-unavailable"></div>
+                <span>No high-res data (use ETOPO ~450m)</span>
+            </div>
+        </div>
+        
+        <div class="stats">
+            <h4>Coverage Statistics</h4>
+            <div class="stat-row">
+                <span>Total Tiles:</span>
+                <span class="stat-value">16</span>
+            </div>
+            <div class="stat-row">
+                <span>Total Size:</span>
+                <span class="stat-value">~2.9 GB</span>
+            </div>
+            <div class="stat-row">
+                <span>Coverage Areas:</span>
+                <span class="stat-value">3 regions</span>
+            </div>
+        </div>
+        
+        <p style="margin-top: 15px; font-size: 12px; color: #888;">
+            Click tiles for details. Coverage reflects NOAA surveys completed through 2024.
+        </p>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize map centered on Alaska
+        const map = L.map('map').setView([61, -152], 5);
+        
+        // Satellite base layer for context
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Esri',
+            maxZoom: 18
+        }).addTo(map);
+        
+        // Add labels overlay
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+            attribution: '',
+            pane: 'overlayPane'
+        }).addTo(map);
+
+        // CUDEM tile definitions - parsed from actual file names
+        // Format: ncei19_n{lat}x{decimal}_w{lon}x{decimal}_{year}v1.tif
+        // Each tile covers 0.25° x 0.25° (15 arc-minutes)
+        const CUDEM_TILES = [
+            // Southeast Alaska - Juneau area
+            { name: 'n58x50_w135x75', lat: 58.50, lon: -135.75, year: 2024, size: 176, region: 'Southeast Alaska' },
+            { name: 'n58x50_w136x00', lat: 58.50, lon: -136.00, year: 2024, size: 173, region: 'Southeast Alaska' },
+            
+            // Cook Inlet / Kenai Peninsula
+            { name: 'n59x75_w152x00', lat: 59.75, lon: -152.00, year: 2022, size: 142, region: 'Cook Inlet' },
+            { name: 'n60x00_w151x75', lat: 60.00, lon: -151.75, year: 2022, size: 159, region: 'Cook Inlet' },
+            { name: 'n60x00_w152x00', lat: 60.00, lon: -152.00, year: 2022, size: 148, region: 'Cook Inlet' },
+            { name: 'n60x25_w151x50', lat: 60.25, lon: -151.50, year: 2022, size: 161, region: 'Cook Inlet' },
+            { name: 'n60x25_w151x75', lat: 60.25, lon: -151.75, year: 2022, size: 152, region: 'Cook Inlet' },
+            { name: 'n60x25_w152x00', lat: 60.25, lon: -152.00, year: 2022, size: 130, region: 'Cook Inlet' },
+            { name: 'n60x50_w151x25', lat: 60.50, lon: -151.25, year: 2022, size: 172, region: 'Cook Inlet' },
+            { name: 'n60x50_w151x50', lat: 60.50, lon: -151.50, year: 2022, size: 163, region: 'Cook Inlet' },
+            { name: 'n60x75_w151x25', lat: 60.75, lon: -151.25, year: 2022, size: 180, region: 'Cook Inlet' },
+            { name: 'n60x75_w151x50', lat: 60.75, lon: -151.50, year: 2022, size: 166, region: 'Cook Inlet' },
+            
+            // Norton Sound / Nome area
+            { name: 'n64x50_w165x50', lat: 64.50, lon: -165.50, year: 2024, size: 251, region: 'Norton Sound' },
+            { name: 'n64x50_w165x75', lat: 64.50, lon: -165.75, year: 2024, size: 251, region: 'Norton Sound' },
+            { name: 'n64x75_w165x50', lat: 64.75, lon: -165.50, year: 2024, size: 251, region: 'Norton Sound' },
+            { name: 'n64x75_w165x75', lat: 64.75, lon: -165.75, year: 2024, size: 251, region: 'Norton Sound' },
+        ];
+        
+        // Draw each tile as a rectangle
+        const tileSize = 0.25; // degrees
+        CUDEM_TILES.forEach(tile => {
+            const bounds = [
+                [tile.lat, tile.lon],
+                [tile.lat + tileSize, tile.lon + tileSize]
+            ];
+            
+            const rect = L.rectangle(bounds, {
+                color: '#006600',
+                weight: 2,
+                fillColor: '#00aa00',
+                fillOpacity: 0.4
+            }).addTo(map);
+            
+            rect.bindPopup(`
+                <div class="tile-popup">
+                    <b>${tile.region}</b><br>
+                    Tile: ${tile.name}<br>
+                    Year: ${tile.year}<br>
+                    Size: ${tile.size} MB<br>
+                    Bounds: ${tile.lat.toFixed(2)}°N to ${(tile.lat + tileSize).toFixed(2)}°N<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${Math.abs(tile.lon).toFixed(2)}°W to ${Math.abs(tile.lon + tileSize).toFixed(2)}°W
+                </div>
+            `);
+        });
+        
+        // Add region labels
+        const regions = [
+            { name: 'Southeast Alaska\n(Juneau)', lat: 58.6, lon: -135.5 },
+            { name: 'Cook Inlet\n(Anchorage/Kenai)', lat: 60.8, lon: -151.0 },
+            { name: 'Norton Sound\n(Nome)', lat: 65.1, lon: -165.3 },
+        ];
+        
+        regions.forEach(r => {
+            L.marker([r.lat, r.lon], {
+                icon: L.divIcon({
+                    className: 'label-tooltip',
+                    html: `<div style="background: rgba(255,255,255,0.9); padding: 5px 10px; border-radius: 5px; white-space: pre-line; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">${r.name}</div>`,
+                    iconSize: [120, 40],
+                    iconAnchor: [60, 50]
+                })
+            }).addTo(map);
+        });
+        
+        // Add major cities/ports for reference
+        const cities = [
+            { name: 'Anchorage', lat: 61.22, lon: -149.90 },
+            { name: 'Juneau', lat: 58.30, lon: -134.42 },
+            { name: 'Nome', lat: 64.50, lon: -165.41 },
+            { name: 'Seward', lat: 60.10, lon: -149.44 },
+            { name: 'Homer', lat: 59.64, lon: -151.55 },
+            { name: 'Kodiak', lat: 57.79, lon: -152.41 },
+            { name: 'Valdez', lat: 61.13, lon: -146.35 },
+            { name: 'Sitka', lat: 57.05, lon: -135.33 },
+            { name: 'Ketchikan', lat: 55.34, lon: -131.65 },
+            { name: 'Dutch Harbor', lat: 53.89, lon: -166.54 },
+            { name: 'Fairbanks', lat: 64.84, lon: -147.72 },
+            { name: 'Barrow/Utqiagvik', lat: 71.29, lon: -156.79 },
+        ];
+        
+        cities.forEach(city => {
+            L.circleMarker([city.lat, city.lon], {
+                radius: 5,
+                color: '#fff',
+                weight: 2,
+                fillColor: '#e74c3c',
+                fillOpacity: 1
+            }).addTo(map).bindTooltip(city.name, {
+                permanent: false,
+                direction: 'top',
+                offset: [0, -8]
+            });
+        });
+        
+        // Show Alaska coastline outline for context (approximate)
+        const alaskaOutline = [
+            [70, -141], [71, -156], [71, -162], [66, -168], [65, -169],
+            [60, -166], [55, -163], [54, -167], [52, -172], [51, -179],
+            [52, 179], [52, 172], [55, 166], [57, 170], [60, 167],
+            [62, 166], [64, 169], [66, 169], [66, 168], [65, 166],
+            [62, -163], [59, -162], [58, -157], [56, -154], [55, -160],
+            [54, -164], [55, -162], [56, -155], [58, -152], [59, -152],
+            [60, -149], [61, -146], [60, -144], [59, -140], [60, -140],
+            [60, -141], [70, -141]
+        ];
+        
+        // Draw outline showing areas WITHOUT coverage
+        L.polygon(alaskaOutline, {
+            color: '#999',
+            weight: 1,
+            fillColor: '#ccc',
+            fillOpacity: 0.1,
+            dashArray: '5, 5'
+        }).addTo(map).bindPopup('Areas without high-resolution CUDEM data.<br>Use ETOPO (~450m resolution) for these regions.');
+        
+    </script>
+</body>
+</html>

@@ -8,6 +8,13 @@ if (Platform.OS !== 'web') {
   try {
     const firestoreModule = require('@react-native-firebase/firestore');
     nativeFirestore = firestoreModule.default();
+    
+    // Configure Firestore settings for better reliability
+    nativeFirestore.settings({
+      persistence: true, // Enable offline persistence
+      cacheSizeBytes: 10000000, // 10MB cache
+    });
+    
     console.log('Native Firestore SDK initialized successfully');
   } catch (e) {
     console.warn('Native Firestore not available, will use JS SDK:', e);
@@ -64,10 +71,30 @@ export async function fetchTideStations(): Promise<TideStation[]> {
     // Use native Firestore SDK on React Native for proper authentication
     if (nativeFirestore) {
       console.log('Fetching from native Firestore...');
-      const querySnapshot = await nativeFirestore.collection('tidal-stations').get();
-      console.log(`Native query returned ${querySnapshot.size} documents`);
+      console.log('Network state check - attempting query...');
       
-      querySnapshot.forEach((doc: any) => {
+      // Add timeout to prevent infinite hanging
+      const queryPromise = nativeFirestore.collection('tidal-stations')
+        .limit(10) // Start with just 10 to test
+        .get();
+      
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Query timeout after 10 seconds')), 10000)
+      );
+      
+      const querySnapshot = await Promise.race([queryPromise, timeoutPromise]) as any;
+      console.log(`Native query returned ${querySnapshot.size} documents (limited to 10 for test)`);
+      
+      if (querySnapshot.empty) {
+        console.warn('Firestore collection "tidal-stations" is empty!');
+      }
+      
+      // If test query worked, fetch all data
+      console.log('Test query successful, fetching all stations...');
+      const fullQuerySnapshot = await nativeFirestore.collection('tidal-stations').get();
+      console.log(`Full query returned ${fullQuerySnapshot.size} documents`);
+      
+      fullQuerySnapshot.forEach((doc: any) => {
         const data = doc.data();
         stations.push({
           id: doc.id,
@@ -133,8 +160,19 @@ export async function fetchCurrentStations(): Promise<CurrentStation[]> {
     // Use native Firestore SDK on React Native for proper authentication
     if (nativeFirestore) {
       console.log('Fetching from native Firestore...');
-      const querySnapshot = await nativeFirestore.collection('current-stations-packed').get();
+      
+      // Add timeout to prevent infinite hanging
+      const queryPromise = nativeFirestore.collection('current-stations-packed').get();
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Query timeout after 10 seconds')), 10000)
+      );
+      
+      const querySnapshot = await Promise.race([queryPromise, timeoutPromise]) as any;
       console.log(`Native query returned ${querySnapshot.size} documents`);
+      
+      if (querySnapshot.empty) {
+        console.warn('Firestore collection "current-stations-packed" is empty!');
+      }
       
       querySnapshot.forEach((doc: any) => {
         const data = doc.data();
