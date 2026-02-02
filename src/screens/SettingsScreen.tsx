@@ -278,6 +278,25 @@ export default function SettingsScreen() {
   const handleRefreshTideData = async () => {
     clearStationCache();
     await loadTideData();
+    
+    // After loading, verify storage
+    try {
+      const keys = await AsyncStorage.multiGet([
+        '@XNautical:tideStations',
+        '@XNautical:currentStations',
+        '@XNautical:stationsTimestamp',
+      ]);
+      
+      const [tides, currents, timestamp] = keys;
+      console.log('=== STORAGE VERIFICATION ===');
+      console.log('Tide Stations in storage:', tides[1] ? `${JSON.parse(tides[1]).length} stations` : 'NOT FOUND');
+      console.log('Current Stations in storage:', currents[1] ? `${JSON.parse(currents[1]).length} stations` : 'NOT FOUND');
+      console.log('Saved at:', timestamp[1] ? new Date(parseInt(timestamp[1])).toISOString() : 'NOT FOUND');
+      console.log('Total size:', tides[1] ? `${((tides[1].length + (currents[1]?.length || 0)) / 1024).toFixed(1)} KB` : '0 KB');
+      console.log('===========================');
+    } catch (error) {
+      console.error('Error verifying storage:', error);
+    }
   };
 
   const updateDisplaySetting = async <K extends keyof DisplaySettings>(
