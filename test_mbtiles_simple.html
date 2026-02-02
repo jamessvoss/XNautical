@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Simple MBTiles Test</title>
+    <script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet">
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        #debug { position: absolute; top: 10px; left: 10px; background: black; color: lime; padding: 10px; font-family: monospace; z-index: 1000; max-height: 300px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="debug">Loading...</div>
+
+    <script>
+        const debug = document.getElementById('debug');
+        function log(msg) {
+            console.log(msg);
+            debug.innerHTML += '<br>' + msg;
+        }
+
+        log('Starting...');
+        
+        // Use your Mapbox token
+        mapboxgl.accessToken = 'pk.eyJ1IjoianZvc3MiLCJhIjoiY2p2cHFqNHE5MGpuNjQ0cXIxc3Buc2IxbiJ9.Xvp5ovdrxYLxfaXl_gN5Cg';
+
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: {
+                version: 8,
+                sources: {},
+                layers: [{
+                    id: 'background',
+                    type: 'background',
+                    paint: { 'background-color': '#1a1a2e' }
+                }]
+            },
+            center: [-155, 62],
+            zoom: 2
+        });
+
+        log('Map created');
+
+        map.on('load', () => {
+            log('Map loaded');
+            
+            // Use TileJSON URL directly - let Mapbox fetch the config
+            map.addSource('test-source', {
+                type: 'vector',
+                url: 'http://localhost:8080/data/alaska_overview.json'
+            });
+            log('Source added with TileJSON URL');
+
+            // Add a simple fill layer for ALL features
+            map.addLayer({
+                id: 'test-fill',
+                type: 'fill',
+                source: 'test-source',
+                'source-layer': 'charts',
+                paint: {
+                    'fill-color': '#00ffff',
+                    'fill-opacity': 0.8
+                }
+            });
+            log('Fill layer added');
+
+            // Add outline
+            map.addLayer({
+                id: 'test-line',
+                type: 'line',
+                source: 'test-source',
+                'source-layer': 'charts',
+                paint: {
+                    'line-color': '#ffffff',
+                    'line-width': 1
+                }
+            });
+            log('Line layer added');
+        });
+
+        map.on('sourcedata', (e) => {
+            if (e.sourceId === 'test-source') {
+                log('Source data event: ' + (e.isSourceLoaded ? 'LOADED' : 'loading...'));
+            }
+        });
+
+        map.on('error', (e) => {
+            log('ERROR: ' + JSON.stringify(e.error));
+        });
+
+        map.on('zoom', () => {
+            log('Zoom: ' + map.getZoom().toFixed(2));
+        });
+    </script>
+</body>
+</html>

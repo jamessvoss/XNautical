@@ -74,15 +74,21 @@ NAVIGATION_AIDS = {
 }
 
 # OBJL code to layer name mapping (S-57 standard)
+# OBJL code to layer name mapping (IHO S-57 Edition 3.1)
 OBJL_TO_LAYER = {
-    2: 'ACHARE', 3: 'ACHBRT', 6: 'BCNCAR', 7: 'BCNISD', 8: 'BCNLAT',
-    9: 'BCNSPP', 10: 'BCNSAW', 14: 'BOYCAR', 15: 'BOYISD', 16: 'BOYINB',
-    17: 'BOYLAT', 18: 'BOYSAW', 19: 'BOYSPP', 21: 'CBLARE', 22: 'CBLSUB',
-    23: 'CBLOHD', 30: 'COALNE', 33: 'CTNARE', 42: 'DEPARE', 43: 'DEPCNT',
-    46: 'DRGARE', 57: 'FAIRWY', 71: 'LNDARE', 74: 'LNDMRK', 75: 'LIGHTS',
-    79: 'MARCUL', 83: 'MIPARE', 86: 'OBSTRN', 97: 'PIPARE', 98: 'PIPSOL',
-    112: 'RESARE', 114: 'SBDARE', 129: 'SOUNDG', 153: 'UWTROC', 156: 'WATTUR',
-    159: 'WRECKS',
+    3: 'ACHBRT', 4: 'ACHARE',
+    5: 'BCNCAR', 6: 'BCNISD', 7: 'BCNLAT', 8: 'BCNSAW', 9: 'BCNSPP',
+    11: 'BRIDGE', 12: 'BUISGL',
+    14: 'BOYCAR', 15: 'BOYINB', 16: 'BOYISD', 17: 'BOYLAT', 18: 'BOYSAW', 19: 'BOYSPP',
+    20: 'CBLARE', 21: 'CBLOHD', 22: 'CBLSUB',
+    27: 'CTNARE', 30: 'COALNE',
+    39: 'DAYMAR', 42: 'DEPARE', 43: 'DEPCNT', 46: 'DRGARE',
+    51: 'FAIRWY', 58: 'FOGSIG',
+    71: 'LNDARE', 74: 'LNDMRK', 75: 'LIGHTS',
+    82: 'MARCUL', 83: 'MIPARE', 84: 'MORFAC', 86: 'OBSTRN',
+    92: 'PIPARE', 94: 'PIPSOL',
+    112: 'RESARE', 121: 'SBDARE', 129: 'SOUNDG',
+    153: 'UWTROC', 156: 'WATTUR', 159: 'WRECKS',
 }
 
 # Zoom ranges by scale band
@@ -463,7 +469,7 @@ class RegionalPackDashboard:
                 )
         
         # Add pending rows
-        all_packs = ['alaska_overview', 'alaska_coastal', 'alaska_detail', 'alaska_full']
+        all_packs = ['alaska_US1', 'alaska_US2', 'alaska_US3', 'alaska_US4', 'alaska_US5', 'alaska_US6']
         done_packs = [r[0] for r in results]
         for p in all_packs:
             if p not in done_packs and p != pack:
@@ -481,156 +487,219 @@ class RegionalPackDashboard:
         return main_table
 
 
+def build_single_scale_pack(args: tuple) -> tuple:
+    """Build a single scale pack - designed for parallel execution.
+    
+    Args:
+        args: (pack_name, patterns, description, per_chart_dir, regional_dir)
+    
+    Returns:
+        (pack_name, num_charts, size_mb, error)
+    """
+    pack_name, patterns, description, per_chart_dir, regional_dir = args
+    
+    # Find input files
+    input_files = []
+    for pattern in patterns:
+        matching_dirs = list(Path(per_chart_dir).glob(pattern))
+        for chart_dir in matching_dirs:
+            mbtiles_files = list(chart_dir.glob('*.mbtiles'))
+            input_files.extend(mbtiles_files)
+    
+    if not input_files:
+        return (pack_name, 0, 0, 'No input files found')
+    
+    output_path = Path(regional_dir) / f'{pack_name}.mbtiles'
+    
+    # Build pack (no progress callback in parallel mode)
+    num_charts, size_mb, error = merge_mbtiles_batch(
+        input_files, output_path, pack_name, description, progress_callback=None
+    )
+    
+    return (pack_name, num_charts, size_mb, error)
+
+
 def build_regional_packs(output_base: Path, console=None, use_rich=True):
-    """Build regional packs from per-chart MBTiles using tile-join with batching."""
+    """Build per-scale regional packs from per-chart MBTiles using tile-join.
+    
+    Creates separate packs for each scale band (US1-US6) with NO merging between scales.
+    All 6 packs are built IN PARALLEL for maximum speed.
+    """
     per_chart_dir = output_base / 'per_chart'
     regional_dir = output_base / 'regional'
     regional_dir.mkdir(parents=True, exist_ok=True)
     
+    # Per-scale packs - NO merging between scales
     regional_configs = [
-        ('alaska_overview', ['US1*', 'US2*'], 'Overview charts (US1+US2) for statewide planning'),
-        ('alaska_coastal', ['US3*'], 'Coastal charts (US3) for coastal transit'),
-        ('alaska_detail', ['US4*', 'US5*', 'US6*'], 'Detail charts (US4+US5+US6) for harbor/docking'),
+        ('alaska_US1', ['US1*'], 'US1 Overview charts - continental view'),
+        ('alaska_US2', ['US2*'], 'US2 General charts - regional planning'),
+        ('alaska_US3', ['US3*'], 'US3 Coastal charts - coastal navigation'),
+        ('alaska_US4', ['US4*'], 'US4 Approach charts - channel approaches'),
+        ('alaska_US5', ['US5*'], 'US5 Harbor charts - harbor navigation'),
+        ('alaska_US6', ['US6*'], 'US6 Berthing charts - docking detail'),
+    ]
+    
+    # Prepare args for parallel execution
+    pack_args = [
+        (pack_name, patterns, description, str(per_chart_dir), str(regional_dir))
+        for pack_name, patterns, description in regional_configs
     ]
     
     results = []
+    start_time = time.time()
     
     if use_rich and RICH_AVAILABLE:
-        dashboard = RegionalPackDashboard()
+        console = Console()
+        console.print("\n[bold cyan]Building 6 scale packs in PARALLEL...[/bold cyan]\n")
         
-        with Live(dashboard.build_display(), console=dashboard.console, refresh_per_second=4) as live:
-            for pack_name, patterns, description in regional_configs:
-                input_files = []
-                for pattern in patterns:
-                    matching_dirs = list(per_chart_dir.glob(pattern))
-                    for chart_dir in matching_dirs:
-                        mbtiles_files = list(chart_dir.glob('*.mbtiles'))
-                        input_files.extend(mbtiles_files)
-                
-                def progress_callback(status, prog, total):
-                    dashboard.update(pack_name, status, prog, total)
-                    live.update(dashboard.build_display())
-                
-                dashboard.update(pack_name, f"Found {len(input_files)} charts", 0, 1)
-                live.update(dashboard.build_display())
-                
-                output_path = regional_dir / f'{pack_name}.mbtiles'
-                num_charts, size_mb, error = merge_mbtiles_batch(
-                    input_files, output_path, pack_name, description, progress_callback
-                )
-                results.append((pack_name, num_charts, size_mb, error))
-                dashboard.add_result(pack_name, num_charts, size_mb, error)
-                live.update(dashboard.build_display())
+        # Show what we're building
+        for pack_name, patterns, description in regional_configs:
+            console.print(f"  • {pack_name}: {patterns[0]}")
+        console.print()
+        
+        # Run all 6 in parallel
+        with ProcessPoolExecutor(max_workers=6) as executor:
+            futures = {executor.submit(build_single_scale_pack, args): args[0] 
+                      for args in pack_args}
             
-            # Build alaska_full
-            regional_packs = [
-                regional_dir / 'alaska_overview.mbtiles',
-                regional_dir / 'alaska_coastal.mbtiles',
-                regional_dir / 'alaska_detail.mbtiles',
-            ]
-            existing_packs = [p for p in regional_packs if p.exists() and p.stat().st_size > 1000]
-            
-            if existing_packs:
-                dashboard.update('alaska_full', f"Merging {len(existing_packs)} regional packs", 0, 1)
-                live.update(dashboard.build_display())
+            for future in as_completed(futures):
+                pack_name = futures[future]
+                result = future.result()
+                results.append(result)
                 
-                full_output = regional_dir / 'alaska_full.mbtiles'
-                cmd = [
-                    'tile-join',
-                    '-o', str(full_output),
-                    '--force',
-                    '--no-tile-size-limit',  # CRITICAL: Never drop tiles due to size!
-                    '-n', 'alaska_full',
-                    '-N', 'All Alaska charts combined',
-                ] + [str(f) for f in existing_packs]
-                
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                # FAIL LOUDLY if any tiles were skipped
-                check_for_skipped_tiles(result.stderr, "alaska_full merge")
-                
-                dashboard.update('alaska_full', "Done", 1, 1)
-                live.update(dashboard.build_display())
-                
-                if result.returncode != 0:
-                    results.append(('alaska_full', len(existing_packs), 0, result.stderr[:100]))
-                    dashboard.add_result('alaska_full', len(existing_packs), 0, result.stderr[:100])
-                elif full_output.exists():
-                    size_mb = full_output.stat().st_size / 1024 / 1024
-                    total_charts = sum(r[1] for r in results if r[2] > 0)
-                    results.append(('alaska_full', total_charts, size_mb, None))
-                    dashboard.add_result('alaska_full', total_charts, size_mb, None)
+                _, num_charts, size_mb, error = result
+                if error:
+                    console.print(f"  [red]✗[/red] {pack_name}: FAILED - {error}")
                 else:
-                    results.append(('alaska_full', 0, 0, 'File not created'))
-                    dashboard.add_result('alaska_full', 0, 0, 'File not created')
-                
-                live.update(dashboard.build_display())
-            else:
-                results.append(('alaska_full', 0, 0, 'No regional packs to merge'))
-                dashboard.add_result('alaska_full', 0, 0, 'No regional packs to merge')
+                    console.print(f"  [green]✓[/green] {pack_name}: {num_charts} charts, {size_mb:.1f} MB")
+        
+        elapsed = time.time() - start_time
+        console.print(f"\n[bold]Parallel build completed in {elapsed:.1f}s[/bold]")
     
     else:
-        # Plain text fallback
-        for pack_name, patterns, description in regional_configs:
-            input_files = []
-            for pattern in patterns:
-                matching_dirs = list(per_chart_dir.glob(pattern))
-                for chart_dir in matching_dirs:
-                    mbtiles_files = list(chart_dir.glob('*.mbtiles'))
-                    input_files.extend(mbtiles_files)
-            
-            print(f"Building {pack_name}: {len(input_files)} charts...")
-            
-            output_path = regional_dir / f'{pack_name}.mbtiles'
-            num_charts, size_mb, error = merge_mbtiles_batch(
-                input_files, output_path, pack_name, description
-            )
-            results.append((pack_name, num_charts, size_mb, error))
-            
-            if error:
-                print(f"  FAILED: {error}")
-            else:
-                print(f"  OK: {size_mb:.1f} MB")
+        # Plain text parallel
+        print(f"\nBuilding 6 scale packs in PARALLEL...")
         
-        # Build alaska_full
-        regional_packs = [
-            regional_dir / 'alaska_overview.mbtiles',
-            regional_dir / 'alaska_coastal.mbtiles',
-            regional_dir / 'alaska_detail.mbtiles',
-        ]
-        existing_packs = [p for p in regional_packs if p.exists() and p.stat().st_size > 1000]
+        with ProcessPoolExecutor(max_workers=6) as executor:
+            futures = {executor.submit(build_single_scale_pack, args): args[0] 
+                      for args in pack_args}
+            
+            for future in as_completed(futures):
+                pack_name = futures[future]
+                result = future.result()
+                results.append(result)
+                
+                _, num_charts, size_mb, error = result
+                if error:
+                    print(f"  ✗ {pack_name}: FAILED - {error}")
+                else:
+                    print(f"  ✓ {pack_name}: {num_charts} charts, {size_mb:.1f} MB")
         
-        if existing_packs:
-            print(f"Building alaska_full: merging {len(existing_packs)} regional packs...")
-            full_output = regional_dir / 'alaska_full.mbtiles'
-            cmd = [
-                'tile-join',
-                '-o', str(full_output),
-                '--force',
-                '--no-tile-size-limit',  # CRITICAL: Never drop tiles due to size!
-                '-n', 'alaska_full',
-                '-N', 'All Alaska charts combined',
-            ] + [str(f) for f in existing_packs]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            # FAIL LOUDLY if any tiles were skipped
-            check_for_skipped_tiles(result.stderr, "alaska_full merge (plaintext)")
-            
-            if result.returncode != 0:
-                results.append(('alaska_full', len(existing_packs), 0, result.stderr[:100]))
-                print(f"  FAILED: {result.stderr[:100]}")
-            elif full_output.exists():
-                size_mb = full_output.stat().st_size / 1024 / 1024
-                total_charts = sum(r[1] for r in results if r[2] > 0)
-                results.append(('alaska_full', total_charts, size_mb, None))
-                print(f"  OK: {size_mb:.1f} MB")
-            else:
-                results.append(('alaska_full', 0, 0, 'File not created'))
-        else:
-            results.append(('alaska_full', 0, 0, 'No regional packs to merge'))
+        elapsed = time.time() - start_time
+        print(f"\nParallel build completed in {elapsed:.1f}s")
+    
+    # Generate manifest for per-scale packs
+    generate_scale_manifest(regional_dir, results)
     
     return results
+
+
+def generate_scale_manifest(regional_dir: Path, pack_results: list):
+    """Generate manifest.json for per-scale regional packs."""
+    import sqlite3
+    
+    # Zoom ranges by scale (natural ranges for display)
+    SCALE_DISPLAY_ZOOMS = {
+        'US1': (0, 8),
+        'US2': (0, 10),
+        'US3': (8, 12),
+        'US4': (10, 14),
+        'US5': (12, 18),
+        'US6': (14, 18),
+    }
+    
+    packs = []
+    
+    for pack_name, num_charts, size_mb, error in pack_results:
+        if error or size_mb <= 0:
+            continue
+        
+        mbtiles_path = regional_dir / f'{pack_name}.mbtiles'
+        if not mbtiles_path.exists():
+            continue
+        
+        # Extract scale from pack name (e.g., 'alaska_US3' -> 'US3')
+        scale = pack_name.replace('alaska_', '')
+        
+        # Get bounds and zoom from mbtiles metadata
+        try:
+            conn = sqlite3.connect(str(mbtiles_path))
+            cursor = conn.cursor()
+            
+            metadata = {}
+            cursor.execute("SELECT name, value FROM metadata")
+            for name, value in cursor.fetchall():
+                metadata[name] = value
+            
+            conn.close()
+            
+            # Parse bounds
+            bounds_str = metadata.get('bounds', '-180,-90,180,90')
+            bounds = [float(x) for x in bounds_str.split(',')]
+            
+            # Get zoom range from metadata or use defaults
+            min_zoom = int(metadata.get('minzoom', SCALE_DISPLAY_ZOOMS.get(scale, (0, 18))[0]))
+            max_zoom = int(metadata.get('maxzoom', SCALE_DISPLAY_ZOOMS.get(scale, (0, 18))[1]))
+            
+        except Exception as e:
+            print(f"Warning: Could not read metadata from {pack_name}: {e}")
+            bounds = [-180, -90, 180, 90]
+            zoom_range = SCALE_DISPLAY_ZOOMS.get(scale, (0, 18))
+            min_zoom, max_zoom = zoom_range
+        
+        pack_info = {
+            'id': pack_name,
+            'filename': f'{pack_name}.mbtiles',
+            'name': f'Alaska {scale} Charts',
+            'description': f'{scale} scale charts for Alaska',
+            'scale': scale,
+            'bounds': {
+                'west': bounds[0],
+                'south': bounds[1],
+                'east': bounds[2],
+                'north': bounds[3],
+            },
+            'minZoom': min_zoom,
+            'maxZoom': max_zoom,
+            'fileSize': int(size_mb * 1024 * 1024),
+            'chartCount': num_charts,
+        }
+        packs.append(pack_info)
+    
+    # Sort by scale
+    scale_order = {'US1': 1, 'US2': 2, 'US3': 3, 'US4': 4, 'US5': 5, 'US6': 6}
+    packs.sort(key=lambda p: scale_order.get(p.get('scale', ''), 99))
+    
+    manifest = {
+        'version': '2.0',
+        'architecture': 'per-scale',
+        'description': 'Per-scale regional packs for Alaska. Server merges tiles at runtime based on zoom.',
+        'packs': packs,
+        'scaleZoomMapping': {
+            'US1': {'minZoom': 0, 'maxZoom': 8, 'displayFrom': 0, 'displayTo': 9},
+            'US2': {'minZoom': 0, 'maxZoom': 10, 'displayFrom': 8, 'displayTo': 11},
+            'US3': {'minZoom': 4, 'maxZoom': 13, 'displayFrom': 10, 'displayTo': 13},
+            'US4': {'minZoom': 6, 'maxZoom': 16, 'displayFrom': 12, 'displayTo': 15},
+            'US5': {'minZoom': 8, 'maxZoom': 18, 'displayFrom': 14, 'displayTo': 17},
+            'US6': {'minZoom': 6, 'maxZoom': 18, 'displayFrom': 16, 'displayTo': 22},
+        },
+    }
+    
+    manifest_path = regional_dir / 'manifest.json'
+    with open(manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=2)
+    
+    print(f"Generated manifest: {manifest_path}")
 
 
 # =============================================================================

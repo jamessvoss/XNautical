@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>MapLibre MBTiles Test</title>
+    <script src="https://unpkg.com/maplibre-gl@4.1.0/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@4.1.0/dist/maplibre-gl.css" rel="stylesheet">
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.8);
+            color: #00ff00;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 14px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="info">Zoom: <span id="zoom">2.0</span> | Using MapLibre GL (no Mapbox token needed)</div>
+
+    <script>
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: {
+                version: 8,
+                sources: {
+                    'alaska': {
+                        type: 'vector',
+                        url: 'http://localhost:8080/data/alaska_overview.json'
+                    }
+                },
+                layers: [
+                    {
+                        id: 'background',
+                        type: 'background',
+                        paint: { 'background-color': '#1a1a2e' }
+                    },
+                    {
+                        id: 'all-features-fill',
+                        type: 'fill',
+                        source: 'alaska',
+                        'source-layer': 'charts',
+                        paint: {
+                            'fill-color': '#00ffff',
+                            'fill-opacity': 0.7
+                        }
+                    },
+                    {
+                        id: 'all-features-line',
+                        type: 'line',
+                        source: 'alaska',
+                        'source-layer': 'charts',
+                        paint: {
+                            'line-color': '#ffffff',
+                            'line-width': 0.5,
+                            'line-opacity': 0.5
+                        }
+                    }
+                ]
+            },
+            center: [-155, 62],
+            zoom: 2
+        });
+
+        map.on('zoom', () => {
+            document.getElementById('zoom').textContent = map.getZoom().toFixed(2);
+        });
+
+        map.on('load', () => {
+            console.log('Map loaded successfully');
+        });
+
+        map.on('error', (e) => {
+            console.error('Map error:', e);
+        });
+    </script>
+</body>
+</html>

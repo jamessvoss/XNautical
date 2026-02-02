@@ -8,9 +8,10 @@
  * - Supports S-52 Day/Dusk/Night theming
  */
 
-import React, { useEffect, useRef, useMemo, memo, useState } from 'react';
+import React, { useEffect, useRef, useMemo, useState } from 'react';
 import {
   View,
+  Text,
   StyleSheet,
   Dimensions,
   Animated,
@@ -63,8 +64,8 @@ const getCompassColors = (mode: S52DisplayMode): CompassColors => {
   }
 };
 
-// Memoized rotating compass rose - only re-renders when size or colors change
-const CompassRose = memo(({ size, colors }: { size: number; colors: CompassColors }) => {
+// Rotating compass rose component (memo removed to fix Android crash)
+const CompassRose = ({ size, colors }: { size: number; colors: CompassColors }) => {
   const center = size / 2;
   const outerRadius = size / 2 - 2;
   const tickOuterRadius = outerRadius - 4;
@@ -220,12 +221,10 @@ const CompassRose = memo(({ size, colors }: { size: number; colors: CompassColor
       })}
     </Svg>
   );
-});
+};
 
-CompassRose.displayName = 'CompassRose';
-
-// Memoized fixed elements (outer ring, lubber line, ship icon)
-const FixedElements = memo(({ size, cogRotation, colors }: { size: number; cogRotation: number | null; colors: CompassColors }) => {
+// Fixed elements component (outer ring, lubber line, ship icon) - memo removed to fix Android crash
+const FixedElements = ({ size, cogRotation, colors }: { size: number; cogRotation: number | null; colors: CompassColors }) => {
   const center = size / 2;
   const outerRadius = size / 2 - 2;
   const innerClearRadius = size / 2 - 80;
@@ -331,29 +330,50 @@ const FixedElements = memo(({ size, cogRotation, colors }: { size: number; cogRo
       )}
     </Svg>
   );
-});
-
-FixedElements.displayName = 'FixedElements';
+};
 
 export default function CompassOverlay({
   heading,
   course,
   visible,
 }: Props) {
+  // DEBUG: Track component lifecycle
+  console.log(`[CompassOverlay] render - visible=${visible}, heading=${heading}`);
+  
+  useEffect(() => {
+    console.log('[CompassOverlay] MOUNTED');
+    return () => console.log('[CompassOverlay] UNMOUNTED');
+  }, []);
+  
+  useEffect(() => {
+    console.log(`[CompassOverlay] visibility changed to: ${visible}`);
+  }, [visible]);
+  
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
   const size = Math.min(screenWidth, screenHeight) - 20;
   const center = size / 2;
   
-  // Theme state
-  const [displayMode, setDisplayMode] = useState<S52DisplayMode>(themeService.getCurrentMode());
+  // Theme state - with safe default
+  const [displayMode, setDisplayMode] = useState<S52DisplayMode>(() => {
+    try {
+      return themeService.getCurrentMode();
+    } catch {
+      return 'day';
+    }
+  });
   const compassColors = useMemo(() => getCompassColors(displayMode), [displayMode]);
   
   // Subscribe to theme changes
   useEffect(() => {
-    const unsubscribe = themeService.subscribeToModeChanges((mode) => {
-      setDisplayMode(mode);
-    });
-    return unsubscribe;
+    try {
+      const unsubscribe = themeService.subscribeToModeChanges((mode) => {
+        setDisplayMode(mode);
+      });
+      return unsubscribe;
+    } catch (error) {
+      console.error('[CompassOverlay] Error subscribing to theme changes:', error);
+      return () => {}; // No-op cleanup
+    }
   }, []);
   
   // Animation ref - persists across renders
@@ -416,24 +436,22 @@ export default function CompassOverlay({
     }).start();
   }, [heading, visible]);
 
-  // Early return AFTER all hooks
-  if (!visible) return null;
-
+  // ALWAYS render the same structure - use opacity/scale to hide
+  // This avoids the Android "child already has parent" crash caused by
+  // returning different JSX structures when visibility changes
+  const displayHeading = heading !== null ? Math.round(heading) : '--';
+  
   return (
-    <View style={styles.container} pointerEvents="none">
-      <View style={[styles.compassWrapper, { width: size, height: size }]}>
-        {/* Rotating compass rose - wrapped in Animated.View for native driver */}
-        <Animated.View 
-          style={[
-            styles.rotatingLayer,
-            { transform: [{ rotate: rotateInterpolate }] }
-          ]}
-        >
-          <CompassRose size={size} colors={compassColors} />
-        </Animated.View>
-        
-        {/* Fixed elements on top */}
-        <FixedElements size={size} cogRotation={cogRotation} colors={compassColors} />
+    <View 
+      style={[
+        styles.container,
+        !visible && styles.invisible
+      ]} 
+      pointerEvents={visible ? "none" : "box-none"}
+    >
+      <View style={[styles.simpleCompass, { width: size, height: size }]}>
+        <Text style={styles.headingText}>{displayHeading}°</Text>
+        <Text style={styles.labelText}>HDG</Text>
       </View>
     </View>
   );
@@ -446,11 +464,35 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 1000,
   },
+  invisible: {
+    opacity: 0,
+    transform: [{ scale: 0.001 }],
+  },
   compassWrapper: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   rotatingLayer: {
     position: 'absolute',
+  },
+  // Simple text compass styles (temporary)
+  simpleCompass: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 200,
+    borderWidth: 4,
+    borderColor: '#4FC3F7',
+  },
+  headingText: {
+    fontSize: 72,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    fontFamily: 'monospace',
+  },
+  labelText: {
+    fontSize: 24,
+    color: '#888888',
+    marginTop: 8,
   },
 });

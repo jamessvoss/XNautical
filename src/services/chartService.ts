@@ -15,6 +15,7 @@ import {
 } from '../types/chart';
 import { documentDirectory, makeDirectoryAsync, getInfoAsync, writeAsStringAsync } from 'expo-file-system/legacy';
 import * as chartCacheService from './chartCacheService';
+import { logger, LogCategory } from './loggingService';
 
 // Modular Firebase imports (only on native platforms)
 let firestoreDb: any = null;
@@ -50,7 +51,7 @@ if (Platform.OS !== 'web') {
       orderBy: rnfbFirestore.orderBy,
     };
   } catch (e) {
-    console.log('Native Firestore not available');
+    logger.debug(LogCategory.NETWORK, 'Native Firestore not available');
   }
   
   try {
@@ -61,14 +62,14 @@ if (Platform.OS !== 'web') {
       getDownloadURL: rnfbStorage.getDownloadURL,
     };
   } catch (e) {
-    console.log('Native Storage not available');
+    logger.debug(LogCategory.NETWORK, 'Native Storage not available');
   }
   
   try {
     const rnfbAuth = require('@react-native-firebase/auth');
     authInstance = rnfbAuth.getAuth();
   } catch (e) {
-    console.log('Native Auth not available for chartService');
+    logger.debug(LogCategory.AUTH, 'Native Auth not available for chartService');
   }
 }
 
@@ -91,13 +92,13 @@ export async function getRegions(): Promise<ChartRegion[]> {
     // Log auth state for debugging
     if (authInstance) {
       const currentUser = authInstance.currentUser;
-      console.log('getRegions - Auth state:', currentUser ? `Logged in as ${currentUser.email} (uid: ${currentUser.uid})` : 'NOT LOGGED IN');
+      logger.debug(LogCategory.AUTH, currentUser ? `Logged in as ${currentUser.email}` : 'NOT LOGGED IN');
     }
     
-    console.log('getRegions - Fetching from collection:', COLLECTIONS.REGIONS);
+    logger.debug(LogCategory.NETWORK, `Fetching from collection: ${COLLECTIONS.REGIONS}`);
     const collectionRef = firestoreFns.collection(firestoreDb, COLLECTIONS.REGIONS);
     const snapshot = await firestoreFns.getDocs(collectionRef);
-    console.log('getRegions - Got', snapshot.docs.length, 'documents');
+    logger.debug(LogCategory.NETWORK, `Got ${snapshot.docs.length} documents`);
     
     return snapshot.docs.map((doc: any) => ({
       id: doc.id as RegionId,
@@ -105,9 +106,7 @@ export async function getRegions(): Promise<ChartRegion[]> {
       lastUpdated: doc.data().lastUpdated?.toDate() || new Date(),
     })) as ChartRegion[];
   } catch (error: any) {
-    console.error('Error fetching regions:', error);
-    console.error('Error code:', error.code);
-    console.error('Error message:', error.message);
+    logger.error(LogCategory.NETWORK, 'Error fetching regions', { code: error.code, message: error.message });
     throw error;
   }
 }
@@ -135,7 +134,7 @@ export async function getRegion(regionId: RegionId): Promise<ChartRegion | null>
       lastUpdated: data.lastUpdated?.toDate() || new Date(),
     } as ChartRegion;
   } catch (error) {
-    console.error('Error fetching region:', error);
+    logger.error(LogCategory.NETWORK, 'Error fetching region', error as Error);
     throw error;
   }
 }
@@ -163,7 +162,7 @@ export async function getChartsByRegion(regionId: RegionId): Promise<ChartMetada
       lastUpdated: doc.data().lastUpdated?.toDate() || new Date(),
     })) as ChartMetadata[];
   } catch (error) {
-    console.error('Error fetching charts by region:', error);
+    logger.error(LogCategory.NETWORK, 'Error fetching charts by region', error as Error);
     throw error;
   }
 }
@@ -180,13 +179,13 @@ export async function getAllCharts(): Promise<ChartMetadata[]> {
     // Log auth state for debugging
     if (authInstance) {
       const currentUser = authInstance.currentUser;
-      console.log('getAllCharts - Auth state:', currentUser ? `Logged in as ${currentUser.email} (uid: ${currentUser.uid})` : 'NOT LOGGED IN');
+      logger.debug(LogCategory.AUTH, currentUser ? `Logged in as ${currentUser.email}` : 'NOT LOGGED IN');
     }
     
-    console.log('getAllCharts - Fetching from collection:', COLLECTIONS.METADATA);
+    logger.debug(LogCategory.NETWORK, `Fetching from collection: ${COLLECTIONS.METADATA}`);
     const collectionRef = firestoreFns.collection(firestoreDb, COLLECTIONS.METADATA);
     const snapshot = await firestoreFns.getDocs(collectionRef);
-    console.log('getAllCharts - Got', snapshot.docs.length, 'documents');
+    logger.debug(LogCategory.NETWORK, `Got ${snapshot.docs.length} documents`);
     
     return snapshot.docs.map((doc: any) => ({
       ...doc.data(),
@@ -194,9 +193,7 @@ export async function getAllCharts(): Promise<ChartMetadata[]> {
       lastUpdated: doc.data().lastUpdated?.toDate() || new Date(),
     })) as ChartMetadata[];
   } catch (error: any) {
-    console.error('Error fetching all charts:', error);
-    console.error('Error code:', error.code);
-    console.error('Error message:', error.message);
+    logger.error(LogCategory.NETWORK, 'Error fetching all charts', { code: error.code, message: error.message });
     throw error;
   }
 }
@@ -228,7 +225,7 @@ export async function getChartsInBounds(
       );
     });
   } catch (error) {
-    console.error('Error fetching charts in bounds:', error);
+    logger.error(LogCategory.NETWORK, 'Error fetching charts in bounds', error as Error);
     throw error;
   }
 }
@@ -256,7 +253,7 @@ export async function getChartMetadata(chartId: string): Promise<ChartMetadata |
       lastUpdated: data.lastUpdated?.toDate() || new Date(),
     } as ChartMetadata;
   } catch (error) {
-    console.error('Error fetching chart metadata:', error);
+    logger.error(LogCategory.NETWORK, 'Error fetching chart metadata', error as Error);
     throw error;
   }
 }
@@ -272,7 +269,7 @@ function decompressGzip(compressedData: ArrayBuffer): string {
     const decompressed = pako.inflate(compressed, { to: 'string' });
     return decompressed;
   } catch (error) {
-    console.error('Gzip decompression failed:', error);
+    logger.warn(LogCategory.CHARTS, 'Gzip decompression failed, trying as uncompressed');
     // Try as uncompressed text as fallback
     const decoder = new TextDecoder();
     return decoder.decode(compressedData);
@@ -294,39 +291,28 @@ export async function downloadChartFeature(
       throw new Error('Native Storage not available');
     }
     
-    // Log auth state for debugging
-    if (authInstance) {
-      const currentUser = authInstance.currentUser;
-      console.log(`downloadChartFeature - Auth: ${currentUser ? currentUser.email : 'NOT LOGGED IN'}`);
-    }
-    
-    console.log(`Downloading: ${storagePath}`);
+    logger.debug(LogCategory.NETWORK, `Downloading: ${storagePath}`);
     const fileRef = storageFns.ref(storageRef, storagePath);
     
     // Download to a data URL and extract the base64 data
     const downloadUrl = await storageFns.getDownloadURL(fileRef);
-    console.log(`Got download URL for ${featureType}`);
     
     // Fetch the file data
     const response = await fetch(downloadUrl);
     const arrayBuffer = await response.arrayBuffer();
-    console.log(`Got ${arrayBuffer.byteLength} bytes for ${featureType}`);
     
     const jsonString = decompressGzip(arrayBuffer);
-    console.log(`Decompressed to ${jsonString.length} chars for ${featureType}`);
-    
     const geojson = JSON.parse(jsonString) as GeoJSONFeatureCollection;
-    console.log(`Parsed ${geojson.features?.length || 0} features for ${featureType}`);
+    logger.debug(LogCategory.CHARTS, `Downloaded ${geojson.features?.length || 0} ${featureType} features`);
     
     return geojson;
   } catch (error: unknown) {
     // File might not exist for this chart (not all charts have all feature types)
     const errorMessage = error instanceof Error ? error.message : String(error);
     if (errorMessage.includes('object-not-found') || errorMessage.includes('404') || errorMessage.includes('does not exist')) {
-      console.log(`No ${featureType} file for ${chartId} at ${storagePath}`);
       return null;
     }
-    console.error(`Error downloading ${featureType} for ${chartId}:`, error);
+    logger.error(LogCategory.NETWORK, `Error downloading ${featureType} for ${chartId}`, error as Error);
     throw error;
   }
 }

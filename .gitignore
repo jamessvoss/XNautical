@@ -41,6 +41,7 @@ google-services-webapp.json
 GoogleService-Info.plist
 *-service-account.json
 *-adminsdk-*.json
+scripts/service-accounts/
 
 # typescript
 *.tsbuildinfo
@@ -96,3 +97,13 @@ charts/
 # Python cache
 __pycache__/
 *.pyc
+
+# Large data files (bathymetry, satellite, test data)
+data/
+*.tif
+*.geojson
+debug_overview_*.mbtiles
+*_preview.html
+*_viewer.html
+device_*.png
+screenshot_*.png

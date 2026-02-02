@@ -2,70 +2,61 @@
 
 ## Overview
 
-The conversion pipeline uses **scale-appropriate** tippecanoe settings to optimize file size while preserving maximum detail where it matters most for navigation.
+The conversion pipeline uses **per-scale regional packs** to enable clean chart rendering at each zoom level without overlap issues.
 
-## Conversion Architecture
+## Architecture v2.0: Per-Scale Packs
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    SINGLE SOURCE OF TRUTH                        │
+│                    PER-SCALE ARCHITECTURE                        │
 │                                                                  │
-│     cloud-functions/enc-converter/convert.py                     │
-│         └── get_tippecanoe_settings(chart_id)                   │
+│   Build time (conversion):                                       │
+│     alaska_US1.mbtiles  ← Only US1 (overview) charts            │
+│     alaska_US2.mbtiles  ← Only US2 (general) charts             │
+│     alaska_US3.mbtiles  ← Only US3 (coastal) charts             │
+│     alaska_US4.mbtiles  ← Only US4 (approach) charts            │
+│     alaska_US5.mbtiles  ← Only US5 (harbor) charts              │
+│     alaska_US6.mbtiles  ← Only US6 (berthing) charts            │
 │                                                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│     scripts/convert_alaska.py                                    │
-│         └── Calls convert.py as subprocess                       │
-│         └── Creates regional packs via tile-join                │
+│   Runtime (server):                                              │
+│     Request for z10 tile → Server selects US3 pack              │
+│                          → Returns US3 features only            │
+│                          → NO overlap with other scales!        │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-All zoom ranges and tippecanoe flags are defined in `get_tippecanoe_settings()`. There is no other conversion script - `convert_alaska.py` is the batch converter that calls `convert.py` for each chart.
+**Benefits:**
+1. **No overlap** - Each pack contains only ONE scale band
+2. **Clean rendering** - No duplicate soundings or labels
+3. **Flexible** - Server can serve any scale combination
+4. **User preference** - Detail level adjusts which scale to show at each zoom
 
-## Zoom Ranges by Scale
+## Server Scale Selection
 
-| Scale | Chart Type | Zoom Range | Use Case |
-|-------|------------|------------|----------|
-| **US1** | Overview | z0-8 | Continental view, route planning |
-| **US2** | General | z0-10 | Regional planning (Gulf of Alaska) |
-| **US3** | Coastal | z4-13 | Coastal navigation (Cook Inlet) |
-| **US4** | Approach | z6-16 | Channel approaches |
-| **US5** | Harbor | z8-18 | Harbor navigation |
-| **US6** | Berthing | z10-18 | Docking, berthing |
+The server selects ONE scale per zoom level:
 
-### Extended Min Zoom for Detail Level Feature
+| Zoom (Low Detail) | Zoom (Med Detail) | Zoom (High Detail) | Scale |
+|-------------------|-------------------|---------------------|-------|
+| z0-7              | z0-5              | z0-3                | US1   |
+| z8-9              | z6-7              | z4-5                | US2   |
+| z10-11            | z8-9              | z6-7                | US3   |
+| z12-13            | z10-11            | z8-9                | US4   |
+| z14-15            | z12-13            | z10-11              | US5   |
+| z16+              | z14+              | z12+                | US6   |
 
-The min zoom for US3-US6 charts has been extended 4 zoom levels earlier than standard to support the app's **user-selectable detail level** feature:
+## Zoom Ranges in MBTiles
 
-- **Low detail**: Charts appear at their standard zoom (e.g., US5 at z12)
-- **Medium detail**: Charts appear 2 zooms earlier (e.g., US5 at z10)
-- **High detail**: Charts appear 4 zooms earlier (e.g., US5 at z8)
+Each scale's pack contains tiles across a wide zoom range to support the detail level feature:
 
-This means a US5 harbor chart contains tiles from z8-z18, but the app controls when it starts displaying based on user preference.
-
-## Chart Quilting: Zoom Level Overlap
-
-At any given zoom level, multiple chart scales may have data available. The app's quilting logic selects which chart to display based on geographic coverage and user detail preference.
-
-| Zoom | US1 | US2 | US3 | US4 | US5 | US6 |
-|------|-----|-----|-----|-----|-----|-----|
-| z0-3 | ✓ | ✓ | | | | |
-| z4-5 | ✓ | ✓ | ✓ | | | |
-| z6-7 | ✓ | ✓ | ✓ | ✓ | | |
-| z8 | ✓ | ✓ | ✓ | ✓ | ✓ | |
-| z9 | | ✓ | ✓ | ✓ | ✓ | |
-| z10 | | ✓ | ✓ | ✓ | ✓ | ✓ |
-| z11-13 | | | ✓ | ✓ | ✓ | ✓ |
-| z14-16 | | | | ✓ | ✓ | ✓ |
-| z17-18 | | | | | ✓ | ✓ |
-
-**Key points:**
-- Charts at different scales cover **different geographic areas** (US1 covers all of Alaska, US5 covers just a harbor)
-- At z8, tiles may contain features from US1, US2, US3, US4, and US5 - but each covers its respective area
-- The `_chartId` property on each feature allows the app to filter which chart to display
-- Smooth transitions: each scale starts before the previous one ends
+| Scale | Chart Type | Tile Zoom Range | Display Zoom Range |
+|-------|------------|-----------------|-------------------|
+| **US1** | Overview | z0-8 | z0-9 |
+| **US2** | General | z0-10 | z8-11 |
+| **US3** | Coastal | z4-13 | z10-13 |
+| **US4** | Approach | z6-16 | z12-15 |
+| **US5** | Harbor | z8-18 | z14-17 |
+| **US6** | Berthing | z6-18 | z16+ |
 
 ## Tippecanoe Settings
 

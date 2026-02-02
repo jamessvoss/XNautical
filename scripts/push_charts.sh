@@ -33,6 +33,7 @@ PUSH_US5=false
 PUSH_US6=false
 PUSH_BASEMAP=false
 PUSH_GNIS=false
+PUSH_SATELLITE=false
 ANY_SELECTED=false
 
 for arg in "$@"; do
@@ -69,6 +70,10 @@ for arg in "$@"; do
             PUSH_GNIS=true
             ANY_SELECTED=true
             ;;
+        --satellite|--Satellite|--SATELLITE)
+            PUSH_SATELLITE=true
+            ANY_SELECTED=true
+            ;;
         --all)
             PUSH_US1=true
             PUSH_US2=true
@@ -78,6 +83,7 @@ for arg in "$@"; do
             PUSH_US6=true
             PUSH_BASEMAP=true
             PUSH_GNIS=true
+            PUSH_SATELLITE=true
             ANY_SELECTED=true
             ;;
         --charts)
@@ -104,12 +110,13 @@ for arg in "$@"; do
             echo "  --US6       Push US6 charts (Berthing, ~1 file)"
             echo ""
             echo "Other Data:"
-            echo "  --basemap   Push basemap tiles (requires generate_basemap.sh first)"
-            echo "  --gnis      Push GNIS place names"
+            echo "  --basemap     Push basemap tiles (requires generate_basemap.sh first)"
+            echo "  --satellite   Push satellite imagery tiles (requires generate_satellite.py first)"
+            echo "  --gnis        Push GNIS place names"
             echo ""
             echo "Shortcuts:"
             echo "  --charts    Push all chart tiers (US1-US6)"
-            echo "  --all       Push everything (charts + basemap + gnis)"
+            echo "  --all       Push everything (charts + basemap + satellite + gnis)"
             echo ""
             echo "Examples:"
             echo "  $0 --US1 --US2 --US3      Push overview charts only"
@@ -184,6 +191,7 @@ PUSH_ITEMS=""
 [ "$PUSH_US5" = true ] && TIERS+=("US5") && PUSH_ITEMS="${PUSH_ITEMS}US5 "
 [ "$PUSH_US6" = true ] && TIERS+=("US6") && PUSH_ITEMS="${PUSH_ITEMS}US6 "
 [ "$PUSH_BASEMAP" = true ] && PUSH_ITEMS="${PUSH_ITEMS}Basemap "
+[ "$PUSH_SATELLITE" = true ] && PUSH_ITEMS="${PUSH_ITEMS}Satellite "
 [ "$PUSH_GNIS" = true ] && PUSH_ITEMS="${PUSH_ITEMS}GNIS "
 
 echo "${CYAN}▶${NC} Pushing: ${BOLD}${PUSH_ITEMS}${NC}"
@@ -314,6 +322,41 @@ if [ "$PUSH_BASEMAP" = true ]; then
     else
         echo "${YELLOW}⚠ Basemap not found at $BASEMAP_FILE${NC}"
         echo "  Run: ./scripts/generate_basemap.sh"
+        echo ""
+    fi
+fi
+
+# Push satellite if requested
+if [ "$PUSH_SATELLITE" = true ]; then
+    SATELLITE_DIR="$PROJECT_DIR/charts/Satellite"
+    SATELLITE_FILES=$(find "$SATELLITE_DIR" -name "satellite_z*.mbtiles" -type f 2>/dev/null)
+    SATELLITE_COUNT=$(echo "$SATELLITE_FILES" | grep -c . 2>/dev/null || echo 0)
+    
+    if [ "$SATELLITE_COUNT" -gt 0 ]; then
+        echo "${CYAN}━━━ Satellite Imagery ━━━${NC}"
+        SATELLITE_TOTAL_SIZE=0
+        
+        # Calculate total size
+        for f in $SATELLITE_FILES; do
+            fsize=$(stat -f%z "$f" 2>/dev/null || echo 0)
+            SATELLITE_TOTAL_SIZE=$((SATELLITE_TOTAL_SIZE + fsize))
+        done
+        
+        echo "  Files: $SATELLITE_COUNT satellite tile sets ($(format_size $SATELLITE_TOTAL_SIZE) total)"
+        echo "  Pushing to device..."
+        
+        # Push each file
+        for f in $SATELLITE_FILES; do
+            fname=$(basename "$f")
+            adb push "$f" "$DEVICE_DIR/$fname"
+        done
+        
+        echo "  ${GREEN}✓ Satellite pushed ($SATELLITE_COUNT files)${NC}"
+        echo ""
+        TOTAL_SIZE=$((TOTAL_SIZE + SATELLITE_TOTAL_SIZE))
+    else
+        echo "${YELLOW}⚠ No satellite files found in $SATELLITE_DIR${NC}"
+        echo "  Expected files like: satellite_z8.mbtiles, satellite_z0-5.mbtiles"
         echo ""
     fi
 fi

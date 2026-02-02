@@ -133,7 +133,11 @@ def get_s57_layers(s57_path: str) -> list:
 
 
 def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
-    """Convert S-57 file to GeoJSON using GDAL, extracting all geometry layers."""
+    """Convert S-57 file to GeoJSON using GDAL, extracting all geometry layers.
+    
+    Each feature will include a CHART_ID property with the source chart identifier,
+    which helps with debugging and identifying which chart a feature came from.
+    """
     
     s57_path = Path(s57_path)
     output_dir = Path(output_dir)
@@ -141,6 +145,7 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
     
     # Extract chart_id from filename (e.g., US4AK4PH.000 -> US4AK4PH)
     chart_id = s57_path.stem
+    print(f"Chart ID: {chart_id}")
     
     # Get all layers in the S-57 file
     layers = get_s57_layers(str(s57_path))
@@ -169,6 +174,77 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
         'MARCUL',  # Marine farms/aquaculture
     }
     
+    # S-57 Object Class codes - layer name to OBJL mapping
+    # Source: GDAL s57objectclasses.csv (IHO S-57 Edition 3.1 Object Catalogue)
+    # GDAL extracts the correct layer name from S-57 file structure, but OBJL attribute
+    # may be incorrect. Use layer name (authoritative) to set correct OBJL.
+    S57_OBJL = {
+        # Anchorages (3-4)
+        'ACHBRT': 3, 'ACHARE': 4,
+        # Beacons (5-9)
+        'BCNCAR': 5, 'BCNISD': 6, 'BCNLAT': 7, 'BCNSAW': 8, 'BCNSPP': 9,
+        # Bridge/Buildings (11-12)
+        'BRIDGE': 11, 'BUISGL': 12,
+        # Buoys (14-19)
+        'BOYCAR': 14, 'BOYINB': 15, 'BOYISD': 16, 'BOYLAT': 17, 'BOYSAW': 18, 'BOYSPP': 19,
+        # Cables (20-22)
+        'CBLARE': 20, 'CBLOHD': 21, 'CBLSUB': 22,
+        # Canals/Causeway (23, 26)
+        'CANALS': 23, 'CAUSWY': 26,
+        # Caution area (27)
+        'CTNARE': 27,
+        # Coastline (30)
+        'COALNE': 30,
+        # Daymark (39)
+        'DAYMAR': 39,
+        # Depth (42-43, 46)
+        'DEPARE': 42, 'DEPCNT': 43, 'DRGARE': 46,
+        # Fairway (51)
+        'FAIRWY': 51,
+        # Fog signal (58)
+        'FOGSIG': 58,
+        # Hulk (65)
+        'HULKES': 65,
+        # Lake (69)
+        'LAKARE': 69,
+        # Land (71-74)
+        'LNDARE': 71, 'LNDELV': 72, 'LNDRGN': 73, 'LNDMRK': 74,
+        # Lights (75)
+        'LIGHTS': 75,
+        # Marine/Military/Mooring (82-84)
+        'MARCUL': 82, 'MIPARE': 83, 'MORFAC': 84,
+        # Navigation (85)
+        'NAVLNE': 85,
+        # Obstruction (86)
+        'OBSTRN': 86,
+        # Pile/Pipeline (90, 92, 94)
+        'PILPNT': 90, 'PIPARE': 92, 'PIPSOL': 94,
+        # Pontoon (95)
+        'PONTON': 95,
+        # Recommended track (109)
+        'RECTRC': 109,
+        # Restricted/Rescue (111-112)
+        'RSCSTA': 111, 'RESARE': 112,
+        # River (114)
+        'RIVERS': 114,
+        # Sea/Seabed (119, 121)
+        'SEAARE': 119, 'SBDARE': 121,
+        # Shoreline (122)
+        'SLCONS': 122,
+        # Sounding (129)
+        'SOUNDG': 129,
+        # Topmark (144)
+        'TOPMAR': 144,
+        # Traffic separation (145, 148)
+        'TSELNE': 145, 'TSSLPT': 148,
+        # Underwater rock (153)
+        'UWTROC': 153,
+        # Water turbulence (156)
+        'WATTUR': 156,
+        # Wreck (159)
+        'WRECKS': 159,
+    }
+    
     for layer in layers:
         layer_output = output_dir / f"{layer}.geojson"
         
@@ -189,10 +265,18 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
                 with open(layer_output, 'r') as f:
                     data = json.load(f)
                     features = data.get('features', [])
-                    # Add metadata to each feature (OBJL code already present from ogr2ogr)
+                    # Add metadata to each feature and set correct OBJL from layer name
                     for feature in features:
                         if feature.get('geometry') is not None:
+                            # Add chart ID for debugging and quilting - both formats for compatibility
+                            feature['properties']['CHART_ID'] = chart_id  # Visible in feature inspector
                             feature['properties']['_chartId'] = chart_id  # Track source chart for compositing
+                            
+                            # Set OBJL from layer name (authoritative S-57 object class)
+                            # GDAL's OBJL attribute extraction can be incorrect
+                            if layer in S57_OBJL:
+                                feature['properties']['OBJL'] = S57_OBJL[layer]
+                            
                             # Force navigation aids and safety areas to appear at all zoom levels
                             if layer in NAVIGATION_AIDS or layer in SAFETY_AREAS:
                                 feature['tippecanoe'] = {'minzoom': 0, 'maxzoom': 17}
@@ -269,6 +353,8 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
                                                 'SECTR1': sectr1,
                                                 'SECTR2': sectr2,
                                                 'OBJNAM': props.get('OBJNAM'),
+                                                'CHART_ID': chart_id,  # Preserve chart ID
+                                                '_chartId': chart_id,
                                             },
                                             'tippecanoe': {'minzoom': 0, 'maxzoom': 17}
                                         }
@@ -291,7 +377,9 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
                                         if len(coord) >= 3:
                                             point_props = {
                                                 'OBJL': 129,  # SOUNDG
-                                                'DEPTH': coord[2]
+                                                'DEPTH': coord[2],
+                                                'CHART_ID': chart_id,  # Preserve chart ID for debugging
+                                                '_chartId': chart_id,
                                             }
                                             # Include SCAMIN if present for zoom-based filtering
                                             if scamin is not None:

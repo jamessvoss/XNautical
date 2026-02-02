@@ -75,6 +75,33 @@ const NAV_SYMBOLS: Record<string, any> = {
   'beacon-lattice': require('../../assets/symbols/png/beacon-lattice.png'),
   'beacon-withy': require('../../assets/symbols/png/beacon-withy.png'),
   'beacon-cairn': require('../../assets/symbols/png/beacon-cairn.png'),
+  // Beacon halos (white versions for visibility)
+  'beacon-tower-halo': require('../../assets/symbols/png/beacon-tower-halo.png'),
+  'beacon-generic-halo': require('../../assets/symbols/png/beacon-generic-halo.png'),
+  'beacon-stake-halo': require('../../assets/symbols/png/beacon-stake-halo.png'),
+  'beacon-lattice-halo': require('../../assets/symbols/png/beacon-lattice-halo.png'),
+  'beacon-withy-halo': require('../../assets/symbols/png/beacon-withy-halo.png'),
+  'beacon-cairn-halo': require('../../assets/symbols/png/beacon-cairn-halo.png'),
+  // Landmark halos (white versions for visibility)
+  'landmark-tower-halo': require('../../assets/symbols/png/landmark-tower-halo.png'),
+  'landmark-chimney-halo': require('../../assets/symbols/png/landmark-chimney-halo.png'),
+  'landmark-church-halo': require('../../assets/symbols/png/landmark-church-halo.png'),
+  'landmark-flagpole-halo': require('../../assets/symbols/png/landmark-flagpole-halo.png'),
+  'landmark-mast-halo': require('../../assets/symbols/png/landmark-mast-halo.png'),
+  'landmark-monument-halo': require('../../assets/symbols/png/landmark-monument-halo.png'),
+  'landmark-radio-tower-halo': require('../../assets/symbols/png/landmark-radio-tower-halo.png'),
+  'landmark-windmill-halo': require('../../assets/symbols/png/landmark-windmill-halo.png'),
+  // Buoy halos (white versions for visibility)
+  'buoy-pillar-halo': require('../../assets/symbols/png/buoy-pillar-halo.png'),
+  'buoy-spherical-halo': require('../../assets/symbols/png/buoy-spherical-halo.png'),
+  'buoy-super-halo': require('../../assets/symbols/png/buoy-super-halo.png'),
+  'buoy-conical-halo': require('../../assets/symbols/png/buoy-conical-halo.png'),
+  'buoy-can-halo': require('../../assets/symbols/png/buoy-can-halo.png'),
+  'buoy-spar-halo': require('../../assets/symbols/png/buoy-spar-halo.png'),
+  'buoy-barrel-halo': require('../../assets/symbols/png/buoy-barrel-halo.png'),
+  // Hazard halos (white versions for visibility)
+  'tide-rips-halo': require('../../assets/symbols/png/riptide-halo.png'),
+  'foul-ground-halo': require('../../assets/symbols/png/foul-ground-halo.png'),
   // Wrecks
   'wreck-danger': require('../../assets/symbols/png/wreck-danger.png'),
   'wreck-submerged': require('../../assets/symbols/png/wreck-submerged.png'),
@@ -175,14 +202,15 @@ const DISPLAY_FEATURES: DisplayFeatureConfig[] = [
 // Note: Halos disabled for all symbols - will implement with white symbol versions later
 const SYMBOL_FEATURES: SymbolFeatureConfig[] = [
   { id: 'lights', label: 'Lights', sizeKey: 'lightSymbolSizeScale', haloKey: 'lightSymbolHaloScale', opacityKey: 'lightSymbolOpacityScale', color: '#FF00FF', hasHalo: false },
-  { id: 'buoys', label: 'Buoys', sizeKey: 'buoySymbolSizeScale', haloKey: 'buoySymbolHaloScale', opacityKey: 'buoySymbolOpacityScale', color: '#FF0000', hasHalo: false },
-  { id: 'beacons', label: 'Beacons', sizeKey: 'beaconSymbolSizeScale', haloKey: 'beaconSymbolHaloScale', opacityKey: 'beaconSymbolOpacityScale', color: '#00AA00', hasHalo: false },
+  { id: 'buoys', label: 'Buoys', sizeKey: 'buoySymbolSizeScale', haloKey: 'buoySymbolHaloScale', opacityKey: 'buoySymbolOpacityScale', color: '#FF0000', hasHalo: true },
+  { id: 'beacons', label: 'Beacons', sizeKey: 'beaconSymbolSizeScale', haloKey: 'beaconSymbolHaloScale', opacityKey: 'beaconSymbolOpacityScale', color: '#00AA00', hasHalo: true },
   { id: 'wrecks', label: 'Wrecks', sizeKey: 'wreckSymbolSizeScale', haloKey: 'wreckSymbolHaloScale', opacityKey: 'wreckSymbolOpacityScale', color: '#000000', hasHalo: false },
   { id: 'rocks', label: 'Rocks', sizeKey: 'rockSymbolSizeScale', haloKey: 'rockSymbolHaloScale', opacityKey: 'rockSymbolOpacityScale', color: '#000000', hasHalo: false },
-  { id: 'hazards', label: 'Hazards', sizeKey: 'hazardSymbolSizeScale', haloKey: 'hazardSymbolHaloScale', opacityKey: 'hazardSymbolOpacityScale', color: '#000000', hasHalo: false },
-  { id: 'landmarks', label: 'Landmarks', sizeKey: 'landmarkSymbolSizeScale', haloKey: 'landmarkSymbolHaloScale', opacityKey: 'landmarkSymbolOpacityScale', color: '#8B4513', hasHalo: false },
+  { id: 'hazards', label: 'Hazards', sizeKey: 'hazardSymbolSizeScale', haloKey: 'hazardSymbolHaloScale', opacityKey: 'hazardSymbolOpacityScale', color: '#000000', hasHalo: true },
+  { id: 'landmarks', label: 'Landmarks', sizeKey: 'landmarkSymbolSizeScale', haloKey: 'landmarkSymbolHaloScale', opacityKey: 'landmarkSymbolOpacityScale', color: '#8B4513', hasHalo: true },
   { id: 'moorings', label: 'Moorings', sizeKey: 'mooringSymbolSizeScale', haloKey: 'mooringSymbolHaloScale', opacityKey: 'mooringSymbolOpacityScale', color: '#800080', hasHalo: false },
   { id: 'anchors', label: 'Anchors', sizeKey: 'anchorSymbolSizeScale', haloKey: 'anchorSymbolHaloScale', opacityKey: 'anchorSymbolOpacityScale', color: '#800080', hasHalo: false },
+  { id: 'tideRips', label: 'Tide Rips', sizeKey: 'tideRipsSymbolSizeScale', haloKey: 'tideRipsSymbolHaloScale', opacityKey: 'tideRipsSymbolOpacityScale', color: '#00CED1', hasHalo: true },
 ];
 
 // Feature lookup optimization constants (moved outside component for performance)
@@ -545,16 +573,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     landmarkSymbolSizeScale: 1.5, // 150% nominal
     mooringSymbolSizeScale: 1.5,  // 150% nominal
     anchorSymbolSizeScale: 1.5,   // 150% nominal
+    tideRipsSymbolSizeScale: 1.5, // 150% nominal
     // Symbol halos (white background for visibility per S-52)
-    lightSymbolHaloScale: 1.0,
-    buoySymbolHaloScale: 1.0,
-    beaconSymbolHaloScale: 1.0,
-    wreckSymbolHaloScale: 1.0,
-    rockSymbolHaloScale: 1.0,
-    hazardSymbolHaloScale: 1.0,
-    landmarkSymbolHaloScale: 1.0,
-    mooringSymbolHaloScale: 1.0,
-    anchorSymbolHaloScale: 1.0,
+    lightSymbolHaloScale: 0.1,
+    buoySymbolHaloScale: 0.1,
+    beaconSymbolHaloScale: 0.1,
+    wreckSymbolHaloScale: 0.1,
+    rockSymbolHaloScale: 0.1,
+    hazardSymbolHaloScale: 0.1,
+    landmarkSymbolHaloScale: 0.1,
+    mooringSymbolHaloScale: 0.1,
+    anchorSymbolHaloScale: 0.1,
+    tideRipsSymbolHaloScale: 0.1,
     // Symbol opacities
     lightSymbolOpacityScale: 1.0,
     buoySymbolOpacityScale: 1.0,
@@ -565,6 +595,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     landmarkSymbolOpacityScale: 1.0,
     mooringSymbolOpacityScale: 1.0,
     anchorSymbolOpacityScale: 1.0,
+    tideRipsSymbolOpacityScale: 1.0,
     // Other settings
     dayNightMode: 'day',
     orientationMode: 'north-up',
@@ -917,6 +948,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     16, 0.6 * displaySettings.buoySymbolSizeScale,
   ], [displaySettings.buoySymbolSizeScale]);
 
+  const scaledBuoyHaloSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.25 * displaySettings.buoySymbolSizeScale * (1.0 + displaySettings.buoySymbolHaloScale),
+    12, 0.4 * displaySettings.buoySymbolSizeScale * (1.0 + displaySettings.buoySymbolHaloScale),
+    16, 0.6 * displaySettings.buoySymbolSizeScale * (1.0 + displaySettings.buoySymbolHaloScale),
+  ], [displaySettings.buoySymbolSizeScale, displaySettings.buoySymbolHaloScale]);
+
   const scaledBeaconIconSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
     8, 0.08 * displaySettings.beaconSymbolSizeScale,   // Much smaller at low zoom
@@ -925,6 +963,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     14, 0.45 * displaySettings.beaconSymbolSizeScale,
     16, 0.6 * displaySettings.beaconSymbolSizeScale,
   ], [displaySettings.beaconSymbolSizeScale]);
+
+  const scaledBeaconHaloSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.08 * displaySettings.beaconSymbolSizeScale * (1.0 + displaySettings.beaconSymbolHaloScale),
+    10, 0.15 * displaySettings.beaconSymbolSizeScale * (1.0 + displaySettings.beaconSymbolHaloScale),
+    12, 0.3 * displaySettings.beaconSymbolSizeScale * (1.0 + displaySettings.beaconSymbolHaloScale),
+    14, 0.45 * displaySettings.beaconSymbolSizeScale * (1.0 + displaySettings.beaconSymbolHaloScale),
+    16, 0.6 * displaySettings.beaconSymbolSizeScale * (1.0 + displaySettings.beaconSymbolHaloScale),
+  ], [displaySettings.beaconSymbolSizeScale, displaySettings.beaconSymbolHaloScale]);
 
   const scaledWreckIconSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
@@ -947,6 +994,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     16, 0.6 * displaySettings.hazardSymbolSizeScale,
   ], [displaySettings.hazardSymbolSizeScale]);
 
+  const scaledHazardHaloSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.25 * displaySettings.hazardSymbolSizeScale * (1.0 + displaySettings.hazardSymbolHaloScale),
+    12, 0.4 * displaySettings.hazardSymbolSizeScale * (1.0 + displaySettings.hazardSymbolHaloScale),
+    16, 0.6 * displaySettings.hazardSymbolSizeScale * (1.0 + displaySettings.hazardSymbolHaloScale),
+  ], [displaySettings.hazardSymbolSizeScale, displaySettings.hazardSymbolHaloScale]);
+
   const scaledLandmarkIconSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
     8, 0.2 * displaySettings.landmarkSymbolSizeScale,
@@ -955,6 +1009,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     14, 0.9 * displaySettings.landmarkSymbolSizeScale,
     16, 1.2 * displaySettings.landmarkSymbolSizeScale,
   ], [displaySettings.landmarkSymbolSizeScale]);
+
+  const scaledLandmarkHaloSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.2 * displaySettings.landmarkSymbolSizeScale * (1.0 + displaySettings.landmarkSymbolHaloScale),
+    10, 0.4 * displaySettings.landmarkSymbolSizeScale * (1.0 + displaySettings.landmarkSymbolHaloScale),
+    12, 0.65 * displaySettings.landmarkSymbolSizeScale * (1.0 + displaySettings.landmarkSymbolHaloScale),
+    14, 0.9 * displaySettings.landmarkSymbolSizeScale * (1.0 + displaySettings.landmarkSymbolHaloScale),
+    16, 1.2 * displaySettings.landmarkSymbolSizeScale * (1.0 + displaySettings.landmarkSymbolHaloScale),
+  ], [displaySettings.landmarkSymbolSizeScale, displaySettings.landmarkSymbolHaloScale]);
 
   const scaledMooringIconSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
@@ -969,6 +1032,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     12, 0.4 * displaySettings.anchorSymbolSizeScale,
     16, 0.6 * displaySettings.anchorSymbolSizeScale,
   ], [displaySettings.anchorSymbolSizeScale]);
+
+  const scaledTideRipsIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.25 * (displaySettings.tideRipsSymbolSizeScale ?? 1.5),
+    12, 0.4 * (displaySettings.tideRipsSymbolSizeScale ?? 1.5),
+    16, 0.6 * (displaySettings.tideRipsSymbolSizeScale ?? 1.5),
+  ], [displaySettings.tideRipsSymbolSizeScale]);
+
+  const scaledTideRipsHaloSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, 0.25 * (displaySettings.tideRipsSymbolSizeScale ?? 1.5) * (1.0 + (displaySettings.tideRipsSymbolHaloScale ?? 0.1)),
+    12, 0.4 * (displaySettings.tideRipsSymbolSizeScale ?? 1.5) * (1.0 + (displaySettings.tideRipsSymbolHaloScale ?? 0.1)),
+    16, 0.6 * (displaySettings.tideRipsSymbolSizeScale ?? 1.5) * (1.0 + (displaySettings.tideRipsSymbolHaloScale ?? 0.1)),
+  ], [displaySettings.tideRipsSymbolSizeScale, displaySettings.tideRipsSymbolHaloScale]);
 
   // Memoized scaled symbol/icon opacities (clamped to 0-1 range)
   const scaledLightSymbolOpacity = useMemo(() => 
@@ -999,6 +1076,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const scaledHazardSymbolOpacity = useMemo(() => 
     Math.min(1, Math.max(0, displaySettings.hazardSymbolOpacityScale)),
     [displaySettings.hazardSymbolOpacityScale]
+  );
+
+  const scaledTideRipsSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.tideRipsSymbolOpacityScale ?? 1.0)),
+    [displaySettings.tideRipsSymbolOpacityScale]
   );
 
   const scaledLandmarkSymbolOpacity = useMemo(() => 
@@ -2600,7 +2682,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     if (styleSwitchStartRef.current > 0) {
       const elapsed = Date.now() - styleSwitchStartRef.current;
       logger.debug(LogCategory.UI, `Style switch: fully rendered (${elapsed}ms)`);
-      // Reset frame counter
+      // Reset refs to prevent repeated logging
+      styleSwitchStartRef.current = 0;
       styleRenderFrameCountRef.current = 0;
     }
   }, []);
@@ -3881,6 +3964,24 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
+            {/* WATTUR halo - Water Turbulence (tide rips) */}
+            <MapLibre.SymbolLayer
+              id="composite-wattur-halo"
+              sourceLayerID="charts"
+              minZoomLevel={8}
+              filter={['all',
+                ['==', ['get', 'OBJL'], 156],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: 'tide-rips-halo',
+                iconSize: scaledTideRipsHaloSize,
+                iconOpacity: scaledTideRipsSymbolOpacity,
+                iconAllowOverlap: true,
+                visibility: showHazards ? 'visible' : 'none',
+              }}
+            />
+            
             {/* WATTUR - Water Turbulence (breakers, eddies, overfalls, rips) */}
             <MapLibre.SymbolLayer
               id="composite-wattur"
@@ -3892,8 +3993,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               ]}
               style={{
                 iconImage: 'tide-rips',
-                iconSize: scaledHazardIconSize,
-                iconOpacity: scaledHazardSymbolOpacity,
+                iconSize: scaledTideRipsIconSize,
+                iconOpacity: scaledTideRipsSymbolOpacity,
                 iconAllowOverlap: true,
                 visibility: showHazards ? 'visible' : 'none',
               }}
@@ -3903,6 +4004,38 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* S-52 LAYER ORDER: Aids to Navigation (AtoN)   */}
             {/* Most prominent - near top of draw order       */}
             {/* ============================================== */}
+            
+            {/* Buoy halos - white background for visibility */}
+            <MapLibre.SymbolLayer
+              id="composite-buoys-halo"
+              sourceLayerID="charts"
+              filter={['any',
+                ['==', ['get', 'OBJL'], 17],
+                ['==', ['get', 'OBJL'], 14],
+                ['==', ['get', 'OBJL'], 18],
+                ['==', ['get', 'OBJL'], 19],
+                ['==', ['get', 'OBJL'], 16],
+                ['==', ['get', 'OBJL'], 15]
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'BOYSHP'],
+                  1, 'buoy-conical-halo',    // Conical buoy
+                  2, 'buoy-can-halo',        // Can buoy
+                  3, 'buoy-spherical-halo',  // Spherical buoy
+                  4, 'buoy-pillar-halo',     // Pillar buoy
+                  5, 'buoy-spar-halo',       // Spar buoy
+                  6, 'buoy-barrel-halo',     // Barrel buoy
+                  7, 'buoy-super-halo',      // Super buoy
+                  'buoy-pillar-halo',        // Default
+                ],
+                iconSize: scaledBuoyHaloSize,
+                iconOpacity: scaledBuoySymbolOpacity,
+                iconAllowOverlap: true,
+                visibility: showBuoys ? 'visible' : 'none',
+              }}
+            />
             
             {/* Buoys - BOYLAT, BOYCAR, etc. */}
             <MapLibre.SymbolLayer
@@ -3936,8 +4069,36 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
             
+            {/* Beacon halos - white background for visibility */}
+            <MapLibre.SymbolLayer
+              id="composite-beacons-halo"
+              sourceLayerID="charts"
+              filter={['any',
+                ['==', ['get', 'OBJL'], 7],
+                ['==', ['get', 'OBJL'], 5],
+                ['==', ['get', 'OBJL'], 8],
+                ['==', ['get', 'OBJL'], 9],
+                ['==', ['get', 'OBJL'], 6]
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'BCNSHP'],
+                  1, 'beacon-stake-halo',      // Stake beacon
+                  2, 'beacon-withy-halo',      // Withy beacon
+                  3, 'beacon-tower-halo',      // Tower beacon
+                  4, 'beacon-lattice-halo',    // Lattice beacon
+                  5, 'beacon-cairn-halo',      // Cairn beacon
+                  'beacon-generic-halo',       // Default/generic beacon
+                ],
+                iconSize: scaledBeaconHaloSize,
+                iconOpacity: scaledBeaconSymbolOpacity,
+                iconAllowOverlap: true,
+                visibility: showBeacons ? 'visible' : 'none',
+              }}
+            />
+            
             {/* Beacons - BCNLAT, BCNCAR, etc. */}
-            {/* Note: No halo for beacons - their complex lattice shapes don't work well with simple circles */}
             <MapLibre.SymbolLayer
               id="composite-beacons"
               sourceLayerID="charts"
@@ -4034,6 +4195,40 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 iconAllowOverlap: true,
                 iconIgnorePlacement: true,
                 visibility: showLights ? 'visible' : 'none',
+              }}
+            />
+            
+            {/* Landmark halos - white background for visibility */}
+            <MapLibre.SymbolLayer
+              id="composite-lndmrk-halo"
+              sourceLayerID="charts"
+              filter={['all',
+                ['==', ['get', 'OBJL'], 74],
+                ['==', ['geometry-type'], 'Point']
+              ]}
+              style={{
+                iconImage: [
+                  'match',
+                  ['get', 'CATLMK'],
+                  3, 'landmark-chimney-halo',     // Chimney
+                  5, 'landmark-flagpole-halo',    // Flagpole
+                  7, 'landmark-mast-halo',        // Mast
+                  9, 'landmark-monument-halo',    // Monument
+                  10, 'landmark-monument-halo',   // Column/memorial
+                  12, 'landmark-monument-halo',   // Obelisk
+                  13, 'landmark-monument-halo',   // Statue
+                  14, 'landmark-church-halo',     // Church/Chapel
+                  17, 'landmark-tower-halo',      // Tower
+                  18, 'landmark-windmill-halo',   // Windmill
+                  19, 'landmark-windmill-halo',   // Windmotor
+                  20, 'landmark-church-halo',     // Temple
+                  28, 'landmark-radio-tower-halo', // Radio/TV tower
+                  'landmark-tower-halo',          // Default
+                ],
+                iconSize: scaledLandmarkHaloSize,
+                iconOpacity: scaledLandmarkSymbolOpacity,
+                iconAllowOverlap: true,
+                visibility: showLandmarks ? 'visible' : 'none',
               }}
             />
             
@@ -4751,13 +4946,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </TouchableOpacity>
         <View style={styles.quickToggleDivider} />
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showSectors && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('sectors')}
-        >
-          <Text style={styles.quickToggleBtnText}>SEC</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
-        <TouchableOpacity 
           style={[styles.quickToggleBtn, showSeabed && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('seabed')}
         >
@@ -5204,7 +5392,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                         
                         <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 12 }]}>Navigation</Text>
                         <FFToggle label="Lights" value={showLights} onToggle={() => toggleLayer('lights')} />
-                        <FFToggle label="Sectors" value={showSectors} onToggle={() => toggleLayer('sectors')} />
                         <FFToggle label="Buoys" value={showBuoys} onToggle={() => toggleLayer('buoys')} />
                         <FFToggle label="Beacons" value={showBeacons} onToggle={() => toggleLayer('beacons')} />
                       </View>
@@ -5627,18 +5814,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                               <Slider
                                 style={styles.displaySliderCompact}
                                 minimumValue={0}
-                                maximumValue={3.0}
-                                step={0.1}
+                                maximumValue={0.25}
+                                step={0.05}
                                 value={displaySettings[symbol.haloKey] as number}
                                 onValueChange={(v) => updateValue(symbol.haloKey, v)}
                                 minimumTrackTintColor="#E040FB"
                                 maximumTrackTintColor={uiTheme.sliderTrack}
                                 thumbTintColor="#E040FB"
                               />
-                              <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>300%</Text>
+                              <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>+25%</Text>
                             </View>
                             <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
-                              {formatPercent(displaySettings[symbol.haloKey] as number)}
+                              +{Math.round((displaySettings[symbol.haloKey] as number) * 100)}%
                             </Text>
                           </View>
                         )}

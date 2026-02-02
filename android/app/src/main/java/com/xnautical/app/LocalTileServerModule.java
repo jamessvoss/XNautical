@@ -69,6 +69,10 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     private static final int OVERVIEW_TRANSITION_MAX_ZOOM = 10; // z8-10: overview + regional
     // z11+: only regional packs
     
+    // Global detail offset setting (0=low, 2=medium, 4=high)
+    // Updated via setDetailLevel() from React Native
+    private volatile int currentDetailOffset = 2; // Default to medium
+    
     /**
      * Get effective overview-only max zoom based on detail level.
      * Higher detail = lower threshold = regional charts appear earlier.
@@ -439,6 +443,20 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     public void getCompositeTileUrl(Promise promise) {
         promise.resolve("http://127.0.0.1:" + port + "/tiles/{z}/{x}/{y}.pbf");
     }
+    
+    /**
+     * Set the detail level for tile serving
+     * @param detailOffset 0 (low), 2 (medium), or 4 (high)
+     */
+    @ReactMethod
+    public void setDetailLevel(int detailOffset, Promise promise) {
+        int oldOffset = currentDetailOffset;
+        currentDetailOffset = Math.max(0, Math.min(4, detailOffset));
+        int threshold = 16 - currentDetailOffset;
+        Log.i(TAG, "[DETAIL] Level changed: " + oldOffset + " → " + currentDetailOffset + 
+            " (US5+US6 threshold now z" + threshold + "+)");
+        promise.resolve(true);
+    }
 
     /**
      * Load the chart index from chart_index.json
@@ -714,14 +732,19 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     }
     
     /**
-     * Find regional packs for a tile using tiered loading strategy.
-     * This is the preferred, efficient method when regions.json is available.
+     * Find regional packs for a tile.
+     * 
+     * Supports two architectures:
+     * 1. Per-scale packs (alaska_US1, alaska_US2, etc.) - NEW preferred architecture
+     *    Each scale has its own pack, server selects ONE scale per zoom level.
+     * 
+     * 2. Legacy tiered packs (alaska_overview, alaska_coastal, alaska_detail)
+     *    Falls back to this if per-scale packs not found.
      * 
      * @param z Zoom level
      * @param x Tile X coordinate
      * @param y Tile Y coordinate
      * @param detailOffset Detail level offset (0=low, 2=medium, 4=high)
-     *                     Higher values shift thresholds down, showing regional detail earlier
      */
     private List<String> findRegionsForTile(int z, int x, int y, int detailOffset) {
         double[] bounds = tileToBounds(z, x, y);
@@ -729,47 +752,149 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         
         List<String> packIds = new ArrayList<>();
         
-        // Compute effective thresholds based on detail level
+        // Check if we have per-scale packs (new architecture)
+        boolean hasPerScalePacks = regionIndex.containsKey("alaska_US1") || 
+                                   regionIndex.containsKey("alaska_US2") ||
+                                   regionIndex.containsKey("alaska_US3");
+        
+        if (hasPerScalePacks) {
+            // NEW ARCHITECTURE: Per-scale packs
+            // At z14+, combine US5 and US6 for maximum detail
+            // US5 (harbor) provides broader coverage, US6 (berthing) adds fine detail
+            if (z >= 14) {
+                // Try to add both US5 and US6 (additive)
+                // Note: We skip isVisibleAtZoom() here because we're explicitly overriding
+                // the pack's minZoom metadata - we WANT to show these at lower zooms
+                RegionInfo us5Pack = regionIndex.get("alaska_US5");
+                RegionInfo us6Pack = regionIndex.get("alaska_US6");
+                
+                // Add US5 first (broader coverage, drawn first/below)
+                // Only check bounds intersection, not zoom visibility
+                if (us5Pack != null && us5Pack.intersectsTileBounds(west, south, east, north)) {
+                    packIds.add("alaska_US5");
+                }
+                
+                // Add US6 on top (finer detail)
+                if (us6Pack != null && us6Pack.intersectsTileBounds(west, south, east, north)) {
+                    packIds.add("alaska_US6");
+                }
+                
+                if (!packIds.isEmpty()) {
+                    Log.d(TAG, "[SCALE] z" + z + " → COMBINED US5+US6: " + packIds);
+                    return packIds;
+                }
+                
+                // Fallback to US4 if neither US5 nor US6 cover this tile location
+                RegionInfo us4Pack = regionIndex.get("alaska_US4");
+                if (us4Pack != null && us4Pack.intersectsTileBounds(west, south, east, north)) {
+                    packIds.add("alaska_US4");
+                    Log.d(TAG, "[SCALE] z" + z + " → fallback to US4 (no US5/US6 coverage)");
+                    return packIds;
+                }
+            }
+            
+            // Standard single-scale selection for lower zoom levels
+            String targetScale = getScaleForZoom(z, detailOffset);
+            String targetPackId = "alaska_" + targetScale;
+            
+            // Check if target pack exists and covers this tile
+            RegionInfo targetPack = regionIndex.get(targetPackId);
+            if (targetPack != null && targetPack.isVisibleAtZoom(z) && 
+                targetPack.intersectsTileBounds(west, south, east, north)) {
+                packIds.add(targetPackId);
+                Log.d(TAG, "[SCALE] z" + z + " (detail=" + detailOffset + ") → " + targetScale + " (" + targetPackId + ")");
+            } else {
+                // Fallback: try adjacent scales
+                String[] fallbackScales = getFallbackScales(targetScale);
+                for (String scale : fallbackScales) {
+                    String packId = "alaska_" + scale;
+                    RegionInfo pack = regionIndex.get(packId);
+                    if (pack != null && pack.isVisibleAtZoom(z) && 
+                        pack.intersectsTileBounds(west, south, east, north)) {
+                        packIds.add(packId);
+                        Log.d(TAG, "[SCALE] z" + z + " → fallback to " + scale);
+                        break;
+                    }
+                }
+            }
+            
+            return packIds;
+        }
+        
+        // LEGACY ARCHITECTURE: Tiered packs (alaska_overview, alaska_coastal, alaska_detail)
+        // Fall back to original behavior
+        return findRegionsForTileLegacy(z, x, y, detailOffset, bounds);
+    }
+    
+    /**
+     * Determine which chart scale to display at a given zoom level.
+     * 
+     * Fixed zoom to scale mapping (NOT affected by detail setting):
+     *   z0-7:   US1 (overview)
+     *   z8-9:   US2 (general)
+     *   z10-11: US3 (coastal)
+     *   z12+:   US4 (approach) - unless in US5+US6 combine range
+     * 
+     * The detail setting (L/M/H) ONLY affects when US5+US6 combine:
+     *   Low    (detailOffset=0): US5+US6 combined at z16+
+     *   Medium (detailOffset=2): US5+US6 combined at z14+
+     *   High   (detailOffset=4): US5+US6 combined at z12+
+     * 
+     * This method is only called when NOT in the combine range,
+     * so it returns US4 for any z12+ that reaches here.
+     */
+    private String getScaleForZoom(int z, int detailOffset) {
+        // US1-US3 at fixed thresholds (detail setting does NOT affect these)
+        if (z <= 7)  return "US1";
+        if (z <= 9)  return "US2";
+        if (z <= 11) return "US3";
+        // z12+ returns US4 (US5+US6 handled by combine logic before this is called)
+        return "US4";
+    }
+    
+    /**
+     * Get fallback scales to try if primary scale has no data
+     */
+    private String[] getFallbackScales(String primary) {
+        switch (primary) {
+            case "US1": return new String[]{"US2"};
+            case "US2": return new String[]{"US1", "US3"};
+            case "US3": return new String[]{"US2", "US4"};
+            case "US4": return new String[]{"US3", "US5"};
+            case "US5": return new String[]{"US4", "US6"};
+            case "US6": return new String[]{"US5"};
+            default: return new String[]{};
+        }
+    }
+    
+    /**
+     * Legacy tiered loading for old-style packs (alaska_overview, alaska_coastal, alaska_detail)
+     */
+    private List<String> findRegionsForTileLegacy(int z, int x, int y, int detailOffset, double[] bounds) {
+        double west = bounds[0], south = bounds[1], east = bounds[2], north = bounds[3];
+        List<String> packIds = new ArrayList<>();
+        
         int effectiveOverviewMax = getEffectiveOverviewMaxZoom(detailOffset);
         int effectiveTransitionMax = getEffectiveTransitionMaxZoom(detailOffset);
         
         if (z <= effectiveOverviewMax) {
-            // LOW ZOOM: Only use overview pack - it's optimized for this
-            // With detailOffset=0: z0-7, detailOffset=2: z0-5, detailOffset=4: z0-3
-            Log.i(TAG, "[TIERED] z" + z + " LOW ZOOM (detail=" + detailOffset + 
-                ", threshold=" + effectiveOverviewMax + ") - searching for overview pack...");
-            Log.i(TAG, "[TIERED] Available regions: " + regionIndex.keySet());
-            
+            // LOW ZOOM: Only use overview pack
             for (RegionInfo region : regionIndex.values()) {
-                Log.i(TAG, "[TIERED]   Checking: " + region.regionId + 
-                    " isOverview=" + region.isOverview + 
-                    " visibleAtZ" + z + "=" + region.isVisibleAtZoom(z) +
-                    " zoomRange=" + region.minZoom + "-" + region.maxZoom);
-                    
                 if (region.isOverview && region.isVisibleAtZoom(z)) {
                     packIds.add(region.regionId);
-                    Log.i(TAG, "[TIERED] ✓ z" + z + " → USING OVERVIEW: " + region.regionId);
+                    Log.d(TAG, "[TIERED-LEGACY] z" + z + " → overview: " + region.regionId);
                     return packIds;
                 }
             }
-            Log.w(TAG, "[TIERED] ⚠️ z" + z + " → NO OVERVIEW PACK FOUND!");
-            Log.w(TAG, "[TIERED] ⚠️ This is why low-zoom tiles aren't rendering!");
-            Log.w(TAG, "[TIERED] ⚠️ Ensure alaska_overview.mbtiles AND manifest.json are on the device");
             return packIds;
             
         } else if (z <= effectiveTransitionMax) {
-            // TRANSITION ZOOM: Try regional packs first, fall back to overview
-            // With detailOffset=0: z8-10, detailOffset=2: z6-8, detailOffset=4: z4-6
-            // This handles the transition smoothly - regional packs have more detail
-            // but overview fills any gaps
-            
-            // First, find regional packs that intersect
+            // TRANSITION: Regional packs first, overview fallback
             List<RegionInfo> regionalCandidates = new ArrayList<>();
             RegionInfo overviewPack = null;
             
             for (RegionInfo region : regionIndex.values()) {
                 if (!region.isVisibleAtZoom(z)) continue;
-                
                 if (region.isOverview) {
                     overviewPack = region;
                 } else if (region.intersectsTileBounds(west, south, east, north)) {
@@ -777,53 +902,37 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 }
             }
             
-            // Sort regional packs by detail level (detail > coastal > overview naming convention)
-            // Note: For regional packs, "detail" packs are LARGEST (contain all harbor charts)
-            // but should be tried FIRST because they have the most detailed features
+            // Sort by detail level
             Collections.sort(regionalCandidates, new Comparator<RegionInfo>() {
                 @Override
                 public int compare(RegionInfo a, RegionInfo b) {
-                    // Priority: detail (0) > coastal (1) > other (2)
-                    int priorityA = getPackPriority(a.regionId);
-                    int priorityB = getPackPriority(b.regionId);
+                    int priorityA = a.regionId.contains("detail") ? 0 : (a.regionId.contains("coastal") ? 1 : 2);
+                    int priorityB = b.regionId.contains("detail") ? 0 : (b.regionId.contains("coastal") ? 1 : 2);
                     return Integer.compare(priorityA, priorityB);
-                }
-                
-                private int getPackPriority(String packId) {
-                    if (packId.contains("detail")) return 0;  // Highest priority
-                    if (packId.contains("coastal")) return 1;
-                    return 2;  // overview and others
                 }
             });
             
-            // Add regional packs first (they have more detail)
             for (RegionInfo r : regionalCandidates) {
                 packIds.add(r.regionId);
             }
-            
-            // Add overview as fallback
             if (overviewPack != null) {
                 packIds.add(overviewPack.regionId);
             }
             
-            Log.d(TAG, "[TIERED] z" + z + " (detail=" + detailOffset + 
-                ", threshold=" + effectiveTransitionMax + ") → transition: " + packIds.size() + " packs " + packIds);
+            Log.d(TAG, "[TIERED-LEGACY] z" + z + " → transition: " + packIds);
             return packIds;
             
         } else {
-            // HIGH ZOOM: Only use regional packs - overview has no detail here
-            // With detailOffset=0: z11+, detailOffset=2: z9+, detailOffset=4: z7+
+            // HIGH ZOOM: Regional packs only
             List<RegionInfo> candidates = new ArrayList<>();
             
             for (RegionInfo region : regionIndex.values()) {
-                if (region.isOverview) continue; // Skip overview at high zoom
+                if (region.isOverview) continue;
                 if (!region.isVisibleAtZoom(z)) continue;
                 if (!region.intersectsTileBounds(west, south, east, north)) continue;
-                
                 candidates.add(region);
             }
             
-            // Sort by detail level (detail > coastal naming convention)
             Collections.sort(candidates, new Comparator<RegionInfo>() {
                 @Override
                 public int compare(RegionInfo a, RegionInfo b) {
@@ -837,14 +946,7 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 packIds.add(r.regionId);
             }
             
-            if (packIds.isEmpty()) {
-                Log.d(TAG, "[TIERED] z" + z + " (detail=" + detailOffset + 
-                    ") → No regional packs cover tile " + x + "/" + y);
-            } else {
-                Log.d(TAG, "[TIERED] z" + z + " (detail=" + detailOffset + 
-                    ") → regional (harbor detail): " + packIds);
-            }
-            
+            Log.d(TAG, "[TIERED-LEGACY] z" + z + " → regional: " + packIds);
             return packIds;
         }
     }
@@ -912,6 +1014,23 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     private String findBestChartForTile(int z, int x, int y) {
         List<String> charts = findChartsForTile(z, x, y, 0); // Default to low detail
         return charts.isEmpty() ? null : charts.get(0);
+    }
+
+    /**
+     * Get the satellite MBTiles filename for a given zoom level.
+     * Routes to per-zoom satellite files: satellite_z0-5, satellite_z6-7, satellite_z8, satellite_z9, etc.
+     */
+    private String getSatelliteFileForZoom(int z) {
+        if (z <= 5) {
+            return "satellite_z0-5";
+        } else if (z <= 7) {
+            return "satellite_z6-7";
+        } else if (z == 8) {
+            return "satellite_z8";
+        } else {
+            // z9-14 have individual files
+            return "satellite_z" + z;
+        }
     }
 
     /**
@@ -1131,19 +1250,24 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             }
             
             // Parse tile request: /tiles/{chartId}/{z}/{x}/{y}.pbf or /tiles/{z}/{x}/{y}.pbf (composite)
+            // Also handles /tiles/v{N}/{z}/{x}/{y}.pbf (versioned composite for cache busting)
             if (uri.startsWith("/tiles/")) {
                 if (uri.endsWith(".pbf")) {
                     // Check if this is a composite request (no chartId, just z/x/y)
                     String path = uri.substring(7, uri.length() - 4); // Remove "/tiles/" and ".pbf"
                     String[] parts = path.split("/");
-                    if (parts.length == 3) {
+                    
+                    // Handle versioned composite: /tiles/v{N}/{z}/{x}/{y}.pbf (4 parts, first starts with 'v')
+                    if (parts.length == 4 && parts[0].startsWith("v")) {
+                        return handleCompositeTileRequest(uri);
+                    } else if (parts.length == 3) {
                         // Composite request: /tiles/{z}/{x}/{y}.pbf
                         return handleCompositeTileRequest(uri);
                     } else {
                         // Per-chart request: /tiles/{chartId}/{z}/{x}/{y}.pbf
                         return handleVectorTileRequest(uri);
                     }
-                } else if (uri.endsWith(".png")) {
+                } else if (uri.endsWith(".png") || uri.endsWith(".jpg") || uri.endsWith(".jpeg")) {
                     return handleRasterTileRequest(uri);
                 }
             }
@@ -1243,46 +1367,34 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         private Response handleCompositeTileRequest(String uri) {
             long startTime = System.currentTimeMillis();
             try {
-                // Parse /tiles/{z}/{x}/{y}.pbf?detail=N
+                // Parse /tiles/{z}/{x}/{y}.pbf or /tiles/v{N}/{z}/{x}/{y}.pbf
                 String path = uri.substring(7); // Remove "/tiles/"
                 
-                // Extract detail level from query param (0=low, 2=medium, 4=high)
-                int detailOffset = 0;
+                // Remove any query string if present
                 int queryIndex = path.indexOf('?');
                 if (queryIndex != -1) {
-                    String queryString = path.substring(queryIndex + 1);
                     path = path.substring(0, queryIndex);
-                    
-                    // Parse query params
-                    for (String param : queryString.split("&")) {
-                        String[] keyValue = param.split("=");
-                        if (keyValue.length == 2 && "detail".equals(keyValue[0])) {
-                            try {
-                                detailOffset = Integer.parseInt(keyValue[1]);
-                                // Clamp to valid range
-                                detailOffset = Math.max(0, Math.min(4, detailOffset));
-                            } catch (NumberFormatException e) {
-                                Log.w(TAG, "Invalid detail param: " + keyValue[1]);
-                            }
-                        }
-                    }
                 }
                 
                 path = path.substring(0, path.length() - 4); // Remove ".pbf"
                 
                 String[] parts = path.split("/");
-                if (parts.length != 3) {
+                
+                // Handle versioned path: v{N}/{z}/{x}/{y} -> strip version prefix
+                int zIndex = 0;
+                if (parts.length == 4 && parts[0].startsWith("v")) {
+                    zIndex = 1; // Skip version prefix
+                } else if (parts.length != 3) {
                     Log.w(TAG, "Invalid composite tile path format: " + uri);
                     return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Invalid tile path");
                 }
                 
-                int z = Integer.parseInt(parts[0]);
-                int x = Integer.parseInt(parts[1]);
-                int y = Integer.parseInt(parts[2]);
+                int z = Integer.parseInt(parts[zIndex]);
+                int x = Integer.parseInt(parts[zIndex + 1]);
+                int y = Integer.parseInt(parts[zIndex + 2]);
                 
                 // Find ALL charts that cover this tile, sorted by preference
-                // Pass detail offset to adjust zoom thresholds for tiered loading
-                List<String> candidateCharts = findChartsForTile(z, x, y, detailOffset);
+                List<String> candidateCharts = findChartsForTile(z, x, y, 0);
                 tileRequestCount++;
                 
                 if (candidateCharts.isEmpty()) {
@@ -1434,9 +1546,17 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
         private Response handleRasterTileRequest(String uri) {
             long startTime = System.currentTimeMillis();
             try {
-                // Parse /tiles/{chartId}/{z}/{x}/{y}.png
+                // Parse /tiles/{chartId}/{z}/{x}/{y}.{png|jpg|jpeg}
                 String path = uri.substring(7); // Remove "/tiles/"
-                path = path.substring(0, path.length() - 4); // Remove ".png"
+                
+                // Determine content type and remove extension
+                String contentType = "image/png";
+                if (path.endsWith(".jpg") || path.endsWith(".jpeg")) {
+                    contentType = "image/jpeg";
+                    path = path.substring(0, path.lastIndexOf('.'));
+                } else if (path.endsWith(".png")) {
+                    path = path.substring(0, path.length() - 4);
+                }
                 
                 String[] parts = path.split("/");
                 if (parts.length < 4) {
@@ -1449,6 +1569,12 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 int x = Integer.parseInt(parts[parts.length - 2]);
                 int y = Integer.parseInt(parts[parts.length - 1]);
                 
+                // Handle satellite tile routing to per-zoom files
+                if (chartId.equals("satellite") || chartId.equals("satellite_alaska")) {
+                    chartId = getSatelliteFileForZoom(z);
+                    Log.d(TAG, "Satellite tile z" + z + " routed to: " + chartId);
+                }
+                
                 // Get tile data
                 byte[] tileData = getTile(chartId, z, x, y);
                 long queryTime = System.currentTimeMillis() - startTime;
@@ -1456,7 +1582,7 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 if (tileData == null || tileData.length == 0) {
                     // Return 204 No Content for missing tiles
                     Log.d(TAG, "Raster tile miss: " + chartId + "/" + z + "/" + x + "/" + y + " (" + queryTime + "ms)");
-                    Response response = newFixedLengthResponse(Response.Status.NO_CONTENT, "image/png", "");
+                    Response response = newFixedLengthResponse(Response.Status.NO_CONTENT, contentType, "");
                     addCorsHeaders(response);
                     addRasterTileHeaders(response);
                     return response;
@@ -1466,10 +1592,10 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 Log.d(TAG, "Raster tile hit: " + chartId + "/" + z + "/" + x + "/" + y + 
                     " size=" + tileData.length + " bytes, query=" + queryTime + "ms");
                 
-                // Return PNG tile data (not gzipped)
+                // Return tile data (not gzipped for raster tiles)
                 Response response = newFixedLengthResponse(
                     Response.Status.OK,
-                    "image/png",
+                    contentType,
                     new ByteArrayInputStream(tileData),
                     tileData.length
                 );

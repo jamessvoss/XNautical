@@ -17,6 +17,7 @@
 
 import { NativeModules, Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import { logger, LogCategory } from './loggingService';
 
 const { LocalTileServer } = NativeModules;
 
@@ -48,12 +49,12 @@ const state: TileServerState = {
  */
 export async function startTileServer(options: TileServerOptions = {}): Promise<string | null> {
   if (Platform.OS === 'web') {
-    console.log('[TileServer] Not supported on web platform');
+    logger.debug(LogCategory.TILES, 'Not supported on web platform');
     return null;
   }
 
   if (!LocalTileServer) {
-    console.error('[TileServer] Native module not available');
+    logger.error(LogCategory.TILES, 'Native module not available');
     return null;
   }
 
@@ -64,7 +65,7 @@ export async function startTileServer(options: TileServerOptions = {}): Promise<
       const url = await LocalTileServer.getServerUrl();
       state.isRunning = true;
       state.serverUrl = url;
-      console.log('[TileServer] Server already running at:', url);
+      logger.info(LogCategory.TILES, `Server already running at: ${url}`);
       return url;
     }
 
@@ -82,10 +83,10 @@ export async function startTileServer(options: TileServerOptions = {}): Promise<
     state.serverUrl = serverUrl;
     state.port = port;
 
-    console.log('[TileServer] Started at:', serverUrl);
+    logger.info(LogCategory.TILES, `Started at: ${serverUrl}`);
     return serverUrl;
   } catch (error) {
-    console.error('[TileServer] Failed to start:', error);
+    logger.error(LogCategory.TILES, 'Failed to start', error as Error);
     return null;
   }
 }
@@ -106,9 +107,9 @@ export async function stopTileServer(): Promise<void> {
     await LocalTileServer.stop();
     state.isRunning = false;
     state.serverUrl = null;
-    console.log('[TileServer] Stopped');
+    logger.info(LogCategory.TILES, 'Stopped');
   } catch (error) {
-    console.error('[TileServer] Failed to stop:', error);
+    logger.error(LogCategory.TILES, 'Failed to stop', error as Error);
   }
 }
 
@@ -123,7 +124,7 @@ export async function isServerRunning(): Promise<boolean> {
   try {
     return await LocalTileServer.isRunning();
   } catch (error) {
-    console.error('[TileServer] Error checking server status:', error);
+    logger.error(LogCategory.TILES, 'Error checking server status', error as Error);
     return false;
   }
 }

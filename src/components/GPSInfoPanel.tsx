@@ -29,7 +29,7 @@ import * as themeService from '../services/themeService';
 import type { UITheme } from '../services/themeService';
 
 interface Props {
-  gpsData: GPSData;
+  gpsData: GPSData | null;
   visible: boolean;
   onClose?: () => void;
   // Future: waypoint data for DTN/ETE
@@ -46,18 +46,70 @@ export default function GPSInfoPanel({
   onClose,
   nextWaypoint = null,
 }: Props) {
+  // DEBUG: Track component lifecycle
+  console.log(`[GPSInfoPanel] render - visible=${visible}`);
+  
+  useEffect(() => {
+    console.log('[GPSInfoPanel] MOUNTED');
+    return () => console.log('[GPSInfoPanel] UNMOUNTED');
+  }, []);
+  
+  useEffect(() => {
+    console.log(`[GPSInfoPanel] visibility changed to: ${visible}`);
+  }, [visible]);
+  
   const insets = useSafeAreaInsets();
-  const [uiTheme, setUITheme] = useState<UITheme>(themeService.getUITheme());
+  const [uiTheme, setUITheme] = useState<UITheme>(() => {
+    try {
+      return themeService.getUITheme();
+    } catch {
+      // Fallback theme
+      return {
+        panelBackground: 'rgba(20, 25, 35, 0.95)',
+        panelBackgroundSolid: '#141923',
+        cardBackground: 'rgba(255, 255, 255, 0.05)',
+        textPrimary: '#FFFFFF',
+        textSecondary: '#E0E0E0',
+        textMuted: '#888888',
+        accentPrimary: '#4FC3F7',
+        accentSecondary: '#81C784',
+        border: 'rgba(255, 255, 255, 0.15)',
+        divider: 'rgba(255, 255, 255, 0.1)',
+        danger: '#F44336',
+        warning: '#FF9800',
+        success: '#4CAF50',
+      };
+    }
+  });
   
   // Subscribe to theme changes
   useEffect(() => {
-    const unsubscribe = themeService.subscribeToModeChanges((mode) => {
-      setUITheme(themeService.getUITheme(mode));
-    });
-    return unsubscribe;
+    try {
+      const unsubscribe = themeService.subscribeToModeChanges((mode) => {
+        setUITheme(themeService.getUITheme(mode));
+      });
+      return unsubscribe;
+    } catch (error) {
+      console.error('[GPSInfoPanel] Error subscribing to theme changes:', error);
+      return () => {}; // No-op cleanup
+    }
   }, []);
 
-  if (!visible) return null;
+  // Use safe gpsData - provide defaults when null to avoid crashes
+  const safeGpsData = gpsData || {
+    latitude: null,
+    longitude: null,
+    altitude: null,
+    speed: null,
+    speedKnots: null,
+    course: null,
+    heading: null,
+    accuracy: null,
+    timestamp: null,
+    isTracking: false,
+    hasPermission: false,
+    error: null,
+  };
 
   // Format DTN (Distance to Next Waypoint)
   const formatDTN = (): string => {
@@ -90,12 +142,12 @@ export default function GPSInfoPanel({
 
   // Determine GPS signal quality indicator
   const getSignalQuality = (): { color: string; bars: number } => {
-    if (!gpsData.isTracking || gpsData.accuracy === null) {
+    if (!safeGpsData.isTracking || safeGpsData.accuracy === null) {
       return { color: '#666', bars: 0 };
     }
-    if (gpsData.accuracy <= 5) return { color: '#4CAF50', bars: 4 };
-    if (gpsData.accuracy <= 15) return { color: '#8BC34A', bars: 3 };
-    if (gpsData.accuracy <= 30) return { color: '#FFC107', bars: 2 };
+    if (safeGpsData.accuracy <= 5) return { color: '#4CAF50', bars: 4 };
+    if (safeGpsData.accuracy <= 15) return { color: '#8BC34A', bars: 3 };
+    if (safeGpsData.accuracy <= 30) return { color: '#FFC107', bars: 2 };
     return { color: '#FF5722', bars: 1 };
   };
 
@@ -131,8 +183,15 @@ export default function GPSInfoPanel({
     backgroundColor: uiTheme.border,
   };
 
+  // ALWAYS render the same structure - use opacity/scale to hide
+  // This avoids the Android "child already has parent" crash
   return (
-    <View style={[styles.container, themedContainer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+    <View style={[
+      styles.container, 
+      themedContainer, 
+      { paddingBottom: Math.max(insets.bottom, 8) },
+      !visible && styles.invisible
+    ]}>
       {/* Top row - DTN/ETE (larger, primary info) */}
       <View style={[styles.primaryRow, themedPrimaryRow]}>
         <View style={styles.primaryItem}>
@@ -151,16 +210,16 @@ export default function GPSInfoPanel({
         {/* Speed */}
         <View style={styles.secondaryItem}>
           <Text style={[styles.secondaryLabel, themedSecondaryLabel]}>SPD</Text>
-          <Text style={[styles.secondaryValue, themedSecondaryValue]}>{formatSpeed(gpsData.speedKnots)}</Text>
+          <Text style={[styles.secondaryValue, themedSecondaryValue]}>{formatSpeed(safeGpsData.speedKnots)}</Text>
         </View>
 
         {/* Heading (magnetic) */}
         <View style={styles.secondaryItem}>
           <Text style={[styles.secondaryLabel, themedSecondaryLabel]}>HDG</Text>
           <View style={styles.headingContainer}>
-            <Text style={[styles.secondaryValue, themedSecondaryValue]}>{formatHeading(gpsData.heading)}</Text>
-            {gpsData.heading !== null && (
-              <Text style={[styles.cardinalText, themedCardinalText]}>{getCardinal(gpsData.heading)}</Text>
+            <Text style={[styles.secondaryValue, themedSecondaryValue]}>{formatHeading(safeGpsData.heading)}</Text>
+            {safeGpsData.heading !== null && (
+              <Text style={[styles.cardinalText, themedCardinalText]}>{getCardinal(safeGpsData.heading)}</Text>
             )}
           </View>
         </View>
@@ -169,9 +228,9 @@ export default function GPSInfoPanel({
         <View style={styles.secondaryItem}>
           <Text style={[styles.secondaryLabel, themedSecondaryLabel]}>COG</Text>
           <View style={styles.headingContainer}>
-            <Text style={[styles.secondaryValue, themedSecondaryValue]}>{formatCourse(gpsData.course)}</Text>
-            {gpsData.course !== null && (
-              <Text style={[styles.cardinalText, themedCardinalText]}>{getCardinal(gpsData.course)}</Text>
+            <Text style={[styles.secondaryValue, themedSecondaryValue]}>{formatCourse(safeGpsData.course)}</Text>
+            {safeGpsData.course !== null && (
+              <Text style={[styles.cardinalText, themedCardinalText]}>{getCardinal(safeGpsData.course)}</Text>
             )}
           </View>
         </View>
@@ -181,7 +240,7 @@ export default function GPSInfoPanel({
           <Text style={[styles.secondaryLabel, themedSecondaryLabel]}>ACC</Text>
           <View style={styles.accuracyContainer}>
             <Text style={[styles.secondaryValue, { color: signal.color }]}>
-              {formatAccuracy(gpsData.accuracy)}
+              {formatAccuracy(safeGpsData.accuracy)}
             </Text>
             <View style={styles.signalBars}>
               {[1, 2, 3, 4].map(bar => (
@@ -201,15 +260,15 @@ export default function GPSInfoPanel({
       </View>
 
       {/* Status indicator */}
-      {!gpsData.isTracking && (
+      {!safeGpsData.isTracking && (
         <View style={[styles.statusBadge, { backgroundColor: uiTheme.cardBackground }]}>
           <Text style={[styles.statusText, { color: uiTheme.textMuted }]}>GPS OFF</Text>
         </View>
       )}
 
-      {gpsData.error && (
+      {safeGpsData.error && (
         <View style={[styles.statusBadge, styles.errorBadge]}>
-          <Text style={styles.errorText}>{gpsData.error}</Text>
+          <Text style={styles.errorText}>{safeGpsData.error}</Text>
         </View>
       )}
     </View>
@@ -217,6 +276,10 @@ export default function GPSInfoPanel({
 }
 
 const styles = StyleSheet.create({
+  invisible: {
+    opacity: 0,
+    transform: [{ scale: 0.001 }],
+  },
   container: {
     position: 'absolute',
     bottom: 70, // Sit above the bottom nav bar (ForeFlight style)

@@ -1,5 +1,5 @@
 /**
- * Chart Debug Overlay - Shows real-time chart and navigation debug info
+ * Chart Info Overlay - Shows real-time chart and navigation info
  * 
  * Displays:
  * - Active chart(s) based on current zoom level
@@ -171,48 +171,72 @@ export default function ChartDebugOverlay({
   // All loaded charts (bounds filtering not available without chart index)
   const coveringCharts = mbtilesCharts;
 
-  // Helper to get chart scale info
+  // Helper to get chart scale info from chart ID
+  // Note: Regional charts like "alaska_US1" are MERGED files containing multiple scales
+  // The number in the filename is a region identifier, NOT a scale indicator
+  // We can't determine actual scale from filename alone for merged regional charts
   const getChartScaleInfo = (chartId: string) => {
-    const match = chartId.match(/^US(\d)/);
-    if (!match) return null;
-    const scaleNum = parseInt(match[1], 10);
-    return CHART_SCALES.find(s => s.prefix === `US${scaleNum}`) || null;
+    // Check if this is a direct scale chart (e.g., "US5AK5QG" starts with US followed by scale number)
+    const directMatch = chartId.match(/^US(\d)/);
+    if (directMatch) {
+      const scaleNum = parseInt(directMatch[1], 10);
+      return CHART_SCALES.find(s => s.prefix === `US${scaleNum}`) || null;
+    }
+    // Regional merged charts (e.g., "alaska_US1") - can't determine scale from filename
+    // Return null to indicate this is a multi-scale merged chart
+    return null;
+  };
+  
+  // Check if chart is a merged regional chart (contains multiple scales)
+  const isMergedRegionalChart = (chartId: string) => {
+    return chartId.includes('_US') && !chartId.match(/^US\d/);
   };
 
   // Find the chart that BEST matches the current zoom level
-  // Priority: chart whose zoom range contains currentZoom, preferring most detailed
-  // If none contain it, pick the closest match (for overzoom/underzoom)
+  // For merged regional charts, we can't determine scale from filename
+  // Just pick the first loaded chart covering the area
   const primaryChart = (() => {
     if (coveringCharts.length === 0) return null;
     
-    // Score each chart by how well it matches current zoom
-    // Higher score = better match
-    const scored = coveringCharts.map(chart => {
-      const scaleInfo = getChartScaleInfo(chart.chartId);
-      if (!scaleInfo) return { chart, score: -1000, inRange: false };
-      
-      const { minZoom, maxZoom } = scaleInfo;
-      const inRange = currentZoom >= minZoom && currentZoom <= maxZoom;
-      const scaleNum = parseInt(chart.chartId.match(/^US(\d)/)?.[1] || '0', 10);
-      
-      if (inRange) {
-        // In range: prefer more detailed charts (higher scale number)
-        return { chart, score: 1000 + scaleNum, inRange: true };
-      } else if (currentZoom > maxZoom) {
-        // Overzoomed past this chart: score by how close we are to maxZoom
-        // More detailed charts score higher for overzoom
-        return { chart, score: 500 + scaleNum - (currentZoom - maxZoom), inRange: false };
-      } else {
-        // Underzoomed: this chart isn't rendering yet
-        // Lower score, but still track for "upcoming" info
-        return { chart, score: -100 - (minZoom - currentZoom), inRange: false };
-      }
-    });
+    // Check if we have any merged regional charts
+    const mergedCharts = coveringCharts.filter(c => isMergedRegionalChart(c.chartId));
+    const directScaleCharts = coveringCharts.filter(c => !isMergedRegionalChart(c.chartId));
     
-    // Sort by score descending
-    scored.sort((a, b) => b.score - a.score);
-    return scored[0]?.chart || null;
+    // If we have direct scale charts, use original scoring logic
+    if (directScaleCharts.length > 0) {
+      const scored = directScaleCharts.map(chart => {
+        const scaleInfo = getChartScaleInfo(chart.chartId);
+        if (!scaleInfo) return { chart, score: -1000, inRange: false };
+        
+        const { minZoom, maxZoom } = scaleInfo;
+        const inRange = currentZoom >= minZoom && currentZoom <= maxZoom;
+        const scaleNum = parseInt(chart.chartId.match(/^US(\d)/)?.[1] || '0', 10);
+        
+        if (inRange) {
+          return { chart, score: 1000 + scaleNum, inRange: true };
+        } else if (currentZoom > maxZoom) {
+          return { chart, score: 500 + scaleNum - (currentZoom - maxZoom), inRange: false };
+        } else {
+          return { chart, score: -100 - (minZoom - currentZoom), inRange: false };
+        }
+      });
+      
+      scored.sort((a, b) => b.score - a.score);
+      if (scored[0]) return scored[0].chart;
+    }
+    
+    // For merged regional charts, just return the first one
+    // The actual scale being rendered depends on the tile content, not the filename
+    return mergedCharts[0] || coveringCharts[0] || null;
   })();
+  
+  // Determine what scale level SHOULD be rendering at current zoom
+  const expectedScaleAtZoom = CHART_SCALES.find(
+    s => currentZoom >= s.minZoom && currentZoom <= s.maxZoom
+  );
+  
+  // Check if primary chart is a merged regional chart
+  const primaryIsMerged = primaryChart && isMergedRegionalChart(primaryChart.chartId);
 
   // Get charts that are actively rendering at this zoom (for "also covering" display)
   const activeCharts = coveringCharts.filter(chart => {
@@ -234,7 +258,7 @@ export default function ChartDebugOverlay({
   const scale = zoomToScale(currentZoom);
   const bounds = getViewportBounds(centerCoord, currentZoom);
 
-  // Compact view - just shows chart ID
+  // Compact view - shows expected scale level (changes with zoom)
   if (!expanded) {
     return (
       <TouchableOpacity 
@@ -242,10 +266,11 @@ export default function ChartDebugOverlay({
         onPress={() => setExpanded(true)}
       >
         <View style={styles.compactRow}>
-          <View style={[styles.categoryDot, { backgroundColor: hasCoverageGap ? '#888' : isOverzoom ? '#FF9800' : category.color }]} />
-          <Text style={[styles.compactChartId, hasCoverageGap && styles.noCoverageText, isOverzoom && styles.overzoomText]}>
-            {primaryChart?.chartId || 'No coverage'}{isOverzoom ? ' ⬆' : ''}
+          <View style={[styles.categoryDot, { backgroundColor: expectedScaleAtZoom ? category.color : '#888' }]} />
+          <Text style={styles.compactChartId}>
+            {expectedScaleAtZoom ? `${expectedScaleAtZoom.prefix} ${expectedScaleAtZoom.name}` : 'Unknown'}
           </Text>
+          <Text style={styles.compactZoom}>z{currentZoom.toFixed(0)}</Text>
         </View>
       </TouchableOpacity>
     );
@@ -253,62 +278,36 @@ export default function ChartDebugOverlay({
 
   // Expanded view
   return (
-    <TouchableOpacity 
-      style={[styles.container, { top: topOffset, left: leftOffset }]}
-      onPress={() => setExpanded(false)}
-      activeOpacity={0.95}
-    >
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        <Text style={styles.title}>Chart Debug</Text>
+    <View style={[styles.container, { top: topOffset, left: leftOffset }]}>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Chart Info</Text>
+        <TouchableOpacity onPress={() => setExpanded(false)} style={styles.closeButton}>
+          <Text style={styles.closeButtonText}>✕</Text>
+        </TouchableOpacity>
+      </View>
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={true}>
         
-        {/* Active Chart */}
+        {/* Combined: Chart File + Scale + Zoom Info */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>CHART DRIVING DISPLAY</Text>
+          <Text style={styles.sectionTitle}>CURRENT VIEW</Text>
+          {/* Chart file */}
           <View style={styles.row}>
-            <View style={[styles.categoryBadge, { backgroundColor: hasCoverageGap ? '#888' : isOverzoom ? '#FF9800' : category.color }]}>
-              <Text style={styles.categoryText}>
-                {hasCoverageGap ? 'None' : isOverzoom ? 'Overzoom' : category.name}
-              </Text>
-            </View>
-            <Text style={[styles.primaryChartId, hasCoverageGap && styles.noCoverageText, isOverzoom && styles.overzoomText]}>
+            <Text style={styles.label}>Chart:</Text>
+            <Text style={[styles.primaryChartIdSmall, hasCoverageGap && styles.noCoverageText]}>
               {primaryChart?.chartId || 'No coverage'}
+              {primaryIsMerged ? ' 📦' : ''}
             </Text>
           </View>
-          
-          {isOverzoom && primaryScaleInfo && (
-            <View style={styles.subRow}>
-              <Text style={styles.warningText}>
-                ⬆ Overzoomed past {primaryScaleInfo.prefix} max (z{primaryScaleInfo.maxZoom})
+          {/* Expected scale */}
+          <View style={styles.row}>
+            <Text style={styles.label}>Tiles from:</Text>
+            <View style={[styles.categoryBadgeSmall, { backgroundColor: expectedScaleAtZoom ? category.color : '#888' }]}>
+              <Text style={styles.categoryTextSmall}>
+                {expectedScaleAtZoom ? `${expectedScaleAtZoom.prefix} ${expectedScaleAtZoom.name}` : 'Unknown'}
               </Text>
             </View>
-          )}
-          
-          {hasCoverageGap && expectedScale && (
-            <View style={styles.subRow}>
-              <Text style={styles.warningText}>
-                ⚠ No {expectedScale.prefix} chart covers this location
-              </Text>
-            </View>
-          )}
-          
-          {activeCharts.length > 1 && (
-            <View style={styles.subRow}>
-              <Text style={styles.subLabel}>Also covering:</Text>
-              <Text style={styles.subValue}>
-                {activeCharts
-                  .filter(c => c.chartId !== primaryChart?.chartId)
-                  .map(c => c.chartId)
-                  .slice(0, 3)
-                  .join(', ')}
-                {activeCharts.length > 4 ? ` +${activeCharts.length - 4}` : ''}
-              </Text>
-            </View>
-          )}
-        </View>
-
-        {/* Scale & Zoom */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>SCALE</Text>
+          </View>
+          {/* Zoom and scale */}
           <View style={styles.row}>
             <Text style={styles.label}>Zoom:</Text>
             <Text style={styles.value}>{currentZoom.toFixed(2)}</Text>
@@ -321,6 +320,28 @@ export default function ChartDebugOverlay({
             <Text style={styles.label}>View width:</Text>
             <Text style={styles.value}>{bounds.widthNm.toFixed(1)} nm</Text>
           </View>
+        </View>
+
+        {/* Tile Server - compact */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>TILE SERVER</Text>
+          <View style={styles.row}>
+            <Text style={styles.label}>Status:</Text>
+            <Text style={[styles.value, { color: tileServerReady ? '#4CAF50' : '#F44336' }]}>
+              {tileServerReady ? 'Running' : 'Stopped'} ({mbtilesCharts.length} charts)
+            </Text>
+          </View>
+          {tileStats && (
+            <View style={styles.row}>
+              <Text style={styles.label}>Cache:</Text>
+              <Text style={styles.value}>
+                {tileStats.requestCount > 0 
+                  ? `${Math.round(tileStats.cacheHits / tileStats.requestCount * 100)}% hits`
+                  : '0 requests'}
+                {tileStats.errors > 0 ? ` (${tileStats.errors} errors)` : ''}
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Viewport */}
@@ -346,46 +367,9 @@ export default function ChartDebugOverlay({
           </View>
         </View>
 
-        {/* Tile Server */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>TILE SERVER</Text>
-          <View style={styles.row}>
-            <Text style={styles.label}>Status:</Text>
-            <Text style={[styles.value, { color: tileServerReady ? '#4CAF50' : '#F44336' }]}>
-              {tileServerReady ? 'Running' : 'Stopped'}
-            </Text>
-          </View>
-          <View style={styles.row}>
-            <Text style={styles.label}>Charts loaded:</Text>
-            <Text style={styles.value}>{mbtilesCharts.length}</Text>
-          </View>
-          {tileStats && (
-            <>
-              <View style={styles.row}>
-                <Text style={styles.label}>Requests:</Text>
-                <Text style={styles.value}>{tileStats.requestCount}</Text>
-              </View>
-              <View style={styles.row}>
-                <Text style={styles.label}>Cache hits:</Text>
-                <Text style={styles.value}>
-                  {tileStats.cacheHits} ({tileStats.requestCount > 0 
-                    ? Math.round(tileStats.cacheHits / tileStats.requestCount * 100) 
-                    : 0}%)
-                </Text>
-              </View>
-              {tileStats.errors > 0 && (
-                <View style={styles.row}>
-                  <Text style={[styles.label, { color: '#F44336' }]}>Errors:</Text>
-                  <Text style={[styles.value, { color: '#F44336' }]}>{tileStats.errors}</Text>
-                </View>
-              )}
-            </>
-          )}
-        </View>
-
         {/* Chart Scale Reference */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>SCALE RANGES</Text>
+          <Text style={styles.sectionTitle}>SCALE RANGES (green = active)</Text>
           {CHART_SCALES.map(s => {
             const isActive = currentZoom >= s.minZoom && currentZoom <= s.maxZoom;
             return (
@@ -404,35 +388,45 @@ export default function ChartDebugOverlay({
           })}
         </View>
 
-        {/* Performance */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>PERFORMANCE</Text>
-          <View style={styles.row}>
-            <Text style={styles.label}>FPS:</Text>
-            <Text style={[styles.value, fps < 30 && { color: '#FF9800' }, fps < 15 && { color: '#F44336' }]}>
-              {fps}
-            </Text>
+        {/* All loaded charts */}
+        {coveringCharts.length > 1 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>ALL LOADED CHARTS ({coveringCharts.length})</Text>
+            {coveringCharts.slice(0, 6).map(c => (
+              <Text key={c.chartId} style={styles.chartListItem}>{c.chartId}</Text>
+            ))}
+            {coveringCharts.length > 6 && (
+              <Text style={styles.chartListMore}>+{coveringCharts.length - 6} more...</Text>
+            )}
           </View>
+        )}
+
+        {/* Performance */}
+        <View style={styles.row}>
+          <Text style={styles.label}>FPS:</Text>
+          <Text style={[styles.value, fps < 30 && { color: '#FF9800' }, fps < 15 && { color: '#F44336' }]}>
+            {fps}
+          </Text>
         </View>
 
-        <Text style={styles.hint}>Tap to minimize</Text>
+        <Text style={styles.hint}>Scroll for more ↓</Text>
       </ScrollView>
-    </TouchableOpacity>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    backgroundColor: 'rgba(0, 0, 0, 0.95)',
     padding: 12,
     borderRadius: 10,
-    maxWidth: 280,
-    maxHeight: 500,
+    maxWidth: 300,
+    maxHeight: 600,
     zIndex: 9999,
   },
   scrollView: {
-    maxHeight: 470,
+    maxHeight: 560,
   },
   compactContainer: {
     position: 'absolute',
@@ -470,16 +464,41 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 4,
   },
+  infoText: {
+    color: '#4FC3F7',
+    fontSize: 11,
+    marginTop: 4,
+  },
+  infoTextSmall: {
+    color: '#888',
+    fontSize: 10,
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
   compactZoom: {
     color: '#aaa',
     fontSize: 11,
     fontFamily: 'monospace',
   },
+  titleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
   title: {
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
-    marginBottom: 12,
+  },
+  closeButton: {
+    padding: 4,
+    marginLeft: 8,
+  },
+  closeButtonText: {
+    color: '#888',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
   section: {
     marginBottom: 12,
@@ -546,6 +565,34 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
     fontFamily: 'monospace',
+  },
+  primaryChartIdSmall: {
+    color: '#4CAF50',
+    fontSize: 12,
+    fontWeight: '600',
+    fontFamily: 'monospace',
+  },
+  categoryBadgeSmall: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 3,
+  },
+  categoryTextSmall: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  chartListItem: {
+    color: '#aaa',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    paddingVertical: 2,
+  },
+  chartListMore: {
+    color: '#666',
+    fontSize: 10,
+    fontStyle: 'italic',
+    marginTop: 4,
   },
   scaleRow: {
     flexDirection: 'row',
