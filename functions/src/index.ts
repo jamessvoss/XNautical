@@ -55,29 +55,49 @@ export const getStationLocations = functions
       // Fetch both collections in parallel, but only select the fields we need
       const [tideSnapshot, currentSnapshot] = await Promise.all([
         db.collection('tidal-stations')
-          .select('name', 'lat', 'lng', 'type') // Only fetch these fields, not predictions
+          .select('name', 'latitude', 'longitude', 'type') // Use latitude/longitude (not lat/lng)
           .get(),
         db.collection('current-stations-packed')
-          .select('name', 'lat', 'lng', 'bin') // Only fetch these fields, not predictions
+          .select('name', 'latitude', 'longitude') // Current stations don't have a simple bin field
           .get(),
       ]);
       
-      // Extract data
+      // Extract tide station data
       const tideStations = tideSnapshot.docs.map(doc => ({
         id: doc.id,
         name: doc.get('name') || 'Unknown',
-        lat: doc.get('lat') || 0,
-        lng: doc.get('lng') || 0,
+        lat: doc.get('latitude') || 0,   // Map latitude -> lat
+        lng: doc.get('longitude') || 0,  // Map longitude -> lng
         type: doc.get('type') || 'S',
       }));
       
-      const currentStations = currentSnapshot.docs.map(doc => ({
-        id: doc.id,
-        name: doc.get('name') || 'Unknown',
-        lat: doc.get('lat') || 0,
-        lng: doc.get('lng') || 0,
-        bin: doc.get('bin') || 0,
-      }));
+      // Extract current station data - these are stored differently
+      // The catalog document contains all stations in an array
+      const currentStations: any[] = [];
+      currentSnapshot.docs.forEach(doc => {
+        if (doc.id === 'catalog') {
+          // Catalog document has locations array
+          const locations = doc.get('locations') || [];
+          locations.forEach((loc: any) => {
+            currentStations.push({
+              id: loc.id || loc.noaaId || 'unknown',
+              name: loc.name || 'Unknown',
+              lat: loc.latitude || 0,
+              lng: loc.longitude || 0,
+              bin: loc.bin || 0,
+            });
+          });
+        } else {
+          // Individual station documents
+          currentStations.push({
+            id: doc.id,
+            name: doc.get('name') || 'Unknown',
+            lat: doc.get('latitude') || 0,
+            lng: doc.get('longitude') || 0,
+            bin: 0,
+          });
+        }
+      });
       
       console.log(`Returning ${tideStations.length} tide stations and ${currentStations.length} current stations`);
       
