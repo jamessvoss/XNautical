@@ -22,6 +22,8 @@ import type { DisplaySettings } from '../services/displaySettingsService';
 import SystemInfoModal from '../components/SystemInfoModal';
 import * as themeService from '../services/themeService';
 import type { UITheme } from '../services/themeService';
+import { fetchTideStations, fetchCurrentStations, clearStationCache } from '../services/stationService';
+import type { TideStation, CurrentStation } from '../services/stationService';
 
 export default function SettingsScreen() {
   const [cacheSize, setCacheSize] = useState<number>(0);
@@ -29,6 +31,11 @@ export default function SettingsScreen() {
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
   const [showSystemInfo, setShowSystemInfo] = useState(false);
+  
+  // Tide & Current data
+  const [tideStations, setTideStations] = useState<TideStation[]>([]);
+  const [currentStations, setCurrentStations] = useState<CurrentStation[]>([]);
+  const [tidesLoading, setTidesLoading] = useState(false);
   
   // Theme state
   const [uiTheme, setUITheme] = useState<UITheme>(themeService.getUITheme());
@@ -178,6 +185,7 @@ export default function SettingsScreen() {
   useEffect(() => {
     loadCacheInfo();
     loadDisplaySettings();
+    loadTideData();
   }, []);
 
   const loadCacheInfo = async () => {
@@ -197,6 +205,69 @@ export default function SettingsScreen() {
   const loadDisplaySettings = async () => {
     const settings = await displaySettingsService.loadSettings();
     setDisplaySettings(settings);
+  };
+
+  const loadTideData = async () => {
+    try {
+      setTidesLoading(true);
+      const [tides, currents] = await Promise.all([
+        fetchTideStations(),
+        fetchCurrentStations(),
+      ]);
+      setTideStations(tides);
+      setCurrentStations(currents);
+    } catch (error) {
+      console.error('Error loading tide/current data:', error);
+    } finally {
+      setTidesLoading(false);
+    }
+  };
+
+  const getDateRange = (stations: (TideStation | CurrentStation)[]) => {
+    let earliestDate: string | null = null;
+    let latestDate: string | null = null;
+    
+    stations.forEach(station => {
+      if (!station.predictions) return;
+      const dates = Object.keys(station.predictions).sort();
+      if (dates.length === 0) return;
+      
+      const first = dates[0];
+      const last = dates[dates.length - 1];
+      
+      if (!earliestDate || first < earliestDate) earliestDate = first;
+      if (!latestDate || last > latestDate) latestDate = last;
+    });
+    
+    if (!earliestDate || !latestDate) return 'No data';
+    
+    // Format dates nicely
+    const formatDate = (dateStr: string) => {
+      const [year, month, day] = dateStr.split('-');
+      return `${month}/${day}/${year}`;
+    };
+    
+    return `${formatDate(earliestDate)} - ${formatDate(latestDate)}`;
+  };
+
+  const getStationsWithData = (stations: (TideStation | CurrentStation)[]) => {
+    return stations.filter(s => s.predictions && Object.keys(s.predictions).length > 0).length;
+  };
+
+  const getMemorySize = (stations: (TideStation | CurrentStation)[]) => {
+    // Rough estimate: JSON.stringify the predictions data
+    let totalBytes = 0;
+    stations.forEach(station => {
+      if (station.predictions) {
+        totalBytes += JSON.stringify(station.predictions).length;
+      }
+    });
+    return formatBytes(totalBytes);
+  };
+
+  const handleRefreshTideData = async () => {
+    clearStationCache();
+    await loadTideData();
   };
 
   const updateDisplaySetting = async <K extends keyof DisplaySettings>(
@@ -300,6 +371,79 @@ export default function SettingsScreen() {
             <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
               <Text style={styles.logoutButtonText}>Logout</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Tides & Currents Section */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Tides & Currents</Text>
+          <View style={[styles.card, themedStyles.card]}>
+            {tidesLoading ? (
+              <ActivityIndicator size="small" color="#007AFF" />
+            ) : (
+              <>
+                {/* Tide Stations */}
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Tide Stations</Text>
+                  <Text style={[styles.value, themedStyles.value]}>
+                    {getStationsWithData(tideStations)} / {tideStations.length}
+                  </Text>
+                </View>
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Tide Date Range</Text>
+                  <Text style={[styles.valueSmall, themedStyles.valueSmall]}>
+                    {getDateRange(tideStations)}
+                  </Text>
+                </View>
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Tide Data Size</Text>
+                  <Text style={[styles.value, themedStyles.value]}>
+                    {getMemorySize(tideStations)}
+                  </Text>
+                </View>
+                
+                {/* Current Stations */}
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Current Stations</Text>
+                  <Text style={[styles.value, themedStyles.value]}>
+                    {getStationsWithData(currentStations)} / {currentStations.length}
+                  </Text>
+                </View>
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Current Date Range</Text>
+                  <Text style={[styles.valueSmall, themedStyles.valueSmall]}>
+                    {getDateRange(currentStations)}
+                  </Text>
+                </View>
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Current Data Size</Text>
+                  <Text style={[styles.value, themedStyles.value]}>
+                    {getMemorySize(currentStations)}
+                  </Text>
+                </View>
+                
+                {/* Total */}
+                <View style={[styles.row, { borderBottomWidth: 0 }]}>
+                  <Text style={[styles.label, themedStyles.label, { fontWeight: '600' }]}>Total Memory</Text>
+                  <Text style={[styles.value, themedStyles.value, { fontWeight: '600' }]}>
+                    {formatBytes(
+                      JSON.stringify(tideStations.map(s => s.predictions)).length +
+                      JSON.stringify(currentStations.map(s => s.predictions)).length
+                    )}
+                  </Text>
+                </View>
+                
+                <TouchableOpacity 
+                  style={styles.refreshTideButton} 
+                  onPress={handleRefreshTideData}
+                  disabled={tidesLoading}
+                >
+                  <Text style={styles.refreshTideButtonText}>
+                    {tidesLoading ? 'Loading...' : 'Refresh Tide Data'}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
 
@@ -486,6 +630,18 @@ const styles = StyleSheet.create({
   refreshButtonText: {
     color: '#fff',
     fontSize: 16,
+    fontWeight: '600',
+  },
+  refreshTideButton: {
+    marginTop: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: 8,
+    backgroundColor: '#007AFF',
+  },
+  refreshTideButtonText: {
+    color: '#fff',
+    fontSize: 14,
     fontWeight: '600',
   },
   sliderRow: {
