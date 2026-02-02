@@ -28,7 +28,10 @@ flowchart TD
     AsyncStorage -->|Hydrates| Memory
     Memory -->|Provides data| MapComponent[DynamicChartViewer]
     MapComponent -->|Creates GeoJSON| MapView
-    MapView -->|Renders circles and labels| Display[Blue circles = Tide<br/>Magenta circles = Current]
+    MapView -->|Renders circles and labels| Display[Display on Map]
+    
+    note1[Blue circles = Tide stations]
+    note2[Magenta circles = Current stations]
 ```
 
 **Data Flow:**
