@@ -49,6 +49,7 @@ import { stateReporter } from '../services/stateReporter';
 import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
 import { fetchTideStations, fetchCurrentStations, getCachedTideStations, getCachedCurrentStations, TideStation, CurrentStation } from '../services/stationService';
+import { calculateAllStationStates, TideStationState, CurrentStationState, createIconNameMap } from '../services/stationStateService';
 import StationInfoModal from './StationInfoModal';
 import TideDetailChart from './TideDetailChart';
 import CurrentDetailChart from './CurrentDetailChart';
@@ -130,6 +131,22 @@ const NAV_SYMBOLS: Record<string, any> = {
   'landmark-radio-tower': require('../../assets/symbols/png/landmark-radio-tower.png'),
   'landmark-windmill': require('../../assets/symbols/png/landmark-windmill.png'),
   'landmark-church': require('../../assets/symbols/png/landmark-church.png'),
+  // Tide station icons (6 fill levels, rotation handled by MapLibre)
+  'tide-0': require('../../assets/symbols/png/tide-0.png'),
+  'tide-20': require('../../assets/symbols/png/tide-20.png'),
+  'tide-40': require('../../assets/symbols/png/tide-40.png'),
+  'tide-60': require('../../assets/symbols/png/tide-60.png'),
+  'tide-80': require('../../assets/symbols/png/tide-80.png'),
+  'tide-100': require('../../assets/symbols/png/tide-100.png'),
+  // Current station icons (6 fill levels, rotation handled by MapLibre)
+  'current-0': require('../../assets/symbols/png/current-0.png'),
+  'current-20': require('../../assets/symbols/png/current-20.png'),
+  'current-40': require('../../assets/symbols/png/current-40.png'),
+  'current-60': require('../../assets/symbols/png/current-60.png'),
+  'current-80': require('../../assets/symbols/png/current-80.png'),
+  'current-100': require('../../assets/symbols/png/current-100.png'),
+  // Shared halo for tide and current icons
+  'arrow-halo': require('../../assets/symbols/png/arrow-halo.png'),
 };
 
 // Display feature configuration for the Display Settings tab
@@ -518,6 +535,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Tide and Current station data
   const [tideStations, setTideStations] = useState<TideStation[]>([]);
   const [currentStations, setCurrentStations] = useState<CurrentStation[]>([]);
+  
+  // Station icon states (calculated every 15 minutes)
+  const [tideIconMap, setTideIconMap] = useState<Map<string, { iconName: string; rotation: number }>>(new Map());
+  const [currentIconMap, setCurrentIconMap] = useState<Map<string, { iconName: string; rotation: number }>>(new Map());
   
   // Station modal state
   const [selectedStation, setSelectedStation] = useState<{
@@ -1711,6 +1732,39 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     // Load once on mount
     loadStations();
   }, []);
+
+  // Calculate station icon states (runs every 15 minutes)
+  useEffect(() => {
+    // Don't run if no stations loaded
+    if (tideStations.length === 0 && currentStations.length === 0) {
+      return;
+    }
+    
+    const updateStationStates = async () => {
+      try {
+        console.log('[MAP] Calculating station icon states...');
+        const states = await calculateAllStationStates(tideStations, currentStations);
+        const iconMaps = createIconNameMap(states);
+        
+        setTideIconMap(iconMaps.tides);
+        setCurrentIconMap(iconMaps.currents);
+        
+        console.log(`[MAP] Updated icon states: ${iconMaps.tides.size} tide, ${iconMaps.currents.size} current`);
+      } catch (error) {
+        console.error('[MAP] Error calculating station states:', error);
+      }
+    };
+    
+    // Calculate immediately
+    updateStationStates();
+    
+    // Set up 15-minute interval
+    const intervalId = setInterval(updateStationStates, 15 * 60 * 1000);
+    
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [tideStations, currentStations]);
 
   // Load and subscribe to display settings
   useEffect(() => {
@@ -4749,22 +4803,46 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             id="tide-stations-source"
             shape={{
               type: 'FeatureCollection',
-              features: tideStations.map(station => ({
-                type: 'Feature',
-                geometry: {
-                  type: 'Point',
-                  coordinates: [station.lng, station.lat],
-                },
-                properties: {
-                  id: station.id,
-                  name: station.name,
-                  type: station.type,
-                },
-              })),
+              features: tideStations.map(station => {
+                const state = tideIconMap.get(station.id);
+                return {
+                  type: 'Feature',
+                  geometry: {
+                    type: 'Point',
+                    coordinates: [station.lng, station.lat],
+                  },
+                  properties: {
+                    id: station.id,
+                    name: station.name,
+                    type: station.type,
+                    iconName: state?.iconName || 'tide-40',
+                    rotation: state?.rotation || 0,
+                  },
+                };
+              }),
             }}
           >
-            <MapLibre.CircleLayer
-              id="tide-stations-circle"
+            {/* Tide station halo - white background for visibility */}
+            <MapLibre.SymbolLayer
+              id="tide-stations-halo"
+              minZoomLevel={7}
+              style={{
+                iconImage: 'arrow-halo',
+                iconRotate: ['get', 'rotation'],
+                iconSize: [
+                  'interpolate',
+                  ['linear'],
+                  ['zoom'],
+                  7, 0.33,
+                  12, 1.1,
+                ],
+                iconAllowOverlap: true,
+                iconIgnorePlacement: true,
+              }}
+            />
+            <MapLibre.SymbolLayer
+              id="tide-stations-icon"
+              minZoomLevel={7}
               onPress={(e) => {
                 const feature = e.features?.[0];
                 console.log('[TIDE PIN CLICK] Feature:', feature?.properties);
@@ -4777,11 +4855,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 }
               }}
               style={{
-                circleRadius: 8,
-                circleColor: '#0066CC',
-                circleStrokeWidth: 2,
-                circleStrokeColor: '#FFFFFF',
-                circleOpacity: 0.9,
+                iconImage: ['get', 'iconName'],
+                iconRotate: ['get', 'rotation'],
+                iconSize: [
+                  'interpolate',
+                  ['linear'],
+                  ['zoom'],
+                  7, 0.3,
+                  12, 1.0,
+                ],
+                iconAllowOverlap: true,
+                iconIgnorePlacement: true,
               }}
             />
             <MapLibre.SymbolLayer
@@ -4809,22 +4893,46 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             id="current-stations-source"
             shape={{
               type: 'FeatureCollection',
-              features: currentStations.map(station => ({
-                type: 'Feature',
-                geometry: {
-                  type: 'Point',
-                  coordinates: [station.lng, station.lat],
-                },
-                properties: {
-                  id: station.id,
-                  name: station.name,
-                  bin: station.bin,
-                },
-              })),
+              features: currentStations.map(station => {
+                const state = currentIconMap.get(station.id);
+                return {
+                  type: 'Feature',
+                  geometry: {
+                    type: 'Point',
+                    coordinates: [station.lng, station.lat],
+                  },
+                  properties: {
+                    id: station.id,
+                    name: station.name,
+                    bin: station.bin,
+                    iconName: state?.iconName || 'current-0',
+                    rotation: state?.rotation || 0,
+                  },
+                };
+              }),
             }}
           >
-            <MapLibre.CircleLayer
-              id="current-stations-circle"
+            {/* Current station halo - white background for visibility */}
+            <MapLibre.SymbolLayer
+              id="current-stations-halo"
+              minZoomLevel={7}
+              style={{
+                iconImage: 'arrow-halo',
+                iconRotate: ['get', 'rotation'],
+                iconSize: [
+                  'interpolate',
+                  ['linear'],
+                  ['zoom'],
+                  7, 0.33,
+                  12, 1.1,
+                ],
+                iconAllowOverlap: true,
+                iconIgnorePlacement: true,
+              }}
+            />
+            <MapLibre.SymbolLayer
+              id="current-stations-icon"
+              minZoomLevel={7}
               onPress={(e) => {
                 const feature = e.features?.[0];
                 console.log('[CURRENT PIN CLICK] Feature:', feature?.properties);
@@ -4837,11 +4945,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 }
               }}
               style={{
-                circleRadius: 8,
-                circleColor: '#CC0066',
-                circleStrokeWidth: 2,
-                circleStrokeColor: '#FFFFFF',
-                circleOpacity: 0.9,
+                iconImage: ['get', 'iconName'],
+                iconRotate: ['get', 'rotation'],
+                iconSize: [
+                  'interpolate',
+                  ['linear'],
+                  ['zoom'],
+                  7, 0.3,
+                  12, 1.0,
+                ],
+                iconAllowOverlap: true,
+                iconIgnorePlacement: true,
               }}
             />
             <MapLibre.SymbolLayer
