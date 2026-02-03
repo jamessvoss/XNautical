@@ -185,7 +185,7 @@ function SettingsTab() {
 
 // Renders overlays outside the navigation hierarchy to avoid MapLibre conflicts
 function OverlayRenderer() {
-  const { showCompass, showGPSPanel, heading, course, gpsData } = useOverlay();
+  const { showCompass, showGPSPanel, showTideDetails, showCurrentDetails, heading, course, gpsData } = useOverlay();
   
   return (
     <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} pointerEvents="box-none">
@@ -194,6 +194,8 @@ function OverlayRenderer() {
           visible={true}
           heading={heading}
           course={course}
+          showTideChart={showTideDetails}
+          showCurrentChart={showCurrentDetails}
         />
       )}
       {GPSInfoModal && showGPSPanel && (

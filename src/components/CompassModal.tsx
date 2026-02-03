@@ -16,7 +16,12 @@ interface Props {
   visible: boolean;
   heading: number | null;
   course: number | null;
+  showTideChart?: boolean;
+  showCurrentChart?: boolean;
 }
+
+// Chart height as percentage of screen (must match TideDetailChart/CurrentDetailChart)
+const CHART_HEIGHT_PERCENT = 0.15;
 
 // Smoothing constants - heavily damped for jittery phone magnetometers on boats
 const EMA_ALPHA = 0.08; // Very smooth (lower = smoother)
@@ -48,9 +53,13 @@ function getAnimationDuration(headingChange: number): number {
   return 150;                     // Very large: snappy
 }
 
-export default function CompassModal({ heading, course }: Props) {
+export default function CompassModal({ heading, course, showTideChart = false, showCurrentChart = false }: Props) {
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
   const size = Math.min(screenWidth, screenHeight) - 60;
+  
+  // Calculate vertical offset based on visible charts
+  const chartCount = (showTideChart ? 1 : 0) + (showCurrentChart ? 1 : 0);
+  const chartsHeight = chartCount * (screenHeight * CHART_HEIGHT_PERCENT);
   
   // Animation for compass rotation
   const animatedRotation = useRef(new Animated.Value(0)).current;
@@ -148,7 +157,7 @@ export default function CompassModal({ heading, course }: Props) {
 
   return (
     <View style={styles.overlay} pointerEvents="none">
-      <View style={[styles.compassContainer, { width: size, height: size }]}>
+      <View style={[styles.compassContainer, { width: size, height: size, marginBottom: chartsHeight }]}>
         
         {/* Outer ring */}
         <View style={[styles.outerRing, { width: size, height: size, borderRadius: size / 2 }]} />

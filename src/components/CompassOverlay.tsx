@@ -31,7 +31,12 @@ interface Props {
   heading: number | null;  // Magnetic heading in degrees
   course: number | null;   // Course over ground (optional)
   visible: boolean;
+  showTideChart?: boolean;    // Tide detail chart visible at bottom
+  showCurrentChart?: boolean; // Current detail chart visible at bottom
 }
+
+// Chart height as percentage of screen (must match TideDetailChart/CurrentDetailChart)
+const CHART_HEIGHT_PERCENT = 0.15;
 
 // Color scheme for different display modes
 interface CompassColors {
@@ -336,22 +341,17 @@ export default function CompassOverlay({
   heading,
   course,
   visible,
+  showTideChart = false,
+  showCurrentChart = false,
 }: Props) {
-  // DEBUG: Track component lifecycle
-  console.log(`[CompassOverlay] render - visible=${visible}, heading=${heading}`);
-  
-  useEffect(() => {
-    console.log('[CompassOverlay] MOUNTED');
-    return () => console.log('[CompassOverlay] UNMOUNTED');
-  }, []);
-  
-  useEffect(() => {
-    console.log(`[CompassOverlay] visibility changed to: ${visible}`);
-  }, [visible]);
-  
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
   const size = Math.min(screenWidth, screenHeight) - 20;
   const center = size / 2;
+  
+  // Calculate vertical offset based on visible charts
+  // Charts take up space at the bottom, so we center compass in remaining space
+  const chartCount = (showTideChart ? 1 : 0) + (showCurrentChart ? 1 : 0);
+  const chartsHeight = chartCount * (screenHeight * CHART_HEIGHT_PERCENT);
   
   // Theme state - with safe default
   const [displayMode, setDisplayMode] = useState<S52DisplayMode>(() => {
@@ -445,11 +445,25 @@ export default function CompassOverlay({
     <View 
       style={[
         styles.container,
-        !visible && styles.invisible
+        !visible && styles.invisible,
       ]} 
       pointerEvents={visible ? "none" : "box-none"}
     >
-      <View style={[styles.simpleCompass, { width: size, height: size }]}>
+      <View 
+        style={[
+          styles.simpleCompass, 
+          { 
+            width: size, 
+            height: size,
+            marginBottom: chartsHeight, // Shift compass up to account for charts at bottom
+          }
+        ]}
+        onLayout={(event) => {
+          const { x, y, width, height } = event.nativeEvent.layout;
+          console.log(`[CompassOverlay] ACTUAL POSITION: x=${x}, y=${y}, width=${width}, height=${height}`);
+          console.log(`[CompassOverlay] Center of compass: y=${y + height/2} (screen center would be ${screenHeight/2})`);
+        }}
+      >
         <Text style={styles.headingText}>{displayHeading}°</Text>
         <Text style={styles.labelText}>HDG</Text>
       </View>

@@ -1465,7 +1465,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showZoomLevel, setShowZoomLevel] = useState(true);
   
   // GPS and Navigation state - overlay visibility from context (rendered in App.tsx)
-  const { showGPSPanel, setShowGPSPanel, showCompass, setShowCompass, updateGPSData } = useOverlay();
+  const { showGPSPanel, setShowGPSPanel, showCompass, setShowCompass, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails } = useOverlay();
   const [followGPS, setFollowGPS] = useState(false); // Follow mode - center map on position
   const followGPSRef = useRef(false); // Ref for immediate follow mode check (avoids race condition)
   const pendingCameraMoveTimeout = useRef<NodeJS.Timeout | null>(null); // Track pending camera moves
@@ -1476,6 +1476,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   useEffect(() => {
     updateGPSData(gpsData);
   }, [gpsData, updateGPSData]);
+  
+  // Sync detail chart visibility with overlay context (for compass positioning)
+  useEffect(() => {
+    setContextTideDetails(showTideDetails);
+  }, [showTideDetails, setContextTideDetails]);
+  
+  useEffect(() => {
+    setContextCurrentDetails(showCurrentDetails);
+  }, [showCurrentDetails, setContextCurrentDetails]);
   
   // Zoom limiting - constrain zoom to available chart detail
   const [limitZoomToCharts, setLimitZoomToCharts] = useState(true);

@@ -11,6 +11,8 @@ import { GPSData } from '../hooks/useGPS';
 interface OverlayState {
   showCompass: boolean;
   showGPSPanel: boolean;
+  showTideDetails: boolean;
+  showCurrentDetails: boolean;
   heading: number | null;
   course: number | null;
   gpsData: GPSData | null;
@@ -19,6 +21,8 @@ interface OverlayState {
 interface OverlayContextType extends OverlayState {
   setShowCompass: (show: boolean) => void;
   setShowGPSPanel: (show: boolean) => void;
+  setShowTideDetails: (show: boolean) => void;
+  setShowCurrentDetails: (show: boolean) => void;
   updateGPSData: (data: GPSData) => void;
 }
 
@@ -40,17 +44,23 @@ const defaultGPSData: GPSData = {
 const OverlayContext = createContext<OverlayContextType>({
   showCompass: false,
   showGPSPanel: false,
+  showTideDetails: false,
+  showCurrentDetails: false,
   heading: null,
   course: null,
   gpsData: null,
   setShowCompass: () => {},
   setShowGPSPanel: () => {},
+  setShowTideDetails: () => {},
+  setShowCurrentDetails: () => {},
   updateGPSData: () => {},
 });
 
 export function OverlayProvider({ children }: { children: ReactNode }) {
   const [showCompass, setShowCompass] = useState(false);
   const [showGPSPanel, setShowGPSPanel] = useState(false);
+  const [showTideDetails, setShowTideDetails] = useState(false);
+  const [showCurrentDetails, setShowCurrentDetails] = useState(false);
   const [gpsData, setGPSData] = useState<GPSData>(defaultGPSData);
 
   const updateGPSData = useCallback((data: GPSData) => {
@@ -60,11 +70,15 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
   const value: OverlayContextType = {
     showCompass,
     showGPSPanel,
+    showTideDetails,
+    showCurrentDetails,
     heading: gpsData.heading,
     course: gpsData.course,
     gpsData,
     setShowCompass,
     setShowGPSPanel,
+    setShowTideDetails,
+    setShowCurrentDetails,
     updateGPSData,
   };
 
