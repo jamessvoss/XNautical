@@ -50,6 +50,8 @@ import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
 import { fetchTideStations, fetchCurrentStations, getCachedTideStations, getCachedCurrentStations, TideStation, CurrentStation } from '../services/stationService';
 import StationInfoModal from './StationInfoModal';
+import TideDetailChart from './TideDetailChart';
+import CurrentDetailChart from './CurrentDetailChart';
 
 // MapLibre doesn't require an access token
 
@@ -365,6 +367,8 @@ interface LayerVisibility {
   gnisNames: boolean;  // Master toggle for all GNIS place names
   tideStations: boolean;  // Tide station markers
   currentStations: boolean;  // Current station markers
+  tideDetails: boolean;  // Tide detail chart at bottom
+  currentDetails: boolean;  // Current detail chart at bottom
 }
 
 type LayerVisibilityAction = 
@@ -404,6 +408,8 @@ const initialLayerVisibility: LayerVisibility = {
   gnisNames: true,  // Master toggle for all GNIS place names
   tideStations: true,  // Show tide stations by default
   currentStations: true,  // Show current stations by default
+  tideDetails: false,  // Tide detail chart hidden by default
+  currentDetails: false,  // Current detail chart hidden by default
 };
 
 function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityAction): LayerVisibility {
@@ -498,6 +504,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     gnisNames: showGNISNames,
     tideStations: showTideStations,
     currentStations: showCurrentStations,
+    tideDetails: showTideDetails,
+    currentDetails: showCurrentDetails,
   } = layers;
   
   // GNIS Place Names layer toggles
@@ -517,6 +525,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     id: string;
     name: string;
   } | null>(null);
+  
+  // State for detail chart station selection (separate from modal selection)
+  const [detailChartTideStationId, setDetailChartTideStationId] = useState<string | null>(null);
+  const [detailChartCurrentStationId, setDetailChartCurrentStationId] = useState<string | null>(null);
+  
   const [showPopulatedNames, setShowPopulatedNames] = useState(true); // Towns, ports
   const [showStreamNames, setShowStreamNames] = useState(false);    // Rivers, creeks (off by default - too many)
   const [showLakeNames, setShowLakeNames] = useState(false);        // Lakes (off by default)
@@ -1309,13 +1322,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       backgroundColor: s52Mode === 'day' ? 'rgba(0,0,0,0.5)' : uiTheme.cardBackground,
     },
     zoomText: {
-      color: uiTheme.textPrimary,
+      color: '#FFFFFF', // Always white on dark translucent badge
     },
     coordBadge: {
       backgroundColor: s52Mode === 'day' ? 'rgba(0,0,0,0.5)' : uiTheme.cardBackground,
     },
     coordText: {
-      color: uiTheme.textPrimary,
+      color: '#FFFFFF', // Always white on dark translucent badge
     },
     // Layers tab
     layersColumnTitle: {
@@ -1416,7 +1429,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [mapStyle]);
   
   // Glyphs URL for local font serving (Noto Sans fonts bundled in assets)
-  const glyphsUrl = 'http://localhost:8080/fonts/{fontstack}/{range}.pbf';
+  const glyphsUrl = 'http://127.0.0.1:8765/fonts/{fontstack}/{range}.pbf';
   
   // Get S-52 colors for current mode
   const s52Colors = useMemo(() => themeService.getS52ColorTable(s52Mode), [s52Mode]);
@@ -2435,7 +2448,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         ids.push(`mbtiles-${layerType}-${chart.chartId}`);
       }
     }
-    logger.debug(LogCategory.CHARTS, `Built ${ids.length} queryable layer IDs for ${chartsAtZoom.length}/${allChartsToRender.length} charts at z${currentZoom.toFixed(1)}`);
     return ids;
   }, [allChartsToRender, chartsAtZoom, currentZoom,
       showLights, showBuoys, showBeacons, showHazards, showLandmarks, showSoundings,
@@ -2502,13 +2514,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           // Check for current station click (has 'bin' property)
           if (props?.bin !== undefined && props?.id && props?.name) {
             console.log('[CURRENT PIN CLICK] Feature:', props);
-            const stationInfo = {
-              type: 'current' as const,
-              id: props.id,
-              name: props.name,
-            };
-            console.log('[CURRENT PIN CLICK] Setting selected station:', stationInfo);
-            setSelectedStation(stationInfo);
+            // Update detail chart station (auto-enable detail view if not visible)
+            setDetailChartCurrentStationId(props.id);
+            if (!showCurrentDetails) {
+              toggleLayer('currentDetails');
+            }
             endTapMetric();
             return; // Stop processing, we handled the current station click
           }
@@ -2516,13 +2526,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           // Check for tide station click (has type: 'tide_prediction' or similar)
           if (props?.type === 'tide_prediction' && props?.id && props?.name) {
             console.log('[TIDE PIN CLICK] Feature:', props);
-            const stationInfo = {
-              type: 'tide' as const,
-              id: props.id,
-              name: props.name,
-            };
-            console.log('[TIDE PIN CLICK] Setting selected station:', stationInfo);
-            setSelectedStation(stationInfo);
+            // Update detail chart station (auto-enable detail view if not visible)
+            setDetailChartTideStationId(props.id);
+            if (!showTideDetails) {
+              toggleLayer('tideDetails');
+            }
             endTapMetric();
             return; // Stop processing, we handled the tide station click
           }
@@ -2834,6 +2842,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   return (
     <View style={styles.container}>
+      {/* Map section wrapper - takes remaining space */}
+      <View style={styles.mapSection}>
       <View 
         style={styles.mapTouchWrapper}
         onStartShouldSetResponderCapture={() => {
@@ -4749,14 +4759,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               onPress={(e) => {
                 const feature = e.features?.[0];
                 console.log('[TIDE PIN CLICK] Feature:', feature?.properties);
-                if (feature?.properties) {
-                  const stationInfo = {
-                    type: 'tide' as const,
-                    id: feature.properties.id,
-                    name: feature.properties.name,
-                  };
-                  console.log('[TIDE PIN CLICK] Setting selected station:', stationInfo);
-                  setSelectedStation(stationInfo);
+                if (feature?.properties?.id) {
+                  // Update detail chart station (auto-enable detail view if not visible)
+                  setDetailChartTideStationId(feature.properties.id);
+                  if (!showTideDetails) {
+                    toggleLayer('tideDetails');
+                  }
                 }
               }}
               style={{
@@ -4811,14 +4819,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               onPress={(e) => {
                 const feature = e.features?.[0];
                 console.log('[CURRENT PIN CLICK] Feature:', feature?.properties);
-                if (feature?.properties) {
-                  const stationInfo = {
-                    type: 'current' as const,
-                    id: feature.properties.id,
-                    name: feature.properties.name,
-                  };
-                  console.log('[CURRENT PIN CLICK] Setting selected station:', stationInfo);
-                  setSelectedStation(stationInfo);
+                if (feature?.properties?.id) {
+                  // Update detail chart station (auto-enable detail view if not visible)
+                  setDetailChartCurrentStationId(feature.properties.id);
+                  if (!showCurrentDetails) {
+                    toggleLayer('currentDetails');
+                  }
                 }
               }}
               style={{
@@ -5140,77 +5146,88 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </TouchableOpacity>
       </View>
 
-      {/* Quick Toggles Strip - bottom left of map (hidden when control panel is open) */}
+      {/* Quick Toggles - Vertical strip under layers button (upper left) */}
       {!showControls && (
-      <View style={[styles.quickTogglesStrip, { bottom: showGPSPanel ? 210 : 90 }]}>
-        {/* Layer toggles first */}
+      <View style={[styles.quickTogglesVertical, { top: insets.top + 52, left: 12 }]}>
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showDepthAreas && styles.quickToggleBtnActive]}
+          style={[styles.quickToggleBtnV, showDepthAreas && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('depthAreas')}
         >
           <Text style={styles.quickToggleBtnText}>DEP</Text>
         </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showDepthContours && styles.quickToggleBtnActive]}
+          style={[styles.quickToggleBtnV, showDepthContours && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('depthContours')}
         >
           <Text style={styles.quickToggleBtnText}>CNT</Text>
         </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showSoundings && styles.quickToggleBtnActive]}
+          style={[styles.quickToggleBtnV, showSoundings && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('soundings')}
         >
           <Text style={styles.quickToggleBtnText}>SND</Text>
         </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showLights && styles.quickToggleBtnActive]}
+          style={[styles.quickToggleBtnV, showLights && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('lights')}
         >
           <Text style={styles.quickToggleBtnText}>LTS</Text>
         </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showSeabed && styles.quickToggleBtnActive]}
+          style={[styles.quickToggleBtnV, showSeabed && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('seabed')}
         >
           <Text style={styles.quickToggleBtnText}>SBD</Text>
         </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showBuoys && styles.quickToggleBtnActive]}
+          style={[styles.quickToggleBtnV, showBuoys && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('buoys')}
         >
           <Text style={styles.quickToggleBtnText}>BOY</Text>
         </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showGNISNames && styles.quickToggleBtnActive]}
+          style={[styles.quickToggleBtnV, showGNISNames && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('gnisNames')}
         >
           <Text style={styles.quickToggleBtnText}>NAM</Text>
         </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showTideStations && styles.quickToggleBtnActive]}
+          style={[styles.quickToggleBtnV, showTideStations && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('tideStations')}
         >
           <Text style={styles.quickToggleBtnText}>TID</Text>
         </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={[styles.quickToggleBtn, showCurrentStations && styles.quickToggleBtnActive]}
+          style={[styles.quickToggleBtnV, showCurrentStations && styles.quickToggleBtnActive]}
           onPress={() => toggleLayer('currentStations')}
         >
           <Text style={styles.quickToggleBtnText}>CUR</Text>
         </TouchableOpacity>
-        
-        {/* Zoom controls */}
-        <View style={styles.quickToggleDividerThick} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={styles.quickToggleBtn}
+          style={[styles.quickToggleBtnV, showTideDetails && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('tideDetails')}
+        >
+          <Text style={styles.quickToggleBtnText}>T-D</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDividerH} />
+        <TouchableOpacity 
+          style={[styles.quickToggleBtnV, showCurrentDetails && styles.quickToggleBtnActive]}
+          onPress={() => toggleLayer('currentDetails')}
+        >
+          <Text style={styles.quickToggleBtnText}>C-D</Text>
+        </TouchableOpacity>
+        <View style={styles.quickToggleDividerH} />
+        <TouchableOpacity 
+          style={styles.quickToggleBtnV}
           onPress={() => {
             const newZoom = Math.min(currentZoom + 0.25, effectiveMaxZoom);
             cameraRef.current?.setCamera({ zoomLevel: newZoom, animationDuration: 200 });
@@ -5218,9 +5235,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         >
           <Text style={[styles.quickToggleBtnText, styles.quickToggleBtnTextLarge]}>+</Text>
         </TouchableOpacity>
-        <View style={styles.quickToggleDivider} />
+        <View style={styles.quickToggleDividerH} />
         <TouchableOpacity 
-          style={styles.quickToggleBtn}
+          style={styles.quickToggleBtnV}
           onPress={() => {
             const newZoom = Math.max(currentZoom - 0.25, 0);
             cameraRef.current?.setCamera({ zoomLevel: newZoom, animationDuration: 200 });
@@ -5230,7 +5247,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </TouchableOpacity>
       </View>
       )}
-
 
       {/* Chart Debug Overlay - Shows active chart based on zoom, right of lat/long */}
       <ChartDebugOverlay
@@ -5376,23 +5392,24 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </View>
       )}
 
-      {/* Coordinates - under top menu bar (upper left) */}
-      {showCoords && (
-        <View style={[styles.coordBadge, { top: insets.top + 52, left: 12 }]}>
-          <Text style={styles.coordText}>
-            {Math.abs(centerCoord[1]).toFixed(4)}°{centerCoord[1] >= 0 ? 'N' : 'S'}{' '}
-            {Math.abs(centerCoord[0]).toFixed(4)}°{centerCoord[0] >= 0 ? 'E' : 'W'}
-          </Text>
-        </View>
-      )}
-      {/* Zoom indicator - under center button (upper right) */}
-      {showZoomLevel && (
-        <View style={[styles.zoomBadge, { top: insets.top + 52, right: 12 }, isAtMaxZoom && styles.zoomBadgeAtMax]}>
-          <Text style={[styles.zoomText, isAtMaxZoom && styles.zoomTextAtMax]}>
-            {currentZoom.toFixed(1)}x{isAtMaxZoom ? ' MAX' : ''}
-          </Text>
-        </View>
-      )}
+      {/* Upper right info stack - Coordinates then Zoom (under Day/Dusk/Night) */}
+      <View style={[styles.upperRightInfoStack, { top: insets.top + 52, right: 12 }]}>
+        {showCoords && (
+          <View style={[styles.coordBadge, themedStyles.coordBadge]}>
+            <Text style={[styles.coordText, themedStyles.coordText]}>
+              {Math.abs(centerCoord[1]).toFixed(4)}°{centerCoord[1] >= 0 ? 'N' : 'S'}{' '}
+              {Math.abs(centerCoord[0]).toFixed(4)}°{centerCoord[0] >= 0 ? 'E' : 'W'}
+            </Text>
+          </View>
+        )}
+        {showZoomLevel && (
+          <View style={[styles.zoomBadge, themedStyles.zoomBadge, isAtMaxZoom && styles.zoomBadgeAtMax]}>
+            <Text style={[styles.zoomText, themedStyles.zoomText, isAtMaxZoom && styles.zoomTextAtMax]}>
+              {currentZoom.toFixed(1)}x{isAtMaxZoom ? ' MAX' : ''}
+            </Text>
+          </View>
+        )}
+      </View>
       
       {/* Max zoom indicator - shows when limited and near max */}
       {limitZoomToCharts && currentZoom >= maxAvailableZoom - 2 && (
@@ -6326,6 +6343,33 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
       {/* Compass and GPS overlays are now rendered in App.tsx outside MapLibre hierarchy */}
 
+      </View>
+      {/* End of mapSection wrapper */}
+
+      {/* Detail Charts - Bottom of screen, flex layout sits above tab bar */}
+      {!showControls && (showTideDetails || showCurrentDetails) && (
+      <View style={styles.bottomStack}>
+        <TideDetailChart
+          visible={showTideDetails}
+          selectedStationId={detailChartTideStationId}
+          currentLocation={gpsData.latitude !== null && gpsData.longitude !== null 
+            ? [gpsData.longitude, gpsData.latitude] 
+            : null}
+          tideStations={tideStations}
+          onClearSelection={() => setDetailChartTideStationId(null)}
+        />
+        <CurrentDetailChart
+          visible={showCurrentDetails}
+          selectedStationId={detailChartCurrentStationId}
+          currentLocation={gpsData.latitude !== null && gpsData.longitude !== null 
+            ? [gpsData.longitude, gpsData.latitude] 
+            : null}
+          currentStations={currentStations}
+          onClearSelection={() => setDetailChartCurrentStationId(null)}
+        />
+      </View>
+      )}
+
     </View>
   );
 }
@@ -6816,8 +6860,36 @@ function FFToggle({ label, value, onToggle, indent = false }: { label: string; v
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  // Map section wrapper - holds map and all overlays, takes remaining flex space
+  mapSection: { flex: 1 },
   mapTouchWrapper: { flex: 1 },
   map: { flex: 1 },
+  // Upper right info stack (coords + zoom)
+  upperRightInfoStack: {
+    position: 'absolute',
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  // Bottom stack for detail charts - flex layout, sits above tab bar naturally
+  bottomStack: {
+    // No absolute positioning - flex child that takes its content height
+  },
+  // Vertical quick toggles (left side)
+  quickTogglesVertical: {
+    position: 'absolute',
+    backgroundColor: 'rgba(21, 21, 23, 0.65)',
+  },
+  quickToggleBtnV: {
+    width: 44,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickToggleDividerH: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    marginHorizontal: 4,
+  },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -6875,7 +6947,6 @@ const styles = StyleSheet.create({
   },
   downloadBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   zoomBadge: {
-    position: 'absolute',
     backgroundColor: 'rgba(0,0,0,0.5)',
     paddingHorizontal: 10,
     paddingVertical: 5,
@@ -6904,7 +6975,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   coordBadge: {
-    position: 'absolute',
     backgroundColor: 'rgba(0,0,0,0.5)',
     paddingHorizontal: 10,
     paddingVertical: 5,
@@ -7373,13 +7443,6 @@ const styles = StyleSheet.create({
   },
   
   // Quick toggles strip - minimalist style, bottom left
-  quickTogglesStrip: {
-    position: 'absolute',
-    left: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
   quickToggleBtn: {
     width: 44,
     height: 36,

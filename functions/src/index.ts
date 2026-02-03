@@ -1186,7 +1186,208 @@ export const triggerCurrentPredictionsCleanup = functions
 // ============================================================================
 
 /**
- * Helper: Create SQLite database from prediction data
+ * Helper: Create SQLite database for TIDE predictions only
+ */
+function createTideDatabase(
+  tidePredictions: Record<string, any>,
+  tideStations: Map<string, { name: string; lat: number; lng: number }>
+): { dbPath: string; stats: any } {
+  const dbPath = path.join(os.tmpdir(), `tides-${Date.now()}.db`);
+  const db = new BetterSqlite3(dbPath);
+
+  console.log('[TIDE DB] Creating SQLite database schema...');
+  
+  // Create schema - tide only
+  db.exec(`
+    -- Station metadata
+    CREATE TABLE stations (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      lat REAL NOT NULL,
+      lng REAL NOT NULL
+    );
+    
+    CREATE INDEX idx_stations_location ON stations(lat, lng);
+    
+    -- Tide predictions (High/Low events)
+    CREATE TABLE tide_predictions (
+      station_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      time TEXT NOT NULL,
+      type TEXT NOT NULL,
+      height REAL NOT NULL,
+      PRIMARY KEY (station_id, date, time)
+    );
+    
+    CREATE INDEX idx_tide_date ON tide_predictions(station_id, date);
+    
+    -- Metadata
+    CREATE TABLE metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+
+  console.log('[TIDE DB] Inserting station data...');
+  
+  const insertStation = db.prepare('INSERT OR IGNORE INTO stations (id, name, lat, lng) VALUES (?, ?, ?, ?)');
+  const insertTide = db.prepare('INSERT OR IGNORE INTO tide_predictions (station_id, date, time, type, height) VALUES (?, ?, ?, ?, ?)');
+
+  let stationCount = 0;
+  let eventCount = 0;
+
+  const insertAllData = db.transaction(() => {
+    for (const [stationId, predictions] of Object.entries(tidePredictions)) {
+      const stationInfo = tideStations.get(stationId);
+      if (stationInfo && Array.isArray(predictions)) {
+        insertStation.run(stationId, stationInfo.name, stationInfo.lat, stationInfo.lng);
+        stationCount++;
+        
+        for (const event of predictions) {
+          insertTide.run(stationId, event.date, event.time, event.type, event.height);
+          eventCount++;
+        }
+      }
+    }
+
+    // Insert metadata
+    const insertMetadata = db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?)');
+    insertMetadata.run('version', '1.0');
+    insertMetadata.run('generated', new Date().toISOString());
+    insertMetadata.run('type', 'tides');
+    insertMetadata.run('stations', String(stationCount));
+    insertMetadata.run('events', String(eventCount));
+  });
+
+  console.log('[TIDE DB] Writing all data to database...');
+  insertAllData();
+  
+  console.log('[TIDE DB] Optimizing database...');
+  db.exec('VACUUM');
+  db.exec('ANALYZE');
+  
+  db.close();
+  
+  const stats = { stationCount, eventCount };
+  console.log(`[TIDE DB] Database created: ${dbPath}`);
+  console.log(`[TIDE DB] Stats: ${stationCount} stations, ${eventCount} events`);
+  
+  return { dbPath, stats };
+}
+
+/**
+ * Helper: Create SQLite database for CURRENT predictions only
+ */
+function createCurrentDatabase(
+  currentPredictions: Record<string, any>,
+  currentStations: Map<string, { name: string; lat: number; lng: number }>
+): { dbPath: string; stats: any } {
+  const dbPath = path.join(os.tmpdir(), `currents-${Date.now()}.db`);
+  const db = new BetterSqlite3(dbPath);
+
+  console.log('[CURRENT DB] Creating SQLite database schema...');
+  
+  // Create schema - currents only
+  db.exec(`
+    -- Station metadata
+    CREATE TABLE stations (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      lat REAL NOT NULL,
+      lng REAL NOT NULL
+    );
+    
+    CREATE INDEX idx_stations_location ON stations(lat, lng);
+    
+    -- Current predictions (Slack/Max events)
+    CREATE TABLE current_predictions (
+      station_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      time TEXT NOT NULL,
+      type TEXT NOT NULL,
+      velocity REAL NOT NULL,
+      direction REAL,
+      PRIMARY KEY (station_id, date, time)
+    );
+    
+    CREATE INDEX idx_current_date ON current_predictions(station_id, date);
+    
+    -- Metadata
+    CREATE TABLE metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+
+  console.log('[CURRENT DB] Inserting station data...');
+  
+  const insertStation = db.prepare('INSERT OR IGNORE INTO stations (id, name, lat, lng) VALUES (?, ?, ?, ?)');
+  const insertCurrent = db.prepare('INSERT OR IGNORE INTO current_predictions (station_id, date, time, type, velocity, direction) VALUES (?, ?, ?, ?, ?, ?)');
+
+  let stationCount = 0;
+  let eventCount = 0;
+
+  const insertAllData = db.transaction(() => {
+    for (const [stationId, monthlyData] of Object.entries(currentPredictions)) {
+      const stationInfo = currentStations.get(stationId);
+      if (stationInfo) {
+        insertStation.run(stationId, stationInfo.name, stationInfo.lat, stationInfo.lng);
+        stationCount++;
+        
+        // Unpack monthly data - structure: { '2025-02': { month, d: { '1': 'packed', ... }, dayCount } }
+        for (const [monthKey, monthDoc] of Object.entries(monthlyData as Record<string, any>)) {
+          const packedDays = monthDoc.d || monthDoc;
+          
+          for (const [dayNum, packedString] of Object.entries(packedDays)) {
+            if (typeof packedString !== 'string') continue;
+            
+            const date = `${monthKey}-${String(dayNum).padStart(2, '0')}`;
+            const events = packedString.split('|');
+            
+            for (const eventStr of events) {
+              const parts = eventStr.split(',');
+              if (parts.length >= 4) {
+                const time = parts[0];
+                const type = parts[1];
+                const velocity = parseFloat(parts[2]);
+                const direction = parts[3] ? parseFloat(parts[3]) : null;
+                
+                insertCurrent.run(stationId, date, time, type, velocity, direction);
+                eventCount++;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Insert metadata
+    const insertMetadata = db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?)');
+    insertMetadata.run('version', '1.0');
+    insertMetadata.run('generated', new Date().toISOString());
+    insertMetadata.run('type', 'currents');
+    insertMetadata.run('stations', String(stationCount));
+    insertMetadata.run('events', String(eventCount));
+  });
+
+  console.log('[CURRENT DB] Writing all data to database...');
+  insertAllData();
+  
+  console.log('[CURRENT DB] Optimizing database...');
+  db.exec('VACUUM');
+  db.exec('ANALYZE');
+  
+  db.close();
+  
+  const stats = { stationCount, eventCount };
+  console.log(`[CURRENT DB] Database created: ${dbPath}`);
+  console.log(`[CURRENT DB] Stats: ${stationCount} stations, ${eventCount} events`);
+  
+  return { dbPath, stats };
+}
+
+/**
+ * Helper: Create SQLite database from prediction data (LEGACY - combined)
  */
 function createPredictionDatabase(
   tidePredictions: Record<string, any>,
@@ -1275,25 +1476,93 @@ function createPredictionDatabase(
     }
 
     // Insert current stations and predictions
+    // DEBUG: Track statistics for logging
+    let debugStationsProcessed = 0;
+    let debugMonthsProcessed = 0;
+    let debugDaysProcessed = 0;
+    let debugEventsSkippedNotString = 0;
+    let debugEventsSkippedParts = 0;
+    let debugSampleStation = 'pct4926'; // Use user's test station
+    
+    console.log(`[CURRENT DEBUG] Starting to process ${Object.keys(currentPredictions).length} current stations`);
+    
     for (const [stationId, monthlyData] of Object.entries(currentPredictions)) {
       const stationInfo = currentStations.get(stationId);
       if (stationInfo) {
         insertStation.run(stationId, stationInfo.name, 'current', stationInfo.lat, stationInfo.lng);
         currentStationCount++;
+        debugStationsProcessed++;
+        
+        // DEBUG: Log structure for sample station
+        if (stationId === debugSampleStation) {
+          console.log(`[CURRENT DEBUG] ========== SAMPLE STATION: ${stationId} ==========`);
+          console.log(`[CURRENT DEBUG] monthlyData type: ${typeof monthlyData}`);
+          console.log(`[CURRENT DEBUG] monthlyData keys: ${Object.keys(monthlyData as Record<string, any>).slice(0, 5).join(', ')}...`);
+        }
         
         // Unpack monthly data - structure is: { '2025-02': { month: '2025-02', d: { '1': 'packed', '2': 'packed', ... }, dayCount: 28 } }
         for (const [monthKey, monthDoc] of Object.entries(monthlyData as Record<string, any>)) {
+          debugMonthsProcessed++;
+          
+          // DEBUG: Log month document structure for sample station
+          if (stationId === debugSampleStation && monthKey === '2026-02') {
+            console.log(`[CURRENT DEBUG] --- Month: ${monthKey} ---`);
+            console.log(`[CURRENT DEBUG] monthDoc type: ${typeof monthDoc}`);
+            console.log(`[CURRENT DEBUG] monthDoc keys: ${Object.keys(monthDoc).join(', ')}`);
+            console.log(`[CURRENT DEBUG] monthDoc.d exists: ${!!monthDoc.d}`);
+            console.log(`[CURRENT DEBUG] monthDoc.d type: ${typeof monthDoc.d}`);
+            if (monthDoc.d) {
+              console.log(`[CURRENT DEBUG] monthDoc.d keys (first 5): ${Object.keys(monthDoc.d).slice(0, 5).join(', ')}`);
+            }
+          }
+          
           // The actual daily data is in the 'd' field
           const packedDays = monthDoc.d || monthDoc;
           
+          // DEBUG: Log what we're iterating over
+          if (stationId === debugSampleStation && monthKey === '2026-02') {
+            console.log(`[CURRENT DEBUG] packedDays type: ${typeof packedDays}`);
+            console.log(`[CURRENT DEBUG] packedDays keys: ${Object.keys(packedDays).slice(0, 10).join(', ')}`);
+          }
+          
           for (const [dayNum, packedString] of Object.entries(packedDays)) {
-            if (typeof packedString !== 'string') continue;
+            // DEBUG: Log the raw value for sample
+            if (stationId === debugSampleStation && monthKey === '2026-02' && dayNum === '2') {
+              console.log(`[CURRENT DEBUG] === Day ${dayNum} ===`);
+              console.log(`[CURRENT DEBUG] packedString type: ${typeof packedString}`);
+              console.log(`[CURRENT DEBUG] packedString value: ${String(packedString).substring(0, 300)}`);
+              console.log(`[CURRENT DEBUG] packedString length: ${String(packedString).length}`);
+              console.log(`[CURRENT DEBUG] Contains '|': ${String(packedString).includes('|')}`);
+              console.log(`[CURRENT DEBUG] Count of '|': ${(String(packedString).match(/\|/g) || []).length}`);
+            }
             
+            if (typeof packedString !== 'string') {
+              debugEventsSkippedNotString++;
+              if (stationId === debugSampleStation && monthKey === '2026-02') {
+                console.log(`[CURRENT DEBUG] SKIPPED day ${dayNum}: not a string (type: ${typeof packedString})`);
+              }
+              continue;
+            }
+            
+            debugDaysProcessed++;
             const date = `${monthKey}-${String(dayNum).padStart(2, '0')}`;
-            const events = packedString.split(';');
+            const events = packedString.split('|');
             
+            // DEBUG: Log split results for sample
+            if (stationId === debugSampleStation && monthKey === '2026-02' && dayNum === '2') {
+              console.log(`[CURRENT DEBUG] After split('|'): ${events.length} events`);
+              console.log(`[CURRENT DEBUG] Events array:`, JSON.stringify(events.slice(0, 3)));
+            }
+            
+            let dayEventCount = 0;
             for (const eventStr of events) {
               const parts = eventStr.split(',');
+              
+              // DEBUG: Log parsing for sample
+              if (stationId === debugSampleStation && monthKey === '2026-02' && dayNum === '2' && dayEventCount < 3) {
+                console.log(`[CURRENT DEBUG] Event ${dayEventCount}: "${eventStr}" -> ${parts.length} parts: ${JSON.stringify(parts)}`);
+              }
+              
               if (parts.length >= 4) {
                 const time = parts[0];
                 const type = parts[1];
@@ -1302,12 +1571,39 @@ function createPredictionDatabase(
                 
                 insertCurrent.run(stationId, date, time, type, velocity, direction);
                 currentEventCount++;
+                dayEventCount++;
+              } else {
+                debugEventsSkippedParts++;
+                if (stationId === debugSampleStation && monthKey === '2026-02') {
+                  console.log(`[CURRENT DEBUG] SKIPPED event: only ${parts.length} parts in "${eventStr}"`);
+                }
               }
+            }
+            
+            // DEBUG: Log day summary for sample
+            if (stationId === debugSampleStation && monthKey === '2026-02' && dayNum === '2') {
+              console.log(`[CURRENT DEBUG] Day ${dayNum} complete: ${dayEventCount} events inserted`);
             }
           }
         }
+        
+        // DEBUG: Log station summary for sample
+        if (stationId === debugSampleStation) {
+          console.log(`[CURRENT DEBUG] ========== END SAMPLE STATION ==========`);
+        }
       }
     }
+    
+    // DEBUG: Final summary
+    console.log(`[CURRENT DEBUG] ========== FINAL SUMMARY ==========`);
+    console.log(`[CURRENT DEBUG] Stations processed: ${debugStationsProcessed}`);
+    console.log(`[CURRENT DEBUG] Months processed: ${debugMonthsProcessed}`);
+    console.log(`[CURRENT DEBUG] Days processed: ${debugDaysProcessed}`);
+    console.log(`[CURRENT DEBUG] Events inserted: ${currentEventCount}`);
+    console.log(`[CURRENT DEBUG] Skipped (not string): ${debugEventsSkippedNotString}`);
+    console.log(`[CURRENT DEBUG] Skipped (< 4 parts): ${debugEventsSkippedParts}`);
+    console.log(`[CURRENT DEBUG] Avg events per day: ${(currentEventCount / debugDaysProcessed).toFixed(2)}`);
+    console.log(`[CURRENT DEBUG] ===================================`);
 
     // Insert metadata
     const insertMetadata = db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?)');
@@ -1433,9 +1729,17 @@ export const generatePredictionsBundle = functions
 
       let currentStationsWithData = 0;
       let totalMonthsFetched = 0;
+      const debugSampleStationId = 'pct4926'; // User's test station
 
       for (const stationDoc of currentSnapshot.docs) {
         const data = stationDoc.data();
+        
+        // DEBUG: Log sample station's raw document
+        if (stationDoc.id === debugSampleStationId) {
+          console.log(`[FETCH DEBUG] ===== SAMPLE STATION: ${stationDoc.id} =====`);
+          console.log(`[FETCH DEBUG] Document keys: ${Object.keys(data).join(', ')}`);
+          console.log(`[FETCH DEBUG] monthsAvailable: ${JSON.stringify(data.monthsAvailable?.slice(0, 5))}...`);
+        }
         
         // Get station metadata
         if (data.name && data.latitude != null && data.longitude != null) {
@@ -1462,6 +1766,31 @@ export const generatePredictionsBundle = functions
             if (predData) {
               stationData[month] = predData;
               totalMonthsFetched++;
+              
+              // DEBUG: Log sample station's month document structure
+              if (stationDoc.id === debugSampleStationId && month === '2026-02') {
+                console.log(`[FETCH DEBUG] --- Month ${month} document ---`);
+                console.log(`[FETCH DEBUG] predData keys: ${Object.keys(predData).join(', ')}`);
+                console.log(`[FETCH DEBUG] predData.d exists: ${!!predData.d}`);
+                if (predData.d) {
+                  console.log(`[FETCH DEBUG] predData.d type: ${typeof predData.d}`);
+                  const dKeys = Object.keys(predData.d);
+                  console.log(`[FETCH DEBUG] predData.d has ${dKeys.length} keys: ${dKeys.slice(0, 5).join(', ')}...`);
+                  
+                  // Log day 2's data specifically
+                  const day2Data = predData.d['2'] || predData.d[2];
+                  if (day2Data) {
+                    console.log(`[FETCH DEBUG] predData.d['2'] type: ${typeof day2Data}`);
+                    console.log(`[FETCH DEBUG] predData.d['2'] length: ${String(day2Data).length}`);
+                    console.log(`[FETCH DEBUG] predData.d['2'] value: ${String(day2Data).substring(0, 200)}`);
+                    console.log(`[FETCH DEBUG] predData.d['2'] contains '|': ${String(day2Data).includes('|')}`);
+                    console.log(`[FETCH DEBUG] predData.d['2'] pipe count: ${(String(day2Data).match(/\|/g) || []).length}`);
+                  } else {
+                    console.log(`[FETCH DEBUG] predData.d['2'] is undefined/null`);
+                    console.log(`[FETCH DEBUG] Available keys in d: ${Object.keys(predData.d).join(', ')}`);
+                  }
+                }
+              }
             }
           }
         }
@@ -1469,6 +1798,12 @@ export const generatePredictionsBundle = functions
         if (Object.keys(stationData).length > 0) {
           currentPredictions[stationDoc.id] = stationData;
           currentStationsWithData++;
+          
+          // DEBUG: Log what we're storing for sample station
+          if (stationDoc.id === debugSampleStationId) {
+            console.log(`[FETCH DEBUG] Stored ${Object.keys(stationData).length} months for ${stationDoc.id}`);
+            console.log(`[FETCH DEBUG] ===== END SAMPLE STATION =====`);
+          }
         }
       }
       console.log(`Loaded ${currentStations.size} current stations`);
@@ -1593,8 +1928,564 @@ export const generatePredictionsBundle = functions
     }
   });
 
+// ============================================================================
+// SEPARATE TIDE AND CURRENT BUNDLE GENERATION (New - Split for reliability)
+// ============================================================================
+
 /**
- * TRIGGER BUNDLE GENERATION (Manual)
+ * GENERATE TIDE BUNDLE (Scheduled)
+ * 
+ * Generates SQLite database with tide predictions only.
+ * Runs faster than combined bundle (~3 min vs ~9 min).
+ * 
+ * @trigger Pub/Sub Schedule: 2nd of each month at 3:00 AM Alaska time
+ */
+export const generateTideBundle = functions
+  .runWith({
+    timeoutSeconds: 300, // 5 minutes should be plenty for tides
+    memory: '4GB',
+  })
+  .pubsub.schedule('0 11 2 * *') // 2nd of month at 11:00 UTC (3 AM Alaska)
+  .timeZone('America/Anchorage')
+  .onRun(async (context) => {
+    console.log('[TIDE BUNDLE] Starting tide bundle generation...');
+    const startTime = Date.now();
+
+    try {
+      // Fetch tide predictions from Firestore
+      console.log('[TIDE BUNDLE] Fetching tide predictions from Firestore...');
+      const tideSnapshot = await db.collection('tidal-stations').get();
+      console.log(`[TIDE BUNDLE] Fetched ${tideSnapshot.size} tide station documents`);
+      
+      const tidePredictions: Record<string, any> = {};
+      const tideStations = new Map<string, { name: string; lat: number; lng: number }>();
+
+      for (const doc of tideSnapshot.docs) {
+        const data = doc.data();
+        
+        if (data.name && data.latitude != null && data.longitude != null) {
+          tideStations.set(doc.id, {
+            name: data.name,
+            lat: data.latitude,
+            lng: data.longitude,
+          });
+        }
+        
+        if (data.predictions && typeof data.predictions === 'object') {
+          const events: Array<{date: string; time: string; type: string; height: number}> = [];
+          for (const [date, dayEvents] of Object.entries(data.predictions)) {
+            if (Array.isArray(dayEvents)) {
+              for (const event of dayEvents) {
+                events.push({
+                  date,
+                  time: event.time,
+                  type: event.type,
+                  height: event.height,
+                });
+              }
+            }
+          }
+          if (events.length > 0) {
+            tidePredictions[doc.id] = events;
+          }
+        }
+      }
+      console.log(`[TIDE BUNDLE] Loaded ${tideStations.size} stations with predictions`);
+
+      // Create SQLite database
+      console.log('[TIDE BUNDLE] Creating SQLite database...');
+      const { dbPath, stats } = createTideDatabase(tidePredictions, tideStations);
+      
+      const dbBuffer = fs.readFileSync(dbPath);
+      const uncompressedSize = dbBuffer.length;
+      console.log(`[TIDE BUNDLE] Database size: ${(uncompressedSize / 1024 / 1024).toFixed(2)} MB`);
+
+      // Compress with zip
+      console.log('[TIDE BUNDLE] Compressing database...');
+      const zipPath = path.join(os.tmpdir(), `tides-${Date.now()}.zip`);
+      
+      await new Promise<void>((resolve, reject) => {
+        const output = fs.createWriteStream(zipPath);
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        
+        output.on('close', () => resolve());
+        archive.on('error', (err) => reject(err));
+        archive.pipe(output);
+        archive.file(dbPath, { name: 'tides.db' });
+        archive.finalize();
+      });
+      
+      const zipBuffer = fs.readFileSync(zipPath);
+      const compressedSize = zipBuffer.length;
+      console.log(`[TIDE BUNDLE] Compressed size: ${(compressedSize / 1024 / 1024).toFixed(2)} MB`);
+      
+      // Clean up temp files
+      fs.unlinkSync(dbPath);
+      fs.unlinkSync(zipPath);
+
+      // Upload to Cloud Storage
+      console.log('[TIDE BUNDLE] Uploading to Cloud Storage...');
+      const file = bucket.file('predictions/tides.db.zip');
+      
+      await file.save(zipBuffer, {
+        metadata: {
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=3600',
+          metadata: {
+            version: '1.0',
+            type: 'tides',
+            generated: new Date().toISOString(),
+            stations: String(stats.stationCount),
+            events: String(stats.eventCount),
+          },
+        },
+      });
+
+      const elapsed = Date.now() - startTime;
+      console.log(`[TIDE BUNDLE] ✅ Complete! ${stats.stationCount} stations, ${stats.eventCount} events in ${(elapsed/1000).toFixed(1)}s`);
+      
+      return { success: true, stats, elapsed };
+    } catch (error: any) {
+      console.error('[TIDE BUNDLE] ❌ Error:', error.message);
+      throw error;
+    }
+  });
+
+/**
+ * TRIGGER TIDE BUNDLE (Manual HTTP callable)
+ */
+export const triggerTideBundle = functions
+  .runWith({ timeoutSeconds: 300, memory: '4GB' })
+  .https.onCall(async (data, context) => {
+    console.log('[TIDE BUNDLE] Manual trigger...');
+    const startTime = Date.now();
+
+    try {
+      // Fetch tide predictions from Firestore
+      console.log('[TIDE BUNDLE] Fetching tide predictions from Firestore...');
+      const tideSnapshot = await db.collection('tidal-stations').get();
+      console.log(`[TIDE BUNDLE] Fetched ${tideSnapshot.size} tide station documents`);
+      
+      const tidePredictions: Record<string, any> = {};
+      const tideStations = new Map<string, { name: string; lat: number; lng: number }>();
+
+      for (const doc of tideSnapshot.docs) {
+        const data = doc.data();
+        
+        if (data.name && data.latitude != null && data.longitude != null) {
+          tideStations.set(doc.id, {
+            name: data.name,
+            lat: data.latitude,
+            lng: data.longitude,
+          });
+        }
+        
+        if (data.predictions && typeof data.predictions === 'object') {
+          const events: Array<{date: string; time: string; type: string; height: number}> = [];
+          for (const [date, dayEvents] of Object.entries(data.predictions)) {
+            if (Array.isArray(dayEvents)) {
+              for (const event of dayEvents) {
+                events.push({
+                  date,
+                  time: event.time,
+                  type: event.type,
+                  height: event.height,
+                });
+              }
+            }
+          }
+          if (events.length > 0) {
+            tidePredictions[doc.id] = events;
+          }
+        }
+      }
+      console.log(`[TIDE BUNDLE] Loaded ${tideStations.size} stations with predictions`);
+
+      // Create SQLite database
+      console.log('[TIDE BUNDLE] Creating SQLite database...');
+      const { dbPath, stats } = createTideDatabase(tidePredictions, tideStations);
+      
+      const dbBuffer = fs.readFileSync(dbPath);
+      const uncompressedSize = dbBuffer.length;
+      console.log(`[TIDE BUNDLE] Database size: ${(uncompressedSize / 1024 / 1024).toFixed(2)} MB`);
+
+      // Compress with zip
+      console.log('[TIDE BUNDLE] Compressing database...');
+      const zipPath = path.join(os.tmpdir(), `tides-${Date.now()}.zip`);
+      
+      await new Promise<void>((resolve, reject) => {
+        const output = fs.createWriteStream(zipPath);
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        
+        output.on('close', () => resolve());
+        archive.on('error', (err) => reject(err));
+        archive.pipe(output);
+        archive.file(dbPath, { name: 'tides.db' });
+        archive.finalize();
+      });
+      
+      const zipBuffer = fs.readFileSync(zipPath);
+      const compressedSize = zipBuffer.length;
+      console.log(`[TIDE BUNDLE] Compressed size: ${(compressedSize / 1024 / 1024).toFixed(2)} MB`);
+      
+      // Clean up temp files
+      fs.unlinkSync(dbPath);
+      fs.unlinkSync(zipPath);
+
+      // Upload to Cloud Storage
+      console.log('[TIDE BUNDLE] Uploading to Cloud Storage...');
+      const file = bucket.file('predictions/tides.db.zip');
+      
+      await file.save(zipBuffer, {
+        metadata: {
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=3600',
+          metadata: {
+            version: '1.0',
+            type: 'tides',
+            generated: new Date().toISOString(),
+            stations: String(stats.stationCount),
+            events: String(stats.eventCount),
+          },
+        },
+      });
+
+      const elapsed = Date.now() - startTime;
+      console.log(`[TIDE BUNDLE] ✅ Complete! ${stats.stationCount} stations, ${stats.eventCount} events in ${(elapsed/1000).toFixed(1)}s`);
+      
+      return { success: true, stats, elapsed };
+    } catch (error: any) {
+      console.error('[TIDE BUNDLE] ❌ Error:', error.message);
+      throw new functions.https.HttpsError('internal', error.message);
+    }
+  });
+
+/**
+ * Helper: Fetch all monthly predictions for a station in PARALLEL
+ */
+async function fetchStationMonthsParallel(
+  stationId: string,
+  monthsAvailable: string[]
+): Promise<Record<string, any>> {
+  const stationData: Record<string, any> = {};
+  
+  // Fetch all months in parallel
+  const results = await Promise.all(
+    monthsAvailable.map(async (month) => {
+      const predDoc = await db.collection(CURRENTS_COLLECTION)
+        .doc(stationId)
+        .collection('predictions')
+        .doc(month)
+        .get();
+      
+      if (predDoc.exists) {
+        return { month, data: predDoc.data() };
+      }
+      return null;
+    })
+  );
+  
+  for (const result of results) {
+    if (result && result.data) {
+      stationData[result.month] = result.data;
+    }
+  }
+  
+  return stationData;
+}
+
+/**
+ * GENERATE CURRENTS BUNDLE (Scheduled)
+ * 
+ * Generates SQLite database with current predictions only.
+ * This is the larger of the two bundles (~7.5M events).
+ * Uses PARALLEL fetching for much faster Firestore reads.
+ * 
+ * @trigger Pub/Sub Schedule: 2nd of each month at 3:05 AM Alaska time (5 min after tides)
+ */
+export const generateCurrentsBundle = functions
+  .runWith({
+    timeoutSeconds: 540, // 9 minutes for currents (larger dataset)
+    memory: '8GB',
+  })
+  .pubsub.schedule('5 11 2 * *') // 2nd of month at 11:05 UTC (3:05 AM Alaska)
+  .timeZone('America/Anchorage')
+  .onRun(async (context) => {
+    console.log('[CURRENTS BUNDLE] Starting currents bundle generation...');
+    const startTime = Date.now();
+
+    try {
+      // Fetch current predictions from Firestore
+      console.log('[CURRENTS BUNDLE] Fetching current station documents...');
+      const currentSnapshot = await db.collection(CURRENTS_COLLECTION)
+        .where(admin.firestore.FieldPath.documentId(), '!=', 'catalog')
+        .get();
+      
+      console.log(`[CURRENTS BUNDLE] Fetched ${currentSnapshot.size} current station documents`);
+      
+      const currentPredictions: Record<string, any> = {};
+      const currentStations = new Map<string, { name: string; lat: number; lng: number }>();
+      let totalMonthsFetched = 0;
+
+      // Process stations in batches for parallel fetching
+      const BATCH_SIZE = 50; // Process 50 stations at a time
+      const stationDocs = currentSnapshot.docs;
+      
+      console.log(`[CURRENTS BUNDLE] Processing ${stationDocs.length} stations in batches of ${BATCH_SIZE}...`);
+      
+      for (let i = 0; i < stationDocs.length; i += BATCH_SIZE) {
+        const batch = stationDocs.slice(i, i + BATCH_SIZE);
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(stationDocs.length / BATCH_SIZE);
+        
+        // Process this batch of stations in parallel
+        const batchResults = await Promise.all(
+          batch.map(async (stationDoc) => {
+            const data = stationDoc.data();
+            
+            let stationInfo = null;
+            if (data.name && data.latitude != null && data.longitude != null) {
+              stationInfo = {
+                id: stationDoc.id,
+                name: data.name,
+                lat: data.latitude,
+                lng: data.longitude,
+              };
+            }
+            
+            const monthsAvailable = data.monthsAvailable || [];
+            const stationData = await fetchStationMonthsParallel(stationDoc.id, monthsAvailable);
+            
+            return {
+              stationId: stationDoc.id,
+              stationInfo,
+              stationData,
+              monthCount: Object.keys(stationData).length,
+            };
+          })
+        );
+        
+        // Collect results from this batch
+        for (const result of batchResults) {
+          if (result.stationInfo) {
+            currentStations.set(result.stationId, {
+              name: result.stationInfo.name,
+              lat: result.stationInfo.lat,
+              lng: result.stationInfo.lng,
+            });
+          }
+          if (Object.keys(result.stationData).length > 0) {
+            currentPredictions[result.stationId] = result.stationData;
+            totalMonthsFetched += result.monthCount;
+          }
+        }
+        
+        console.log(`[CURRENTS BUNDLE] Batch ${batchNum}/${totalBatches} complete (${totalMonthsFetched} months so far)`);
+      }
+      
+      console.log(`[CURRENTS BUNDLE] Loaded ${currentStations.size} stations, ${totalMonthsFetched} months`);
+
+      // Create SQLite database
+      console.log('[CURRENTS BUNDLE] Creating SQLite database...');
+      const { dbPath, stats } = createCurrentDatabase(currentPredictions, currentStations);
+      
+      const dbBuffer = fs.readFileSync(dbPath);
+      const uncompressedSize = dbBuffer.length;
+      console.log(`[CURRENTS BUNDLE] Database size: ${(uncompressedSize / 1024 / 1024).toFixed(2)} MB`);
+
+      // Compress with zip
+      console.log('[CURRENTS BUNDLE] Compressing database...');
+      const zipPath = path.join(os.tmpdir(), `currents-${Date.now()}.zip`);
+      
+      await new Promise<void>((resolve, reject) => {
+        const output = fs.createWriteStream(zipPath);
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        
+        output.on('close', () => resolve());
+        archive.on('error', (err) => reject(err));
+        archive.pipe(output);
+        archive.file(dbPath, { name: 'currents.db' });
+        archive.finalize();
+      });
+      
+      const zipBuffer = fs.readFileSync(zipPath);
+      const compressedSize = zipBuffer.length;
+      console.log(`[CURRENTS BUNDLE] Compressed size: ${(compressedSize / 1024 / 1024).toFixed(2)} MB`);
+      
+      // Clean up temp files
+      fs.unlinkSync(dbPath);
+      fs.unlinkSync(zipPath);
+
+      // Upload to Cloud Storage
+      console.log('[CURRENTS BUNDLE] Uploading to Cloud Storage...');
+      const file = bucket.file('predictions/currents.db.zip');
+      
+      await file.save(zipBuffer, {
+        metadata: {
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=3600',
+          metadata: {
+            version: '1.0',
+            type: 'currents',
+            generated: new Date().toISOString(),
+            stations: String(stats.stationCount),
+            events: String(stats.eventCount),
+          },
+        },
+      });
+
+      const elapsed = Date.now() - startTime;
+      console.log(`[CURRENTS BUNDLE] ✅ Complete! ${stats.stationCount} stations, ${stats.eventCount} events in ${(elapsed/1000).toFixed(1)}s`);
+      
+      return { success: true, stats, elapsed };
+    } catch (error: any) {
+      console.error('[CURRENTS BUNDLE] ❌ Error:', error.message);
+      throw error;
+    }
+  });
+
+/**
+ * TRIGGER CURRENTS BUNDLE (Manual HTTP callable)
+ * Uses PARALLEL fetching for much faster Firestore reads.
+ */
+export const triggerCurrentsBundle = functions
+  .runWith({ timeoutSeconds: 540, memory: '8GB' })
+  .https.onCall(async (data, context) => {
+    console.log('[CURRENTS BUNDLE] Manual trigger (parallel fetch)...');
+    const startTime = Date.now();
+
+    try {
+      // Fetch current predictions from Firestore
+      console.log('[CURRENTS BUNDLE] Fetching current station documents...');
+      const currentSnapshot = await db.collection(CURRENTS_COLLECTION)
+        .where(admin.firestore.FieldPath.documentId(), '!=', 'catalog')
+        .get();
+      
+      console.log(`[CURRENTS BUNDLE] Fetched ${currentSnapshot.size} current station documents`);
+      
+      const currentPredictions: Record<string, any> = {};
+      const currentStations = new Map<string, { name: string; lat: number; lng: number }>();
+      let totalMonthsFetched = 0;
+
+      // Process stations in batches for parallel fetching
+      const BATCH_SIZE = 50; // Process 50 stations at a time
+      const stationDocs = currentSnapshot.docs;
+      
+      console.log(`[CURRENTS BUNDLE] Processing ${stationDocs.length} stations in batches of ${BATCH_SIZE}...`);
+      
+      for (let i = 0; i < stationDocs.length; i += BATCH_SIZE) {
+        const batch = stationDocs.slice(i, i + BATCH_SIZE);
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(stationDocs.length / BATCH_SIZE);
+        
+        // Process this batch of stations in parallel
+        const batchResults = await Promise.all(
+          batch.map(async (stationDoc) => {
+            const docData = stationDoc.data();
+            
+            let stationInfo = null;
+            if (docData.name && docData.latitude != null && docData.longitude != null) {
+              stationInfo = {
+                id: stationDoc.id,
+                name: docData.name,
+                lat: docData.latitude,
+                lng: docData.longitude,
+              };
+            }
+            
+            const monthsAvailable = docData.monthsAvailable || [];
+            const stationData = await fetchStationMonthsParallel(stationDoc.id, monthsAvailable);
+            
+            return {
+              stationId: stationDoc.id,
+              stationInfo,
+              stationData,
+              monthCount: Object.keys(stationData).length,
+            };
+          })
+        );
+        
+        // Collect results from this batch
+        for (const result of batchResults) {
+          if (result.stationInfo) {
+            currentStations.set(result.stationId, {
+              name: result.stationInfo.name,
+              lat: result.stationInfo.lat,
+              lng: result.stationInfo.lng,
+            });
+          }
+          if (Object.keys(result.stationData).length > 0) {
+            currentPredictions[result.stationId] = result.stationData;
+            totalMonthsFetched += result.monthCount;
+          }
+        }
+        
+        console.log(`[CURRENTS BUNDLE] Batch ${batchNum}/${totalBatches} complete (${totalMonthsFetched} months so far)`);
+      }
+      
+      console.log(`[CURRENTS BUNDLE] Loaded ${currentStations.size} stations, ${totalMonthsFetched} months`);
+
+      // Create SQLite database
+      console.log('[CURRENTS BUNDLE] Creating SQLite database...');
+      const { dbPath, stats } = createCurrentDatabase(currentPredictions, currentStations);
+      
+      const dbBuffer = fs.readFileSync(dbPath);
+      const uncompressedSize = dbBuffer.length;
+      console.log(`[CURRENTS BUNDLE] Database size: ${(uncompressedSize / 1024 / 1024).toFixed(2)} MB`);
+
+      // Compress with zip
+      console.log('[CURRENTS BUNDLE] Compressing database...');
+      const zipPath = path.join(os.tmpdir(), `currents-${Date.now()}.zip`);
+      
+      await new Promise<void>((resolve, reject) => {
+        const output = fs.createWriteStream(zipPath);
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        
+        output.on('close', () => resolve());
+        archive.on('error', (err) => reject(err));
+        archive.pipe(output);
+        archive.file(dbPath, { name: 'currents.db' });
+        archive.finalize();
+      });
+      
+      const zipBuffer = fs.readFileSync(zipPath);
+      const compressedSize = zipBuffer.length;
+      console.log(`[CURRENTS BUNDLE] Compressed size: ${(compressedSize / 1024 / 1024).toFixed(2)} MB`);
+      
+      // Clean up temp files
+      fs.unlinkSync(dbPath);
+      fs.unlinkSync(zipPath);
+
+      // Upload to Cloud Storage
+      console.log('[CURRENTS BUNDLE] Uploading to Cloud Storage...');
+      const file = bucket.file('predictions/currents.db.zip');
+      
+      await file.save(zipBuffer, {
+        metadata: {
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=3600',
+          metadata: {
+            version: '1.0',
+            type: 'currents',
+            generated: new Date().toISOString(),
+            stations: String(stats.stationCount),
+            events: String(stats.eventCount),
+          },
+        },
+      });
+
+      const elapsed = Date.now() - startTime;
+      console.log(`[CURRENTS BUNDLE] ✅ Complete! ${stats.stationCount} stations, ${stats.eventCount} events in ${(elapsed/1000).toFixed(1)}s`);
+      
+      return { success: true, stats, elapsed };
+    } catch (error: any) {
+      console.error('[CURRENTS BUNDLE] ❌ Error:', error.message);
+      throw new functions.https.HttpsError('internal', error.message);
+    }
+  });
+
+/**
+ * TRIGGER BUNDLE GENERATION (Manual - LEGACY)
  * 
  * Manual trigger for testing bundle generation.
  */

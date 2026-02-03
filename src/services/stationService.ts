@@ -162,7 +162,7 @@ async function fetchAllStations(): Promise<void> {
         predictions: undefined,
       }));
       
-      console.log(`Cached ${cachedTideStations.length} tide stations and ${cachedCurrentStations.length} current stations in memory`);
+      console.log(`Cached ${cachedTideStations?.length || 0} tide stations and ${cachedCurrentStations?.length || 0} current stations in memory`);
       
       // Save to AsyncStorage for persistence
       await saveToStorage();
@@ -402,146 +402,136 @@ function unpackCurrentPredictions(packedDays: Record<number, string>): Record<st
 }
 
 /**
- * Download ALL tide and current predictions for ALL stations
- * This is a one-time bulk download (~300MB) for offline access
+ * Helper function to download and extract a single database file
  */
+async function downloadAndExtractDatabase(
+  storagePath: string,
+  localDbName: string,
+  onProgress?: (percent: number) => void
+): Promise<{ success: boolean; size: number; error?: string }> {
+  const { storage } = await import('../config/firebase');
+  const { ref, getDownloadURL } = await import('firebase/storage');
+  
+  const compressedPath = `${FileSystem.cacheDirectory}${localDbName}.zip`;
+  const dbPath = `${FileSystem.documentDirectory}${localDbName}`;
+  
+  try {
+    // Get download URL
+    const storageRef = ref(storage, storagePath);
+    const downloadUrl = await getDownloadURL(storageRef);
+    
+    // Download
+    const downloadResumable = FileSystem.createDownloadResumable(
+      downloadUrl,
+      compressedPath,
+      {},
+      (downloadProgress) => {
+        const { totalBytesWritten, totalBytesExpectedToWrite } = downloadProgress;
+        if (totalBytesExpectedToWrite > 0) {
+          const percent = Math.round((totalBytesWritten / totalBytesExpectedToWrite) * 100);
+          onProgress?.(percent);
+        }
+      }
+    );
+    
+    const result = await downloadResumable.downloadAsync();
+    if (!result) {
+      throw new Error('Download failed - no result returned');
+    }
+    
+    // Extract
+    const targetDirectory = FileSystem.documentDirectory;
+    if (!targetDirectory) {
+      throw new Error('Document directory not available');
+    }
+    await unzip(compressedPath, targetDirectory);
+    
+    // Clean up compressed file
+    await FileSystem.deleteAsync(compressedPath, { idempotent: true });
+    
+    // Verify extraction
+    const dbInfo = await FileSystem.getInfoAsync(dbPath);
+    if (!dbInfo.exists) {
+      throw new Error(`Extracted database file not found: ${dbPath}`);
+    }
+    
+    return { success: true, size: dbInfo.size || 0 };
+  } catch (error: any) {
+    return { success: false, size: 0, error: error.message };
+  }
+}
+
 /**
- * Download predictions SQLite database from Cloud Storage
- * Downloads compressed .db.gz file, decompresses to .db on disk
- * Ready for immediate querying with expo-sqlite
+ * Download ALL tide and current predictions (separate databases)
+ * Downloads tides.db.zip and currents.db.zip in parallel
  */
 export async function downloadAllPredictions(
   onProgress?: (message: string, percent: number) => void
 ): Promise<{ success: boolean; error?: string; stats?: any }> {
   try {
     console.log('[PREDICTIONS] ========================================');
-    console.log('[PREDICTIONS] Starting SQLite database download...');
+    console.log('[PREDICTIONS] Starting parallel database downloads...');
     console.log('[PREDICTIONS] ========================================');
-    onProgress?.('Downloading predictions database...', 10);
     
     const startTime = Date.now();
-    let downloadTime = 0;
-    let extractTime = 0;
-    let dbPath = '';
-    let dbInfo: any = null;
+    let tidesProgress = 0;
+    let currentsProgress = 0;
     
-    // Use Firebase Storage SDK to get download URL with proper auth/headers
-    const { storage } = await import('../config/firebase');
-    const { ref, getDownloadURL } = await import('firebase/storage');
+    const updateProgress = () => {
+      const combinedProgress = Math.round((tidesProgress + currentsProgress) / 2);
+      const uiPercent = 10 + Math.round(combinedProgress * 0.8); // 10-90%
+      onProgress?.(`Downloading... Tides: ${tidesProgress}%, Currents: ${currentsProgress}%`, uiPercent);
+    };
     
-    console.log('[PREDICTIONS] Getting download URL from Firebase Storage...');
-    const storageRef = ref(storage, 'predictions/predictions.db.zip');
-    const downloadUrl = await getDownloadURL(storageRef);
-    console.log('[PREDICTIONS] Got signed URL');
+    onProgress?.('Downloading prediction databases...', 10);
     
-    // Download to cache directory using expo-file-system
-    const compressedPath = `${FileSystem.cacheDirectory}predictions.db.zip`;
-    console.log('[PREDICTIONS] Download path:', compressedPath);
-    console.log('[PREDICTIONS] Starting download...');
+    // Download both databases in parallel
+    console.log('[PREDICTIONS] Starting parallel downloads: tides.db.zip and currents.db.zip');
     
-    const downloadStartTime = Date.now();
+    const [tidesResult, currentsResult] = await Promise.all([
+      downloadAndExtractDatabase(
+        'predictions/tides.db.zip',
+        'tides.db',
+        (p) => { tidesProgress = p; updateProgress(); }
+      ),
+      downloadAndExtractDatabase(
+        'predictions/currents.db.zip',
+        'currents.db',
+        (p) => { currentsProgress = p; updateProgress(); }
+      ),
+    ]);
     
-    try {
-      const downloadResumable = FileSystem.createDownloadResumable(
-        downloadUrl,
-        compressedPath,
-        {},
-        (downloadProgress) => {
-          const { totalBytesWritten, totalBytesExpectedToWrite } = downloadProgress;
-          if (totalBytesExpectedToWrite > 0) {
-            const percent = Math.round((totalBytesWritten / totalBytesExpectedToWrite) * 100);
-            const downloadedMB = (totalBytesWritten / 1024 / 1024).toFixed(1);
-            const totalMB = (totalBytesExpectedToWrite / 1024 / 1024).toFixed(1);
-            
-            // Log every 10%
-            if (percent % 10 === 0) {
-              console.log(`[PREDICTIONS] Download progress: ${percent}% (${downloadedMB} MB / ${totalMB} MB)`);
-            }
-            
-            const uiPercent = 10 + Math.round((totalBytesWritten / totalBytesExpectedToWrite) * 40);
-            onProgress?.(`Downloading... ${percent}%`, uiPercent);
-          }
-        }
-      );
-      
-      const result = await downloadResumable.downloadAsync();
-      
-      if (!result) {
-        throw new Error('Download failed - no result returned');
-      }
-      
-      downloadTime = Date.now() - downloadStartTime;
-      const fileInfo = await FileSystem.getInfoAsync(compressedPath);
-      
-      if (!fileInfo.exists) {
-        throw new Error('Downloaded file does not exist');
-      }
-      
-      console.log('[PREDICTIONS] ✅ Download complete!');
-      console.log(`[PREDICTIONS] Compressed size: ${(fileInfo.size / 1024 / 1024).toFixed(2)} MB`);
-      console.log(`[PREDICTIONS] Download time: ${downloadTime}ms (${(downloadTime/1000).toFixed(1)}s)`);
-      
-    } catch (error: any) {
-      console.error('[PREDICTIONS] ❌ Download failed:', error);
-      throw new Error(`Download failed: ${error.message || 'Unknown error'}`);
+    // Check results
+    if (!tidesResult.success) {
+      throw new Error(`Tides download failed: ${tidesResult.error}`);
+    }
+    if (!currentsResult.success) {
+      throw new Error(`Currents download failed: ${currentsResult.error}`);
     }
     
-    onProgress?.('Extracting database...', 60);
+    console.log('[PREDICTIONS] ✅ Both downloads complete!');
+    console.log(`[PREDICTIONS] Tides database size: ${(tidesResult.size / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`[PREDICTIONS] Currents database size: ${(currentsResult.size / 1024 / 1024).toFixed(2)} MB`);
     
-    // Extract zip to document directory using native code (NO JS MEMORY USAGE!)
-    console.log('[PREDICTIONS] ----------------------------------------');
-    console.log('[PREDICTIONS] Extracting database file (native code)...');
-    const extractStartTime = Date.now();
-    
-    const targetDirectory = FileSystem.documentDirectory;
-    console.log('[PREDICTIONS] Target directory:', targetDirectory);
-    
-    // This happens in Native C++/Java - Zero JavaScript memory usage!
-    const extractedPath = await unzip(compressedPath, targetDirectory);
-    console.log('[PREDICTIONS] ✅ Extracted to:', extractedPath);
-    
-    extractTime = Date.now() - extractStartTime;
-    console.log(`[PREDICTIONS] ✅ Extraction completed in ${extractTime}ms (${(extractTime/1000).toFixed(1)}s)`);
-    
-    // Clean up compressed file
-    await FileSystem.deleteAsync(compressedPath, { idempotent: true });
-    console.log('[PREDICTIONS] ✅ Cleaned up zip file');
-    
-    // Verify the extracted database
-    dbPath = `${FileSystem.documentDirectory}predictions.db`;
-    dbInfo = await FileSystem.getInfoAsync(dbPath);
-    
-    if (!dbInfo.exists) {
-      throw new Error('Extracted database file not found');
-    }
-    
-    console.log('[PREDICTIONS] ✅ Database verified!');
-    console.log(`[PREDICTIONS] Database size: ${(dbInfo.size / 1024 / 1024).toFixed(2)} MB`);
-    console.log(`[PREDICTIONS] Database path: ${dbPath}`);
-    
-      onProgress?.('Saving metadata...', 95);
+    onProgress?.('Saving metadata...', 95);
     
     // Save metadata
-    console.log('[PREDICTIONS] ----------------------------------------');
-    console.log('[PREDICTIONS] Saving metadata to AsyncStorage...');
+    const totalSize = tidesResult.size + currentsResult.size;
     const stats = {
-      tideStations: 576,
-      tideEvents: 2352621,
-      currentStations: 936,
-      currentEvents: 994529,
-      bundleVersion: '1.0',
+      tidesDbSize: tidesResult.size,
+      currentsDbSize: currentsResult.size,
+      totalSize: totalSize,
+      bundleVersion: '2.0', // New version for split databases
       generated: new Date().toISOString(),
-      databaseSize: dbInfo.size,
-      databasePath: dbPath,
-      format: 'sqlite',
+      format: 'sqlite-split',
     };
     
     await AsyncStorage.multiSet([
       [STORAGE_KEY_PREDICTIONS_TIMESTAMP, Date.now().toString()],
       [STORAGE_KEY_PREDICTIONS_STATS, JSON.stringify(stats)],
-      ['@XNautical:predictionsDbPath', dbPath],
+      ['@XNautical:tidesDbPath', `${FileSystem.documentDirectory}tides.db`],
+      ['@XNautical:currentsDbPath', `${FileSystem.documentDirectory}currents.db`],
     ]);
-    console.log('[PREDICTIONS] ✅ Metadata saved');
     
     predictionsLoaded = true;
     
@@ -549,42 +539,26 @@ export async function downloadAllPredictions(
     console.log('[PREDICTIONS] ========================================');
     console.log('[PREDICTIONS] 🎉 DOWNLOAD COMPLETE!');
     console.log('[PREDICTIONS] ========================================');
-    console.log(`[PREDICTIONS] Total time: ${totalTime}ms (${(totalTime/1000).toFixed(1)}s)`);
-    console.log(`[PREDICTIONS] Breakdown:`);
-    console.log(`[PREDICTIONS]   - Download: ${downloadTime}ms (${(downloadTime/1000).toFixed(1)}s)`);
-    console.log(`[PREDICTIONS]   - Extract: ${extractTime}ms (${(extractTime/1000).toFixed(1)}s)`);
-    console.log(`[PREDICTIONS] Database location: ${dbPath}`);
-    console.log(`[PREDICTIONS] Database size: ${(dbInfo.size / 1024 / 1024).toFixed(2)} MB`);
-    console.log(`[PREDICTIONS] Ready to query with expo-sqlite!`);
+    console.log(`[PREDICTIONS] Total time: ${(totalTime/1000).toFixed(1)}s`);
+    console.log(`[PREDICTIONS] Total size: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
+    console.log('[PREDICTIONS] Ready to query with expo-sqlite!');
     console.log('[PREDICTIONS] ========================================');
+    
     onProgress?.('Download complete!', 100);
-    
-    // Save metadata to AsyncStorage for UI display
-    const finalStats = {
-      ...stats,
-      totalSizeMB: dbInfo.size / 1024 / 1024,
-      downloadTimeSec: Math.round(totalTime / 1000),
-      downloadNetworkTimeSec: Math.round(downloadTime / 1000),
-      extractTimeSec: Math.round(extractTime / 1000),
-    };
-    
-    const timestamp = Date.now().toString();
-    await AsyncStorage.multiSet([
-      [STORAGE_KEY_PREDICTIONS_STATS, JSON.stringify(finalStats)],
-      [STORAGE_KEY_PREDICTIONS_TIMESTAMP, timestamp],
-    ]);
-    console.log('[PREDICTIONS] Saved metadata to AsyncStorage');
     
     return {
       success: true,
-      stats: finalStats,
+      stats: {
+        ...stats,
+        totalSizeMB: totalSize / 1024 / 1024,
+        downloadTimeSec: Math.round(totalTime / 1000),
+      },
     };
   } catch (error: any) {
     console.error('[PREDICTIONS] ========================================');
     console.error('[PREDICTIONS] ❌ ERROR OCCURRED!');
     console.error('[PREDICTIONS] ========================================');
     console.error('[PREDICTIONS] Error:', error.message);
-    console.error('[PREDICTIONS] Full error details:', JSON.stringify(error, null, 2));
     console.error('[PREDICTIONS] ========================================');
     return {
       success: false,
@@ -678,23 +652,37 @@ export async function getPredictionsStats(): Promise<any> {
 export async function arePredictionsDownloaded(): Promise<boolean> {
   try {
     console.log('[PREDICTIONS] Checking if predictions are downloaded...');
-    // Check if the SQLite database file exists
-    const dbPath = `${FileSystem.documentDirectory}predictions.db`;
-    console.log('[PREDICTIONS] Database path:', dbPath);
-    const dbInfo = await FileSystem.getInfoAsync(dbPath);
-    console.log('[PREDICTIONS] Database info:', dbInfo);
     
-    if (dbInfo.exists) {
-      console.log('[PREDICTIONS] ✅ Database file exists:', dbPath);
-      console.log('[PREDICTIONS] Database size:', (dbInfo.size / 1024 / 1024).toFixed(2), 'MB');
+    // Check for new split databases (tides.db and currents.db)
+    const tidesDbPath = `${FileSystem.documentDirectory}tides.db`;
+    const currentsDbPath = `${FileSystem.documentDirectory}currents.db`;
+    
+    const [tidesInfo, currentsInfo] = await Promise.all([
+      FileSystem.getInfoAsync(tidesDbPath),
+      FileSystem.getInfoAsync(currentsDbPath),
+    ]);
+    
+    // If both new databases exist, we're good
+    if (tidesInfo.exists && currentsInfo.exists) {
+      console.log('[PREDICTIONS] ✅ Both split databases exist');
+      console.log(`[PREDICTIONS] Tides: ${((tidesInfo.size || 0) / 1024 / 1024).toFixed(2)} MB`);
+      console.log(`[PREDICTIONS] Currents: ${((currentsInfo.size || 0) / 1024 / 1024).toFixed(2)} MB`);
       return true;
     }
     
-    console.log('[PREDICTIONS] Database file does not exist, checking AsyncStorage...');
-    // Fallback: check timestamp in AsyncStorage
-    const timestamp = await AsyncStorage.getItem(STORAGE_KEY_PREDICTIONS_TIMESTAMP);
-    console.log('[PREDICTIONS] AsyncStorage timestamp:', timestamp);
-    return !!timestamp;
+    // Fallback: check for legacy combined database
+    const legacyDbPath = `${FileSystem.documentDirectory}predictions.db`;
+    const legacyInfo = await FileSystem.getInfoAsync(legacyDbPath);
+    
+    if (legacyInfo.exists) {
+      console.log('[PREDICTIONS] ⚠️ Legacy combined database exists (needs re-download for split format)');
+      console.log(`[PREDICTIONS] Legacy size: ${((legacyInfo.size || 0) / 1024 / 1024).toFixed(2)} MB`);
+      // Return false to trigger re-download with new split format
+      return false;
+    }
+    
+    console.log('[PREDICTIONS] No database files found');
+    return false;
   } catch (error) {
     console.error('[PREDICTIONS] Error checking if downloaded:', error);
     return false;
@@ -710,17 +698,38 @@ export async function clearPredictions(): Promise<void> {
   cachedCurrentPredictions = {};
   predictionsLoaded = false;
   
-  // Delete the SQLite database file
-  try {
-    const dbPath = `${FileSystem.documentDirectory}predictions.db`;
-    const dbInfo = await FileSystem.getInfoAsync(dbPath);
-    if (dbInfo.exists) {
-      console.log('[PREDICTIONS] Deleting database file:', dbPath);
-      await FileSystem.deleteAsync(dbPath);
-      console.log('[PREDICTIONS] Database file deleted');
+  // Close any open database connections
+  if (tideDb) {
+    try { await tideDb.closeAsync(); } catch (e) {}
+    tideDb = null;
+  }
+  if (currentDb) {
+    try { await currentDb.closeAsync(); } catch (e) {}
+    currentDb = null;
+  }
+  if (db) {
+    try { await db.closeAsync(); } catch (e) {}
+    db = null;
+  }
+  
+  // Delete all database files (split and legacy)
+  const dbPaths = [
+    `${FileSystem.documentDirectory}tides.db`,
+    `${FileSystem.documentDirectory}currents.db`,
+    `${FileSystem.documentDirectory}predictions.db`, // Legacy
+  ];
+  
+  for (const dbPath of dbPaths) {
+    try {
+      const dbInfo = await FileSystem.getInfoAsync(dbPath);
+      if (dbInfo.exists) {
+        console.log('[PREDICTIONS] Deleting database file:', dbPath);
+        await FileSystem.deleteAsync(dbPath);
+        console.log('[PREDICTIONS] Database file deleted');
+      }
+    } catch (error) {
+      console.error('[PREDICTIONS] Error deleting database file:', dbPath, error);
     }
-  } catch (error) {
-    console.error('[PREDICTIONS] Error deleting database file:', error);
   }
   
   // Clear AsyncStorage metadata
@@ -729,6 +738,9 @@ export async function clearPredictions(): Promise<void> {
     STORAGE_KEY_CURRENT_PREDICTIONS,
     STORAGE_KEY_PREDICTIONS_TIMESTAMP,
     STORAGE_KEY_PREDICTIONS_STATS,
+    '@XNautical:tidesDbPath',
+    '@XNautical:currentsDbPath',
+    '@XNautical:predictionsDbPath',
   ]);
   
   console.log('[PREDICTIONS] Predictions cleared successfully');
@@ -749,13 +761,46 @@ export function getCurrentPredictionsForDate(stationId: string, date: string): C
 }
 
 // ============================================================================
-// SQLITE DATABASE QUERIES
+// SQLITE DATABASE QUERIES (Separate Tide and Current Databases)
 // ============================================================================
 
+let tideDb: SQLite.SQLiteDatabase | null = null;
+let currentDb: SQLite.SQLiteDatabase | null = null;
+// Legacy combined database (for backward compatibility)
 let db: SQLite.SQLiteDatabase | null = null;
 
 /**
- * Open the SQLite database
+ * Open the TIDE predictions database
+ */
+async function openTideDatabase(): Promise<SQLite.SQLiteDatabase> {
+  if (tideDb) return tideDb;
+  
+  const dbPath = `${FileSystem.documentDirectory}tides.db`;
+  
+  console.log('[SQLITE] Opening tide database:', dbPath);
+  tideDb = await SQLite.openDatabaseAsync(dbPath);
+  console.log('[SQLITE] Tide database opened successfully');
+  
+  return tideDb;
+}
+
+/**
+ * Open the CURRENT predictions database
+ */
+async function openCurrentDatabase(): Promise<SQLite.SQLiteDatabase> {
+  if (currentDb) return currentDb;
+  
+  const dbPath = `${FileSystem.documentDirectory}currents.db`;
+  
+  console.log('[SQLITE] Opening current database:', dbPath);
+  currentDb = await SQLite.openDatabaseAsync(dbPath);
+  console.log('[SQLITE] Current database opened successfully');
+  
+  return currentDb;
+}
+
+/**
+ * Open the legacy combined SQLite database (backward compatibility)
  */
 async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (db) return db;
@@ -771,16 +816,133 @@ async function openDatabase(): Promise<SQLite.SQLiteDatabase> {
 }
 
 /**
+ * Calculate distance between two points using Haversine formula
+ * Returns distance in kilometers
+ */
+function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+/**
+ * Find the nearest tide station to a given location
+ * Returns station info with distance
+ */
+export function findNearestTideStation(
+  lat: number, 
+  lng: number, 
+  stations: TideStation[]
+): { station: TideStation; distance: number } | null {
+  if (!stations || stations.length === 0) return null;
+  
+  let nearest: TideStation | null = null;
+  let minDistance = Infinity;
+  
+  for (const station of stations) {
+    if (station.lat && station.lng) {
+      const distance = haversineDistance(lat, lng, station.lat, station.lng);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearest = station;
+      }
+    }
+  }
+  
+  return nearest ? { station: nearest, distance: minDistance } : null;
+}
+
+/**
+ * Find the nearest current station to a given location
+ * Returns station info with distance
+ */
+export function findNearestCurrentStation(
+  lat: number, 
+  lng: number, 
+  stations: CurrentStation[]
+): { station: CurrentStation; distance: number } | null {
+  if (!stations || stations.length === 0) return null;
+  
+  let nearest: CurrentStation | null = null;
+  let minDistance = Infinity;
+  
+  for (const station of stations) {
+    if (station.lat && station.lng) {
+      const distance = haversineDistance(lat, lng, station.lat, station.lng);
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearest = station;
+      }
+    }
+  }
+  
+  return nearest ? { station: nearest, distance: minDistance } : null;
+}
+
+/**
+ * Get predictions for a station for a specific date range (for chart rendering)
+ * Returns array of predictions sorted by date/time
+ */
+export async function getStationPredictionsForRange(
+  stationId: string, 
+  stationType: 'tide' | 'current',
+  startDate: Date,
+  endDate: Date
+): Promise<any[]> {
+  try {
+    // Use the appropriate database based on station type
+    const database = stationType === 'tide' 
+      ? await openTideDatabase() 
+      : await openCurrentDatabase();
+    
+    const startDateStr = startDate.toISOString().split('T')[0];
+    const endDateStr = endDate.toISOString().split('T')[0];
+    
+    let predictions: any[] = [];
+    
+    if (stationType === 'tide') {
+      predictions = await database.getAllAsync(
+        `SELECT * FROM tide_predictions 
+         WHERE station_id = ? AND date >= ? AND date <= ? 
+         ORDER BY date, time`,
+        [stationId, startDateStr, endDateStr]
+      );
+    } else {
+      predictions = await database.getAllAsync(
+        `SELECT * FROM current_predictions 
+         WHERE station_id = ? AND date >= ? AND date <= ? 
+         ORDER BY date, time`,
+        [stationId, startDateStr, endDateStr]
+      );
+    }
+    
+    return predictions;
+  } catch (error) {
+    console.error(`[PREDICTIONS] Error getting predictions for range:`, error);
+    return [];
+  }
+}
+
+/**
  * Get station info and predictions for today
  */
 export async function getStationPredictions(stationId: string, stationType: 'tide' | 'current') {
   try {
-    const database = await openDatabase();
+    // Use the appropriate database based on station type
+    const database = stationType === 'tide' 
+      ? await openTideDatabase() 
+      : await openCurrentDatabase();
     
-    // Get station info
+    // Get station info (stations table exists in both split databases)
     const station = await database.getFirstAsync(
-      'SELECT * FROM stations WHERE id = ? AND type = ?',
-      [stationId, stationType]
+      'SELECT * FROM stations WHERE id = ?',
+      [stationId]
     );
     
     if (!station) {
@@ -807,7 +969,7 @@ export async function getStationPredictions(stationId: string, stationType: 'tid
       );
     }
     
-    console.log(`[SQLITE] Found ${predictions.length} predictions for ${station.name} on ${dateStr}`);
+    console.log(`[SQLITE] Found ${predictions.length} predictions for ${(station as any).name} on ${dateStr}`);
     
     return {
       station,
