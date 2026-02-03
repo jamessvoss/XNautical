@@ -49,6 +49,7 @@ import { stateReporter } from '../services/stateReporter';
 import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
 import { fetchTideStations, fetchCurrentStations, getCachedTideStations, getCachedCurrentStations, TideStation, CurrentStation } from '../services/stationService';
+import StationInfoModal from './StationInfoModal';
 
 // MapLibre doesn't require an access token
 
@@ -509,6 +510,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Tide and Current station data
   const [tideStations, setTideStations] = useState<TideStation[]>([]);
   const [currentStations, setCurrentStations] = useState<CurrentStation[]>([]);
+  
+  // Station modal state
+  const [selectedStation, setSelectedStation] = useState<{
+    type: 'tide' | 'current';
+    id: string;
+    name: string;
+  } | null>(null);
   const [showPopulatedNames, setShowPopulatedNames] = useState(true); // Towns, ports
   const [showStreamNames, setShowStreamNames] = useState(false);    // Rivers, creeks (off by default - too many)
   const [showLakeNames, setShowLakeNames] = useState(false);        // Lakes (off by default)
@@ -2485,6 +2493,42 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const queryTime = Date.now() - queryStart;
       logger.debug(LogCategory.UI, `Feature query: ${queryTime}ms (${allFeatures?.features?.length || 0} raw features)`);
       
+      // FIRST: Check for tide/current station clicks (these take priority)
+      // Since ShapeSource features don't have layer.id, we identify them by properties
+      if (allFeatures?.features) {
+        for (const feature of allFeatures.features) {
+          const props = feature.properties;
+          
+          // Check for current station click (has 'bin' property)
+          if (props?.bin !== undefined && props?.id && props?.name) {
+            console.log('[CURRENT PIN CLICK] Feature:', props);
+            const stationInfo = {
+              type: 'current' as const,
+              id: props.id,
+              name: props.name,
+            };
+            console.log('[CURRENT PIN CLICK] Setting selected station:', stationInfo);
+            setSelectedStation(stationInfo);
+            endTapMetric();
+            return; // Stop processing, we handled the current station click
+          }
+          
+          // Check for tide station click (has type: 'tide_prediction' or similar)
+          if (props?.type === 'tide_prediction' && props?.id && props?.name) {
+            console.log('[TIDE PIN CLICK] Feature:', props);
+            const stationInfo = {
+              type: 'tide' as const,
+              id: props.id,
+              name: props.name,
+            };
+            console.log('[TIDE PIN CLICK] Setting selected station:', stationInfo);
+            setSelectedStation(stationInfo);
+            endTapMetric();
+            return; // Stop processing, we handled the tide station click
+          }
+        }
+      }
+      
       // Filter to nautical features from ACTIVE/VISIBLE layers only
       const filterStart = Date.now();
       
@@ -2530,8 +2574,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         84: showMoorings,
         // Shoreline construction
         122: showShorelineConstruction,
-        // Depth/land areas (always queryable for context)
-        42: showDepthAreas,
+        // Depth areas - EXCLUDED from click-to-identify (not useful)
+        42: false,
+        // Land areas (always queryable for context)
         71: showLand,
       };
       
@@ -4678,191 +4723,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </MapLibre.ShapeSource>
         )}
 
-        {/* GNIS Place Names Layer - Reference data from USGS */}
-        {/* IMPORTANT: maxZoomLevel must match tippecanoe --maximum-zoom (14) */}
-        {/* to prevent overzoom rendering issues */}
-        {/* NOTE: These layers use aboveLayerID to ensure they appear above all chart content */}
-        {tileServerReady && gnisAvailable && showGNISNames && showPlaceNames && (
-          <MapLibre.VectorSource
-            id="gnis-names-source"
-            tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/gnis_names_ak/{z}/{x}/{y}.pbf`]}
-            maxZoomLevel={14}
-          >
-            {/* Water features - Bays, channels, sounds (highest priority) */}
-            {/* textAllowOverlap: true ensures GNIS shows regardless of chart symbols */}
-            <MapLibre.SymbolLayer
-              id="gnis-water-names"
-              sourceLayerID="gnis_names"
-              filter={['==', ['get', 'CATEGORY'], 'water']}
-              minZoomLevel={6}
-              style={{
-                textField: ['get', 'NAME'],
-                textFont: ['Noto Sans Regular'],
-                textSize: scaledGnisFontSizes.water,
-                textColor: '#0066CC',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: scaledGnisHalo,
-                textOpacity: scaledGnisOpacity,
-                textAllowOverlap: false,  // Declutter - don't overlap other labels
-                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
-                symbolPlacement: 'point',
-                textAnchor: 'center',
-                textMaxWidth: 10,
-                symbolSortKey: ['get', 'PRIORITY'],  // Use GNIS priority field
-                visibility: showWaterNames ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* Coastal features - Capes, islands, beaches, rocks, reefs */}
-            <MapLibre.SymbolLayer
-              id="gnis-coastal-names"
-              sourceLayerID="gnis_names"
-              filter={['==', ['get', 'CATEGORY'], 'coastal']}
-              minZoomLevel={6}
-              style={{
-                textField: ['get', 'NAME'],
-                textFont: ['Noto Sans Regular'],
-                textSize: scaledGnisFontSizes.coastal,
-                textColor: '#5D4037',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: scaledGnisHalo,
-                textOpacity: scaledGnisOpacity,
-                textAllowOverlap: false,  // Declutter - don't overlap other labels
-                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
-                symbolPlacement: 'point',
-                textAnchor: 'center',
-                textMaxWidth: 10,
-                symbolSortKey: ['get', 'PRIORITY'],
-                visibility: showCoastalNames ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* Landmark features - Summits, glaciers, cliffs */}
-            <MapLibre.SymbolLayer
-              id="gnis-landmark-names"
-              sourceLayerID="gnis_names"
-              filter={['==', ['get', 'CATEGORY'], 'landmark']}
-              minZoomLevel={8}
-              style={{
-                textField: ['get', 'NAME'],
-                textFont: ['Noto Sans Italic'],
-                textSize: scaledGnisFontSizes.landmark,
-                textColor: '#666666',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: scaledGnisHalo,
-                textOpacity: scaledGnisOpacity,
-                textAllowOverlap: false,  // Declutter - don't overlap other labels
-                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
-                symbolPlacement: 'point',
-                textAnchor: 'center',
-                textMaxWidth: 10,
-                symbolSortKey: ['get', 'PRIORITY'],
-                visibility: showLandmarkNames ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* Populated places - Towns, ports */}
-            <MapLibre.SymbolLayer
-              id="gnis-populated-names"
-              sourceLayerID="gnis_names"
-              filter={['==', ['get', 'CATEGORY'], 'populated']}
-              minZoomLevel={6}
-              style={{
-                textField: ['get', 'NAME'],
-                textFont: ['Noto Sans Bold'],
-                textSize: scaledGnisFontSizes.populated,
-                textColor: '#CC0000',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: scaledGnisHalo * 1.25,
-                textOpacity: scaledGnisOpacity,
-                textAllowOverlap: false,  // Declutter - don't overlap other labels
-                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
-                symbolPlacement: 'point',
-                textAnchor: 'center',
-                textMaxWidth: 10,
-                symbolSortKey: ['get', 'PRIORITY'],
-                visibility: showPopulatedNames ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* Stream names - Rivers, creeks (off by default) */}
-            <MapLibre.SymbolLayer
-              id="gnis-stream-names"
-              sourceLayerID="gnis_names"
-              filter={['==', ['get', 'CATEGORY'], 'stream']}
-              minZoomLevel={9}
-              style={{
-                textField: ['get', 'NAME'],
-                textFont: ['Noto Sans Italic'],
-                textSize: scaledGnisFontSizes.stream,
-                textColor: '#3399FF',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: scaledGnisHalo * 0.875,
-                textOpacity: scaledGnisOpacity,
-                textAllowOverlap: false,  // Declutter - don't overlap other labels
-                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
-                symbolPlacement: 'point',
-                textAnchor: 'center',
-                textMaxWidth: 10,
-                symbolSortKey: ['get', 'PRIORITY'],
-                visibility: showStreamNames ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* Lake names (off by default) */}
-            <MapLibre.SymbolLayer
-              id="gnis-lake-names"
-              sourceLayerID="gnis_names"
-              filter={['==', ['get', 'CATEGORY'], 'lake']}
-              minZoomLevel={9}
-              style={{
-                textField: ['get', 'NAME'],
-                textFont: ['Noto Sans Italic'],
-                textSize: scaledGnisFontSizes.lake,
-                textColor: '#66CCFF',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: scaledGnisHalo * 0.875,
-                textOpacity: scaledGnisOpacity,
-                textAllowOverlap: false,  // Declutter - don't overlap other labels
-                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
-                symbolPlacement: 'point',
-                textAnchor: 'center',
-                textMaxWidth: 10,
-                symbolSortKey: ['get', 'PRIORITY'],
-                visibility: showLakeNames ? 'visible' : 'none',
-              }}
-            />
-            
-            {/* Terrain features - Valleys, basins (off by default) */}
-            <MapLibre.SymbolLayer
-              id="gnis-terrain-names"
-              sourceLayerID="gnis_names"
-              filter={['==', ['get', 'CATEGORY'], 'terrain']}
-              minZoomLevel={10}
-              style={{
-                textField: ['get', 'NAME'],
-                textFont: ['Noto Sans Regular'],
-                textSize: scaledGnisFontSizes.terrain,
-                textColor: '#999966',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: scaledGnisHalo * 0.875,
-                textOpacity: scaledGnisOpacity,
-                textAllowOverlap: false,  // Declutter - don't overlap other labels
-                textIgnorePlacement: false, // Reserve space so other GNIS categories don't overlap
-                symbolPlacement: 'point',
-                textAnchor: 'center',
-                textMaxWidth: 10,
-                symbolSortKey: ['get', 'PRIORITY'],
-                visibility: showTerrainNames ? 'visible' : 'none',
-              }}
-            />
-          </MapLibre.VectorSource>
-        )}
-
-        {/* Tide Stations Layer */}
+        {/* Tide Stations Layer - Rendered BEFORE GNIS so names appear on top */}
         {showTideStations && tideStations.length > 0 && (
           <>
-            {console.log(`[MAP] Rendering tide stations layer: ${tideStations.length} stations, showTideStations=${showTideStations}`)}
             <MapLibre.ShapeSource
             id="tide-stations-source"
             shape={{
@@ -4883,6 +4746,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           >
             <MapLibre.CircleLayer
               id="tide-stations-circle"
+              onPress={(e) => {
+                const feature = e.features?.[0];
+                console.log('[TIDE PIN CLICK] Feature:', feature?.properties);
+                if (feature?.properties) {
+                  const stationInfo = {
+                    type: 'tide' as const,
+                    id: feature.properties.id,
+                    name: feature.properties.name,
+                  };
+                  console.log('[TIDE PIN CLICK] Setting selected station:', stationInfo);
+                  setSelectedStation(stationInfo);
+                }
+              }}
               style={{
                 circleRadius: 8,
                 circleColor: '#0066CC',
@@ -4906,12 +4782,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
           </MapLibre.ShapeSource>
+          </>
         )}
 
         {/* Current Stations Layer */}
         {showCurrentStations && currentStations.length > 0 && (
           <>
-            {console.log(`[MAP] Rendering current stations layer: ${currentStations.length} stations, showCurrentStations=${showCurrentStations}`)}
             <MapLibre.ShapeSource
             id="current-stations-source"
             shape={{
@@ -4932,6 +4808,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           >
             <MapLibre.CircleLayer
               id="current-stations-circle"
+              onPress={(e) => {
+                const feature = e.features?.[0];
+                console.log('[CURRENT PIN CLICK] Feature:', feature?.properties);
+                if (feature?.properties) {
+                  const stationInfo = {
+                    type: 'current' as const,
+                    id: feature.properties.id,
+                    name: feature.properties.name,
+                  };
+                  console.log('[CURRENT PIN CLICK] Setting selected station:', stationInfo);
+                  setSelectedStation(stationInfo);
+                }
+              }}
               style={{
                 circleRadius: 8,
                 circleColor: '#CC0066',
@@ -4955,6 +4844,181 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
           </MapLibre.ShapeSource>
+          </>
+        )}
+
+        {/* ===== GNIS NAMES MOVED HERE TO RENDER ON TOP ===== */}
+
+        {/* GNIS Place Names Layer - Reference data from USGS */}
+        {/* IMPORTANT: Rendered AFTER tide/current stations so names appear on top */}
+        {tileServerReady && gnisAvailable && showGNISNames && showPlaceNames && (
+          <MapLibre.VectorSource
+            id="gnis-names-source"
+            tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/gnis_names_ak/{z}/{x}/{y}.pbf`]}
+            maxZoomLevel={14}
+          >
+            {/* Water features - Bays, channels, sounds */}
+            <MapLibre.SymbolLayer
+              id="gnis-water-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'water']}
+              minZoomLevel={6}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['Noto Sans Regular'],
+                textSize: scaledGnisFontSizes.water,
+                textColor: '#0066CC',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledGnisHalo,
+                textOpacity: scaledGnisOpacity,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
+                visibility: showWaterNames ? 'visible' : 'none',
+              }}
+            />
+            
+            <MapLibre.SymbolLayer
+              id="gnis-coastal-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'coastal']}
+              minZoomLevel={6}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['Noto Sans Regular'],
+                textSize: scaledGnisFontSizes.coastal,
+                textColor: '#5D4037',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledGnisHalo,
+                textOpacity: scaledGnisOpacity,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
+                visibility: showCoastalNames ? 'visible' : 'none',
+              }}
+            />
+            
+            <MapLibre.SymbolLayer
+              id="gnis-landmark-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'landmark']}
+              minZoomLevel={8}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['Noto Sans Regular'], // Changed from Italic to Regular
+                textSize: scaledGnisFontSizes.landmark,
+                textColor: '#666666',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledGnisHalo,
+                textOpacity: scaledGnisOpacity,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
+                visibility: showLandmarkNames ? 'visible' : 'none',
+              }}
+            />
+            
+            <MapLibre.SymbolLayer
+              id="gnis-populated-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'populated']}
+              minZoomLevel={6}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['Noto Sans Regular'], // Changed from Bold to Regular
+                textSize: scaledGnisFontSizes.populated,
+                textColor: '#CC0000',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledGnisHalo * 1.25,
+                textOpacity: scaledGnisOpacity,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
+                visibility: showPopulatedNames ? 'visible' : 'none',
+              }}
+            />
+            
+            <MapLibre.SymbolLayer
+              id="gnis-stream-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'stream']}
+              minZoomLevel={9}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['Noto Sans Regular'], // Changed from Italic to Regular
+                textSize: scaledGnisFontSizes.stream,
+                textColor: '#3399FF',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledGnisHalo * 0.875,
+                textOpacity: scaledGnisOpacity,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
+                visibility: showStreamNames ? 'visible' : 'none',
+              }}
+            />
+            
+            <MapLibre.SymbolLayer
+              id="gnis-lake-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'lake']}
+              minZoomLevel={9}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['Noto Sans Regular'], // Changed from Italic to Regular
+                textSize: scaledGnisFontSizes.lake,
+                textColor: '#66CCFF',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledGnisHalo * 0.875,
+                textOpacity: scaledGnisOpacity,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
+                visibility: showLakeNames ? 'visible' : 'none',
+              }}
+            />
+            
+            <MapLibre.SymbolLayer
+              id="gnis-terrain-names"
+              sourceLayerID="gnis_names"
+              filter={['==', ['get', 'CATEGORY'], 'terrain']}
+              minZoomLevel={10}
+              style={{
+                textField: ['get', 'NAME'],
+                textFont: ['Noto Sans Regular'],
+                textSize: scaledGnisFontSizes.terrain,
+                textColor: '#999966',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledGnisHalo * 0.875,
+                textOpacity: scaledGnisOpacity,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                symbolPlacement: 'point',
+                textAnchor: 'center',
+                textMaxWidth: 10,
+                symbolSortKey: ['get', 'PRIORITY'],
+                visibility: showTerrainNames ? 'visible' : 'none',
+              }}
+            />
+          </MapLibre.VectorSource>
         )}
 
         {/* GPS Position Marker - always show when GPS available */}
@@ -6247,6 +6311,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           feature={selectedFeature} 
           formattedProps={formattedFeatureProps}
           onClose={closeFeatureInspector}
+        />
+      )}
+
+      {/* Tide/Current Station Modal */}
+      {selectedStation && (
+        <StationInfoModal
+          visible={selectedStation !== null}
+          stationId={selectedStation?.id || null}
+          stationType={selectedStation?.type || null}
+          onClose={() => setSelectedStation(null)}
         />
       )}
 

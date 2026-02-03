@@ -8,6 +8,12 @@ service firebase.storage {
       allow write: if false; // Only admin/server can upload charts
     }
     
+    // Predictions bundle - publicly readable
+    match /predictions/{allPaths=**} {
+      allow read: if true; // Public read access
+      allow write: if false; // Only server can upload
+    }
+    
     // User uploads (if needed in future)
     match /users/{userId}/{allPaths=**} {
       allow read: if request.auth != null;

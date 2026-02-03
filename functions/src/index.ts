@@ -27,6 +27,11 @@ import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import axios from 'axios';
 import * as nodemailer from 'nodemailer';
+import BetterSqlite3 from 'better-sqlite3';
+import archiver from 'archiver';
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
 
 // Load environment variables
 require('dotenv').config();
@@ -34,6 +39,7 @@ require('dotenv').config();
 // Initialize Firebase Admin
 admin.initializeApp();
 const db = admin.firestore();
+const bucket = admin.storage().bucket();
 
 // ============================================================================
 // TIDE & CURRENT STATION LOCATIONS
@@ -109,6 +115,153 @@ export const getStationLocations = functions
     } catch (error) {
       console.error('Error fetching station locations:', error);
       throw new functions.https.HttpsError('internal', 'Failed to fetch station locations');
+    }
+  });
+
+/**
+ * Get all tide and current predictions for ALL stations
+ * Returns ONLY High/Low events (not full tide curves)
+ * Used for bulk download to device for offline access
+ * 
+ * TIDE PREDICTIONS:
+ *   - Stored directly in document as predictions: { "YYYY-MM-DD": [TideEvent, ...] }
+ *   - ~4 H/L events per day
+ *   - ~3 years of data per station
+ * 
+ * CURRENT PREDICTIONS:
+ *   - Stored in subcollection predictions/{month}
+ *   - Packed string format: "HH:MM,f|e|s,velocity,direction|..."
+ *   - ~6 events per day (flood/ebb/slack cycles)
+ *   - ~3 years of data per station
+ */
+export const getStationPredictions = functions
+  .runWith({
+    memory: '8GB',       // Increased to 8GB (max for Gen 1) to handle ~700MB peak memory usage
+    timeoutSeconds: 540, // 9 minutes max
+  })
+  .https.onCall(async (data, context) => {
+    try {
+      console.log('Packaging all station predictions...');
+      const startTime = Date.now();
+      
+      // TIDE PREDICTIONS: Process in smaller batches to avoid OOM
+      console.log('Fetching tide predictions...');
+      const tideSnapshot = await db.collection('tidal-stations')
+        .select('predictions')
+        .get();
+      
+      const tidePredictions: Record<string, Record<string, any[]>> = {};
+      let tideStationCount = 0;
+      let tideDateCount = 0;
+      
+      // Process tide stations in batches to manage memory
+      const TIDE_BATCH_SIZE = 50;
+      for (let i = 0; i < tideSnapshot.docs.length; i += TIDE_BATCH_SIZE) {
+        const batch = tideSnapshot.docs.slice(i, i + TIDE_BATCH_SIZE);
+        
+        for (const doc of batch) {
+          const preds = doc.get('predictions');
+          if (preds && typeof preds === 'object') {
+            tidePredictions[doc.id] = preds;
+            tideStationCount++;
+            tideDateCount += Object.keys(preds).length;
+          }
+        }
+        
+        // Log progress
+        if ((i + TIDE_BATCH_SIZE) % 100 === 0) {
+          console.log(`Processed ${Math.min(i + TIDE_BATCH_SIZE, tideSnapshot.docs.length)}/${tideSnapshot.docs.length} tide stations`);
+        }
+      }
+      
+      console.log(`Packaged ${tideStationCount} tide stations with ${tideDateCount} total dates`);
+      
+      // CURRENT PREDICTIONS: Get all station docs with months available
+      console.log('Fetching current predictions...');
+      const currentStationsSnapshot = await db.collection('current-stations-packed')
+        .where(admin.firestore.FieldPath.documentId(), '!=', 'catalog')
+        .select('monthsAvailable')
+        .get();
+      
+      const currentPredictions: Record<string, Record<string, any>> = {};
+      let currentStationCount = 0;
+      let currentMonthCount = 0;
+      
+      // Process current stations in smaller batches
+      const CURRENT_BATCH_SIZE = 25; // Smaller because we fetch subcollections
+      const stationDocs = currentStationsSnapshot.docs;
+      
+      for (let i = 0; i < stationDocs.length; i += CURRENT_BATCH_SIZE) {
+        const batch = stationDocs.slice(i, i + CURRENT_BATCH_SIZE);
+        
+        for (const stationDoc of batch) {
+          const monthsAvailable = stationDoc.get('monthsAvailable');
+          if (!monthsAvailable || !Array.isArray(monthsAvailable)) continue;
+          
+          currentPredictions[stationDoc.id] = {};
+          
+          // Fetch monthly predictions for this station
+          for (const month of monthsAvailable) {
+            try {
+              const predDoc = await db.collection('current-stations-packed')
+                .doc(stationDoc.id)
+                .collection('predictions')
+                .doc(month)
+                .get();
+              
+              if (predDoc.exists) {
+                const predData = predDoc.data();
+                if (predData && predData.d) {
+                  currentPredictions[stationDoc.id][month] = predData.d;
+                  currentMonthCount++;
+                }
+              }
+            } catch (err) {
+              console.warn(`Error fetching predictions for ${stationDoc.id}/${month}:`, err);
+            }
+          }
+          
+          currentStationCount++;
+        }
+        
+        // Log progress every 50 stations
+        if ((i + CURRENT_BATCH_SIZE) % 50 === 0 || (i + CURRENT_BATCH_SIZE) >= stationDocs.length) {
+          console.log(`Progress: ${Math.min(i + CURRENT_BATCH_SIZE, stationDocs.length)}/${stationDocs.length} current stations processed`);
+        }
+      }
+      
+      console.log(`Packaged ${currentStationCount} current stations with ${currentMonthCount} total months`);
+      
+      const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+      console.log(`Packaging complete in ${elapsedSec} seconds`);
+      
+      // Calculate data size estimate (for logging) - but don't stringify everything at once
+      const tideSampleSize = JSON.stringify(Object.values(tidePredictions)[0] || {}).length;
+      const currentSampleSize = JSON.stringify(Object.values(currentPredictions)[0] || {}).length;
+      const estimatedTideMB = (tideSampleSize * tideStationCount / 1024 / 1024).toFixed(1);
+      const estimatedCurrentMB = (currentSampleSize * currentStationCount / 1024 / 1024).toFixed(1);
+      
+      console.log(`Estimated tide predictions: ~${estimatedTideMB} MB`);
+      console.log(`Estimated current predictions: ~${estimatedCurrentMB} MB`);
+      
+      return {
+        tidePredictions,
+        currentPredictions,
+        timestamp: new Date().toISOString(),
+        stats: {
+          tideStations: tideStationCount,
+          tideDates: tideDateCount,
+          currentStations: currentStationCount,
+          currentMonths: currentMonthCount,
+          tideSizeMB: parseFloat(estimatedTideMB),
+          currentSizeMB: parseFloat(estimatedCurrentMB),
+          totalSizeMB: parseFloat(estimatedTideMB) + parseFloat(estimatedCurrentMB),
+          processingTimeSec: elapsedSec,
+        },
+      };
+    } catch (error) {
+      console.error('Error fetching station predictions:', error);
+      throw new functions.https.HttpsError('internal', 'Failed to fetch station predictions');
     }
   });
 
@@ -785,6 +938,852 @@ export const triggerTidePredictionsUpdate = functions
       };
     } catch (error: any) {
       console.error('Error in manual tide predictions update:', error);
+      return { success: false, message: error.message };
+    }
+  });
+
+/**
+ * CLEANUP CURRENT PREDICTIONS (Monthly Maintenance)
+ * 
+ * Maintains a 3-year rolling window of current predictions.
+ * Deletes monthly prediction subcollection documents older than 1 year.
+ * 
+ * @trigger Pub/Sub Schedule: 1st of each month at 2:00 AM Alaska time
+ * @schedule '0 10 1 * *' (10:00 UTC on 1st = 2 AM Alaska)
+ * 
+ * Data Strategy:
+ * - Keeps 1 year of historical data
+ * - Keeps 2 years of future predictions
+ * - Total: 3-year rolling window (36 months)
+ */
+export const cleanupCurrentPredictions = functions
+  .runWith({
+    timeoutSeconds: 540,
+    memory: '1GB',
+  })
+  .pubsub.schedule('0 10 1 * *') // 1st of month at 10:00 UTC (2 AM Alaska)
+  .timeZone('America/Anchorage')
+  .onRun(async (context) => {
+    console.log('Starting monthly current predictions cleanup...');
+    const startTime = new Date();
+
+    const now = new Date();
+    
+    // Calculate cutoff month (1 year ago)
+    const oneYearAgo = new Date(now);
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const cutoffMonth = `${oneYearAgo.getFullYear()}-${String(oneYearAgo.getMonth() + 1).padStart(2, '0')}`;
+    
+    console.log(`Deleting prediction months older than ${cutoffMonth}`);
+
+    try {
+      // Get all current station documents (exclude catalog)
+      const stationsSnapshot = await db.collection(CURRENTS_COLLECTION)
+        .where(admin.firestore.FieldPath.documentId(), '!=', 'catalog')
+        .select('monthsAvailable')
+        .get();
+      
+      console.log(`Processing ${stationsSnapshot.docs.length} current stations...`);
+
+      let stationsProcessed = 0;
+      let monthsDeleted = 0;
+      let skipCount = 0;
+
+      const BATCH_SIZE = 25;
+
+      for (let i = 0; i < stationsSnapshot.docs.length; i += BATCH_SIZE) {
+        const batch = stationsSnapshot.docs.slice(i, i + BATCH_SIZE);
+
+        for (const stationDoc of batch) {
+          try {
+            const monthsAvailable = stationDoc.get('monthsAvailable') || [];
+            
+            if (!Array.isArray(monthsAvailable) || monthsAvailable.length === 0) {
+              skipCount++;
+              continue;
+            }
+
+            // Split months into keep vs delete
+            const monthsToKeep: string[] = [];
+            const monthsToDelete: string[] = [];
+            
+            for (const month of monthsAvailable) {
+              if (month < cutoffMonth) {
+                monthsToDelete.push(month);
+              } else {
+                monthsToKeep.push(month);
+              }
+            }
+
+            // Delete old monthly prediction documents from subcollection
+            for (const month of monthsToDelete) {
+              await db.collection(CURRENTS_COLLECTION)
+                .doc(stationDoc.id)
+                .collection('predictions')
+                .doc(month)
+                .delete();
+              monthsDeleted++;
+            }
+
+            // Update monthsAvailable array if anything was deleted
+            if (monthsToDelete.length > 0) {
+              await stationDoc.ref.update({
+                monthsAvailable: monthsToKeep,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+            }
+
+            stationsProcessed++;
+          } catch (err) {
+            console.warn(`Error processing station ${stationDoc.id}:`, err);
+            skipCount++;
+          }
+        }
+
+        // Log progress every 50 stations
+        if ((i + BATCH_SIZE) % 50 === 0 || (i + BATCH_SIZE) >= stationsSnapshot.docs.length) {
+          console.log(`Progress: ${Math.min(i + BATCH_SIZE, stationsSnapshot.docs.length)}/${stationsSnapshot.docs.length} stations`);
+        }
+      }
+
+      console.log(`Cleanup complete: ${stationsProcessed} stations processed, ${monthsDeleted} old months deleted, ${skipCount} skipped`);
+      
+      // Send notification email
+      await sendJobNotification({
+        functionName: 'Current Predictions Cleanup',
+        status: skipCount === 0 ? 'success' : 'partial',
+        startTime,
+        endTime: new Date(),
+        details: {
+          'Stations Processed': stationsProcessed,
+          'Months Deleted': monthsDeleted,
+          'Stations Skipped': skipCount,
+          'Cutoff Month': cutoffMonth,
+          'Next Run': '1st of next month, 2:00 AM Alaska'
+        }
+      });
+      
+      return null;
+    } catch (error: any) {
+      console.error('Error in current predictions cleanup:', error);
+      
+      // Send failure notification
+      await sendJobNotification({
+        functionName: 'Current Predictions Cleanup',
+        status: 'failed',
+        startTime,
+        endTime: new Date(),
+        details: {
+          'Error': error.message || 'Unknown error'
+        }
+      });
+      
+      return null;
+    }
+  });
+
+/**
+ * TRIGGER CURRENT PREDICTIONS CLEANUP (Manual)
+ * 
+ * Manual trigger for current predictions cleanup.
+ */
+export const triggerCurrentPredictionsCleanup = functions
+  .runWith({ timeoutSeconds: 540, memory: '1GB' })
+  .https.onCall(async (data, context) => {
+    console.log('Manual current predictions cleanup triggered...');
+    const startTime = new Date();
+
+    const now = new Date();
+    const oneYearAgo = new Date(now);
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const cutoffMonth = `${oneYearAgo.getFullYear()}-${String(oneYearAgo.getMonth() + 1).padStart(2, '0')}`;
+
+    try {
+      const stationsSnapshot = await db.collection(CURRENTS_COLLECTION)
+        .where(admin.firestore.FieldPath.documentId(), '!=', 'catalog')
+        .select('monthsAvailable')
+        .get();
+
+      console.log(`Processing ${stationsSnapshot.docs.length} stations...`);
+
+      let stationsProcessed = 0;
+      let monthsDeleted = 0;
+      let skipCount = 0;
+      const BATCH_SIZE = 25;
+
+      for (let i = 0; i < stationsSnapshot.docs.length; i += BATCH_SIZE) {
+        const batch = stationsSnapshot.docs.slice(i, i + BATCH_SIZE);
+
+        for (const stationDoc of batch) {
+          try {
+            const monthsAvailable = stationDoc.get('monthsAvailable') || [];
+            
+            if (!Array.isArray(monthsAvailable) || monthsAvailable.length === 0) {
+              skipCount++;
+              continue;
+            }
+
+            const monthsToKeep: string[] = [];
+            const monthsToDelete: string[] = [];
+            
+            for (const month of monthsAvailable) {
+              if (month < cutoffMonth) {
+                monthsToDelete.push(month);
+              } else {
+                monthsToKeep.push(month);
+              }
+            }
+
+            for (const month of monthsToDelete) {
+              await db.collection(CURRENTS_COLLECTION)
+                .doc(stationDoc.id)
+                .collection('predictions')
+                .doc(month)
+                .delete();
+              monthsDeleted++;
+            }
+
+            if (monthsToDelete.length > 0) {
+              await stationDoc.ref.update({
+                monthsAvailable: monthsToKeep,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+            }
+
+            stationsProcessed++;
+          } catch (err) {
+            console.warn(`Error processing station ${stationDoc.id}:`, err);
+            skipCount++;
+          }
+        }
+
+        if ((i + BATCH_SIZE) % 50 === 0 || (i + BATCH_SIZE) >= stationsSnapshot.docs.length) {
+          console.log(`Progress: ${Math.min(i + BATCH_SIZE, stationsSnapshot.docs.length)}/${stationsSnapshot.docs.length} stations`);
+        }
+      }
+
+      const endTime = new Date();
+      const durationSec = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+      
+      console.log(`Manual cleanup complete in ${durationSec} seconds`);
+
+      return {
+        success: true,
+        message: 'Current predictions cleanup completed',
+        processed: stationsProcessed,
+        deleted: monthsDeleted,
+        skipped: skipCount,
+        durationSec,
+      };
+    } catch (error: any) {
+      console.error('Error in manual cleanup:', error);
+      return { success: false, message: error.message };
+    }
+  });
+
+// ============================================================================
+// PREDICTION DATA BUNDLE GENERATION (Cloud Storage)
+// ============================================================================
+
+/**
+ * Helper: Create SQLite database from prediction data
+ */
+function createPredictionDatabase(
+  tidePredictions: Record<string, any>,
+  currentPredictions: Record<string, any>,
+  tideStations: Map<string, { name: string; lat: number; lng: number }>,
+  currentStations: Map<string, { name: string; lat: number; lng: number }>
+): { dbPath: string; stats: any } {
+  // Create temp database file
+  const dbPath = path.join(os.tmpdir(), `predictions-${Date.now()}.db`);
+  const db = new BetterSqlite3(dbPath);
+
+  console.log('Creating SQLite database schema...');
+  
+  // Create schema
+  db.exec(`
+    -- Station metadata
+    CREATE TABLE stations (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      lat REAL NOT NULL,
+      lng REAL NOT NULL
+    );
+    
+    CREATE INDEX idx_stations_type ON stations(type);
+    CREATE INDEX idx_stations_location ON stations(lat, lng);
+    
+    -- Tide predictions (High/Low events)
+    CREATE TABLE tide_predictions (
+      station_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      time TEXT NOT NULL,
+      type TEXT NOT NULL,
+      height REAL NOT NULL,
+      PRIMARY KEY (station_id, date, time)
+    );
+    
+    CREATE INDEX idx_tide_date ON tide_predictions(station_id, date);
+    
+    -- Current predictions (Slack/Max events)
+    CREATE TABLE current_predictions (
+      station_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      time TEXT NOT NULL,
+      type TEXT NOT NULL,
+      velocity REAL NOT NULL,
+      direction REAL,
+      PRIMARY KEY (station_id, date, time)
+    );
+    
+    CREATE INDEX idx_current_date ON current_predictions(station_id, date);
+    
+    -- Metadata
+    CREATE TABLE metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+
+  console.log('Inserting station data...');
+  
+  // Insert tide stations
+  const insertStation = db.prepare('INSERT OR IGNORE INTO stations (id, name, type, lat, lng) VALUES (?, ?, ?, ?, ?)');
+  const insertTide = db.prepare('INSERT OR IGNORE INTO tide_predictions (station_id, date, time, type, height) VALUES (?, ?, ?, ?, ?)');
+  const insertCurrent = db.prepare('INSERT OR IGNORE INTO current_predictions (station_id, date, time, type, velocity, direction) VALUES (?, ?, ?, ?, ?, ?)');
+
+  let tideStationCount = 0;
+  let tideEventCount = 0;
+  let currentStationCount = 0;
+  let currentEventCount = 0;
+
+  // Use transaction for better performance
+  const insertAllData = db.transaction(() => {
+    // Insert tide stations and predictions
+    for (const [stationId, predictions] of Object.entries(tidePredictions)) {
+      const stationInfo = tideStations.get(stationId);
+      if (stationInfo && Array.isArray(predictions)) {
+        insertStation.run(stationId, stationInfo.name, 'tide', stationInfo.lat, stationInfo.lng);
+        tideStationCount++;
+        
+        for (const event of predictions) {
+          insertTide.run(stationId, event.date, event.time, event.type, event.height);
+          tideEventCount++;
+        }
+      }
+    }
+
+    // Insert current stations and predictions
+    for (const [stationId, monthlyData] of Object.entries(currentPredictions)) {
+      const stationInfo = currentStations.get(stationId);
+      if (stationInfo) {
+        insertStation.run(stationId, stationInfo.name, 'current', stationInfo.lat, stationInfo.lng);
+        currentStationCount++;
+        
+        // Unpack monthly data - structure is: { '2025-02': { month: '2025-02', d: { '1': 'packed', '2': 'packed', ... }, dayCount: 28 } }
+        for (const [monthKey, monthDoc] of Object.entries(monthlyData as Record<string, any>)) {
+          // The actual daily data is in the 'd' field
+          const packedDays = monthDoc.d || monthDoc;
+          
+          for (const [dayNum, packedString] of Object.entries(packedDays)) {
+            if (typeof packedString !== 'string') continue;
+            
+            const date = `${monthKey}-${String(dayNum).padStart(2, '0')}`;
+            const events = packedString.split(';');
+            
+            for (const eventStr of events) {
+              const parts = eventStr.split(',');
+              if (parts.length >= 4) {
+                const time = parts[0];
+                const type = parts[1];
+                const velocity = parseFloat(parts[2]);
+                const direction = parts[3] ? parseFloat(parts[3]) : null;
+                
+                insertCurrent.run(stationId, date, time, type, velocity, direction);
+                currentEventCount++;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Insert metadata
+    const insertMetadata = db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?)');
+    insertMetadata.run('version', '1.0');
+    insertMetadata.run('generated', new Date().toISOString());
+    insertMetadata.run('tide_stations', String(tideStationCount));
+    insertMetadata.run('current_stations', String(currentStationCount));
+    insertMetadata.run('tide_events', String(tideEventCount));
+    insertMetadata.run('current_events', String(currentEventCount));
+  });
+
+  console.log('Writing all data to database...');
+  insertAllData();
+  
+  // Optimize database
+  console.log('Optimizing database...');
+  db.exec('VACUUM');
+  db.exec('ANALYZE');
+  
+  db.close();
+  
+  const stats = {
+    tideStationCount,
+    tideEventCount,
+    currentStationCount,
+    currentEventCount,
+  };
+  
+  console.log(`Database created: ${dbPath}`);
+  console.log(`Stats:`, stats);
+  
+  return { dbPath, stats };
+}
+
+/**
+ * GENERATE PREDICTIONS BUNDLE (Monthly Scheduled)
+ * 
+ * 1. Fetches all tide and current predictions from Firestore
+ * 2. Creates SQLite database
+ * 3. Compresses the database using gzip
+ * 4. Uploads to Cloud Storage
+ * 5. Sends email notification with stats
+ * 
+ * @trigger Pub/Sub Schedule: 2nd of each month at 3:00 AM Alaska time
+ * @schedule '0 11 2 * *' (11:00 UTC on 2nd = 3 AM Alaska)
+ * 
+ * This runs AFTER:
+ * - updateTidePredictions (Sundays at midnight)
+ * - cleanupCurrentPredictions (1st of month at 2 AM)
+ */
+export const generatePredictionsBundle = functions
+  .runWith({
+    timeoutSeconds: 540,
+    memory: '8GB', // Need memory to hold all data
+  })
+  .pubsub.schedule('0 11 2 * *') // 2nd of month at 11:00 UTC (3 AM Alaska)
+  .timeZone('America/Anchorage')
+  .onRun(async (context) => {
+    console.log('Starting predictions bundle generation...');
+    const startTime = new Date();
+
+    try {
+      // STEP 1: Fetch all tide predictions and metadata
+      console.log('Step 1: Fetching tide predictions from Firestore...');
+      const tideSnapshot = await db.collection('tidal-stations').get();
+      console.log(`Fetched ${tideSnapshot.size} tide station documents`);
+      
+      const tidePredictions: Record<string, any> = {};
+      const tideStations = new Map<string, { name: string; lat: number; lng: number }>();
+
+      let tideDocsWithPredictions = 0;
+      let totalTideEvents = 0;
+
+      for (const doc of tideSnapshot.docs) {
+        const data = doc.data();
+        
+        // Get station metadata
+        if (data.name && data.latitude != null && data.longitude != null) {
+          tideStations.set(doc.id, {
+            name: data.name,
+            lat: data.latitude,
+            lng: data.longitude,
+          });
+        }
+        
+        // Get predictions (stored as object keyed by date)
+        if (data.predictions && typeof data.predictions === 'object') {
+          tideDocsWithPredictions++;
+          // Convert date-keyed object to flat array of events
+          const events: Array<{date: string; time: string; type: string; height: number}> = [];
+          for (const [date, dayEvents] of Object.entries(data.predictions)) {
+            if (Array.isArray(dayEvents)) {
+              for (const event of dayEvents) {
+                events.push({
+                  date,
+                  time: event.time,
+                  type: event.type,
+                  height: event.height,
+                });
+              }
+            }
+          }
+          if (events.length > 0) {
+            tidePredictions[doc.id] = events;
+            totalTideEvents += events.length;
+          }
+        }
+      }
+      console.log(`Loaded ${tideStations.size} tide stations`);
+      console.log(`${tideDocsWithPredictions} stations have predictions`);
+      console.log(`Total tide events: ${totalTideEvents}`);
+
+      // STEP 2: Fetch all current predictions and metadata
+      console.log('Step 2: Fetching current predictions from Firestore...');
+      const currentSnapshot = await db.collection(CURRENTS_COLLECTION)
+        .where(admin.firestore.FieldPath.documentId(), '!=', 'catalog')
+        .get();
+      
+      console.log(`Fetched ${currentSnapshot.size} current station documents`);
+      
+      const currentPredictions: Record<string, any> = {};
+      const currentStations = new Map<string, { name: string; lat: number; lng: number }>();
+
+      let currentStationsWithData = 0;
+      let totalMonthsFetched = 0;
+
+      for (const stationDoc of currentSnapshot.docs) {
+        const data = stationDoc.data();
+        
+        // Get station metadata
+        if (data.name && data.latitude != null && data.longitude != null) {
+          currentStations.set(stationDoc.id, {
+            name: data.name,
+            lat: data.latitude,
+            lng: data.longitude,
+          });
+        }
+        
+        // Fetch all monthly prediction documents
+        const monthsAvailable = data.monthsAvailable || [];
+        const stationData: Record<string, any> = {};
+
+        for (const month of monthsAvailable) {
+          const predDoc = await db.collection(CURRENTS_COLLECTION)
+            .doc(stationDoc.id)
+            .collection('predictions')
+            .doc(month)
+            .get();
+
+          if (predDoc.exists) {
+            const predData = predDoc.data();
+            if (predData) {
+              stationData[month] = predData;
+              totalMonthsFetched++;
+            }
+          }
+        }
+
+        if (Object.keys(stationData).length > 0) {
+          currentPredictions[stationDoc.id] = stationData;
+          currentStationsWithData++;
+        }
+      }
+      console.log(`Loaded ${currentStations.size} current stations`);
+      console.log(`${currentStationsWithData} stations have prediction data`);
+      console.log(`Total months fetched: ${totalMonthsFetched}`);
+
+      // STEP 3: Create SQLite database
+      console.log('Step 3: Creating SQLite database...');
+      const { dbPath, stats: dbStats } = createPredictionDatabase(
+        tidePredictions,
+        currentPredictions,
+        tideStations,
+        currentStations
+      );
+      
+      const dbBuffer = fs.readFileSync(dbPath);
+      const uncompressedSize = dbBuffer.length;
+      console.log(`Database size: ${(uncompressedSize / 1024 / 1024).toFixed(2)} MB`);
+
+      // STEP 4: Compress with zip (for native decompression on mobile)
+      console.log('Step 4: Compressing database with zip...');
+      const zipPath = path.join(os.tmpdir(), `predictions-${Date.now()}.zip`);
+      
+      await new Promise<void>((resolve, reject) => {
+        const output = fs.createWriteStream(zipPath);
+        const archive = archiver('zip', {
+          zlib: { level: 9 } // Maximum compression
+        });
+        
+        output.on('close', () => {
+          console.log(`Zip created: ${(archive.pointer() / 1024 / 1024).toFixed(2)} MB`);
+          resolve();
+        });
+        
+        archive.on('error', (err) => reject(err));
+        archive.pipe(output);
+        archive.file(dbPath, { name: 'predictions.db' });
+        archive.finalize();
+      });
+      
+      const zipBuffer = fs.readFileSync(zipPath);
+      const compressedSize = zipBuffer.length;
+      const compressionRatio = ((1 - compressedSize / uncompressedSize) * 100).toFixed(1);
+      console.log(`Compressed size: ${(compressedSize / 1024 / 1024).toFixed(2)} MB (${compressionRatio}% reduction)`);
+      
+      // Clean up temp files
+      fs.unlinkSync(dbPath);
+      fs.unlinkSync(zipPath);
+
+      // STEP 5: Upload to Cloud Storage
+      console.log('Step 5: Uploading to Cloud Storage...');
+      
+      // Upload compressed database
+      const compressedFilename = 'predictions.db.zip';
+      const compressedFile = bucket.file(`predictions/${compressedFilename}`);
+      
+      await compressedFile.save(zipBuffer, {
+        metadata: {
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=3600',
+          metadata: {
+            version: '1.0',
+            type: 'sqlite',
+            generated: new Date().toISOString(),
+            tideStations: String(dbStats.tideStationCount),
+            currentStations: String(dbStats.currentStationCount),
+            tideEvents: String(dbStats.tideEventCount),
+            currentEvents: String(dbStats.currentEventCount),
+            uncompressedSize: String(uncompressedSize),
+            compressedSize: String(compressedSize),
+          },
+        },
+      });
+
+      await compressedFile.makePublic();
+      const dbUrl = `https://storage.googleapis.com/${bucket.name}/predictions/${compressedFilename}`;
+      console.log(`Uploaded compressed database to: ${dbUrl}`);
+
+      const endTime = new Date();
+      const durationSec = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+
+      // STEP 7: Send email notification
+      console.log('Step 7: Sending email notification...');
+      await sendJobNotification({
+        functionName: 'Predictions Bundle Generation (SQLite)',
+        status: 'success',
+        startTime,
+        endTime,
+        details: {
+          'Format': 'SQLite Database',
+          'Tide Stations': dbStats.tideStationCount,
+          'Tide Events': dbStats.tideEventCount,
+          'Current Stations': dbStats.currentStationCount,
+          'Current Events': dbStats.currentEventCount,
+          'Database Size': `${(uncompressedSize / 1024 / 1024).toFixed(2)} MB`,
+          'Compressed Size': `${(compressedSize / 1024 / 1024).toFixed(2)} MB`,
+          'Compression Ratio': `${compressionRatio}%`,
+          'Duration': `${durationSec} seconds`,
+          'Download URL': dbUrl,
+          'Next Run': '2nd of next month, 3:00 AM Alaska'
+        }
+      });
+
+      console.log(`Bundle generation complete in ${durationSec} seconds`);
+      return null;
+    } catch (error: any) {
+      console.error('Error generating predictions bundle:', error);
+      
+      // Send failure notification
+      await sendJobNotification({
+        functionName: 'Predictions Bundle Generation (SQLite)',
+        status: 'failed',
+        startTime,
+        endTime: new Date(),
+        details: {
+          'Error': error.message || 'Unknown error',
+          'Stack': error.stack || 'No stack trace'
+        }
+      });
+      
+      return null;
+    }
+  });
+
+/**
+ * TRIGGER BUNDLE GENERATION (Manual)
+ * 
+ * Manual trigger for testing bundle generation.
+ */
+export const triggerBundleGeneration = functions
+  .runWith({ timeoutSeconds: 540, memory: '8GB' })
+  .https.onCall(async (data, context) => {
+    console.log('Manual bundle generation triggered (SQLite)...');
+    const startTime = new Date();
+
+    try {
+      // STEP 1: Fetch tide predictions and metadata
+      console.log('Step 1: Fetching tide predictions from Firestore...');
+      const tideSnapshot = await db.collection('tidal-stations').get();
+      console.log(`Fetched ${tideSnapshot.size} tide station documents`);
+      
+      const tidePredictions: Record<string, any> = {};
+      const tideStations = new Map<string, { name: string; lat: number; lng: number }>();
+
+      let tideDocsWithPredictions = 0;
+      let totalTideEvents = 0;
+
+      for (const doc of tideSnapshot.docs) {
+        const data = doc.data();
+        
+        // Get station metadata
+        if (data.name && data.latitude != null && data.longitude != null) {
+          tideStations.set(doc.id, {
+            name: data.name,
+            lat: data.latitude,
+            lng: data.longitude,
+          });
+        }
+        
+        // Get predictions (stored as object keyed by date)
+        if (data.predictions && typeof data.predictions === 'object') {
+          tideDocsWithPredictions++;
+          // Convert date-keyed object to flat array of events
+          const events: Array<{date: string; time: string; type: string; height: number}> = [];
+          for (const [date, dayEvents] of Object.entries(data.predictions)) {
+            if (Array.isArray(dayEvents)) {
+              for (const event of dayEvents) {
+                events.push({
+                  date,
+                  time: event.time,
+                  type: event.type,
+                  height: event.height,
+                });
+              }
+            }
+          }
+          if (events.length > 0) {
+            tidePredictions[doc.id] = events;
+            totalTideEvents += events.length;
+          }
+        }
+      }
+      console.log(`Loaded ${tideStations.size} tide stations`);
+      console.log(`${tideDocsWithPredictions} stations have predictions`);
+      console.log(`Total tide events: ${totalTideEvents}`);
+
+      // STEP 2: Fetch current predictions and metadata
+      console.log('Step 2: Fetching current predictions from Firestore...');
+      const currentSnapshot = await db.collection(CURRENTS_COLLECTION)
+        .where(admin.firestore.FieldPath.documentId(), '!=', 'catalog')
+        .get();
+      
+      console.log(`Fetched ${currentSnapshot.size} current station documents`);
+      
+      const currentPredictions: Record<string, any> = {};
+      const currentStations = new Map<string, { name: string; lat: number; lng: number }>();
+
+      let currentStationsWithData = 0;
+      let totalMonthsFetched = 0;
+
+      for (const stationDoc of currentSnapshot.docs) {
+        const data = stationDoc.data();
+        
+        // Get station metadata
+        if (data.name && data.latitude != null && data.longitude != null) {
+          currentStations.set(stationDoc.id, {
+            name: data.name,
+            lat: data.latitude,
+            lng: data.longitude,
+          });
+        }
+        
+        // Fetch all monthly prediction documents
+        const monthsAvailable = data.monthsAvailable || [];
+        const stationData: Record<string, any> = {};
+
+        for (const month of monthsAvailable) {
+          const predDoc = await db.collection(CURRENTS_COLLECTION)
+            .doc(stationDoc.id)
+            .collection('predictions')
+            .doc(month)
+            .get();
+
+          if (predDoc.exists) {
+            const predData = predDoc.data();
+            if (predData) {
+              stationData[month] = predData;
+              totalMonthsFetched++;
+            }
+          }
+        }
+
+        if (Object.keys(stationData).length > 0) {
+          currentPredictions[stationDoc.id] = stationData;
+          currentStationsWithData++;
+        }
+      }
+      console.log(`Loaded ${currentStations.size} current stations`);
+      console.log(`${currentStationsWithData} stations have prediction data`);
+      console.log(`Total months fetched: ${totalMonthsFetched}`);
+
+      // Create SQLite database
+      const { dbPath, stats: dbStats } = createPredictionDatabase(
+        tidePredictions,
+        currentPredictions,
+        tideStations,
+        currentStations
+      );
+      
+      const dbBuffer = fs.readFileSync(dbPath);
+      const uncompressedSize = dbBuffer.length;
+      
+      // Compress with zip
+      const zipPath = path.join(os.tmpdir(), `predictions-trigger-${Date.now()}.zip`);
+      await new Promise<void>((resolve, reject) => {
+        const output = fs.createWriteStream(zipPath);
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        output.on('close', () => resolve());
+        archive.on('error', (err) => reject(err));
+        archive.pipe(output);
+        archive.file(dbPath, { name: 'predictions.db' });
+        archive.finalize();
+      });
+      
+      const zipBuffer = fs.readFileSync(zipPath);
+      const compressedSize = zipBuffer.length;
+      const compressionRatio = ((1 - compressedSize / uncompressedSize) * 100).toFixed(1);
+      
+      fs.unlinkSync(dbPath);
+      fs.unlinkSync(zipPath);
+
+      // Upload to Cloud Storage
+      const compressedFilename = 'predictions.db.zip';
+      const compressedFile = bucket.file(`predictions/${compressedFilename}`);
+      
+      await compressedFile.save(zipBuffer, {
+        metadata: {
+          contentType: 'application/zip',
+          cacheControl: 'public, max-age=3600',
+          metadata: {
+            version: '1.0',
+            type: 'sqlite',
+            generated: new Date().toISOString(),
+            tideStations: String(dbStats.tideStationCount),
+            currentStations: String(dbStats.currentStationCount),
+            tideEvents: String(dbStats.tideEventCount),
+            currentEvents: String(dbStats.currentEventCount),
+            uncompressedSize: String(uncompressedSize),
+            compressedSize: String(compressedSize),
+          },
+        },
+      });
+
+      await compressedFile.makePublic();
+      const dbUrl = `https://storage.googleapis.com/${bucket.name}/predictions/${compressedFilename}`;
+
+      const endTime = new Date();
+      const durationSec = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+
+      return {
+        success: true,
+        message: 'Bundle generation completed (SQLite)',
+        format: 'sqlite',
+        tideStations: dbStats.tideStationCount,
+        tideEvents: dbStats.tideEventCount,
+        currentStations: dbStats.currentStationCount,
+        currentEvents: dbStats.currentEventCount,
+        databaseSizeMB: (uncompressedSize / 1024 / 1024).toFixed(2),
+        compressedSizeMB: (compressedSize / 1024 / 1024).toFixed(2),
+        compressionRatio: `${compressionRatio}%`,
+        downloadUrl: dbUrl,
+        durationSec,
+      };
+    } catch (error: any) {
+      console.error('Error in manual bundle generation:', error);
       return { success: false, message: error.message };
     }
   });

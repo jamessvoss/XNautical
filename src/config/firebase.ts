@@ -1,8 +1,9 @@
 import { initializeApp } from 'firebase/app';
 import { getStorage } from 'firebase/storage';
 import { getFirestore } from 'firebase/firestore';
-import { getAuth as getJsAuth, onAuthStateChanged as onJsAuthStateChanged } from 'firebase/auth';
+import { initializeAuth, getReactNativePersistence, getAuth as getExistingAuth } from 'firebase/auth';
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // XNautical Firebase configuration
 // Values loaded from environment variables (.env file)
@@ -20,14 +21,29 @@ const firebaseConfig = {
 // Initialize Firebase JS SDK (for Storage - still needed for file downloads)
 const app = initializeApp(firebaseConfig);
 
+// Initialize JS SDK Auth with AsyncStorage persistence FIRST (before Storage/Firestore)
+// This ensures auth is initialized with persistence before anything else touches it
+let jsAuth;
+try {
+  jsAuth = initializeAuth(app, {
+    persistence: getReactNativePersistence(AsyncStorage)
+  });
+  console.log('[FIREBASE] Auth initialized with AsyncStorage persistence');
+} catch (error: any) {
+  if (error.code === 'auth/already-initialized') {
+    console.log('[FIREBASE] Auth already initialized, using existing instance');
+    jsAuth = getExistingAuth(app);
+  } else {
+    console.error('[FIREBASE] Auth initialization error:', error);
+    throw error;
+  }
+}
+
 // Initialize Storage for chart GeoJSON files
 const storage = getStorage(app);
 
 // Initialize Firestore for tide/current data
 const firestore = getFirestore(app);
-
-// Initialize JS SDK Auth (for Firestore authentication)
-const jsAuth = getJsAuth(app);
 
 // Native Firebase Auth - modular API (React Native Firebase v22+)
 let nativeAuthInstance: any = null;
@@ -44,10 +60,8 @@ if (Platform.OS !== 'web') {
       if (user) {
         console.log('Native auth user detected, syncing to JS SDK...');
         try {
-          // Get the ID token from native auth
-          const token = await user.getIdToken();
-          // Sign in to JS SDK with custom token would be ideal,
-          // but for now we'll rely on the API key authentication
+          // Get the ID token using the modular API
+          const token = await rnfbAuth.getIdToken(user);
           console.log('User authenticated in native SDK:', user.email);
         } catch (e) {
           console.error('Error syncing auth:', e);
