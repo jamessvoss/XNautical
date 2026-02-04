@@ -17,6 +17,16 @@
  *    - getCurrentsJobStatus (job status)
  *    - cancelCurrentsJob (cancel job)
  * 
+ * 4. MARINE WEATHER FORECASTS (NWS)
+ *    - fetchMarineForecasts (scheduled every 10 min, smart polling)
+ *    - dailyMarineForecastSummary (scheduled midnight)
+ *    - refreshMarineForecasts (manual HTTP trigger)
+ * 
+ * 5. LIVE BUOY DATA (NOAA NDBC)
+ *    - updateBuoyData (scheduled hourly)
+ *    - dailyBuoySummary (scheduled midnight)
+ *    - triggerBuoyUpdate (manual callable)
+ * 
  * Environment Variables Required:
  *   - TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER (SMS)
  *   - SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS (Email)
@@ -32,6 +42,8 @@ import archiver from 'archiver';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as https from 'https';
+import * as cheerio from 'cheerio';
 
 // Load environment variables
 require('dotenv').config();
@@ -3376,4 +3388,714 @@ export const cancelCurrentsJob = functions
     console.log(`Job ${jobId} cancelled`);
     
     return { success: true, jobId };
+  });
+
+// ============================================================================
+// LIVE BUOYS - Hourly Update (NOAA NDBC)
+// ============================================================================
+
+const NDBC_REALTIME_URL = 'https://www.ndbc.noaa.gov/data/realtime2';
+const NDBC_LATEST_OBS_URL = 'https://www.ndbc.noaa.gov/data/latest_obs';
+
+// Axios instance for NDBC with SSL handling
+const ndbcAxios = axios.create({
+  httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+  timeout: 15000,
+});
+
+/**
+ * Fetch real-time observations for a buoy station
+ * Tries multiple data sources for reliability
+ */
+async function fetchBuoyObservations(stationId: string): Promise<any | null> {
+  const idsToTry = [stationId, stationId.toUpperCase(), stationId.toLowerCase()];
+  const uniqueIds = [...new Set(idsToTry)];
+  
+  // Try realtime2 format first (standard buoys)
+  for (const id of uniqueIds) {
+    try {
+      const url = `${NDBC_REALTIME_URL}/${id}.txt`;
+      const response = await ndbcAxios.get(url);
+      
+      const lines = response.data.split('\n');
+      if (lines.length < 3) continue;
+      if (response.data.includes('<!DOCTYPE')) continue;
+      
+      const headers = lines[0].replace('#', '').trim().split(/\s+/);
+      const dataLine = lines[2].trim().split(/\s+/);
+      
+      if (dataLine.length < 5) continue;
+      
+      const getValue = (header: string): number | undefined => {
+        const idx = headers.indexOf(header);
+        if (idx === -1 || idx >= dataLine.length) return undefined;
+        const val = parseFloat(dataLine[idx]);
+        return isNaN(val) || val === 99 || val === 999 || val === 9999 ? undefined : val;
+      };
+      
+      // Build timestamp from date components
+      const year = dataLine[0];
+      const month = dataLine[1];
+      const day = dataLine[2];
+      const hour = dataLine[3];
+      const minute = dataLine[4];
+      const timestamp = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour.padStart(2, '0')}:${minute.padStart(2, '0')}:00Z`;
+      
+      return {
+        timestamp,
+        windDirection: getValue('WDIR'),
+        windSpeed: getValue('WSPD'),
+        windGust: getValue('GST'),
+        waveHeight: getValue('WVHT'),
+        dominantWavePeriod: getValue('DPD'),
+        averageWavePeriod: getValue('APD'),
+        meanWaveDirection: getValue('MWD'),
+        pressure: getValue('PRES'),
+        airTemp: getValue('ATMP'),
+        waterTemp: getValue('WTMP'),
+        dewPoint: getValue('DEWP'),
+        visibility: getValue('VIS'),
+        pressureTendency: getValue('PTDY'),
+        tide: getValue('TIDE'),
+      };
+    } catch (error) {
+      // Continue to next attempt
+    }
+  }
+  
+  // Try latest_obs format as fallback
+  for (const id of uniqueIds) {
+    try {
+      const url = `${NDBC_LATEST_OBS_URL}/${id}.txt`;
+      const response = await ndbcAxios.get(url);
+      
+      if (response.data.includes('<!DOCTYPE')) continue;
+      
+      const lines = response.data.split('\n');
+      const data: Record<string, string> = {};
+      
+      for (const line of lines) {
+        const match = line.match(/^([^:]+):\s*(.+)$/);
+        if (match) {
+          data[match[1].trim()] = match[2].trim();
+        }
+      }
+      
+      if (Object.keys(data).length < 3) continue;
+      
+      const parseValue = (str: string | undefined): number | undefined => {
+        if (!str) return undefined;
+        const num = parseFloat(str.split(' ')[0]);
+        return isNaN(num) ? undefined : num;
+      };
+      
+      return {
+        timestamp: new Date().toISOString(),
+        windSpeed: parseValue(data['Wind']),
+        windGust: parseValue(data['Gust']),
+        waveHeight: parseValue(data['Wave Height']),
+        dominantWavePeriod: parseValue(data['Dominant Wave Period']),
+        pressure: parseValue(data['Pressure']),
+        airTemp: parseValue(data['Air Temp']),
+        waterTemp: parseValue(data['Water Temp']),
+      };
+    } catch (error) {
+      // Continue to next attempt
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * UPDATE BUOY DATA (Scheduled)
+ * Fetches latest observations from NOAA/NDBC buoys hourly
+ */
+export const updateBuoyData = functions
+  .runWith({ 
+    timeoutSeconds: 120,
+    memory: '256MB',
+  })
+  .pubsub.schedule('15 * * * *') // Every hour at :15
+  .timeZone('America/Anchorage')
+  .onRun(async (context) => {
+    console.log('Starting hourly buoy data update...');
+    const skippedBuoys: string[] = [];
+
+    try {
+      const catalogDoc = await db.collection('buoys').doc('catalog').get();
+      
+      if (!catalogDoc.exists) {
+        console.log('No buoys catalog found');
+        return null;
+      }
+
+      const catalog = catalogDoc.data()!;
+      const stations = catalog.stations as Array<{ id: string; name: string }>;
+      
+      console.log(`Updating ${stations.length} buoys...`);
+
+      let successCount = 0;
+      let skipCount = 0;
+
+      for (const station of stations) {
+        const obs = await fetchBuoyObservations(station.id);
+        
+        if (obs) {
+          await db.collection('buoys').doc(station.id).update({
+            latestObservation: obs,
+            lastUpdated: new Date().toISOString(),
+          });
+          successCount++;
+        } else {
+          skipCount++;
+          skippedBuoys.push(station.name || station.id);
+        }
+        
+        // Small delay to avoid rate limiting
+        await delay(50);
+      }
+
+      // Update catalog timestamp
+      await db.collection('buoys').doc('catalog').update({
+        lastUpdated: new Date().toISOString(),
+      });
+
+      console.log(`Buoy update complete: ${successCount} updated, ${skipCount} skipped`);
+      
+      // Log to daily issues tracker if there were problems
+      if (skipCount > 0 || successCount === 0) {
+        const today = new Date().toISOString().split('T')[0];
+        const issueRef = db.collection('system').doc('buoy-daily-issues');
+        
+        await issueRef.set({
+          [today]: admin.firestore.FieldValue.arrayUnion({
+            timestamp: new Date().toISOString(),
+            successCount,
+            skipCount,
+            skippedBuoys,
+            totalBuoys: stations.length,
+          })
+        }, { merge: true });
+      }
+      
+      return null;
+    } catch (error: any) {
+      console.error('Error updating buoy data:', error);
+      
+      const today = new Date().toISOString().split('T')[0];
+      const issueRef = db.collection('system').doc('buoy-daily-issues');
+      
+      await issueRef.set({
+        [today]: admin.firestore.FieldValue.arrayUnion({
+          timestamp: new Date().toISOString(),
+          error: error.message || 'Unknown error',
+          type: 'failure',
+        })
+      }, { merge: true });
+      
+      return null;
+    }
+  });
+
+/**
+ * DAILY BUOY SUMMARY (Scheduled)
+ * Sends summary email at midnight if there were issues
+ */
+export const dailyBuoySummary = functions
+  .runWith({ 
+    timeoutSeconds: 60,
+    memory: '256MB',
+  })
+  .pubsub.schedule('0 0 * * *') // Every day at midnight
+  .timeZone('America/Anchorage')
+  .onRun(async (context) => {
+    console.log('Running daily buoy summary check...');
+    
+    try {
+      const issueRef = db.collection('system').doc('buoy-daily-issues');
+      const issueDoc = await issueRef.get();
+      
+      if (!issueDoc.exists) {
+        console.log('No buoy issues document found, nothing to report');
+        return null;
+      }
+      
+      const issueData = issueDoc.data() || {};
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayKey = yesterday.toISOString().split('T')[0];
+      
+      const yesterdayIssues = issueData[yesterdayKey] || [];
+      
+      if (yesterdayIssues.length === 0) {
+        console.log('No buoy issues yesterday, no email needed');
+      } else {
+        let totalSkipped = 0;
+        let totalSuccess = 0;
+        let totalFailures = 0;
+        const allSkippedBuoys = new Set<string>();
+        
+        for (const issue of yesterdayIssues) {
+          if (issue.type === 'failure') {
+            totalFailures++;
+          } else {
+            totalSkipped += issue.skipCount || 0;
+            totalSuccess += issue.successCount || 0;
+            (issue.skippedBuoys || []).forEach((b: string) => allSkippedBuoys.add(b));
+          }
+        }
+        
+        if (totalFailures > 0 || totalSkipped > 0) {
+          console.log(`Buoy issues: ${totalFailures} failures, ${totalSkipped} skipped`);
+        }
+      }
+      
+      // Clean up old issue logs (older than 7 days)
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+      
+      const keysToDelete: string[] = [];
+      for (const key of Object.keys(issueData)) {
+        if (key < sevenDaysAgo.toISOString().split('T')[0]) {
+          keysToDelete.push(key);
+        }
+      }
+      
+      if (keysToDelete.length > 0) {
+        const deleteUpdates: Record<string, any> = {};
+        keysToDelete.forEach(key => {
+          deleteUpdates[key] = admin.firestore.FieldValue.delete();
+        });
+        await issueRef.update(deleteUpdates);
+        console.log(`Cleaned up ${keysToDelete.length} old buoy issue logs`);
+      }
+      
+      return null;
+    } catch (error: any) {
+      console.error('Error in daily buoy summary:', error);
+      return null;
+    }
+  });
+
+/**
+ * TRIGGER BUOY UPDATE (Manual)
+ * Callable function to force immediate buoy data refresh
+ */
+export const triggerBuoyUpdate = functions.https.onCall(async (data, context) => {
+  console.log('Manual buoy update triggered...');
+
+  try {
+    const catalogDoc = await db.collection('buoys').doc('catalog').get();
+    
+    if (!catalogDoc.exists) {
+      return { success: false, message: 'No buoys catalog found' };
+    }
+
+    const catalog = catalogDoc.data()!;
+    const stations = catalog.stations as Array<{ id: string; name: string }>;
+
+    let successCount = 0;
+    let skipCount = 0;
+
+    for (const station of stations) {
+      const obs = await fetchBuoyObservations(station.id);
+      
+      if (obs) {
+        await db.collection('buoys').doc(station.id).update({
+          latestObservation: obs,
+          lastUpdated: new Date().toISOString(),
+        });
+        successCount++;
+      } else {
+        skipCount++;
+      }
+      
+      await delay(50);
+    }
+
+    await db.collection('buoys').doc('catalog').update({
+      lastUpdated: new Date().toISOString(),
+    });
+
+    return {
+      success: true,
+      message: `Updated ${successCount} buoys, skipped ${skipCount}`,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (error: any) {
+    console.error('Error in manual buoy update:', error);
+    return { success: false, message: error.message };
+  }
+});
+
+// ============================================================================
+// MARINE WEATHER FORECASTS - Smart Polling (NWS)
+// ============================================================================
+
+const MARINE_WEATHER_URL = 'https://marine.weather.gov/MapClick.php?zoneid=';
+
+/**
+ * Fetch and parse forecast for a single zone from marine.weather.gov
+ */
+async function fetchZoneForecast(zoneId: string): Promise<any> {
+  const url = `${MARINE_WEATHER_URL}${zoneId.toLowerCase()}`;
+  
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; XNauticalBot/1.0)',
+        'Accept': 'text/html'
+      },
+      timeout: 15000
+    });
+    
+    const $ = cheerio.load(response.data);
+    
+    // Get zone name from h1
+    let zoneName = $('h1').first().text().trim();
+    if (!zoneName || zoneName.includes('location') || zoneName.includes('Sorry')) {
+      zoneName = zoneId;
+    }
+    
+    // Get the forecast panel
+    const forecastPanel = $('#detailed-forecast-body');
+    if (!forecastPanel.length) {
+      return { error: 'No forecast panel found' };
+    }
+    
+    // Get the full text content
+    const fullText = forecastPanel.text().replace(/\s+/g, ' ').trim();
+    
+    if (!fullText || fullText.length < 20) {
+      return { error: 'No forecast text found' };
+    }
+    
+    // Parse out advisory
+    let advisory = '';
+    const advisoryMatch = fullText.match(/\.\.\.([^.]+)\.\.\./);
+    if (advisoryMatch) {
+      advisory = advisoryMatch[1].trim();
+    }
+    
+    // Parse out synopsis
+    let synopsis = '';
+    const synopsisMatch = fullText.match(/Synopsis:\s*(.+?)(?=Today|Tonight|Mon|Tue|Wed|Thu|Fri|Sat|Sun)/i);
+    if (synopsisMatch) {
+      synopsis = synopsisMatch[1].trim();
+    }
+    
+    // Parse forecast periods from the forecast rows
+    const periods: Array<{number: number; name: string; detailedForecast: string}> = [];
+    let periodNum = 1;
+    
+    forecastPanel.find('.row-forecast').each((i: number, el: any) => {
+      const periodName = $(el).find('.forecast-label b').text().trim() || 
+                         $(el).find('b').first().text().trim();
+      const forecastText = $(el).find('.forecast-text').text().replace(/\s+/g, ' ').trim();
+      
+      if (periodName && forecastText && forecastText.length > 5) {
+        periods.push({
+          number: periodNum++,
+          name: periodName,
+          detailedForecast: forecastText
+        });
+      }
+    });
+    
+    // Get last update time
+    const updateText = $('b:contains("Last Update")').parent().text();
+    const updateMatch = updateText.match(/Last Update:\s*(.+)/i);
+    const lastUpdate = updateMatch ? updateMatch[1].trim() : new Date().toISOString();
+    
+    if (periods.length === 0) {
+      return { error: 'No forecast periods found' };
+    }
+    
+    return {
+      zoneName,
+      advisory,
+      synopsis,
+      periods,
+      updated: lastUpdate,
+    };
+  } catch (error: any) {
+    console.log(`Error fetching ${zoneId}:`, error.message);
+    return { error: error.message };
+  }
+}
+
+/**
+ * Fetch all marine forecasts from marine.weather.gov
+ */
+async function fetchAllMarineForecasts(): Promise<Record<string, any>> {
+  const zonesSnap = await db.collection('marine-zones').get();
+  const zones: Array<{id: string; name?: string}> = [];
+  
+  zonesSnap.forEach(doc => {
+    zones.push({ id: doc.id, ...doc.data() as any });
+  });
+  
+  console.log(`Found ${zones.length} marine zones in database`);
+  
+  const forecasts: Record<string, any> = {};
+  let successCount = 0;
+  
+  for (const zone of zones) {
+    const forecast = await fetchZoneForecast(zone.id);
+    
+    if (!forecast.error) {
+      forecasts[zone.id] = {
+        ...forecast,
+        zoneName: zone.name || forecast.zoneName
+      };
+      successCount++;
+    }
+    
+    await delay(300);
+  }
+  
+  console.log(`Successfully fetched ${successCount}/${zones.length} forecasts`);
+  
+  return forecasts;
+}
+
+/**
+ * Save forecasts to Firebase
+ */
+async function saveMarineForecasts(forecasts: Record<string, any>): Promise<number> {
+  let count = 0;
+  
+  for (const [zoneId, forecast] of Object.entries(forecasts)) {
+    try {
+      await db.collection('marine-forecasts').doc(zoneId).set({
+        zoneId: zoneId,
+        zoneName: forecast.zoneName || zoneId,
+        advisory: forecast.advisory || '',
+        synopsis: forecast.synopsis || '',
+        forecast: forecast.periods,
+        nwsUpdated: forecast.updated,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+      count++;
+    } catch (error: any) {
+      console.error(`Error saving ${zoneId}:`, error.message);
+    }
+  }
+  
+  return count;
+}
+
+/**
+ * Check if we should be polling for updates right now
+ * NWS Alaska updates at ~4 AM and ~4 PM Alaska time
+ */
+function isInMarineUpdateWindow(): { inWindow: boolean; windowHour?: number; minutesSinceStart?: number } {
+  const now = new Date();
+  const alaskaTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/Anchorage' }));
+  const hour = alaskaTime.getHours();
+  const minute = alaskaTime.getMinutes();
+  const currentMinutes = hour * 60 + minute;
+  
+  const UPDATE_WINDOWS = [4, 16]; // 4 AM and 4 PM Alaska time
+  
+  for (const windowHour of UPDATE_WINDOWS) {
+    const windowStart = windowHour * 60;
+    const diff = currentMinutes - windowStart;
+    
+    if (diff >= 0 && diff < 90) {
+      return { inWindow: true, windowHour, minutesSinceStart: diff };
+    }
+  }
+  
+  return { inWindow: false };
+}
+
+/**
+ * Get the last update time from our database
+ */
+async function getMarineLastUpdateTime(): Promise<Date | null> {
+  const metaDoc = await db.collection('system').doc('marine-forecast-meta').get();
+  if (metaDoc.exists) {
+    const data = metaDoc.data();
+    return data?.lastUpdatedAt?.toDate() || null;
+  }
+  return null;
+}
+
+/**
+ * Save the last update time
+ */
+async function saveMarineLastUpdateTime(): Promise<void> {
+  await db.collection('system').doc('marine-forecast-meta').set({
+    lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
+
+/**
+ * FETCH MARINE FORECASTS (Scheduled)
+ * Runs every 10 minutes with smart polling during update windows
+ */
+export const fetchMarineForecasts = functions
+  .runWith({ timeoutSeconds: 540, memory: '1GB' })
+  .pubsub
+  .schedule('every 10 minutes')
+  .timeZone('America/Anchorage')
+  .onRun(async (context) => {
+    const windowInfo = isInMarineUpdateWindow();
+    
+    if (!windowInfo.inWindow) {
+      console.log('Not in update window, skipping');
+      return null;
+    }
+    
+    console.log(`In update window (${windowInfo.windowHour}:00), ${windowInfo.minutesSinceStart} min since start`);
+    
+    // Check if we already updated in this window
+    const lastUpdate = await getMarineLastUpdateTime();
+    if (lastUpdate) {
+      const minutesSinceLastUpdate = (Date.now() - lastUpdate.getTime()) / 60000;
+      if (minutesSinceLastUpdate < 60) {
+        console.log(`Already updated ${Math.round(minutesSinceLastUpdate)} minutes ago, skipping`);
+        return null;
+      }
+    }
+    
+    try {
+      console.log('Fetching forecasts from marine.weather.gov...');
+      const forecasts = await fetchAllMarineForecasts();
+      
+      const count = await saveMarineForecasts(forecasts);
+      await saveMarineLastUpdateTime();
+      
+      console.log(`Updated ${count} marine zone forecasts`);
+      
+      // Log to daily tracker if there were issues
+      const totalZones = Object.keys(forecasts).length;
+      if (count === 0 || count < totalZones) {
+        const today = new Date().toISOString().split('T')[0];
+        const issueRef = db.collection('system').doc('marine-daily-issues');
+        
+        await issueRef.set({
+          [today]: admin.firestore.FieldValue.arrayUnion({
+            timestamp: new Date().toISOString(),
+            zonesUpdated: count,
+            totalZones,
+            updateWindow: `${windowInfo.windowHour}:00`,
+            type: count === 0 ? 'failure' : 'partial',
+          })
+        }, { merge: true });
+      }
+      
+      return null;
+    } catch (error: any) {
+      console.error('Error fetching marine forecasts:', error);
+      
+      const today = new Date().toISOString().split('T')[0];
+      const issueRef = db.collection('system').doc('marine-daily-issues');
+      
+      await issueRef.set({
+        [today]: admin.firestore.FieldValue.arrayUnion({
+          timestamp: new Date().toISOString(),
+          error: error.message || 'Unknown error',
+          type: 'failure',
+        })
+      }, { merge: true });
+      
+      return null;
+    }
+  });
+
+/**
+ * DAILY MARINE FORECAST SUMMARY (Scheduled)
+ * Runs at midnight Alaska time to check for issues
+ */
+export const dailyMarineForecastSummary = functions
+  .runWith({ 
+    timeoutSeconds: 60,
+    memory: '256MB',
+  })
+  .pubsub.schedule('0 0 * * *')
+  .timeZone('America/Anchorage')
+  .onRun(async (context) => {
+    console.log('Running daily marine forecast summary check...');
+    
+    try {
+      const issueRef = db.collection('system').doc('marine-daily-issues');
+      const issueDoc = await issueRef.get();
+      
+      if (!issueDoc.exists) {
+        console.log('No marine issues document found, nothing to report');
+        return null;
+      }
+      
+      const issueData = issueDoc.data() || {};
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayKey = yesterday.toISOString().split('T')[0];
+      
+      const yesterdayIssues = issueData[yesterdayKey] || [];
+      
+      if (yesterdayIssues.length === 0) {
+        console.log('No marine forecast issues yesterday, no email needed');
+      } else {
+        let failures = 0;
+        for (const issue of yesterdayIssues) {
+          if (issue.type === 'failure') failures++;
+        }
+        console.log(`Marine forecast issues yesterday: ${failures} failures, ${yesterdayIssues.length} total issues`);
+      }
+      
+      // Clean up old issue logs (older than 7 days)
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+      
+      const keysToDelete: string[] = [];
+      for (const key of Object.keys(issueData)) {
+        if (key < sevenDaysAgo.toISOString().split('T')[0]) {
+          keysToDelete.push(key);
+        }
+      }
+      
+      if (keysToDelete.length > 0) {
+        const deleteUpdates: Record<string, any> = {};
+        keysToDelete.forEach(key => {
+          deleteUpdates[key] = admin.firestore.FieldValue.delete();
+        });
+        await issueRef.update(deleteUpdates);
+        console.log(`Cleaned up ${keysToDelete.length} old marine issue logs`);
+      }
+      
+      return null;
+    } catch (error: any) {
+      console.error('Error in daily marine forecast summary:', error);
+      return null;
+    }
+  });
+
+/**
+ * REFRESH MARINE FORECASTS (Manual HTTP Trigger)
+ * Bypasses smart polling to immediately refresh all forecasts
+ */
+export const refreshMarineForecasts = functions
+  .runWith({ timeoutSeconds: 540, memory: '1GB' })
+  .https.onRequest(async (req, res) => {
+    try {
+      console.log('Manual marine forecast refresh triggered');
+      
+      const forecasts = await fetchAllMarineForecasts();
+      const count = await saveMarineForecasts(forecasts);
+      await saveMarineLastUpdateTime();
+      
+      console.log(`Manual refresh complete: ${count} zones updated`);
+      
+      res.json({
+        success: true,
+        forecastsUpdated: count,
+        totalZonesFetched: Object.keys(forecasts).length,
+      });
+    } catch (error: any) {
+      console.error('Error in manual marine forecast refresh:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
   });
