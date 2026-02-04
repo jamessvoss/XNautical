@@ -27,9 +27,21 @@ const path = require('path');
 const fishTopiaKeyPath = path.join(__dirname, 'fishtopia-service-account.json');
 const xnauticalKeyPath = path.join(__dirname, 'xnautical-service-account.json');
 
-if (!fs.existsSync(fishTopiaKeyPath)) {
+// Alternative: Try FishTopia mobile directory (found in the project)
+const fishTopiaActualKeyPath = path.join(__dirname, '../../FishTopia/mobile/alaska-fishtopia-firebase-adminsdk-1waxi-6a9dca5398.json');
+
+let fishTopiaCredential;
+if (fs.existsSync(fishTopiaKeyPath)) {
+  console.log('✓ Using FishTopia service account from scripts directory');
+  fishTopiaCredential = admin.credential.cert(require(fishTopiaKeyPath));
+} else if (fs.existsSync(fishTopiaActualKeyPath)) {
+  console.log('✓ Using FishTopia service account from FishTopia/mobile directory');
+  fishTopiaCredential = admin.credential.cert(require(fishTopiaActualKeyPath));
+} else {
   console.error('❌ Error: FishTopia service account key not found!');
-  console.error(`   Expected at: ${fishTopiaKeyPath}`);
+  console.error(`   Searched locations:`);
+  console.error(`   - ${fishTopiaKeyPath}`);
+  console.error(`   - ${fishTopiaActualKeyPath}`);
   console.error('\n📖 How to get it:');
   console.error('   1. Open https://console.firebase.google.com/project/alaska-fishtopia/settings/serviceaccounts/adminsdk');
   console.error('   2. Click "Generate new private key"');
@@ -50,7 +62,7 @@ if (!fs.existsSync(xnauticalKeyPath)) {
 // Initialize source (FishTopia)
 console.log('🔧 Initializing FishTopia connection...');
 const sourceApp = admin.initializeApp({
-  credential: admin.credential.cert(require(fishTopiaKeyPath)),
+  credential: fishTopiaCredential,
 }, 'source');
 
 // Initialize target (XNautical)
