@@ -46,6 +46,7 @@
     "react-native-screens": "^4.20.0",
     "react-native-svg": "15.12.1",
     "react-native-web": "^0.21.2",
+    "react-native-webview": "^13.16.0",
     "react-native-zip-archive": "^7.0.2"
   },
   "devDependencies": {
