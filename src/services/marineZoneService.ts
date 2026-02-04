@@ -144,18 +144,19 @@ export async function getMarineZone(zoneId: string): Promise<MarineZone | null> 
  */
 export async function getMarineForecast(zoneId: string): Promise<MarineForecast | null> {
   try {
+    console.log('[Marine] Fetching forecast for zone:', zoneId);
     const docRef = doc(firestore, 'marine-forecasts', zoneId);
     const docSnap = await getDoc(docRef);
     
     if (!docSnap.exists()) {
+      console.log('[Marine] No forecast document found for zone:', zoneId);
       return null;
     }
     
+    console.log('[Marine] Forecast found for zone:', zoneId);
     return docSnap.data() as MarineForecast;
   } catch (error: any) {
-    if (!error?.message?.includes('offline')) {
-      console.log('[Marine] Error fetching forecast:', error?.message || error);
-    }
+    console.error('[Marine] Error fetching forecast for', zoneId, ':', error?.message || error);
     return null;
   }
 }

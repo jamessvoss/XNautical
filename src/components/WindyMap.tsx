@@ -1,6 +1,7 @@
 /**
  * WindyMap Component
  * Displays the Windy.com weather forecast map using WebView
+ * Copied from FishTopia - uses embed URL approach
  */
 
 import React, { useState, useRef } from 'react';
@@ -18,7 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-// Windy.com API key
+// Windy.com API key (from FishTopia)
 const WINDY_API_KEY = 'N44TdWVw8Y6KsyOAjSGqnkiRWpnO9M3z';
 
 // Alaska center coordinates
@@ -105,7 +106,7 @@ const WindyMap: React.FC<WindyMapProps> = ({
 
   if (!visible) return null;
 
-  // Windy embed URL with parameters
+  // Windy embed URL with parameters - EXACTLY like FishTopia (no API key in URL)
   const windyUrl = `https://embed.windy.com/embed2.html?lat=${latitude}&lon=${longitude}&zoom=${DEFAULT_ZOOM}&level=surface&overlay=${activeOverlay}&product=ecmwf&menu=false&message=false&marker=false&calendar=now&pressure=false&type=map&location=coordinates&metricWind=kt&metricTemp=%C2%B0F&radarRange=-1`;
   
   // Handle overlay change

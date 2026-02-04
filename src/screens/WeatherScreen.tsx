@@ -1,10 +1,10 @@
 /**
  * Weather Screen
  * Main weather tab with vertical sidebar to toggle between:
- * - Marine Zone Forecasts (Zones)
- * - WindyMap (Wind)
- * - FAA Weather Cameras (Cams)
- * - Live Buoy Data (Buoys)
+ * - Marine Zone Forecasts (Zones) - Map with polygons
+ * - WindyMap (Wind) - Windy.com WebView
+ * - FAA Weather Cameras (Cams) - FAA WebView
+ * - Live Buoy Data (Buoys) - Map with markers
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -15,18 +15,21 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  RefreshControl,
+  Dimensions,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import MapView, { Marker, Polygon, Region } from 'react-native-maps';
+import { X, Maximize2, Minimize2, RotateCcw } from 'lucide-react-native';
+import { useNavigation } from '@react-navigation/native';
 
 // Firebase
 import { waitForAuth } from '../config/firebase';
 
 // Services
 import {
-  getMarineZoneSummaries,
+  getMarineZones,
   getMarineForecast,
-  MarineZoneSummary,
+  MarineZone,
   MarineForecast,
   formatForecastTime,
   getWfoName,
@@ -48,6 +51,8 @@ import {
 import WindyMap from '../components/WindyMap';
 import FAAWeatherCamsView from '../components/FAAWeatherCamsView';
 
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
+
 type WeatherView = 'zones' | 'wind' | 'cams' | 'buoys';
 
 interface SidebarOption {
@@ -63,13 +68,24 @@ const SIDEBAR_OPTIONS: SidebarOption[] = [
   { id: 'buoys', label: 'Buoys', icon: '📡' },
 ];
 
+// Alaska initial region
+const INITIAL_REGION: Region = {
+  latitude: 61.2,
+  longitude: -149.9,
+  latitudeDelta: 15,
+  longitudeDelta: 15,
+};
+
 export default function WeatherScreen() {
+  const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
   const [activeView, setActiveView] = useState<WeatherView>('zones');
+  const [isFullscreen, setIsFullscreen] = useState(true);
   
   // Marine zones state
-  const [zones, setZones] = useState<MarineZoneSummary[]>([]);
+  const [zones, setZones] = useState<MarineZone[]>([]);
   const [loadingZones, setLoadingZones] = useState(false);
-  const [selectedZone, setSelectedZone] = useState<MarineZoneSummary | null>(null);
+  const [selectedZone, setSelectedZone] = useState<MarineZone | null>(null);
   const [zoneForecast, setZoneForecast] = useState<MarineForecast | null>(null);
   const [loadingForecast, setLoadingForecast] = useState(false);
   
@@ -80,10 +96,10 @@ export default function WeatherScreen() {
   const [buoyDetail, setBuoyDetail] = useState<Buoy | null>(null);
   const [loadingBuoyDetail, setLoadingBuoyDetail] = useState(false);
   
-  // Refreshing state
-  const [refreshing, setRefreshing] = useState(false);
+  // Map region state
+  const [region, setRegion] = useState<Region>(INITIAL_REGION);
 
-  // Load zones on mount
+  // Load zones with full geometry on mount
   useEffect(() => {
     loadZones();
   }, []);
@@ -98,9 +114,8 @@ export default function WeatherScreen() {
   const loadZones = async () => {
     setLoadingZones(true);
     try {
-      // Wait for authentication before accessing Firestore
       await waitForAuth();
-      const zoneList = await getMarineZoneSummaries();
+      const zoneList = await getMarineZones(); // Get full geometry for map
       setZones(zoneList);
     } catch (error) {
       console.error('Error loading marine zones:', error);
@@ -111,7 +126,6 @@ export default function WeatherScreen() {
   const loadBuoys = async () => {
     setLoadingBuoys(true);
     try {
-      // Wait for authentication before accessing Firestore
       await waitForAuth();
       const buoyList = await getBuoysCatalog();
       setBuoys(buoyList);
@@ -121,14 +135,7 @@ export default function WeatherScreen() {
     setLoadingBuoys(false);
   };
 
-  const handleZonePress = async (zone: MarineZoneSummary) => {
-    if (selectedZone?.id === zone.id) {
-      // Collapse if already selected
-      setSelectedZone(null);
-      setZoneForecast(null);
-      return;
-    }
-    
+  const handleZonePress = async (zone: MarineZone) => {
     setSelectedZone(zone);
     setLoadingForecast(true);
     try {
@@ -142,13 +149,6 @@ export default function WeatherScreen() {
   };
 
   const handleBuoyPress = async (buoy: BuoySummary) => {
-    if (selectedBuoy?.id === buoy.id) {
-      // Collapse if already selected
-      setSelectedBuoy(null);
-      setBuoyDetail(null);
-      return;
-    }
-    
     setSelectedBuoy(buoy);
     setLoadingBuoyDetail(true);
     try {
@@ -161,223 +161,312 @@ export default function WeatherScreen() {
     setLoadingBuoyDetail(false);
   };
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    if (activeView === 'zones') {
-      await loadZones();
-    } else if (activeView === 'buoys') {
-      await loadBuoys();
+  // Convert GeoJSON coordinates to react-native-maps format
+  const getPolygonCoords = (geometry: any) => {
+    if (!geometry) return [];
+    if (geometry.type === 'Polygon') {
+      return geometry.coordinates[0].map((coord: number[]) => ({
+        latitude: coord[1],
+        longitude: coord[0],
+      }));
+    } else if (geometry.type === 'MultiPolygon') {
+      // For MultiPolygon, return the first polygon (largest)
+      return geometry.coordinates[0][0].map((coord: number[]) => ({
+        latitude: coord[1],
+        longitude: coord[0],
+      }));
     }
-    setRefreshing(false);
-  }, [activeView]);
+    return [];
+  };
 
-  // Render marine zones list
+  // Render marine zones map view
   const renderZonesView = () => (
-    <ScrollView
-      style={styles.scrollView}
-      contentContainerStyle={styles.scrollContent}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-          tintColor="#4FC3F7"
-          colors={['#4FC3F7']}
-        />
-      }
-    >
-      <Text style={styles.viewTitle}>Marine Weather Zones</Text>
-      <Text style={styles.viewSubtitle}>NWS Alaska Marine Forecasts</Text>
-      
-      {loadingZones ? (
-        <View style={styles.loadingContainer}>
+    <View style={styles.mapContainer}>
+      {loadingZones && (
+        <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#4FC3F7" />
           <Text style={styles.loadingText}>Loading zones...</Text>
         </View>
-      ) : zones.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>No marine zones available</Text>
-          <Text style={styles.emptySubtext}>Pull down to refresh</Text>
-        </View>
-      ) : (
-        zones.map((zone) => (
-          <TouchableOpacity
-            key={zone.id}
-            style={[
-              styles.card,
-              selectedZone?.id === zone.id && styles.cardSelected,
-            ]}
-            onPress={() => handleZonePress(zone)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.cardHeader}>
-              <View style={styles.zoneIdBadge}>
-                <Text style={styles.zoneIdText}>{zone.id}</Text>
-              </View>
-              <View style={styles.cardTitleContainer}>
-                <Text style={styles.cardTitle} numberOfLines={1}>{zone.name}</Text>
-                <Text style={styles.cardSubtitle}>{getWfoName(zone.wfo)} WFO</Text>
-              </View>
-              <Text style={styles.expandIcon}>
-                {selectedZone?.id === zone.id ? '▼' : '▶'}
-              </Text>
-            </View>
-            
-            {selectedZone?.id === zone.id && (
-              <View style={styles.forecastContainer}>
-                {loadingForecast ? (
-                  <ActivityIndicator size="small" color="#4FC3F7" />
-                ) : zoneForecast ? (
-                  <>
-                    {zoneForecast.advisory && (
-                      <View style={styles.advisoryBadge}>
-                        <Text style={styles.advisoryText}>{zoneForecast.advisory}</Text>
-                      </View>
-                    )}
-                    {zoneForecast.synopsis && (
-                      <Text style={styles.synopsisText}>{zoneForecast.synopsis}</Text>
-                    )}
-                    {zoneForecast.forecast?.slice(0, 3).map((period, idx) => (
-                      <View key={idx} style={styles.forecastPeriod}>
-                        <Text style={styles.periodName}>{period.name}:</Text>
-                        <Text style={styles.periodForecast}>{period.detailedForecast}</Text>
-                      </View>
-                    ))}
-                    {zoneForecast.nwsUpdated && (
-                      <Text style={styles.updateTime}>
-                        Updated: {formatForecastTime(zoneForecast.nwsUpdated)}
-                      </Text>
-                    )}
-                  </>
-                ) : (
-                  <Text style={styles.noDataText}>No forecast available</Text>
-                )}
-              </View>
-            )}
-          </TouchableOpacity>
-        ))
       )}
-    </ScrollView>
+      
+      <MapView
+        style={styles.map}
+        initialRegion={INITIAL_REGION}
+        region={region}
+        onRegionChangeComplete={setRegion}
+        mapType="terrain"
+        showsUserLocation={true}
+        showsMyLocationButton={true}
+      >
+        {/* Marine Zone Polygons */}
+        {zones.map((zone) => {
+          const isSelected = selectedZone?.id === zone.id;
+          const coords = getPolygonCoords(zone.geometry);
+          if (coords.length === 0) return null;
+          
+          return (
+            <Polygon
+              key={zone.id}
+              coordinates={coords}
+              strokeColor={isSelected ? '#1E88E5' : '#2196F3'}
+              strokeWidth={isSelected ? 3 : 2}
+              fillColor={isSelected ? 'rgba(30, 136, 229, 0.35)' : 'rgba(33, 150, 243, 0.2)'}
+              tappable={true}
+              onPress={() => handleZonePress(zone)}
+            />
+          );
+        })}
+
+        {/* Marine Zone Labels (centroids) */}
+        {zones.map((zone) => {
+          if (!zone.centroid?.lat || !zone.centroid?.lon) return null;
+          
+          // Extract just the number portion (e.g., "722" from "PKZ722")
+          const shortId = zone.id.replace(/^[A-Z]+/, '');
+          
+          return (
+            <Marker
+              key={`zone-label-${zone.id}`}
+              coordinate={{
+                latitude: zone.centroid.lat,
+                longitude: zone.centroid.lon,
+              }}
+              onPress={() => handleZonePress(zone)}
+              anchor={{ x: 0.5, y: 0.5 }}
+            >
+              <View 
+                style={{ 
+                  backgroundColor: '#1565C0', 
+                  borderRadius: 3, 
+                  paddingHorizontal: 4, 
+                  paddingVertical: 2,
+                  borderWidth: 1,
+                  borderColor: '#0D47A1',
+                }}
+                collapsable={false}
+              >
+                <Text style={{ color: '#FFFFFF', fontSize: 9, fontWeight: '700' }}>{shortId}</Text>
+              </View>
+            </Marker>
+          );
+        })}
+      </MapView>
+
+      {/* Zone Detail Panel */}
+      {selectedZone && (
+        <View style={styles.detailPanel}>
+          <View style={styles.detailHeader}>
+            <View style={styles.zoneIdBadge}>
+              <Text style={styles.zoneIdText}>{selectedZone.id}</Text>
+            </View>
+            <View style={styles.detailTitleContainer}>
+              <Text style={styles.detailTitle} numberOfLines={1}>{selectedZone.name}</Text>
+              <Text style={styles.detailSubtitle}>{getWfoName(selectedZone.wfo)} WFO</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.closeButton}
+              onPress={() => {
+                setSelectedZone(null);
+                setZoneForecast(null);
+              }}
+            >
+              <Text style={styles.closeButtonText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.detailScroll} contentContainerStyle={styles.detailScrollContent}>
+            {loadingForecast ? (
+              <ActivityIndicator size="small" color="#4FC3F7" style={{ marginTop: 20 }} />
+            ) : zoneForecast ? (
+              <>
+                {zoneForecast.advisory && (
+                  <View style={styles.advisoryBadge}>
+                    <Text style={styles.advisoryText}>{zoneForecast.advisory}</Text>
+                  </View>
+                )}
+                {zoneForecast.synopsis && (
+                  <Text style={styles.synopsisText}>{zoneForecast.synopsis}</Text>
+                )}
+                {zoneForecast.forecast?.map((period, idx) => (
+                  <View key={idx} style={styles.forecastPeriod}>
+                    <Text style={styles.periodName}>{period.name}:</Text>
+                    <Text style={styles.periodForecast}>{period.detailedForecast}</Text>
+                  </View>
+                ))}
+                {zoneForecast.nwsUpdated && (
+                  <Text style={styles.updateTime}>
+                    Updated: {formatForecastTime(zoneForecast.nwsUpdated)}
+                  </Text>
+                )}
+              </>
+            ) : (
+              <Text style={styles.noDataText}>No forecast available</Text>
+            )}
+          </ScrollView>
+        </View>
+      )}
+    </View>
   );
 
-  // Render buoys list
+  // Render buoys map view
   const renderBuoysView = () => (
-    <ScrollView
-      style={styles.scrollView}
-      contentContainerStyle={styles.scrollContent}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-          tintColor="#4FC3F7"
-          colors={['#4FC3F7']}
-        />
-      }
-    >
-      <Text style={styles.viewTitle}>Live Buoy Data</Text>
-      <Text style={styles.viewSubtitle}>NOAA NDBC Weather Buoys</Text>
-      
-      {loadingBuoys ? (
-        <View style={styles.loadingContainer}>
+    <View style={styles.mapContainer}>
+      {loadingBuoys && (
+        <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#4FC3F7" />
           <Text style={styles.loadingText}>Loading buoys...</Text>
         </View>
-      ) : buoys.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>No buoy data available</Text>
-          <Text style={styles.emptySubtext}>Pull down to refresh</Text>
-        </View>
-      ) : (
-        buoys.map((buoy) => (
-          <TouchableOpacity
-            key={buoy.id}
-            style={[
-              styles.card,
-              selectedBuoy?.id === buoy.id && styles.cardSelected,
-            ]}
-            onPress={() => handleBuoyPress(buoy)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.cardHeader}>
-              <View style={styles.buoyIcon}>
-                <Text style={styles.buoyIconText}>📡</Text>
-              </View>
-              <View style={styles.cardTitleContainer}>
-                <Text style={styles.cardTitle} numberOfLines={1}>{buoy.name}</Text>
-                <Text style={styles.cardSubtitle}>{buoy.type || 'Weather Buoy'}</Text>
-              </View>
-              <Text style={styles.expandIcon}>
-                {selectedBuoy?.id === buoy.id ? '▼' : '▶'}
-              </Text>
-            </View>
-            
-            {selectedBuoy?.id === buoy.id && (
-              <View style={styles.buoyDetailContainer}>
-                {loadingBuoyDetail ? (
-                  <ActivityIndicator size="small" color="#4FC3F7" />
-                ) : buoyDetail?.latestObservation ? (
-                  <>
-                    <View style={styles.buoyDataGrid}>
-                      <View style={styles.buoyDataItem}>
-                        <Text style={styles.buoyDataLabel}>Water Temp</Text>
-                        <Text style={styles.buoyDataValue}>
-                          {formatTemp(buoyDetail.latestObservation.waterTemp)}
-                        </Text>
-                      </View>
-                      <View style={styles.buoyDataItem}>
-                        <Text style={styles.buoyDataLabel}>Air Temp</Text>
-                        <Text style={styles.buoyDataValue}>
-                          {formatTemp(buoyDetail.latestObservation.airTemp)}
-                        </Text>
-                      </View>
-                      <View style={styles.buoyDataItem}>
-                        <Text style={styles.buoyDataLabel}>Wind</Text>
-                        <Text style={styles.buoyDataValue}>
-                          {formatWindSpeed(buoyDetail.latestObservation.windSpeed)}{' '}
-                          {formatWindDirection(buoyDetail.latestObservation.windDirection)}
-                        </Text>
-                      </View>
-                      <View style={styles.buoyDataItem}>
-                        <Text style={styles.buoyDataLabel}>Waves</Text>
-                        <Text style={styles.buoyDataValue}>
-                          {formatWaveHeight(buoyDetail.latestObservation.waveHeight)}
-                        </Text>
-                      </View>
-                      <View style={styles.buoyDataItem}>
-                        <Text style={styles.buoyDataLabel}>Pressure</Text>
-                        <Text style={styles.buoyDataValue}>
-                          {formatPressure(buoyDetail.latestObservation.pressure)}
-                        </Text>
-                      </View>
-                      {buoyDetail.latestObservation.swellHeight && (
-                        <View style={styles.buoyDataItem}>
-                          <Text style={styles.buoyDataLabel}>Swell</Text>
-                          <Text style={styles.buoyDataValue}>
-                            {formatWaveHeight(buoyDetail.latestObservation.swellHeight)}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.updateTime}>
-                      Updated: {formatBuoyTimestamp(buoyDetail.latestObservation.timestamp)}
-                    </Text>
-                  </>
-                ) : (
-                  <Text style={styles.noDataText}>No observation data available</Text>
-                )}
-              </View>
-            )}
-          </TouchableOpacity>
-        ))
       )}
-    </ScrollView>
+      
+      <MapView
+        style={styles.map}
+        initialRegion={INITIAL_REGION}
+        region={region}
+        onRegionChangeComplete={setRegion}
+        mapType="terrain"
+        showsUserLocation={true}
+        showsMyLocationButton={true}
+      >
+        {/* Buoy Markers */}
+        {buoys.map((buoy) => (
+          <Marker
+            key={buoy.id}
+            coordinate={{
+              latitude: buoy.latitude,
+              longitude: buoy.longitude,
+            }}
+            pinColor="#FF9800"
+            onPress={() => handleBuoyPress(buoy)}
+            tracksViewChanges={false}
+          />
+        ))}
+      </MapView>
+
+      {/* Buoy Detail Panel */}
+      {selectedBuoy && (
+        <View style={styles.detailPanel}>
+          <View style={styles.detailHeader}>
+            <View style={styles.buoyIcon}>
+              <Text style={styles.buoyIconText}>📡</Text>
+            </View>
+            <View style={styles.detailTitleContainer}>
+              <Text style={styles.detailTitle} numberOfLines={1}>{selectedBuoy.name}</Text>
+              <Text style={styles.detailSubtitle}>{selectedBuoy.type || 'Weather Buoy'}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.closeButton}
+              onPress={() => {
+                setSelectedBuoy(null);
+                setBuoyDetail(null);
+              }}
+            >
+              <Text style={styles.closeButtonText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.detailScroll} contentContainerStyle={styles.detailScrollContent}>
+            {loadingBuoyDetail ? (
+              <ActivityIndicator size="small" color="#4FC3F7" style={{ marginTop: 20 }} />
+            ) : buoyDetail?.latestObservation ? (
+              <>
+                <View style={styles.buoyDataGrid}>
+                  <View style={styles.buoyDataItem}>
+                    <Text style={styles.buoyDataLabel}>Water Temp</Text>
+                    <Text style={styles.buoyDataValue}>
+                      {formatTemp(buoyDetail.latestObservation.waterTemp)}
+                    </Text>
+                  </View>
+                  <View style={styles.buoyDataItem}>
+                    <Text style={styles.buoyDataLabel}>Air Temp</Text>
+                    <Text style={styles.buoyDataValue}>
+                      {formatTemp(buoyDetail.latestObservation.airTemp)}
+                    </Text>
+                  </View>
+                  <View style={styles.buoyDataItem}>
+                    <Text style={styles.buoyDataLabel}>Wind</Text>
+                    <Text style={styles.buoyDataValue}>
+                      {formatWindSpeed(buoyDetail.latestObservation.windSpeed)}{' '}
+                      {formatWindDirection(buoyDetail.latestObservation.windDirection)}
+                    </Text>
+                  </View>
+                  <View style={styles.buoyDataItem}>
+                    <Text style={styles.buoyDataLabel}>Waves</Text>
+                    <Text style={styles.buoyDataValue}>
+                      {formatWaveHeight(buoyDetail.latestObservation.waveHeight)}
+                    </Text>
+                  </View>
+                  <View style={styles.buoyDataItem}>
+                    <Text style={styles.buoyDataLabel}>Pressure</Text>
+                    <Text style={styles.buoyDataValue}>
+                      {formatPressure(buoyDetail.latestObservation.pressure)}
+                    </Text>
+                  </View>
+                  {buoyDetail.latestObservation.swellHeight && (
+                    <View style={styles.buoyDataItem}>
+                      <Text style={styles.buoyDataLabel}>Swell</Text>
+                      <Text style={styles.buoyDataValue}>
+                        {formatWaveHeight(buoyDetail.latestObservation.swellHeight)}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.updateTime}>
+                  Updated: {formatBuoyTimestamp(buoyDetail.latestObservation.timestamp)}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.noDataText}>No observation data available</Text>
+            )}
+          </ScrollView>
+        </View>
+      )}
+    </View>
   );
+
+  const handleRefresh = () => {
+    console.log('[WeatherScreen] Refresh requested for view:', activeView);
+    switch (activeView) {
+      case 'zones':
+        loadZones();
+        break;
+      case 'buoys':
+        loadBuoys();
+        break;
+      default:
+        // Wind and Cams don't need refresh
+        break;
+    }
+  };
+
+  const handleClose = () => {
+    // Navigate back to Charts tab (or whichever was previous)
+    navigation.navigate('Charts' as never);
+  };
+
+  // Get header title based on active view
+  const getHeaderTitle = () => {
+    switch (activeView) {
+      case 'zones':
+        return 'Marine Zones';
+      case 'wind':
+        return 'Weather Forecast';
+      case 'cams':
+        return 'Weather Cams';
+      case 'buoys':
+        return 'Weather Buoys';
+      default:
+        return 'Weather Forecast';
+    }
+  };
 
   // Render active view content
   const renderContent = () => {
+    console.log('[WeatherScreen] renderContent called, activeView:', activeView);
     switch (activeView) {
       case 'zones':
         return renderZonesView();
       case 'wind':
+        console.log('[WeatherScreen] Rendering WindyMap component');
         return <WindyMap visible={true} embedded={true} />;
       case 'cams':
         return <FAAWeatherCamsView visible={true} embedded={true} />;
@@ -390,34 +479,80 @@ export default function WeatherScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.content}>
-        {/* Vertical Sidebar */}
-        <View style={styles.sidebar}>
-          {SIDEBAR_OPTIONS.map((option) => (
-            <TouchableOpacity
-              key={option.id}
-              style={[
-                styles.sidebarButton,
-                activeView === option.id && styles.sidebarButtonActive,
-              ]}
-              onPress={() => setActiveView(option.id)}
-            >
-              <Text style={styles.sidebarIcon}>{option.icon}</Text>
-              <Text
-                style={[
-                  styles.sidebarLabel,
-                  activeView === option.id && styles.sidebarLabelActive,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>{getHeaderTitle()}</Text>
+        <View style={styles.headerButtons}>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={handleRefresh}
+          >
+            <RotateCcw size={20} color="#FFF" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={() => setIsFullscreen(!isFullscreen)}
+          >
+            {isFullscreen ? (
+              <Minimize2 size={20} color="#FFF" />
+            ) : (
+              <Maximize2 size={20} color="#FFF" />
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.headerButton}
+            onPress={handleClose}
+          >
+            <X size={20} color="#FFF" />
+          </TouchableOpacity>
         </View>
-
-        {/* Main Content Area */}
+      </View>
+      
+      <View style={styles.content}>
+        {/* Main Content Area - Full Screen */}
         <View style={styles.mainContent}>
           {renderContent()}
+        </View>
+        
+        {/* Floating Sidebar - Upper Left */}
+        <View style={[styles.layerSidebar, { top: insets.top + 60 }]}>
+          <TouchableOpacity
+            style={[styles.sidebarButton, activeView === 'zones' && styles.sidebarButtonActive]}
+            onPress={() => setActiveView('zones')}
+          >
+            <Text style={styles.sidebarIcon}>🌊</Text>
+            <Text style={styles.sidebarLabel}>Zones</Text>
+          </TouchableOpacity>
+          
+          <View style={styles.sidebarDivider} />
+          
+          <TouchableOpacity
+            style={[styles.sidebarButton, activeView === 'wind' && styles.sidebarButtonActive]}
+            onPress={() => setActiveView('wind')}
+          >
+            <Text style={styles.sidebarIcon}>💨</Text>
+            <Text style={styles.sidebarLabel}>Wind</Text>
+          </TouchableOpacity>
+          
+          <View style={styles.sidebarDivider} />
+          
+          <TouchableOpacity
+            style={[styles.sidebarButton, activeView === 'cams' && styles.sidebarButtonActive]}
+            onPress={() => setActiveView('cams')}
+          >
+            <Text style={styles.sidebarIcon}>📷</Text>
+            <Text style={styles.sidebarLabel}>Cams</Text>
+          </TouchableOpacity>
+          
+          <View style={styles.sidebarDivider} />
+          
+          <TouchableOpacity
+            style={[styles.sidebarButton, activeView === 'buoys' && styles.sidebarButtonActive]}
+            onPress={() => setActiveView('buoys')}
+          >
+            <Text style={styles.sidebarIcon}>📡</Text>
+            <Text style={styles.sidebarLabel}>Buoys</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </SafeAreaView>
@@ -429,99 +564,133 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0f172a',
   },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#16213e',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFF',
+  },
+  headerButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  headerButton: {
+    padding: 4,
+  },
   content: {
     flex: 1,
-    flexDirection: 'row',
-  },
-  sidebar: {
-    width: 70,
-    backgroundColor: '#1e293b',
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderRightWidth: 1,
-    borderRightColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  sidebarButton: {
-    width: 60,
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderRadius: 8,
-    marginBottom: 8,
-  },
-  sidebarButtonActive: {
-    backgroundColor: 'rgba(79, 195, 247, 0.2)',
-  },
-  sidebarIcon: {
-    fontSize: 24,
-    marginBottom: 4,
-  },
-  sidebarLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: 'rgba(255, 255, 255, 0.5)',
-    textAlign: 'center',
-  },
-  sidebarLabelActive: {
-    color: '#4FC3F7',
   },
   mainContent: {
     flex: 1,
     backgroundColor: '#0f172a',
   },
-  scrollView: {
+  layerSidebar: {
+    position: 'absolute',
+    left: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 8,
+    paddingTop: 4,
+    paddingBottom: 6,
+    paddingHorizontal: 4,
+  },
+  sidebarButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    marginVertical: 1,
+    borderRadius: 4,
+    minWidth: 48,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  sidebarButtonActive: {
+    backgroundColor: 'rgba(79, 195, 247, 0.4)',
+    borderColor: 'rgba(79, 195, 247, 0.8)',
+  },
+  sidebarIcon: {
+    fontSize: 20,
+  },
+  sidebarLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    marginTop: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+    color: '#FFFFFF',
+  },
+  sidebarDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    marginVertical: 3,
+    marginHorizontal: 4,
+  },
+  mapContainer: {
+    flex: 1,
+    position: 'relative',
+  },
+  map: {
     flex: 1,
   },
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 32,
-  },
-  viewTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#fff',
-    marginBottom: 4,
-  },
-  viewSubtitle: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginBottom: 20,
-  },
-  loadingContainer: {
-    padding: 40,
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.7)',
+    zIndex: 10,
   },
   loadingText: {
     marginTop: 12,
     color: '#4FC3F7',
     fontSize: 14,
   },
-  emptyContainer: {
-    padding: 40,
-    alignItems: 'center',
-  },
-  emptyText: {
-    fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.7)',
-    marginBottom: 8,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.4)',
-  },
-  card: {
-    backgroundColor: '#1e293b',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+  zoneLabelMarker: {
+    backgroundColor: '#1565C0',
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: '#0D47A1',
   },
-  cardSelected: {
-    borderColor: '#4FC3F7',
+  zoneLabelText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '700',
   },
-  cardHeader: {
+  detailPanel: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#1e293b',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    maxHeight: SCREEN_HEIGHT * 0.5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  detailHeader: {
     flexDirection: 'row',
     alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
   zoneIdBadge: {
     backgroundColor: '#1565C0',
@@ -547,29 +716,33 @@ const styles = StyleSheet.create({
   buoyIconText: {
     fontSize: 20,
   },
-  cardTitleContainer: {
+  detailTitleContainer: {
     flex: 1,
   },
-  cardTitle: {
+  detailTitle: {
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
   },
-  cardSubtitle: {
+  detailSubtitle: {
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.5)',
     marginTop: 2,
   },
-  expandIcon: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginLeft: 8,
+  closeButton: {
+    padding: 8,
   },
-  forecastContainer: {
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+  closeButtonText: {
+    fontSize: 24,
+    color: 'rgba(255, 255, 255, 0.7)',
+    lineHeight: 24,
+  },
+  detailScroll: {
+    flex: 1,
+  },
+  detailScrollContent: {
+    padding: 16,
+    paddingBottom: 32,
   },
   advisoryBadge: {
     backgroundColor: '#FF5722',
@@ -613,12 +786,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: 'rgba(255, 255, 255, 0.5)',
     fontStyle: 'italic',
-  },
-  buoyDetailContainer: {
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+    marginTop: 20,
+    textAlign: 'center',
   },
   buoyDataGrid: {
     flexDirection: 'row',
