@@ -15,6 +15,7 @@ let LoginScreen: React.ComponentType<{ onLoginSuccess: () => void }> | null = nu
 let MapSelectionScreen: React.ComponentType | null = null;
 let DynamicChartViewer: React.ComponentType<{ onNavigateToDownloads?: () => void }> | null = null;
 let SettingsScreen: React.ComponentType | null = null;
+let WeatherScreen: React.ComponentType | null = null;
 let CompassModal: React.ComponentType<{ visible: boolean; heading: number | null; course: number | null }> | null = null;
 let GPSInfoModal: React.ComponentType<{ visible: boolean; gpsData: any }> | null = null;
 
@@ -33,6 +34,7 @@ if (Platform.OS !== 'web') {
   MapSelectionScreen = require('./src/screens/MapSelectionScreen').default;
   DynamicChartViewer = require('./src/components/DynamicChartViewer.native').default;
   SettingsScreen = require('./src/screens/SettingsScreen').default;
+  WeatherScreen = require('./src/screens/WeatherScreen').default;
   CompassModal = require('./src/components/CompassModal').default;
   GPSInfoModal = require('./src/components/GPSInfoModal').default;
   
@@ -148,6 +150,8 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
         return '🗺️';
       case 'Charts':
         return '📥';
+      case 'Weather':
+        return '🌊';
       case 'Settings':
         return '⚙️';
       default:
@@ -181,6 +185,11 @@ function ViewerTab() {
 function SettingsTab() {
   if (!SettingsScreen) return null;
   return <SettingsScreen />;
+}
+
+function WeatherTab() {
+  if (!WeatherScreen) return null;
+  return <WeatherScreen />;
 }
 
 // Renders overlays outside the navigation hierarchy to avoid MapLibre conflicts
@@ -318,6 +327,11 @@ function AppContent() {
               name="Charts" 
               component={ChartsTab}
               options={{ tabBarLabel: 'Documents' }}
+            />
+            <Tab.Screen 
+              name="Weather" 
+              component={WeatherTab}
+              options={{ tabBarLabel: 'Weather' }}
             />
             <Tab.Screen 
               name="Settings" 
