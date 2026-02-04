@@ -15,6 +15,7 @@ import {
 import { Ionicons, FontAwesome6 } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
+import * as FileSystem from 'expo-file-system';
 import Slider from '@react-native-community/slider';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getAuth, signOut } from '@react-native-firebase/auth';
@@ -44,6 +45,12 @@ export default function SettingsScreen() {
   const [loading, setLoading] = useState(true);
   const [clearing, setClearing] = useState(false);
   const [showSystemInfo, setShowSystemInfo] = useState(false);
+  
+  // Storage tracking for all data types
+  const [mbtilesCount, setMbtilesCount] = useState<number>(0);
+  const [mbtilesSize, setMbtilesSize] = useState<number>(0);
+  const [tidesDbSize, setTidesDbSize] = useState<number>(0);
+  const [currentsDbSize, setCurrentsDbSize] = useState<number>(0);
   
   // Tide & Current data
   const [tideStations, setTideStations] = useState<TideStation[]>([]);
@@ -214,6 +221,26 @@ export default function SettingsScreen() {
   const loadCacheInfo = async () => {
     try {
       setLoading(true);
+      
+      // Get MBTiles data
+      const mbtilesSize = await chartCacheService.getMBTilesCacheSize();
+      const mbtilesIds = await chartCacheService.getDownloadedMBTilesIds();
+      setMbtilesSize(mbtilesSize);
+      setMbtilesCount(mbtilesIds.length);
+      
+      // Get prediction database sizes
+      const tidesPath = `${FileSystem.documentDirectory}tides.db`;
+      const currentsPath = `${FileSystem.documentDirectory}currents.db`;
+      
+      const [tidesInfo, currentsInfo] = await Promise.all([
+        FileSystem.getInfoAsync(tidesPath),
+        FileSystem.getInfoAsync(currentsPath),
+      ]);
+      
+      setTidesDbSize(tidesInfo.exists && 'size' in tidesInfo ? tidesInfo.size : 0);
+      setCurrentsDbSize(currentsInfo.exists && 'size' in currentsInfo ? currentsInfo.size : 0);
+      
+      // Keep legacy GeoJSON tracking (hidden from UI, but used for cleanup)
       const size = await chartCacheService.getCacheSize();
       const ids = await chartCacheService.getDownloadedChartIds();
       setCacheSize(size);
@@ -678,9 +705,13 @@ export default function SettingsScreen() {
           onPress: async () => {
             try {
               setClearing(true);
+              // Clear both MBTiles (primary) and legacy GeoJSON (cleanup)
+              await chartCacheService.clearAllMBTiles();
               await chartCacheService.clearAllCharts();
-              setCacheSize(0);
-              setDownloadedCount(0);
+              
+              // Reload all cache info
+              await loadCacheInfo();
+              
               Alert.alert('Success', 'All cached charts have been cleared.');
             } catch (error) {
               Alert.alert('Error', 'Failed to clear cache.');
@@ -890,25 +921,79 @@ export default function SettingsScreen() {
               <ActivityIndicator size="small" color="#007AFF" />
             ) : (
               <>
+                {/* Charts (MBTiles) */}
                 <View style={[styles.row, themedStyles.row]}>
-                  <Text style={[styles.label, themedStyles.label]}>Downloaded Charts</Text>
-                  <Text style={[styles.value, themedStyles.value]}>{downloadedCount}</Text>
+                  <Text style={[styles.label, themedStyles.label]}>Charts</Text>
+                  <Text style={[styles.value, themedStyles.value]}>
+                    {mbtilesCount} {mbtilesCount === 1 ? 'chart' : 'charts'}
+                  </Text>
                 </View>
                 <View style={[styles.row, themedStyles.row]}>
-                  <Text style={[styles.label, themedStyles.label]}>Cache Size</Text>
-                  <Text style={[styles.value, themedStyles.value]}>{formatBytes(cacheSize)}</Text>
+                  <Text style={[styles.labelIndent, themedStyles.label]}>Size</Text>
+                  <Text style={[styles.value, themedStyles.value]}>{formatBytes(mbtilesSize)}</Text>
                 </View>
-                <TouchableOpacity
-                  style={[styles.clearButton, clearing && styles.clearButtonDisabled]}
-                  onPress={handleClearCache}
-                  disabled={clearing || downloadedCount === 0}
-                >
-                  {clearing ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <Text style={styles.clearButtonText}>Clear All Charts</Text>
-                  )}
-                </TouchableOpacity>
+                
+                {/* Tide Predictions */}
+                {tidesDbSize > 0 && (
+                  <>
+                    <View style={[styles.row, themedStyles.row]}>
+                      <Text style={[styles.label, themedStyles.label]}>Tide Predictions</Text>
+                      <Text style={[styles.value, themedStyles.value]}>
+                        {dbStats?.tideStations || 0} stations
+                      </Text>
+                    </View>
+                    <View style={[styles.row, themedStyles.row]}>
+                      <Text style={[styles.labelIndent, themedStyles.label]}>Size</Text>
+                      <Text style={[styles.value, themedStyles.value]}>{formatBytes(tidesDbSize)}</Text>
+                    </View>
+                  </>
+                )}
+                
+                {/* Current Predictions */}
+                {currentsDbSize > 0 && (
+                  <>
+                    <View style={[styles.row, themedStyles.row]}>
+                      <Text style={[styles.label, themedStyles.label]}>Current Predictions</Text>
+                      <Text style={[styles.value, themedStyles.value]}>
+                        {dbStats?.currentStations || 0} stations
+                      </Text>
+                    </View>
+                    <View style={[styles.row, themedStyles.row]}>
+                      <Text style={[styles.labelIndent, themedStyles.label]}>Size</Text>
+                      <Text style={[styles.value, themedStyles.value]}>{formatBytes(currentsDbSize)}</Text>
+                    </View>
+                  </>
+                )}
+                
+                {/* Total Storage */}
+                <View style={[styles.row, themedStyles.row, styles.totalRow]}>
+                  <Text style={[styles.label, themedStyles.label, styles.totalLabel]}>Total Storage</Text>
+                  <Text style={[styles.value, themedStyles.value, styles.totalValue]}>
+                    {formatBytes(mbtilesSize + tidesDbSize + currentsDbSize)}
+                  </Text>
+                </View>
+                
+                {/* Clear button - only show if there are charts */}
+                {mbtilesCount > 0 && (
+                  <TouchableOpacity
+                    style={[styles.clearButton, clearing && styles.clearButtonDisabled]}
+                    onPress={handleClearCache}
+                    disabled={clearing}
+                  >
+                    {clearing ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.clearButtonText}>Clear All Charts</Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+                
+                {/* No data message */}
+                {mbtilesCount === 0 && tidesDbSize === 0 && currentsDbSize === 0 && (
+                  <Text style={[styles.valueSmall, themedStyles.valueSmall, { textAlign: 'center', marginTop: 8 }]}>
+                    No data stored
+                  </Text>
+                )}
               </>
             )}
           </View>
@@ -1016,6 +1101,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#333',
   },
+  labelIndent: {
+    fontSize: 14,
+    color: '#333',
+    paddingLeft: 16,
+  },
   value: {
     fontSize: 16,
     color: '#666',
@@ -1024,6 +1114,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#999',
     textAlign: 'right',
+  },
+  totalRow: {
+    marginTop: 8,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#e0e0e0',
+  },
+  totalLabel: {
+    fontWeight: '600',
+  },
+  totalValue: {
+    fontWeight: '600',
   },
   logoutButton: {
     marginTop: 16,
