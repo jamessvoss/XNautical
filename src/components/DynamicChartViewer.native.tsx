@@ -169,6 +169,11 @@ interface SymbolFeatureConfig {
   opacityKey: keyof DisplaySettings;
   color: string;  // S-52 compliant color for visual identification
   hasHalo: boolean;  // Whether this symbol type supports halos (complex shapes like beacons don't)
+  // Optional text settings for symbols that have associated labels
+  hasText?: boolean;
+  textSizeKey?: keyof DisplaySettings;
+  textHaloKey?: keyof DisplaySettings;
+  textOpacityKey?: keyof DisplaySettings;
 }
 
 // Depth unit conversion helpers
@@ -232,6 +237,8 @@ const SYMBOL_FEATURES: SymbolFeatureConfig[] = [
   { id: 'moorings', label: 'Moorings', sizeKey: 'mooringSymbolSizeScale', haloKey: 'mooringSymbolHaloScale', opacityKey: 'mooringSymbolOpacityScale', color: '#800080', hasHalo: false },
   { id: 'anchors', label: 'Anchors', sizeKey: 'anchorSymbolSizeScale', haloKey: 'anchorSymbolHaloScale', opacityKey: 'anchorSymbolOpacityScale', color: '#800080', hasHalo: false },
   { id: 'tideRips', label: 'Tide Rips', sizeKey: 'tideRipsSymbolSizeScale', haloKey: 'tideRipsSymbolHaloScale', opacityKey: 'tideRipsSymbolOpacityScale', color: '#00CED1', hasHalo: true },
+  { id: 'tideStations', label: 'Tide Stations', sizeKey: 'tideStationSymbolSizeScale', haloKey: 'tideStationSymbolHaloScale', opacityKey: 'tideStationSymbolOpacityScale', color: '#0066CC', hasHalo: true, hasText: true, textSizeKey: 'tideStationTextSizeScale', textHaloKey: 'tideStationTextHaloScale', textOpacityKey: 'tideStationTextOpacityScale' },
+  { id: 'currentStations', label: 'Current Stations', sizeKey: 'currentStationSymbolSizeScale', haloKey: 'currentStationSymbolHaloScale', opacityKey: 'currentStationSymbolOpacityScale', color: '#CC0066', hasHalo: true, hasText: true, textSizeKey: 'currentStationTextSizeScale', textHaloKey: 'currentStationTextHaloScale', textOpacityKey: 'currentStationTextOpacityScale' },
 ];
 
 // Feature lookup optimization constants (moved outside component for performance)
@@ -537,8 +544,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [currentStations, setCurrentStations] = useState<CurrentStation[]>([]);
   
   // Station icon states (calculated every 15 minutes)
-  const [tideIconMap, setTideIconMap] = useState<Map<string, { iconName: string; rotation: number }>>(new Map());
-  const [currentIconMap, setCurrentIconMap] = useState<Map<string, { iconName: string; rotation: number }>>(new Map());
+  const [tideIconMap, setTideIconMap] = useState<Map<string, { iconName: string; rotation: number; currentHeight: number | null }>>(new Map());
+  const [currentIconMap, setCurrentIconMap] = useState<Map<string, { iconName: string; rotation: number; currentVelocity: number | null }>>(new Map());
   
   // Station modal state
   const [selectedStation, setSelectedStation] = useState<{
@@ -1154,6 +1161,88 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     [displaySettings.anchorSymbolOpacityScale]
   );
 
+  // Tide station symbol scaling (base zoom interpolation with user scale applied)
+  const scaledTideStationIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    7, 0.3 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
+    12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
+  ], [displaySettings.tideStationSymbolSizeScale]);
+
+  const scaledTideStationHaloSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    7, 0.3 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
+    12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
+  ], [displaySettings.tideStationSymbolSizeScale, displaySettings.tideStationSymbolHaloScale]);
+
+  const scaledTideStationSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.tideStationSymbolOpacityScale ?? 1.0)),
+    [displaySettings.tideStationSymbolOpacityScale]
+  );
+
+  // Current station symbol scaling (base zoom interpolation with user scale applied)
+  const scaledCurrentStationIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    7, 0.3 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
+    12, 1.0 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
+  ], [displaySettings.currentStationSymbolSizeScale]);
+
+  const scaledCurrentStationHaloSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    7, 0.3 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
+    12, 1.0 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
+  ], [displaySettings.currentStationSymbolSizeScale, displaySettings.currentStationSymbolHaloScale]);
+
+  const scaledCurrentStationSymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.currentStationSymbolOpacityScale ?? 1.0)),
+    [displaySettings.currentStationSymbolOpacityScale]
+  );
+
+  // Tide station text scaling
+  const scaledTideStationTextSize = useMemo(() => 
+    10 * (displaySettings.tideStationTextSizeScale ?? 1.0),
+    [displaySettings.tideStationTextSizeScale]
+  );
+
+  const scaledTideStationTextHalo = useMemo(() => 
+    1.5 * (displaySettings.tideStationTextHaloScale ?? 1.0),
+    [displaySettings.tideStationTextHaloScale]
+  );
+
+  const scaledTideStationTextOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.tideStationTextOpacityScale ?? 1.0)),
+    [displaySettings.tideStationTextOpacityScale]
+  );
+
+  // Current station text scaling - scales with zoom so em-based offsets scale proportionally
+  const scaledCurrentStationTextSize = useMemo(() => {
+    const baseSize = 14 * (displaySettings.currentStationTextSizeScale ?? 1.0);
+    return [
+      'interpolate', ['linear'], ['zoom'],
+      10, baseSize * 0.5,  // 50% at z10
+      13, baseSize         // 100% at z13
+    ];
+  }, [displaySettings.currentStationTextSizeScale]);
+
+  // Slightly larger version for station name labels (1.1x)
+  const scaledCurrentStationLabelSize = useMemo(() => {
+    const baseSize = 15 * (displaySettings.currentStationTextSizeScale ?? 1.0);
+    return [
+      'interpolate', ['linear'], ['zoom'],
+      10, baseSize * 0.5,  // 50% at z10
+      13, baseSize         // 100% at z13
+    ];
+  }, [displaySettings.currentStationTextSizeScale]);
+
+  const scaledCurrentStationTextHalo = useMemo(() => 
+    1.5 * (displaySettings.currentStationTextHaloScale ?? 1.0),
+    [displaySettings.currentStationTextHaloScale]
+  );
+
+  const scaledCurrentStationTextOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.currentStationTextOpacityScale ?? 1.0)),
+    [displaySettings.currentStationTextOpacityScale]
+  );
+
   // Note: Symbol halos disabled - will implement with white symbol versions later
   // The halo settings are preserved in DisplaySettings for future use
   
@@ -1169,6 +1258,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [activeTab, setActiveTab] = useState<ControlPanelTab>('basemap');
   const [selectedDisplayFeature, setSelectedDisplayFeature] = useState<string>('soundings');
   const [selectedSymbolFeature, setSelectedSymbolFeature] = useState<string>('lights');
+  const [symbolEditMode, setSymbolEditMode] = useState<'symbol' | 'text'>('symbol');
   
   // Layers sub-tabs
   type LayersSubTab = 'chart' | 'names' | 'sources';
@@ -1694,10 +1784,41 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           fetchCurrentStations(),
         ]);
         
-        console.log(`[MAP] Fetched ${tides.length} tide stations and ${currents.length} current stations`);
+        console.log(`[MAP] Fetched ${tides.length} tide stations and ${currents.length} current stations (before bin filtering)`);
         
-        if (tides.length > 0 || currents.length > 0) {
-          logger.info(LogCategory.DATA, `Loaded ${tides.length} tide stations and ${currents.length} current stations from storage`);
+        // Filter current stations to only show the highest bin for each station
+        // Higher bin numbers are closer to the surface
+        const filteredCurrents = (() => {
+          // Group stations by base name (location)
+          const stationsByLocation = new Map<string, CurrentStation[]>();
+          
+          for (const station of currents) {
+            // Extract base station identifier - stations at same location share lat/lng
+            // Use lat/lng as key since station names may vary slightly
+            const locationKey = `${station.lat.toFixed(4)},${station.lng.toFixed(4)}`;
+            
+            if (!stationsByLocation.has(locationKey)) {
+              stationsByLocation.set(locationKey, []);
+            }
+            stationsByLocation.get(locationKey)!.push(station);
+          }
+          
+          // For each location, keep only the station with the highest bin number
+          const result: CurrentStation[] = [];
+          for (const stations of stationsByLocation.values()) {
+            // Find station with highest bin (closest to surface)
+            const highestBinStation = stations.reduce((best, current) => 
+              current.bin > best.bin ? current : best
+            );
+            result.push(highestBinStation);
+          }
+          
+          console.log(`[MAP] Filtered ${currents.length} current stations to ${result.length} (highest bin per location)`);
+          return result;
+        })();
+        
+        if (tides.length > 0 || filteredCurrents.length > 0) {
+          logger.info(LogCategory.DATA, `Loaded ${tides.length} tide stations and ${filteredCurrents.length} current stations (highest bin only) from storage`);
           
           // Log sample coordinates to verify
           if (tides.length > 0) {
@@ -1708,18 +1829,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               lng: tides[0].lng 
             });
           }
-          if (currents.length > 0) {
+          if (filteredCurrents.length > 0) {
             console.log('[MAP] Sample current station:', { 
-              id: currents[0].id, 
-              name: currents[0].name, 
-              lat: currents[0].lat, 
-              lng: currents[0].lng 
+              id: filteredCurrents[0].id, 
+              name: filteredCurrents[0].name, 
+              lat: filteredCurrents[0].lat, 
+              lng: filteredCurrents[0].lng,
+              bin: filteredCurrents[0].bin
             });
           }
           
           setTideStations(tides);
-          setCurrentStations(currents);
-          console.log(`[MAP] Successfully set ${tides.length} tide stations and ${currents.length} current stations into state`);
+          setCurrentStations(filteredCurrents);
+          console.log(`[MAP] Successfully set ${tides.length} tide stations and ${filteredCurrents.length} current stations into state`);
         } else {
           console.log('[MAP] No stations in storage - user needs to press "Refresh Tide Data" in Settings');
         }
@@ -2615,8 +2737,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         159: showHazards, 153: showHazards, 86: showHazards,
         // Landmarks
         74: showLandmarks,
-        // Soundings
-        129: showSoundings,
+        // Soundings - EXCLUDED from click-to-identify (too numerous and not useful)
+        129: false,
         // Cables (CBLSUB, CBLOHD, CBLARE)
         22: showCables, 21: showCables, 20: showCables,
         // Pipelines (PIPSOL, PIPARE)
@@ -4805,6 +4927,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               type: 'FeatureCollection',
               features: tideStations.map(station => {
                 const state = tideIconMap.get(station.id);
+                const heightStr = state?.currentHeight != null 
+                  ? `${state.currentHeight.toFixed(1)} ft` 
+                  : '';
                 return {
                   type: 'Feature',
                   geometry: {
@@ -4817,6 +4942,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     type: station.type,
                     iconName: state?.iconName || 'tide-40',
                     rotation: state?.rotation || 0,
+                    heightLabel: heightStr,
                   },
                 };
               }),
@@ -4829,13 +4955,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 iconImage: 'arrow-halo',
                 iconRotate: ['get', 'rotation'],
-                iconSize: [
-                  'interpolate',
-                  ['linear'],
-                  ['zoom'],
-                  7, 0.33,
-                  12, 1.1,
-                ],
+                iconSize: scaledTideStationHaloSize,
+                iconOpacity: scaledTideStationSymbolOpacity,
                 iconAllowOverlap: true,
                 iconIgnorePlacement: true,
               }}
@@ -4857,15 +4978,27 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 iconImage: ['get', 'iconName'],
                 iconRotate: ['get', 'rotation'],
-                iconSize: [
-                  'interpolate',
-                  ['linear'],
-                  ['zoom'],
-                  7, 0.3,
-                  12, 1.0,
-                ],
+                iconSize: scaledTideStationIconSize,
+                iconOpacity: scaledTideStationSymbolOpacity,
                 iconAllowOverlap: true,
                 iconIgnorePlacement: true,
+              }}
+            />
+            {/* Tide height value label */}
+            <MapLibre.SymbolLayer
+              id="tide-stations-value"
+              minZoomLevel={10}
+              style={{
+                textField: ['get', 'heightLabel'],
+                textFont: ['Noto Sans Bold'],
+                textSize: scaledTideStationTextSize,
+                textColor: '#0066CC',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledTideStationTextHalo,
+                textOpacity: scaledTideStationTextOpacity,
+                textOffset: [1.2, 0],
+                textAnchor: 'left',
+                textAllowOverlap: true,
               }}
             />
             <MapLibre.SymbolLayer
@@ -4874,10 +5007,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 textField: ['get', 'name'],
                 textFont: ['Noto Sans Regular'],
-                textSize: 11,
+                textSize: scaledTideStationTextSize * 1.1,
                 textColor: '#0066CC',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 2,
+                textHaloWidth: scaledTideStationTextHalo * 1.33,
+                textOpacity: scaledTideStationTextOpacity,
                 textOffset: [0, 1.5],
                 textAnchor: 'top',
               }}
@@ -4895,6 +5029,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               type: 'FeatureCollection',
               features: currentStations.map(station => {
                 const state = currentIconMap.get(station.id);
+                const velocityStr = state?.currentVelocity != null 
+                  ? `${Math.abs(state.currentVelocity).toFixed(1)} kn` 
+                  : '';
+                const rotation = state?.rotation || 0;
+                // Pre-calculate label offset to position at tail of arrow
+                const rotationRad = rotation * Math.PI / 180;
+                const labelOffsetX = -2.5 * Math.sin(rotationRad);
+                const labelOffsetY = 2.5 * Math.cos(rotationRad);
                 return {
                   type: 'Feature',
                   geometry: {
@@ -4906,7 +5048,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     name: station.name,
                     bin: station.bin,
                     iconName: state?.iconName || 'current-0',
-                    rotation: state?.rotation || 0,
+                    rotation: rotation,
+                    velocityLabel: velocityStr,
+                    labelOffsetX: labelOffsetX,
+                    labelOffsetY: labelOffsetY,
                   },
                 };
               }),
@@ -4919,13 +5064,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 iconImage: 'arrow-halo',
                 iconRotate: ['get', 'rotation'],
-                iconSize: [
-                  'interpolate',
-                  ['linear'],
-                  ['zoom'],
-                  7, 0.33,
-                  12, 1.1,
-                ],
+                iconSize: scaledCurrentStationHaloSize,
+                iconOpacity: scaledCurrentStationSymbolOpacity,
                 iconAllowOverlap: true,
                 iconIgnorePlacement: true,
               }}
@@ -4947,29 +5087,56 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 iconImage: ['get', 'iconName'],
                 iconRotate: ['get', 'rotation'],
-                iconSize: [
-                  'interpolate',
-                  ['linear'],
-                  ['zoom'],
-                  7, 0.3,
-                  12, 1.0,
-                ],
+                iconSize: scaledCurrentStationIconSize,
+                iconOpacity: scaledCurrentStationSymbolOpacity,
                 iconAllowOverlap: true,
                 iconIgnorePlacement: true,
               }}
             />
+            {/* Current station name - at arrow head */}
             <MapLibre.SymbolLayer
               id="current-stations-label"
               minZoomLevel={10}
               style={{
                 textField: ['get', 'name'],
                 textFont: ['Noto Sans Regular'],
-                textSize: 11,
+                textSize: scaledCurrentStationLabelSize,
                 textColor: '#CC0066',
                 textHaloColor: '#FFFFFF',
-                textHaloWidth: 2,
-                textOffset: [0, 1.5],
-                textAnchor: 'top',
+                textHaloWidth: scaledCurrentStationTextHalo * 1.33,
+                textOpacity: scaledCurrentStationTextOpacity,
+                // Always at arrow head: flip offset direction when arrow points down
+                textOffset: [
+                  'case',
+                  ['all', ['>=', ['get', 'rotation'], 90], ['<', ['get', 'rotation'], 270]],
+                    ['literal', [0, 3.5]],   // Arrow down: text below symbol (at head)
+                  ['literal', [0, -3.5]]     // Arrow up: text above symbol (at head)
+                ],
+                textAnchor: 'center',
+                textAllowOverlap: true,
+              }}
+            />
+            {/* Current velocity label - further out from arrow head */}
+            <MapLibre.SymbolLayer
+              id="current-stations-value"
+              minZoomLevel={10}
+              style={{
+                textField: ['get', 'velocityLabel'],
+                textFont: ['Noto Sans Regular'],
+                textSize: scaledCurrentStationLabelSize,
+                textColor: '#CC0066',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledCurrentStationTextHalo,
+                textOpacity: scaledCurrentStationTextOpacity,
+                // Further from head than station name
+                textOffset: [
+                  'case',
+                  ['all', ['>=', ['get', 'rotation'], 90], ['<', ['get', 'rotation'], 270]],
+                    ['literal', [0, 5.5]],   // Arrow down: text further below
+                  ['literal', [0, -5.5]]     // Arrow up: text further above
+                ],
+                textAnchor: 'center',
+                textAllowOverlap: true,
               }}
             />
           </MapLibre.ShapeSource>
@@ -6152,7 +6319,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       const updates: Partial<DisplaySettings> = {};
                       updates[symbol.sizeKey] = getNominalSize(symbol.id);
                       if (symbol.hasHalo) {
-                        updates[symbol.haloKey] = 1.0;
+                        updates[symbol.haloKey] = 0.1;
                       }
                       updates[symbol.opacityKey] = 1.0;
                       const newSettings = { ...displaySettings, ...updates };
@@ -6160,93 +6327,214 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       await displaySettingsService.saveSettings(newSettings);
                     };
                     
+                    const resetText = async () => {
+                      if (!symbol.hasText || !symbol.textSizeKey || !symbol.textHaloKey || !symbol.textOpacityKey) return;
+                      const updates: Partial<DisplaySettings> = {};
+                      updates[symbol.textSizeKey] = 1.0;
+                      updates[symbol.textHaloKey] = 1.0;
+                      updates[symbol.textOpacityKey] = 1.0;
+                      const newSettings = { ...displaySettings, ...updates };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    };
+                    
+                    // Show symbol or text controls based on mode
+                    const showingText = symbolEditMode === 'text' && symbol.hasText;
+                    
                     return (
                       <>
                         <View style={styles.displayControlHeader}>
                           <Text style={[styles.displayFeatureName, themedStyles.displayFeatureName]}>{symbol.label}</Text>
                           <View style={styles.headerRightSection}>
-                            <View style={[styles.featureTypeBadge, { backgroundColor: symbol.color }]}>
-                              <Text style={styles.featureTypeBadgeLabel}>symbol</Text>
-                            </View>
+                            {/* Symbol/Text toggle - only show for symbols with text */}
+                            {symbol.hasText ? (
+                              <View style={styles.symbolTextToggle}>
+                                <TouchableOpacity 
+                                  style={[
+                                    styles.symbolTextToggleBtn,
+                                    symbolEditMode === 'symbol' && styles.symbolTextToggleBtnActive,
+                                    { backgroundColor: symbolEditMode === 'symbol' ? symbol.color : 'transparent' }
+                                  ]}
+                                  onPress={() => setSymbolEditMode('symbol')}
+                                >
+                                  <Text style={[
+                                    styles.symbolTextToggleText,
+                                    symbolEditMode === 'symbol' && styles.symbolTextToggleTextActive
+                                  ]}>symbol</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity 
+                                  style={[
+                                    styles.symbolTextToggleBtn,
+                                    symbolEditMode === 'text' && styles.symbolTextToggleBtnActive,
+                                    { backgroundColor: symbolEditMode === 'text' ? symbol.color : 'transparent' }
+                                  ]}
+                                  onPress={() => setSymbolEditMode('text')}
+                                >
+                                  <Text style={[
+                                    styles.symbolTextToggleText,
+                                    symbolEditMode === 'text' && styles.symbolTextToggleTextActive
+                                  ]}>text</Text>
+                                </TouchableOpacity>
+                              </View>
+                            ) : (
+                              <View style={[styles.featureTypeBadge, { backgroundColor: symbol.color }]}>
+                                <Text style={styles.featureTypeBadgeLabel}>symbol</Text>
+                              </View>
+                            )}
                             <TouchableOpacity 
                               style={styles.resetIconBtn}
-                              onPress={resetSymbol}
+                              onPress={showingText ? resetText : resetSymbol}
                             >
                               <Text style={styles.resetIconText}>↺</Text>
                             </TouchableOpacity>
                           </View>
                         </View>
                         
-                        {/* Size slider */}
-                        <View style={styles.controlRow}>
-                          <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Size</Text>
-                          <View style={styles.sliderContainerCompact}>
-                            <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>50%</Text>
-                            <Slider
-                              style={styles.displaySliderCompact}
-                              minimumValue={0.5}
-                              maximumValue={3.0}
-                              step={0.1}
-                              value={displaySettings[symbol.sizeKey] as number}
-                              onValueChange={(v) => updateValue(symbol.sizeKey, v)}
-                              minimumTrackTintColor={symbol.color}
-                              maximumTrackTintColor={uiTheme.sliderTrack}
-                              thumbTintColor={symbol.color}
-                            />
-                            <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>300%</Text>
-                          </View>
-                          <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
-                            {formatPercent(displaySettings[symbol.sizeKey] as number)}
-                          </Text>
-                        </View>
-                        
-                        {/* Halo slider - only shown for symbols that support halos */}
-                        {symbol.hasHalo && (
-                          <View style={styles.controlRow}>
-                            <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Halo</Text>
-                            <View style={styles.sliderContainerCompact}>
-                              <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
-                              <Slider
-                                style={styles.displaySliderCompact}
-                                minimumValue={0}
-                                maximumValue={0.25}
-                                step={0.05}
-                                value={displaySettings[symbol.haloKey] as number}
-                                onValueChange={(v) => updateValue(symbol.haloKey, v)}
-                                minimumTrackTintColor="#E040FB"
-                                maximumTrackTintColor={uiTheme.sliderTrack}
-                                thumbTintColor="#E040FB"
-                              />
-                              <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>+25%</Text>
+                        {showingText ? (
+                          <>
+                            {/* Text Size slider */}
+                            <View style={styles.controlRow}>
+                              <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Size</Text>
+                              <View style={styles.sliderContainerCompact}>
+                                <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>50%</Text>
+                                <Slider
+                                  style={styles.displaySliderCompact}
+                                  minimumValue={0.5}
+                                  maximumValue={2.0}
+                                  step={0.1}
+                                  value={displaySettings[symbol.textSizeKey!] as number}
+                                  onValueChange={(v) => updateValue(symbol.textSizeKey!, v)}
+                                  minimumTrackTintColor={symbol.color}
+                                  maximumTrackTintColor={uiTheme.sliderTrack}
+                                  thumbTintColor={symbol.color}
+                                />
+                                <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>200%</Text>
+                              </View>
+                              <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
+                                {formatPercent(displaySettings[symbol.textSizeKey!] as number)}
+                              </Text>
                             </View>
-                            <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
-                              +{Math.round((displaySettings[symbol.haloKey] as number) * 100)}%
-                            </Text>
-                          </View>
+                            
+                            {/* Text Halo slider */}
+                            <View style={styles.controlRow}>
+                              <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Halo</Text>
+                              <View style={styles.sliderContainerCompact}>
+                                <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
+                                <Slider
+                                  style={styles.displaySliderCompact}
+                                  minimumValue={0}
+                                  maximumValue={2.0}
+                                  step={0.1}
+                                  value={displaySettings[symbol.textHaloKey!] as number}
+                                  onValueChange={(v) => updateValue(symbol.textHaloKey!, v)}
+                                  minimumTrackTintColor="#E040FB"
+                                  maximumTrackTintColor={uiTheme.sliderTrack}
+                                  thumbTintColor="#E040FB"
+                                />
+                                <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>200%</Text>
+                              </View>
+                              <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
+                                {formatPercent(displaySettings[symbol.textHaloKey!] as number)}
+                              </Text>
+                            </View>
+                            
+                            {/* Text Opacity slider */}
+                            <View style={styles.controlRow}>
+                              <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Opacity</Text>
+                              <View style={styles.sliderContainerCompact}>
+                                <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
+                                <Slider
+                                  style={styles.displaySliderCompact}
+                                  minimumValue={0}
+                                  maximumValue={1.0}
+                                  step={0.1}
+                                  value={displaySettings[symbol.textOpacityKey!] as number}
+                                  onValueChange={(v) => updateValue(symbol.textOpacityKey!, v)}
+                                  minimumTrackTintColor="#81C784"
+                                  maximumTrackTintColor={uiTheme.sliderTrack}
+                                  thumbTintColor="#81C784"
+                                />
+                                <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>100%</Text>
+                              </View>
+                              <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
+                                {formatPercent(displaySettings[symbol.textOpacityKey!] as number)}
+                              </Text>
+                            </View>
+                          </>
+                        ) : (
+                          <>
+                            {/* Size slider */}
+                            <View style={styles.controlRow}>
+                              <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Size</Text>
+                              <View style={styles.sliderContainerCompact}>
+                                <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>50%</Text>
+                                <Slider
+                                  style={styles.displaySliderCompact}
+                                  minimumValue={0.5}
+                                  maximumValue={3.0}
+                                  step={0.1}
+                                  value={displaySettings[symbol.sizeKey] as number}
+                                  onValueChange={(v) => updateValue(symbol.sizeKey, v)}
+                                  minimumTrackTintColor={symbol.color}
+                                  maximumTrackTintColor={uiTheme.sliderTrack}
+                                  thumbTintColor={symbol.color}
+                                />
+                                <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>300%</Text>
+                              </View>
+                              <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
+                                {formatPercent(displaySettings[symbol.sizeKey] as number)}
+                              </Text>
+                            </View>
+                            
+                            {/* Halo slider - only shown for symbols that support halos */}
+                            {symbol.hasHalo && (
+                              <View style={styles.controlRow}>
+                                <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Halo</Text>
+                                <View style={styles.sliderContainerCompact}>
+                                  <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
+                                  <Slider
+                                    style={styles.displaySliderCompact}
+                                    minimumValue={0}
+                                    maximumValue={0.25}
+                                    step={0.05}
+                                    value={displaySettings[symbol.haloKey] as number}
+                                    onValueChange={(v) => updateValue(symbol.haloKey, v)}
+                                    minimumTrackTintColor="#E040FB"
+                                    maximumTrackTintColor={uiTheme.sliderTrack}
+                                    thumbTintColor="#E040FB"
+                                  />
+                                  <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>+25%</Text>
+                                </View>
+                                <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
+                                  +{Math.round((displaySettings[symbol.haloKey] as number) * 100)}%
+                                </Text>
+                              </View>
+                            )}
+                            
+                            {/* Opacity slider */}
+                            <View style={styles.controlRow}>
+                              <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Opacity</Text>
+                              <View style={styles.sliderContainerCompact}>
+                                <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
+                                <Slider
+                                  style={styles.displaySliderCompact}
+                                  minimumValue={0}
+                                  maximumValue={1.0}
+                                  step={0.1}
+                                  value={displaySettings[symbol.opacityKey] as number}
+                                  onValueChange={(v) => updateValue(symbol.opacityKey, v)}
+                                  minimumTrackTintColor="#81C784"
+                                  maximumTrackTintColor={uiTheme.sliderTrack}
+                                  thumbTintColor="#81C784"
+                                />
+                                <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>100%</Text>
+                              </View>
+                              <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
+                                {formatPercent(displaySettings[symbol.opacityKey] as number)}
+                              </Text>
+                            </View>
+                          </>
                         )}
-                        
-                        {/* Opacity slider */}
-                        <View style={styles.controlRow}>
-                          <Text style={[styles.controlRowLabel, themedStyles.controlRowLabel]}>Opacity</Text>
-                          <View style={styles.sliderContainerCompact}>
-                            <Text style={[styles.sliderMinLabelSmall, themedStyles.sliderMinMaxLabel]}>0%</Text>
-                            <Slider
-                              style={styles.displaySliderCompact}
-                              minimumValue={0}
-                              maximumValue={1.0}
-                              step={0.1}
-                              value={displaySettings[symbol.opacityKey] as number}
-                              onValueChange={(v) => updateValue(symbol.opacityKey, v)}
-                              minimumTrackTintColor="#81C784"
-                              maximumTrackTintColor={uiTheme.sliderTrack}
-                              thumbTintColor="#81C784"
-                            />
-                            <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>100%</Text>
-                          </View>
-                          <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
-                            {formatPercent(displaySettings[symbol.opacityKey] as number)}
-                          </Text>
-                        </View>
                       </>
                     );
                   })()}
@@ -7892,6 +8180,30 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: 'rgba(255, 255, 255, 0.8)',
     textTransform: 'uppercase',
+  },
+  symbolTextToggle: {
+    flexDirection: 'row',
+    borderRadius: 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+  },
+  symbolTextToggleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+  },
+  symbolTextToggleBtnActive: {
+    // Background color set dynamically based on symbol.color
+  },
+  symbolTextToggleText: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.85)',
+    textTransform: 'uppercase',
+  },
+  symbolTextToggleTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '600',
   },
   controlRow: {
     flexDirection: 'row',

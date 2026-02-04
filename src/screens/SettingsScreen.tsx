@@ -31,8 +31,9 @@ import {
   arePredictionsDownloaded,
   getPredictionsStats,
   clearPredictions,
+  getPredictionDatabaseStats,
 } from '../services/stationService';
-import type { TideStation, CurrentStation } from '../services/stationService';
+import type { TideStation, CurrentStation, PredictionDatabaseStats } from '../services/stationService';
 
 export default function SettingsScreen() {
   const [cacheSize, setCacheSize] = useState<number>(0);
@@ -52,6 +53,9 @@ export default function SettingsScreen() {
   const [downloadingPredictions, setDownloadingPredictions] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState('');
   const [downloadPercent, setDownloadPercent] = useState(0);
+  
+  // Database stats (accurate values from SQLite)
+  const [dbStats, setDbStats] = useState<PredictionDatabaseStats | null>(null);
   
   // Theme state
   const [uiTheme, setUITheme] = useState<UITheme>(themeService.getUITheme());
@@ -249,8 +253,15 @@ export default function SettingsScreen() {
         const stats = await getPredictionsStats();
         console.log('[SETTINGS] Prediction stats:', stats);
         setPredictionsStats(stats);
+        
+        // Get accurate stats from SQLite database
+        console.log('[SETTINGS] Getting database stats...');
+        const databaseStats = await getPredictionDatabaseStats();
+        console.log('[SETTINGS] Database stats:', databaseStats);
+        setDbStats(databaseStats);
       } else {
         console.log('[SETTINGS] No predictions downloaded yet');
+        setDbStats(null);
       }
     } catch (error) {
       console.error('Error loading tide/current data:', error);
@@ -360,41 +371,84 @@ export default function SettingsScreen() {
   const verifyPredictionDatabase = async () => {
     try {
       console.log('[VERIFY] ========================================');
-      console.log('[VERIFY] Checking for prediction database...');
+      console.log('[VERIFY] Checking for prediction databases (split format)...');
       
       const FileSystem = require('expo-file-system/legacy');
       const SQLite = require('expo-sqlite');
-      const dbPath = `${FileSystem.documentDirectory}predictions.db`;
       
-      console.log('[VERIFY] Checking path:', dbPath);
-      const dbInfo = await FileSystem.getInfoAsync(dbPath);
+      // Check for new split databases
+      const tidesDbPath = `${FileSystem.documentDirectory}tides.db`;
+      const currentsDbPath = `${FileSystem.documentDirectory}currents.db`;
       
-      console.log('[VERIFY] Database exists:', dbInfo.exists);
-      if (dbInfo.exists) {
-        console.log('[VERIFY] Database size:', (dbInfo.size / 1024 / 1024).toFixed(2), 'MB');
-        console.log('[VERIFY] Modified:', new Date(dbInfo.modificationTime).toISOString());
+      console.log('[VERIFY] Checking tides path:', tidesDbPath);
+      console.log('[VERIFY] Checking currents path:', currentsDbPath);
+      
+      const [tidesInfo, currentsInfo] = await Promise.all([
+        FileSystem.getInfoAsync(tidesDbPath),
+        FileSystem.getInfoAsync(currentsDbPath),
+      ]);
+      
+      console.log('[VERIFY] Tides DB exists:', tidesInfo.exists);
+      console.log('[VERIFY] Currents DB exists:', currentsInfo.exists);
+      
+      let tidesTableInfo = '';
+      let currentsTableInfo = '';
+      
+      // Check tides database
+      if (tidesInfo.exists) {
+        console.log('[VERIFY] Tides DB size:', (tidesInfo.size / 1024 / 1024).toFixed(2), 'MB');
         
-        // Try to open and query the database
         try {
-          const db = await SQLite.openDatabaseAsync('predictions.db');
-          console.log('[VERIFY] Database opened successfully');
+          const tidesDb = await SQLite.openDatabaseAsync(tidesDbPath);
+          console.log('[VERIFY] Tides database opened successfully');
           
           // Check what tables exist
-          const tables = await db.getAllAsync(
+          const tables = await tidesDb.getAllAsync(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
           );
-          console.log('[VERIFY] Tables in database:', tables);
+          console.log('[VERIFY] Tables in tides.db:', tables.map((t: any) => t.name));
           
-          // If we have tables, check row counts
-          if (tables && tables.length > 0) {
-            for (const table of tables) {
-              const tableName = table.name;
-              const count = await db.getFirstAsync(`SELECT COUNT(*) as count FROM ${tableName}`);
-              console.log(`[VERIFY] Table ${tableName}: ${count?.count} rows`);
+          // Check row counts
+          for (const table of tables) {
+            const tableName = (table as any).name;
+            if (tableName !== 'sqlite_sequence') {
+              const count = await tidesDb.getFirstAsync(`SELECT COUNT(*) as count FROM ${tableName}`);
+              console.log(`[VERIFY] tides.db ${tableName}: ${(count as any)?.count} rows`);
+              tidesTableInfo += `${tableName}: ${(count as any)?.count} rows\n`;
             }
           }
         } catch (dbError: any) {
-          console.error('[VERIFY] Database query error:', dbError);
+          console.error('[VERIFY] Tides database query error:', dbError);
+          tidesTableInfo = `Error: ${dbError.message}`;
+        }
+      }
+      
+      // Check currents database
+      if (currentsInfo.exists) {
+        console.log('[VERIFY] Currents DB size:', (currentsInfo.size / 1024 / 1024).toFixed(2), 'MB');
+        
+        try {
+          const currentsDb = await SQLite.openDatabaseAsync(currentsDbPath);
+          console.log('[VERIFY] Currents database opened successfully');
+          
+          // Check what tables exist
+          const tables = await currentsDb.getAllAsync(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+          );
+          console.log('[VERIFY] Tables in currents.db:', tables.map((t: any) => t.name));
+          
+          // Check row counts
+          for (const table of tables) {
+            const tableName = (table as any).name;
+            if (tableName !== 'sqlite_sequence') {
+              const count = await currentsDb.getFirstAsync(`SELECT COUNT(*) as count FROM ${tableName}`);
+              console.log(`[VERIFY] currents.db ${tableName}: ${(count as any)?.count} rows`);
+              currentsTableInfo += `${tableName}: ${(count as any)?.count} rows\n`;
+            }
+          }
+        } catch (dbError: any) {
+          console.error('[VERIFY] Currents database query error:', dbError);
+          currentsTableInfo = `Error: ${dbError.message}`;
         }
       }
       
@@ -414,10 +468,17 @@ export default function SettingsScreen() {
       
       console.log('[VERIFY] ========================================');
       
+      const totalSize = (tidesInfo.exists ? tidesInfo.size : 0) + (currentsInfo.exists ? currentsInfo.size : 0);
+      
       Alert.alert(
         'Database Verification',
-        `Database exists: ${dbInfo.exists}\n` +
-        `Size: ${dbInfo.exists ? (dbInfo.size / 1024 / 1024).toFixed(2) + ' MB' : 'N/A'}\n` +
+        `Tides DB: ${tidesInfo.exists ? 'EXISTS' : 'NOT FOUND'}\n` +
+        `  Size: ${tidesInfo.exists ? (tidesInfo.size / 1024 / 1024).toFixed(2) + ' MB' : 'N/A'}\n` +
+        `  ${tidesTableInfo || 'No tables'}\n\n` +
+        `Currents DB: ${currentsInfo.exists ? 'EXISTS' : 'NOT FOUND'}\n` +
+        `  Size: ${currentsInfo.exists ? (currentsInfo.size / 1024 / 1024).toFixed(2) + ' MB' : 'N/A'}\n` +
+        `  ${currentsTableInfo || 'No tables'}\n\n` +
+        `Total Size: ${(totalSize / 1024 / 1024).toFixed(2)} MB\n` +
         `Metadata saved: ${!!statsJson && !!timestamp}\n\n` +
         `Check console for table details`,
         [{ text: 'OK' }]
@@ -632,54 +693,69 @@ export default function SettingsScreen() {
               </View>
             ) : (
               <>
-                {/* Tide Stations */}
+                {/* Tide Stations - use database stats if available */}
                 <View style={[styles.row, themedStyles.row]}>
                   <Text style={[styles.label, themedStyles.label]}>Tide Stations</Text>
                   <Text style={[styles.value, themedStyles.value]}>
-                    {getStationsWithData(tideStations)} / {tideStations.length}
+                    {dbStats?.tideStations ?? 0} / {tideStations.length}
                   </Text>
                 </View>
                 <View style={[styles.row, themedStyles.row]}>
                   <Text style={[styles.label, themedStyles.label]}>Tide Date Range</Text>
                   <Text style={[styles.valueSmall, themedStyles.valueSmall]}>
-                    {getDateRange(tideStations)}
+                    {dbStats?.tideDateRange 
+                      ? `${dbStats.tideDateRange.start} - ${dbStats.tideDateRange.end}`
+                      : 'No data'}
                   </Text>
                 </View>
                 <View style={[styles.row, themedStyles.row]}>
-                  <Text style={[styles.label, themedStyles.label]}>Tide Data Size</Text>
+                  <Text style={[styles.label, themedStyles.label]}>Tide DB Size</Text>
                   <Text style={[styles.value, themedStyles.value]}>
-                    {getMemorySize(tideStations)}
+                    {dbStats?.tidesDbSizeMB ? `${dbStats.tidesDbSizeMB.toFixed(1)} MB` : 'N/A'}
+                  </Text>
+                </View>
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Tide Predictions</Text>
+                  <Text style={[styles.value, themedStyles.value]}>
+                    {dbStats?.totalTidePredictions?.toLocaleString() ?? 0}
                   </Text>
                 </View>
                 
-                {/* Current Stations */}
+                {/* Current Stations - use database stats if available */}
                 <View style={[styles.row, themedStyles.row]}>
                   <Text style={[styles.label, themedStyles.label]}>Current Stations</Text>
                   <Text style={[styles.value, themedStyles.value]}>
-                    {getStationsWithData(currentStations)} / {currentStations.length}
+                    {dbStats?.currentStations ?? 0} / {currentStations.length}
                   </Text>
                 </View>
                 <View style={[styles.row, themedStyles.row]}>
                   <Text style={[styles.label, themedStyles.label]}>Current Date Range</Text>
                   <Text style={[styles.valueSmall, themedStyles.valueSmall]}>
-                    {getDateRange(currentStations)}
+                    {dbStats?.currentDateRange 
+                      ? `${dbStats.currentDateRange.start} - ${dbStats.currentDateRange.end}`
+                      : 'No data'}
                   </Text>
                 </View>
                 <View style={[styles.row, themedStyles.row]}>
-                  <Text style={[styles.label, themedStyles.label]}>Current Data Size</Text>
+                  <Text style={[styles.label, themedStyles.label]}>Current DB Size</Text>
                   <Text style={[styles.value, themedStyles.value]}>
-                    {getMemorySize(currentStations)}
+                    {dbStats?.currentsDbSizeMB ? `${dbStats.currentsDbSizeMB.toFixed(1)} MB` : 'N/A'}
+                  </Text>
+                </View>
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Current Predictions</Text>
+                  <Text style={[styles.value, themedStyles.value]}>
+                    {dbStats?.totalCurrentPredictions?.toLocaleString() ?? 0}
                   </Text>
                 </View>
                 
                 {/* Total */}
                 <View style={[styles.row, { borderBottomWidth: 0 }]}>
-                  <Text style={[styles.label, themedStyles.label, { fontWeight: '600' }]}>Total Memory</Text>
+                  <Text style={[styles.label, themedStyles.label, { fontWeight: '600' }]}>Total DB Size</Text>
                   <Text style={[styles.value, themedStyles.value, { fontWeight: '600' }]}>
-                    {formatBytes(
-                      JSON.stringify(tideStations.filter(s => s.predictions).map(s => s.predictions)).length +
-                      JSON.stringify(currentStations.filter(s => s.predictions).map(s => s.predictions)).length
-                    )}
+                    {dbStats 
+                      ? `${(dbStats.tidesDbSizeMB + dbStats.currentsDbSizeMB).toFixed(1)} MB`
+                      : 'N/A'}
                   </Text>
                 </View>
                 
@@ -743,6 +819,47 @@ export default function SettingsScreen() {
                     >
                       <Text style={styles.clearButtonText}>
                         Clear Predictions
+                      </Text>
+                    </TouchableOpacity>
+                    
+                    {/* Debug: Verify Database Button */}
+                    <TouchableOpacity
+                      style={[styles.refreshTideButton, { marginTop: 8, backgroundColor: '#444' }]}
+                      onPress={verifyPredictionDatabase}
+                    >
+                      <Text style={styles.refreshTideButtonText}>
+                        🔍 Verify Database (Debug)
+                      </Text>
+                    </TouchableOpacity>
+                    
+                    {/* Force Delete Corrupt Database */}
+                    <TouchableOpacity
+                      style={[styles.clearButton, { marginTop: 8 }]}
+                      onPress={async () => {
+                        Alert.alert(
+                          'Delete Database File',
+                          'This will delete the predictions database files so you can re-download them.\n\nContinue?',
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            {
+                              text: 'Delete',
+                              style: 'destructive',
+                              onPress: async () => {
+                                try {
+                                  await clearPredictions();
+                                  await loadTideData(); // Refresh status
+                                  Alert.alert('Success', 'Database deleted. You can now download again.', [{ text: 'OK' }]);
+                                } catch (error: any) {
+                                  Alert.alert('Error', error.message, [{ text: 'OK' }]);
+                                }
+                              }
+                            }
+                          ]
+                        );
+                      }}
+                    >
+                      <Text style={styles.clearButtonText}>
+                        🗑️ Delete Corrupt DB
                       </Text>
                     </TouchableOpacity>
                   </>

@@ -309,23 +309,25 @@ export async function calculateAllStationStates(
  * Get a map of station ID to icon state for quick lookup
  */
 export function createIconNameMap(states: AllStationStates): {
-  tides: Map<string, { iconName: string; rotation: number }>;
-  currents: Map<string, { iconName: string; rotation: number }>;
+  tides: Map<string, { iconName: string; rotation: number; currentHeight: number | null }>;
+  currents: Map<string, { iconName: string; rotation: number; currentVelocity: number | null }>;
 } {
-  const tideMap = new Map<string, { iconName: string; rotation: number }>();
-  const currentMap = new Map<string, { iconName: string; rotation: number }>();
+  const tideMap = new Map<string, { iconName: string; rotation: number; currentHeight: number | null }>();
+  const currentMap = new Map<string, { iconName: string; rotation: number; currentVelocity: number | null }>();
   
   for (const state of states.tides) {
     tideMap.set(state.stationId, { 
       iconName: state.iconName, 
-      rotation: state.rotation 
+      rotation: state.rotation,
+      currentHeight: state.currentHeight,
     });
   }
   
   for (const state of states.currents) {
     currentMap.set(state.stationId, { 
       iconName: state.iconName, 
-      rotation: state.rotation 
+      rotation: state.rotation,
+      currentVelocity: state.currentVelocity,
     });
   }
   

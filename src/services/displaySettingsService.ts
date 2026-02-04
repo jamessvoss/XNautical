@@ -89,6 +89,9 @@ export interface DisplaySettings {
   landmarkSymbolSizeScale: number;
   mooringSymbolSizeScale: number;
   anchorSymbolSizeScale: number;
+  tideRipsSymbolSizeScale: number;
+  tideStationSymbolSizeScale: number;
+  currentStationSymbolSizeScale: number;
   
   // Symbol/icon halo multipliers (1.0 = default, 0 = no halo)
   lightSymbolHaloScale: number;
@@ -100,6 +103,9 @@ export interface DisplaySettings {
   landmarkSymbolHaloScale: number;
   mooringSymbolHaloScale: number;
   anchorSymbolHaloScale: number;
+  tideRipsSymbolHaloScale: number;
+  tideStationSymbolHaloScale: number;
+  currentStationSymbolHaloScale: number;
   
   // Symbol/icon opacity multipliers (1.0 = default)
   lightSymbolOpacityScale: number;
@@ -111,6 +117,19 @@ export interface DisplaySettings {
   landmarkSymbolOpacityScale: number;
   mooringSymbolOpacityScale: number;
   anchorSymbolOpacityScale: number;
+  tideRipsSymbolOpacityScale: number;
+  tideStationSymbolOpacityScale: number;
+  currentStationSymbolOpacityScale: number;
+  
+  // Tide station text settings
+  tideStationTextSizeScale: number;
+  tideStationTextHaloScale: number;
+  tideStationTextOpacityScale: number;
+  
+  // Current station text settings
+  currentStationTextSizeScale: number;
+  currentStationTextHaloScale: number;
+  currentStationTextOpacityScale: number;
   
   // Other settings
   dayNightMode: 'day' | 'dusk' | 'night' | 'auto';
@@ -190,6 +209,9 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   landmarkSymbolSizeScale: 1.5, // 150% nominal
   mooringSymbolSizeScale: 1.5,  // 150% nominal
   anchorSymbolSizeScale: 1.5,   // 150% nominal
+  tideRipsSymbolSizeScale: 1.5, // 150% nominal
+  tideStationSymbolSizeScale: 1.0,    // 100% nominal (zoom-based sizing built-in)
+  currentStationSymbolSizeScale: 1.0, // 100% nominal (zoom-based sizing built-in)
   // Symbol halos (white background for visibility per S-52)
   lightSymbolHaloScale: 1.0,
   buoySymbolHaloScale: 1.0,
@@ -200,6 +222,9 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   landmarkSymbolHaloScale: 1.0,
   mooringSymbolHaloScale: 1.0,
   anchorSymbolHaloScale: 1.0,
+  tideRipsSymbolHaloScale: 0.1,
+  tideStationSymbolHaloScale: 0.1,
+  currentStationSymbolHaloScale: 0.3,
   // Symbol opacities
   lightSymbolOpacityScale: 1.0,
   buoySymbolOpacityScale: 1.0,
@@ -210,6 +235,17 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   landmarkSymbolOpacityScale: 1.0,
   mooringSymbolOpacityScale: 1.0,
   anchorSymbolOpacityScale: 1.0,
+  tideRipsSymbolOpacityScale: 1.0,
+  tideStationSymbolOpacityScale: 1.0,
+  currentStationSymbolOpacityScale: 1.0,
+  // Tide station text
+  tideStationTextSizeScale: 1.0,
+  tideStationTextHaloScale: 1.0,
+  tideStationTextOpacityScale: 1.0,
+  // Current station text
+  currentStationTextSizeScale: 1.0,
+  currentStationTextHaloScale: 1.0,
+  currentStationTextOpacityScale: 1.0,
   // Other settings
   dayNightMode: 'dusk',  // S-52 default - dark background suitable for day and twilight
   orientationMode: 'north-up',

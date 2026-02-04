@@ -769,34 +769,66 @@ let currentDb: SQLite.SQLiteDatabase | null = null;
 // Legacy combined database (for backward compatibility)
 let db: SQLite.SQLiteDatabase | null = null;
 
+// Mutex promises to prevent race conditions when opening databases
+let tideDbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let currentDbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+
 /**
- * Open the TIDE predictions database
+ * Open the TIDE predictions database (with mutex to prevent race conditions)
  */
 async function openTideDatabase(): Promise<SQLite.SQLiteDatabase> {
+  // Return existing connection if available
   if (tideDb) return tideDb;
+  
+  // If another call is already opening the database, wait for it
+  if (tideDbPromise) return tideDbPromise;
   
   const dbPath = `${FileSystem.documentDirectory}tides.db`;
   
-  console.log('[SQLITE] Opening tide database:', dbPath);
-  tideDb = await SQLite.openDatabaseAsync(dbPath);
-  console.log('[SQLITE] Tide database opened successfully');
+  // Create a promise that will be shared by all concurrent callers
+  tideDbPromise = (async () => {
+    console.log('[SQLITE] Opening tide database:', dbPath);
+    const newDb = await SQLite.openDatabaseAsync(dbPath);
+    console.log('[SQLITE] Tide database opened successfully');
+    tideDb = newDb;
+    return newDb;
+  })();
   
-  return tideDb;
+  try {
+    const result = await tideDbPromise;
+    return result;
+  } finally {
+    tideDbPromise = null;
+  }
 }
 
 /**
- * Open the CURRENT predictions database
+ * Open the CURRENT predictions database (with mutex to prevent race conditions)
  */
 async function openCurrentDatabase(): Promise<SQLite.SQLiteDatabase> {
+  // Return existing connection if available
   if (currentDb) return currentDb;
+  
+  // If another call is already opening the database, wait for it
+  if (currentDbPromise) return currentDbPromise;
   
   const dbPath = `${FileSystem.documentDirectory}currents.db`;
   
-  console.log('[SQLITE] Opening current database:', dbPath);
-  currentDb = await SQLite.openDatabaseAsync(dbPath);
-  console.log('[SQLITE] Current database opened successfully');
+  // Create a promise that will be shared by all concurrent callers
+  currentDbPromise = (async () => {
+    console.log('[SQLITE] Opening current database:', dbPath);
+    const newDb = await SQLite.openDatabaseAsync(dbPath);
+    console.log('[SQLITE] Current database opened successfully');
+    currentDb = newDb;
+    return newDb;
+  })();
   
-  return currentDb;
+  try {
+    const result = await currentDbPromise;
+    return result;
+  } finally {
+    currentDbPromise = null;
+  }
 }
 
 /**
@@ -896,6 +928,17 @@ export async function getStationPredictionsForRange(
   endDate: Date
 ): Promise<any[]> {
   try {
+    // Check if the database file exists before trying to open it
+    const dbPath = stationType === 'tide' 
+      ? `${FileSystem.documentDirectory}tides.db`
+      : `${FileSystem.documentDirectory}currents.db`;
+    
+    const dbInfo = await FileSystem.getInfoAsync(dbPath);
+    if (!dbInfo.exists) {
+      // Database not downloaded yet - return empty array silently
+      return [];
+    }
+    
     // Use the appropriate database based on station type
     const database = stationType === 'tide' 
       ? await openTideDatabase() 
@@ -934,6 +977,17 @@ export async function getStationPredictionsForRange(
  */
 export async function getStationPredictions(stationId: string, stationType: 'tide' | 'current') {
   try {
+    // Check if the database file exists before trying to open it
+    const dbPath = stationType === 'tide' 
+      ? `${FileSystem.documentDirectory}tides.db`
+      : `${FileSystem.documentDirectory}currents.db`;
+    
+    const dbInfo = await FileSystem.getInfoAsync(dbPath);
+    if (!dbInfo.exists) {
+      // Database not downloaded yet - return null silently
+      return null;
+    }
+    
     // Use the appropriate database based on station type
     const database = stationType === 'tide' 
       ? await openTideDatabase() 
@@ -979,5 +1033,163 @@ export async function getStationPredictions(stationId: string, stationType: 'tid
   } catch (error: any) {
     console.error('[SQLITE] Error querying station:', error);
     throw error;
+  }
+}
+
+/**
+ * Get accurate stats from the SQLite prediction databases
+ */
+export interface PredictionDatabaseStats {
+  tideStations: number;
+  currentStations: number;
+  tideDateRange: { start: string; end: string } | null;
+  currentDateRange: { start: string; end: string } | null;
+  totalTidePredictions: number;
+  totalCurrentPredictions: number;
+  tidesDbSizeMB: number;
+  currentsDbSizeMB: number;
+}
+
+export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseStats | null> {
+  try {
+    const tidesDbPath = `${FileSystem.documentDirectory}tides.db`;
+    const currentsDbPath = `${FileSystem.documentDirectory}currents.db`;
+    
+    // Check if databases exist
+    const [tidesInfo, currentsInfo] = await Promise.all([
+      FileSystem.getInfoAsync(tidesDbPath),
+      FileSystem.getInfoAsync(currentsDbPath),
+    ]);
+    
+    if (!tidesInfo.exists && !currentsInfo.exists) {
+      return null;
+    }
+    
+    const stats: PredictionDatabaseStats = {
+      tideStations: 0,
+      currentStations: 0,
+      tideDateRange: null,
+      currentDateRange: null,
+      totalTidePredictions: 0,
+      totalCurrentPredictions: 0,
+      tidesDbSizeMB: tidesInfo.exists && 'size' in tidesInfo ? tidesInfo.size / (1024 * 1024) : 0,
+      currentsDbSizeMB: currentsInfo.exists && 'size' in currentsInfo ? currentsInfo.size / (1024 * 1024) : 0,
+    };
+    
+    // Query tide database - open fresh connection to avoid stale cache
+    if (tidesInfo.exists) {
+      let freshTideDb: SQLite.SQLiteDatabase | null = null;
+      try {
+        console.log('[STATS] Opening fresh tide database connection...');
+        // Reset cached connection and promise if they exist
+        if (tideDb) {
+          try { await tideDb.closeAsync(); } catch (e) { /* ignore */ }
+          tideDb = null;
+        }
+        tideDbPromise = null;
+        freshTideDb = await SQLite.openDatabaseAsync(tidesDbPath);
+        tideDb = freshTideDb; // Update cache
+        
+        // Verify table exists
+        const tideTableCheck = await freshTideDb.getFirstAsync<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='tide_predictions'"
+        );
+        if (!tideTableCheck) {
+          console.warn('[STATS] tide_predictions table not found in tides.db');
+          throw new Error('tide_predictions table not found');
+        }
+        
+        // Count unique stations with predictions
+        const tideStationCount = await freshTideDb.getFirstAsync<{ count: number }>(
+          'SELECT COUNT(DISTINCT station_id) as count FROM tide_predictions'
+        );
+        stats.tideStations = tideStationCount?.count || 0;
+        
+        // Get date range
+        const tideDateRange = await freshTideDb.getFirstAsync<{ min_date: string; max_date: string }>(
+          'SELECT MIN(date) as min_date, MAX(date) as max_date FROM tide_predictions'
+        );
+        if (tideDateRange?.min_date && tideDateRange?.max_date) {
+          stats.tideDateRange = { start: tideDateRange.min_date, end: tideDateRange.max_date };
+        }
+        
+        // Count total predictions
+        const tidePredictionCount = await freshTideDb.getFirstAsync<{ count: number }>(
+          'SELECT COUNT(*) as count FROM tide_predictions'
+        );
+        stats.totalTidePredictions = tidePredictionCount?.count || 0;
+        
+        console.log('[STATS] Tide database stats retrieved successfully');
+      } catch (error) {
+        console.error('[STATS] Error querying tide database:', error);
+        // Reset connection on error
+        if (freshTideDb) {
+          try { await freshTideDb.closeAsync(); } catch (e) { /* ignore */ }
+        }
+        tideDb = null;
+        tideDbPromise = null;
+      }
+    }
+    
+    // Query currents database - open fresh connection to avoid stale cache
+    if (currentsInfo.exists) {
+      let freshCurrentDb: SQLite.SQLiteDatabase | null = null;
+      try {
+        console.log('[STATS] Opening fresh currents database connection...');
+        // Reset cached connection and promise if they exist
+        if (currentDb) {
+          try { await currentDb.closeAsync(); } catch (e) { /* ignore */ }
+          currentDb = null;
+        }
+        currentDbPromise = null;
+        freshCurrentDb = await SQLite.openDatabaseAsync(currentsDbPath);
+        currentDb = freshCurrentDb; // Update cache
+        
+        // Verify table exists
+        const currentTableCheck = await freshCurrentDb.getFirstAsync<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='current_predictions'"
+        );
+        if (!currentTableCheck) {
+          console.warn('[STATS] current_predictions table not found in currents.db');
+          throw new Error('current_predictions table not found');
+        }
+        
+        // Count unique stations with predictions
+        const currentStationCount = await freshCurrentDb.getFirstAsync<{ count: number }>(
+          'SELECT COUNT(DISTINCT station_id) as count FROM current_predictions'
+        );
+        stats.currentStations = currentStationCount?.count || 0;
+        
+        // Get date range
+        const currentDateRange = await freshCurrentDb.getFirstAsync<{ min_date: string; max_date: string }>(
+          'SELECT MIN(date) as min_date, MAX(date) as max_date FROM current_predictions'
+        );
+        if (currentDateRange?.min_date && currentDateRange?.max_date) {
+          stats.currentDateRange = { start: currentDateRange.min_date, end: currentDateRange.max_date };
+        }
+        
+        // Count total predictions
+        const currentPredictionCount = await freshCurrentDb.getFirstAsync<{ count: number }>(
+          'SELECT COUNT(*) as count FROM current_predictions'
+        );
+        stats.totalCurrentPredictions = currentPredictionCount?.count || 0;
+        
+        console.log('[STATS] Currents database stats retrieved successfully');
+      } catch (error) {
+        console.error('[STATS] Error querying currents database:', error);
+        // Reset connection on error
+        if (freshCurrentDb) {
+          try { await freshCurrentDb.closeAsync(); } catch (e) { /* ignore */ }
+        }
+        currentDb = null;
+        currentDbPromise = null;
+      }
+    }
+    
+    console.log('[STATS] Database stats:', stats);
+    return stats;
+  } catch (error) {
+    console.error('[STATS] Error getting database stats:', error);
+    return null;
   }
 }
