@@ -19,6 +19,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+// Firebase
+import { waitForAuth } from '../config/firebase';
+
 // Services
 import {
   getMarineZoneSummaries,
@@ -95,6 +98,8 @@ export default function WeatherScreen() {
   const loadZones = async () => {
     setLoadingZones(true);
     try {
+      // Wait for authentication before accessing Firestore
+      await waitForAuth();
       const zoneList = await getMarineZoneSummaries();
       setZones(zoneList);
     } catch (error) {
@@ -106,6 +111,8 @@ export default function WeatherScreen() {
   const loadBuoys = async () => {
     setLoadingBuoys(true);
     try {
+      // Wait for authentication before accessing Firestore
+      await waitForAuth();
       const buoyList = await getBuoysCatalog();
       setBuoys(buoyList);
     } catch (error) {
