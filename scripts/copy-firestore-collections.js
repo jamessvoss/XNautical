@@ -30,6 +30,9 @@ const xnauticalKeyPath = path.join(__dirname, 'xnautical-service-account.json');
 // Alternative: Try FishTopia mobile directory (found in the project)
 const fishTopiaActualKeyPath = path.join(__dirname, '../../FishTopia/mobile/alaska-fishtopia-firebase-adminsdk-1waxi-6a9dca5398.json');
 
+// Alternative: Try XNautical root directory
+const xnauticalRootKeyPath = path.join(__dirname, '../xnautical-service-account.json');
+
 let fishTopiaCredential;
 if (fs.existsSync(fishTopiaKeyPath)) {
   console.log('✓ Using FishTopia service account from scripts directory');
@@ -49,13 +52,22 @@ if (fs.existsSync(fishTopiaKeyPath)) {
   process.exit(1);
 }
 
-if (!fs.existsSync(xnauticalKeyPath)) {
+let xnauticalCredential;
+if (fs.existsSync(xnauticalKeyPath)) {
+  console.log('✓ Using XNautical service account from scripts directory');
+  xnauticalCredential = admin.credential.cert(require(xnauticalKeyPath));
+} else if (fs.existsSync(xnauticalRootKeyPath)) {
+  console.log('✓ Using XNautical service account from project root directory');
+  xnauticalCredential = admin.credential.cert(require(xnauticalRootKeyPath));
+} else {
   console.error('❌ Error: XNautical service account key not found!');
-  console.error(`   Expected at: ${xnauticalKeyPath}`);
+  console.error(`   Searched locations:`);
+  console.error(`   - ${xnauticalKeyPath}`);
+  console.error(`   - ${xnauticalRootKeyPath}`);
   console.error('\n📖 How to get it:');
   console.error('   1. Open Firebase Console → XNautical Project → Settings → Service Accounts');
   console.error('   2. Click "Generate new private key"');
-  console.error(`   3. Save as: ${xnauticalKeyPath}`);
+  console.error(`   3. Save as: ${xnauticalKeyPath} or ${xnauticalRootKeyPath}`);
   process.exit(1);
 }
 
@@ -68,7 +80,7 @@ const sourceApp = admin.initializeApp({
 // Initialize target (XNautical)
 console.log('🔧 Initializing XNautical connection...');
 const targetApp = admin.initializeApp({
-  credential: admin.credential.cert(require(xnauticalKeyPath)),
+  credential: xnauticalCredential,
 }, 'target');
 
 const sourceDb = sourceApp.firestore();
