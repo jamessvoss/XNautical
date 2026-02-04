@@ -51,6 +51,7 @@ export default function SettingsScreen() {
   const [mbtilesSize, setMbtilesSize] = useState<number>(0);
   const [tidesDbSize, setTidesDbSize] = useState<number>(0);
   const [currentsDbSize, setCurrentsDbSize] = useState<number>(0);
+  const [availableStorage, setAvailableStorage] = useState<number>(0);
   
   // Tide & Current data
   const [tideStations, setTideStations] = useState<TideStation[]>([]);
@@ -239,6 +240,15 @@ export default function SettingsScreen() {
       
       setTidesDbSize(tidesInfo.exists && 'size' in tidesInfo ? tidesInfo.size : 0);
       setCurrentsDbSize(currentsInfo.exists && 'size' in currentsInfo ? currentsInfo.size : 0);
+      
+      // Get available device storage
+      try {
+        const freeSpace = await FileSystem.getFreeDiskStorageAsync();
+        setAvailableStorage(freeSpace);
+      } catch (error) {
+        console.error('Error getting free disk space:', error);
+        setAvailableStorage(0);
+      }
       
       // Keep legacy GeoJSON tracking (hidden from UI, but used for cleanup)
       const size = await chartCacheService.getCacheSize();
@@ -921,18 +931,6 @@ export default function SettingsScreen() {
               <ActivityIndicator size="small" color="#007AFF" />
             ) : (
               <>
-                {/* Charts (MBTiles) */}
-                <View style={[styles.row, themedStyles.row]}>
-                  <Text style={[styles.label, themedStyles.label]}>Charts</Text>
-                  <Text style={[styles.value, themedStyles.value]}>
-                    {mbtilesCount} {mbtilesCount === 1 ? 'chart' : 'charts'}
-                  </Text>
-                </View>
-                <View style={[styles.row, themedStyles.row]}>
-                  <Text style={[styles.labelIndent, themedStyles.label]}>Size</Text>
-                  <Text style={[styles.value, themedStyles.value]}>{formatBytes(mbtilesSize)}</Text>
-                </View>
-                
                 {/* Tide Predictions */}
                 {tidesDbSize > 0 && (
                   <>
@@ -965,11 +963,19 @@ export default function SettingsScreen() {
                   </>
                 )}
                 
-                {/* Total Storage */}
+                {/* Total Storage Used */}
                 <View style={[styles.row, themedStyles.row, styles.totalRow]}>
-                  <Text style={[styles.label, themedStyles.label, styles.totalLabel]}>Total Storage</Text>
+                  <Text style={[styles.label, themedStyles.label, styles.totalLabel]}>Total Storage Used:</Text>
                   <Text style={[styles.value, themedStyles.value, styles.totalValue]}>
                     {formatBytes(mbtilesSize + tidesDbSize + currentsDbSize)}
+                  </Text>
+                </View>
+                
+                {/* Available Storage */}
+                <View style={[styles.row, themedStyles.row]}>
+                  <Text style={[styles.label, themedStyles.label]}>Available Storage:</Text>
+                  <Text style={[styles.value, themedStyles.value]}>
+                    {formatBytes(availableStorage)}
                   </Text>
                 </View>
                 
