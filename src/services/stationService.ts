@@ -402,6 +402,44 @@ function unpackCurrentPredictions(packedDays: Record<number, string>): Record<st
 }
 
 /**
+ * Get metadata for prediction databases (file sizes) before downloading
+ */
+export async function getPredictionDatabaseMetadata(): Promise<{
+  tidesSize: number;
+  currentsSize: number;
+  totalSize: number;
+  totalSizeMB: number;
+}> {
+  try {
+    const { storage } = await import('../config/firebase');
+    const { ref, getMetadata } = await import('firebase/storage');
+    
+    // Get metadata for both files
+    const tidesRef = ref(storage, 'predictions/tides.db.zip');
+    const currentsRef = ref(storage, 'predictions/currents.db.zip');
+    
+    const [tidesMetadata, currentsMetadata] = await Promise.all([
+      getMetadata(tidesRef),
+      getMetadata(currentsRef),
+    ]);
+    
+    const tidesSize = tidesMetadata.size || 0;
+    const currentsSize = currentsMetadata.size || 0;
+    const totalSize = tidesSize + currentsSize;
+    
+    return {
+      tidesSize,
+      currentsSize,
+      totalSize,
+      totalSizeMB: totalSize / 1024 / 1024,
+    };
+  } catch (error: any) {
+    console.error('[PREDICTIONS] Error getting metadata:', error);
+    throw error;
+  }
+}
+
+/**
  * Helper function to download and extract a single database file
  */
 async function downloadAndExtractDatabase(
@@ -469,10 +507,6 @@ export async function downloadAllPredictions(
   onProgress?: (message: string, percent: number) => void
 ): Promise<{ success: boolean; error?: string; stats?: any }> {
   try {
-    console.log('[PREDICTIONS] ========================================');
-    console.log('[PREDICTIONS] Starting parallel database downloads...');
-    console.log('[PREDICTIONS] ========================================');
-    
     const startTime = Date.now();
     let tidesProgress = 0;
     let currentsProgress = 0;
@@ -486,8 +520,6 @@ export async function downloadAllPredictions(
     onProgress?.('Downloading prediction databases...', 10);
     
     // Download both databases in parallel
-    console.log('[PREDICTIONS] Starting parallel downloads: tides.db.zip and currents.db.zip');
-    
     const [tidesResult, currentsResult] = await Promise.all([
       downloadAndExtractDatabase(
         'predictions/tides.db.zip',
@@ -508,10 +540,6 @@ export async function downloadAllPredictions(
     if (!currentsResult.success) {
       throw new Error(`Currents download failed: ${currentsResult.error}`);
     }
-    
-    console.log('[PREDICTIONS] ✅ Both downloads complete!');
-    console.log(`[PREDICTIONS] Tides database size: ${(tidesResult.size / 1024 / 1024).toFixed(2)} MB`);
-    console.log(`[PREDICTIONS] Currents database size: ${(currentsResult.size / 1024 / 1024).toFixed(2)} MB`);
     
     onProgress?.('Saving metadata...', 95);
     
@@ -536,13 +564,6 @@ export async function downloadAllPredictions(
     predictionsLoaded = true;
     
     const totalTime = Date.now() - startTime;
-    console.log('[PREDICTIONS] ========================================');
-    console.log('[PREDICTIONS] 🎉 DOWNLOAD COMPLETE!');
-    console.log('[PREDICTIONS] ========================================');
-    console.log(`[PREDICTIONS] Total time: ${(totalTime/1000).toFixed(1)}s`);
-    console.log(`[PREDICTIONS] Total size: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
-    console.log('[PREDICTIONS] Ready to query with expo-sqlite!');
-    console.log('[PREDICTIONS] ========================================');
     
     onProgress?.('Download complete!', 100);
     
@@ -631,7 +652,6 @@ export async function getPredictionsStats(): Promise<any> {
     const dbInfo = await FileSystem.getInfoAsync(dbPath);
     
     if (dbInfo.exists && dbInfo.size) {
-      console.log('[PREDICTIONS] Database exists but metadata missing, using file info');
       return {
         totalSizeMB: dbInfo.size / 1024 / 1024,
         downloadedAt: new Date(dbInfo.modificationTime || 0).toISOString(),
@@ -664,9 +684,6 @@ export async function arePredictionsDownloaded(): Promise<boolean> {
     
     // If both new databases exist, we're good
     if (tidesInfo.exists && currentsInfo.exists) {
-      console.log('[PREDICTIONS] ✅ Both split databases exist');
-      console.log(`[PREDICTIONS] Tides: ${((tidesInfo.size || 0) / 1024 / 1024).toFixed(2)} MB`);
-      console.log(`[PREDICTIONS] Currents: ${((currentsInfo.size || 0) / 1024 / 1024).toFixed(2)} MB`);
       return true;
     }
     
@@ -675,13 +692,10 @@ export async function arePredictionsDownloaded(): Promise<boolean> {
     const legacyInfo = await FileSystem.getInfoAsync(legacyDbPath);
     
     if (legacyInfo.exists) {
-      console.log('[PREDICTIONS] ⚠️ Legacy combined database exists (needs re-download for split format)');
-      console.log(`[PREDICTIONS] Legacy size: ${((legacyInfo.size || 0) / 1024 / 1024).toFixed(2)} MB`);
       // Return false to trigger re-download with new split format
       return false;
     }
     
-    console.log('[PREDICTIONS] No database files found');
     return false;
   } catch (error) {
     console.error('[PREDICTIONS] Error checking if downloaded:', error);
@@ -742,8 +756,6 @@ export async function clearPredictions(): Promise<void> {
     '@XNautical:currentsDbPath',
     '@XNautical:predictionsDbPath',
   ]);
-  
-  console.log('[PREDICTIONS] Predictions cleared successfully');
 }
 
 /**
@@ -1080,7 +1092,6 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
     if (tidesInfo.exists) {
       let freshTideDb: SQLite.SQLiteDatabase | null = null;
       try {
-        console.log('[STATS] Opening fresh tide database connection...');
         // Reset cached connection and promise if they exist
         if (tideDb) {
           try { await tideDb.closeAsync(); } catch (e) { /* ignore */ }
@@ -1099,9 +1110,9 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
           throw new Error('tide_predictions table not found');
         }
         
-        // Count unique stations with predictions
+        // Count unique stations from stations table
         const tideStationCount = await freshTideDb.getFirstAsync<{ count: number }>(
-          'SELECT COUNT(DISTINCT station_id) as count FROM tide_predictions'
+          'SELECT COUNT(*) as count FROM stations'
         );
         stats.tideStations = tideStationCount?.count || 0;
         
@@ -1118,8 +1129,6 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
           'SELECT COUNT(*) as count FROM tide_predictions'
         );
         stats.totalTidePredictions = tidePredictionCount?.count || 0;
-        
-        console.log('[STATS] Tide database stats retrieved successfully');
       } catch (error) {
         console.error('[STATS] Error querying tide database:', error);
         // Reset connection on error
@@ -1135,7 +1144,6 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
     if (currentsInfo.exists) {
       let freshCurrentDb: SQLite.SQLiteDatabase | null = null;
       try {
-        console.log('[STATS] Opening fresh currents database connection...');
         // Reset cached connection and promise if they exist
         if (currentDb) {
           try { await currentDb.closeAsync(); } catch (e) { /* ignore */ }
@@ -1154,9 +1162,9 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
           throw new Error('current_predictions table not found');
         }
         
-        // Count unique stations with predictions
+        // Count unique stations from stations table
         const currentStationCount = await freshCurrentDb.getFirstAsync<{ count: number }>(
-          'SELECT COUNT(DISTINCT station_id) as count FROM current_predictions'
+          'SELECT COUNT(*) as count FROM stations'
         );
         stats.currentStations = currentStationCount?.count || 0;
         
@@ -1173,8 +1181,6 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
           'SELECT COUNT(*) as count FROM current_predictions'
         );
         stats.totalCurrentPredictions = currentPredictionCount?.count || 0;
-        
-        console.log('[STATS] Currents database stats retrieved successfully');
       } catch (error) {
         console.error('[STATS] Error querying currents database:', error);
         // Reset connection on error
@@ -1186,7 +1192,6 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
       }
     }
     
-    console.log('[STATS] Database stats:', stats);
     return stats;
   } catch (error) {
     console.error('[STATS] Error getting database stats:', error);

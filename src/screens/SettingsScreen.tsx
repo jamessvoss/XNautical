@@ -12,7 +12,9 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
+import { Ionicons, FontAwesome6 } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import Slider from '@react-native-community/slider';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getAuth, signOut } from '@react-native-firebase/auth';
@@ -32,6 +34,7 @@ import {
   getPredictionsStats,
   clearPredictions,
   getPredictionDatabaseStats,
+  getPredictionDatabaseMetadata,
 } from '../services/stationService';
 import type { TideStation, CurrentStation, PredictionDatabaseStats } from '../services/stationService';
 
@@ -205,7 +208,7 @@ export default function SettingsScreen() {
   useEffect(() => {
     loadCacheInfo();
     loadDisplaySettings();
-    // Don't load tide data on startup - only when user presses "Refresh Tide Data" button
+    loadDatabaseStats(); // Load DB stats on mount without fetching from Firestore
   }, []);
 
   const loadCacheInfo = async () => {
@@ -227,10 +230,34 @@ export default function SettingsScreen() {
     setDisplaySettings(settings);
   };
 
+  // Load database stats from local SQLite (no Firestore fetch)
+  const loadDatabaseStats = async () => {
+    try {
+      // Check if predictions are downloaded
+      const downloaded = await arePredictionsDownloaded();
+      setPredictionsDownloaded(downloaded);
+      
+      if (downloaded) {
+        const stats = await getPredictionsStats();
+        setPredictionsStats(stats);
+        
+        // Get accurate stats from SQLite database
+        const databaseStats = await getPredictionDatabaseStats();
+        setDbStats(databaseStats);
+      } else {
+        setDbStats(null);
+      }
+    } catch (error) {
+      console.error('[SETTINGS] Error loading database stats:', error);
+      // Don't show alert for this - it's not critical on mount
+    }
+  };
+
+  // Load station locations from Firestore (via Cloud Function)
   const loadTideData = async () => {
     try {
       setTidesLoading(true);
-      console.log('Loading tide/current station locations (metadata only)...');
+      console.log('Loading tide/current station locations from Firestore...');
       
       // Load only metadata first (much faster, avoids string length errors)
       const [tides, currents] = await Promise.all([
@@ -238,31 +265,12 @@ export default function SettingsScreen() {
         fetchCurrentStations(false), // false = metadata only, no predictions
       ]);
       
-      console.log(`Loaded ${tides.length} tide stations, ${currents.length} current stations (locations only)`);
+      console.log(`Loaded ${tides.length} tide stations, ${currents.length} current stations from Firestore`);
       setTideStations(tides);
       setCurrentStations(currents);
       
-      // Check if predictions are downloaded
-      console.log('[SETTINGS] Checking if predictions are downloaded...');
-      const downloaded = await arePredictionsDownloaded();
-      console.log('[SETTINGS] Predictions downloaded:', downloaded);
-      setPredictionsDownloaded(downloaded);
-      
-      if (downloaded) {
-        console.log('[SETTINGS] Getting prediction stats...');
-        const stats = await getPredictionsStats();
-        console.log('[SETTINGS] Prediction stats:', stats);
-        setPredictionsStats(stats);
-        
-        // Get accurate stats from SQLite database
-        console.log('[SETTINGS] Getting database stats...');
-        const databaseStats = await getPredictionDatabaseStats();
-        console.log('[SETTINGS] Database stats:', databaseStats);
-        setDbStats(databaseStats);
-      } else {
-        console.log('[SETTINGS] No predictions downloaded yet');
-        setDbStats(null);
-      }
+      // Also refresh database stats
+      await loadDatabaseStats();
     } catch (error) {
       console.error('Error loading tide/current data:', error);
       Alert.alert(
@@ -273,6 +281,13 @@ export default function SettingsScreen() {
     } finally {
       setTidesLoading(false);
     }
+  };
+
+  // Format date from YYYY-MM-DD to MM/DD/YY
+  const formatDateRange = (dateStr: string) => {
+    const [year, month, day] = dateStr.split('-');
+    const shortYear = year.slice(2); // Get last 2 digits of year
+    return `${month}/${day}/${shortYear}`;
   };
 
   const getDateRange = (stations: (TideStation | CurrentStation)[]) => {
@@ -318,6 +333,136 @@ export default function SettingsScreen() {
   };
 
   const handleRefreshTideData = async () => {
+    // If predictions aren't downloaded, trigger the download flow
+    if (!predictionsDownloaded) {
+      try {
+        // Check network connection
+        const netState = await NetInfo.fetch();
+        const isConnected = netState.isConnected && netState.isInternetReachable;
+        
+        if (!isConnected) {
+          Alert.alert(
+            'No Internet Connection',
+            'You need an internet connection to download prediction data. Please check your connection and try again.',
+            [{ text: 'OK' }]
+          );
+          return;
+        }
+        
+        // Get file sizes from Firebase Storage
+        const metadata = await getPredictionDatabaseMetadata();
+        
+        // Check if on WiFi
+        const isWifi = netState.type === 'wifi';
+        const wifiWarning = !isWifi 
+          ? '\n\n⚠️ WARNING: You are not connected to WiFi. This download will use cellular data and may affect your data plan.'
+          : '';
+        
+        Alert.alert(
+          'Download Predictions',
+          `This will download ${metadata.totalSizeMB.toFixed(1)} MB of tide and current prediction data:\n\n` +
+          `• Tides: ${(metadata.tidesSize / 1024 / 1024).toFixed(1)} MB\n` +
+          `• Currents: ${(metadata.currentsSize / 1024 / 1024).toFixed(1)} MB\n\n` +
+          `The download may take several minutes.${wifiWarning}\n\nContinue?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Download',
+              onPress: async () => {
+                setDownloadingPredictions(true);
+                setDownloadProgress('Starting download...');
+                setDownloadPercent(0);
+                
+                try {
+                  const result = await downloadAllPredictions((message, percent) => {
+                    setDownloadProgress(message);
+                    setDownloadPercent(percent);
+                  });
+                  
+                  if (result.success) {
+                    setPredictionsDownloaded(true);
+                    setPredictionsStats(result.stats);
+                    
+                    // Retry mechanism: Try to load database stats with retries for slow devices
+                    let updatedStats: PredictionDatabaseStats | null = null;
+                    const maxRetries = 3;
+                    const retryDelay = 1000; // 1 second
+                    
+                    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                      try {
+                        // Reload database stats after successful download
+                        await loadDatabaseStats();
+                        
+                        // Get the updated stats
+                        updatedStats = await getPredictionDatabaseStats();
+                        
+                        // If we got valid stats with station counts, break out of retry loop
+                        if (updatedStats && (updatedStats.tideStations > 0 || updatedStats.currentStations > 0)) {
+                          break;
+                        }
+                        
+                        // If stats are empty and we have more retries, wait and try again
+                        if (attempt < maxRetries) {
+                          await new Promise(resolve => setTimeout(resolve, retryDelay));
+                        }
+                      } catch (error) {
+                        console.error(`[SETTINGS] Attempt ${attempt} failed to load database stats:`, error);
+                        if (attempt < maxRetries) {
+                          await new Promise(resolve => setTimeout(resolve, retryDelay));
+                        } else {
+                          throw error; // Throw on final attempt
+                        }
+                      }
+                    }
+                    
+                    if (!updatedStats || (updatedStats.tideStations === 0 && updatedStats.currentStations === 0)) {
+                      throw new Error('Database downloaded but unable to read station data. Please try again.');
+                    }
+                    
+                    Alert.alert(
+                      'Download Complete',
+                      `Successfully downloaded predictions:\n\n` +
+                      `• Tide Stations: ${updatedStats?.tideStations || 0}\n` +
+                      `• Current Stations: ${updatedStats?.currentStations || 0}\n\n` +
+                      `Total size: ${result.stats?.totalSizeMB?.toFixed(1) || '?'} MB\n` +
+                      `Download time: ${result.stats?.downloadTimeSec || '?'}s`,
+                      [{ text: 'OK' }]
+                    );
+                  } else {
+                    Alert.alert(
+                      'Download Failed',
+                      result.error || 'Unknown error occurred during download',
+                      [{ text: 'OK' }]
+                    );
+                  }
+                } catch (error) {
+                  console.error('[SETTINGS] ❌ Download exception:', error);
+                  Alert.alert(
+                    'Download Failed',
+                    error instanceof Error ? error.message : 'Unknown error',
+                    [{ text: 'OK' }]
+                  );
+                } finally {
+                  setDownloadingPredictions(false);
+                  setDownloadProgress('');
+                  setDownloadPercent(0);
+                }
+              },
+            },
+          ]
+        );
+      } catch (error) {
+        console.error('[SETTINGS] Error checking download prerequisites:', error);
+        Alert.alert(
+          'Error',
+          error instanceof Error ? error.message : 'Unable to fetch download information',
+          [{ text: 'OK' }]
+        );
+      }
+      return;
+    }
+    
+    // Otherwise, refresh station locations from Firestore
     clearStationCache();
     await loadTideData();
     
@@ -489,95 +634,6 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleDownloadPredictions = async () => {
-    Alert.alert(
-      'Download Predictions',
-      'This will download approximately 300 MB of tide and current prediction data for offline use. The download may take several minutes.\n\nContinue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Download',
-          onPress: async () => {
-            console.log('[SETTINGS] User initiated prediction download');
-            setDownloadingPredictions(true);
-            setDownloadProgress('Starting download...');
-            setDownloadPercent(0);
-            
-            try {
-              console.log('[SETTINGS] Calling downloadAllPredictions...');
-              const result = await downloadAllPredictions((message, percent) => {
-                console.log(`[SETTINGS] Progress: ${percent}% - ${message}`);
-                setDownloadProgress(message);
-                setDownloadPercent(percent);
-              });
-              
-              console.log('[SETTINGS] Download result:', JSON.stringify(result, null, 2));
-              
-              if (result.success) {
-                console.log('[SETTINGS] ✅ Download successful!');
-                setPredictionsDownloaded(true);
-                setPredictionsStats(result.stats);
-                
-                Alert.alert(
-                  'Download Complete',
-                  `Successfully downloaded predictions for ${result.stats?.tideStations || 0} tide stations and ${result.stats?.currentStations || 0} current stations.\n\nTotal size: ${result.stats?.totalSizeMB?.toFixed(1) || '?'} MB\nDownload time: ${result.stats?.downloadTimeSec || '?'}s`,
-                  [{ text: 'OK' }]
-                );
-              } else {
-                console.error('[SETTINGS] ❌ Download failed:', result.error);
-                Alert.alert(
-                  'Download Failed',
-                  result.error || 'Unknown error occurred during download',
-                  [{ text: 'OK' }]
-                );
-              }
-            } catch (error) {
-              console.error('[SETTINGS] ❌ Download exception:', error);
-              Alert.alert(
-                'Download Failed',
-                error instanceof Error ? error.message : 'Unknown error',
-                [{ text: 'OK' }]
-              );
-            } finally {
-              console.log('[SETTINGS] Download process finished, resetting UI state');
-              setDownloadingPredictions(false);
-              setDownloadProgress('');
-              setDownloadPercent(0);
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const handleClearPredictions = async () => {
-    Alert.alert(
-      'Clear Predictions',
-      'This will delete all downloaded tide and current predictions. You will need to download them again for offline use.\n\nContinue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await clearPredictions();
-              setPredictionsDownloaded(false);
-              setPredictionsStats(null);
-              Alert.alert('Success', 'Predictions cleared', [{ text: 'OK' }]);
-            } catch (error) {
-              Alert.alert(
-                'Error',
-                error instanceof Error ? error.message : 'Failed to clear predictions',
-                [{ text: 'OK' }]
-              );
-            }
-          },
-        },
-      ]
-    );
-  };
-
   const updateDisplaySetting = async <K extends keyof DisplaySettings>(
     key: K,
     value: DisplaySettings[K]
@@ -697,14 +753,14 @@ export default function SettingsScreen() {
                 <View style={[styles.row, themedStyles.row]}>
                   <Text style={[styles.label, themedStyles.label]}>Tide Stations</Text>
                   <Text style={[styles.value, themedStyles.value]}>
-                    {dbStats?.tideStations ?? 0} / {tideStations.length}
+                    {dbStats?.tideStations ?? 0}
                   </Text>
                 </View>
                 <View style={[styles.row, themedStyles.row]}>
                   <Text style={[styles.label, themedStyles.label]}>Tide Date Range</Text>
                   <Text style={[styles.valueSmall, themedStyles.valueSmall]}>
                     {dbStats?.tideDateRange 
-                      ? `${dbStats.tideDateRange.start} - ${dbStats.tideDateRange.end}`
+                      ? `${formatDateRange(dbStats.tideDateRange.start)} - ${formatDateRange(dbStats.tideDateRange.end)}`
                       : 'No data'}
                   </Text>
                 </View>
@@ -725,14 +781,14 @@ export default function SettingsScreen() {
                 <View style={[styles.row, themedStyles.row]}>
                   <Text style={[styles.label, themedStyles.label]}>Current Stations</Text>
                   <Text style={[styles.value, themedStyles.value]}>
-                    {dbStats?.currentStations ?? 0} / {currentStations.length}
+                    {dbStats?.currentStations ?? 0}
                   </Text>
                 </View>
                 <View style={[styles.row, themedStyles.row]}>
                   <Text style={[styles.label, themedStyles.label]}>Current Date Range</Text>
                   <Text style={[styles.valueSmall, themedStyles.valueSmall]}>
                     {dbStats?.currentDateRange 
-                      ? `${dbStats.currentDateRange.start} - ${dbStats.currentDateRange.end}`
+                      ? `${formatDateRange(dbStats.currentDateRange.start)} - ${formatDateRange(dbStats.currentDateRange.end)}`
                       : 'No data'}
                   </Text>
                 </View>
@@ -759,183 +815,67 @@ export default function SettingsScreen() {
                   </Text>
                 </View>
                 
-                <TouchableOpacity 
-                  style={styles.refreshTideButton} 
-                  onPress={handleRefreshTideData}
-                  disabled={tidesLoading}
-                >
-                  <Text style={styles.refreshTideButtonText}>
-                    Refresh Station Locations
-                  </Text>
-                </TouchableOpacity>
-                
-                {/* Prediction Download Section */}
-                <View style={[styles.row, { borderBottomWidth: 0, marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: themedStyles.row.borderBottomColor }]}>
-                  <Text style={[styles.label, themedStyles.label, { fontWeight: '600' }]}>
-                    Offline Predictions
-                  </Text>
+                {/* Action Buttons Row */}
+                <View style={styles.actionButtonsRow}>
+                  <TouchableOpacity 
+                    style={[styles.iconButton, { backgroundColor: '#007AFF' }]} 
+                    onPress={handleRefreshTideData}
+                    disabled={tidesLoading}
+                  >
+                    <Ionicons 
+                      name={predictionsDownloaded ? "refresh" : "download"} 
+                      size={40} 
+                      color="#fff" 
+                    />
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={[styles.iconButton, { backgroundColor: '#444' }]}
+                    onPress={verifyPredictionDatabase}
+                  >
+                    <Ionicons name="search" size={40} color="#fff" />
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={[styles.iconButton, { backgroundColor: '#dc3545' }]}
+                    onPress={async () => {
+                      Alert.alert(
+                        'Delete Database',
+                        'This will delete the predictions database files so you can re-download them.\n\nContinue?',
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Delete',
+                            style: 'destructive',
+                            onPress: async () => {
+                              try {
+                                await clearPredictions();
+                                await loadDatabaseStats(); // Refresh status
+                                Alert.alert('Success', 'Database deleted. You can now download again.', [{ text: 'OK' }]);
+                              } catch (error: any) {
+                                Alert.alert('Error', error.message, [{ text: 'OK' }]);
+                              }
+                            }
+                          }
+                        ]
+                      );
+                    }}
+                  >
+                    <FontAwesome6 name="trash-can" size={36} color="#fff" />
+                  </TouchableOpacity>
                 </View>
                 
-                {predictionsDownloaded ? (
-                  <>
-                    <View style={[styles.row, themedStyles.row]}>
-                      <Text style={[styles.label, themedStyles.label]}>Status</Text>
-                      <Text style={[styles.value, themedStyles.value, { color: '#22c55e' }]}>
-                        Downloaded
-                      </Text>
-                    </View>
-                    {predictionsStats && (
-                      <>
-                        <View style={[styles.row, themedStyles.row]}>
-                          <Text style={[styles.label, themedStyles.label]}>Downloaded</Text>
-                          <Text style={[styles.valueSmall, themedStyles.valueSmall]}>
-                            {new Date(predictionsStats.downloadedAt).toLocaleDateString()}
-                          </Text>
-                        </View>
-                        <View style={[styles.row, themedStyles.row]}>
-                          <Text style={[styles.label, themedStyles.label]}>Size</Text>
-                          <Text style={[styles.value, themedStyles.value]}>
-                            {predictionsStats.totalSizeMB?.toFixed(1) || '?'} MB
-                          </Text>
-                        </View>
-                        <View style={[styles.row, themedStyles.row]}>
-                          <Text style={[styles.label, themedStyles.label]}>Tide Stations</Text>
-                          <Text style={[styles.value, themedStyles.value]}>
-                            {predictionsStats.tideStations || 0}
-                          </Text>
-                        </View>
-                        <View style={[styles.row, themedStyles.row]}>
-                          <Text style={[styles.label, themedStyles.label]}>Current Stations</Text>
-                          <Text style={[styles.value, themedStyles.value]}>
-                            {predictionsStats.currentStations || 0}
-                          </Text>
-                        </View>
-                      </>
-                    )}
-                    <TouchableOpacity 
-                      style={[styles.clearButton, { marginTop: 12 }]} 
-                      onPress={handleClearPredictions}
-                      disabled={downloadingPredictions}
-                    >
-                      <Text style={styles.clearButtonText}>
-                        Clear Predictions
-                      </Text>
-                    </TouchableOpacity>
-                    
-                    {/* Debug: Verify Database Button */}
-                    <TouchableOpacity
-                      style={[styles.refreshTideButton, { marginTop: 8, backgroundColor: '#444' }]}
-                      onPress={verifyPredictionDatabase}
-                    >
-                      <Text style={styles.refreshTideButtonText}>
-                        🔍 Verify Database (Debug)
-                      </Text>
-                    </TouchableOpacity>
-                    
-                    {/* Force Delete Corrupt Database */}
-                    <TouchableOpacity
-                      style={[styles.clearButton, { marginTop: 8 }]}
-                      onPress={async () => {
-                        Alert.alert(
-                          'Delete Database File',
-                          'This will delete the predictions database files so you can re-download them.\n\nContinue?',
-                          [
-                            { text: 'Cancel', style: 'cancel' },
-                            {
-                              text: 'Delete',
-                              style: 'destructive',
-                              onPress: async () => {
-                                try {
-                                  await clearPredictions();
-                                  await loadTideData(); // Refresh status
-                                  Alert.alert('Success', 'Database deleted. You can now download again.', [{ text: 'OK' }]);
-                                } catch (error: any) {
-                                  Alert.alert('Error', error.message, [{ text: 'OK' }]);
-                                }
-                              }
-                            }
-                          ]
-                        );
-                      }}
-                    >
-                      <Text style={styles.clearButtonText}>
-                        🗑️ Delete Corrupt DB
-                      </Text>
-                    </TouchableOpacity>
-                  </>
-                ) : (
-                  <>
-                    <View style={[styles.row, themedStyles.row]}>
-                      <Text style={[styles.label, themedStyles.label]}>Status</Text>
-                      <Text style={[styles.value, themedStyles.value, { color: '#f59e0b' }]}>
-                        Not Downloaded
-                      </Text>
-                    </View>
-                    {downloadingPredictions ? (
-                      <>
-                        <View style={styles.loadingContainer}>
-                          <ActivityIndicator size="large" color="#007AFF" />
-                          <Text style={[styles.loadingText, themedStyles.label]}>
-                            {downloadProgress}
-                          </Text>
-                          <Text style={[styles.valueSmall, themedStyles.valueSmall]}>
-                            {downloadPercent}%
-                          </Text>
-                        </View>
-                      </>
-                    ) : (
-                      <TouchableOpacity 
-                        style={[styles.refreshTideButton, { backgroundColor: '#007AFF' }]} 
-                        onPress={handleDownloadPredictions}
-                        disabled={tidesLoading}
-                      >
-                        <Text style={styles.refreshTideButtonText}>
-                          Download Predictions (~300 MB)
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                    
-                    {/* Debug: Verify Database Button */}
-                    <TouchableOpacity
-                      style={[styles.refreshTideButton, { marginTop: 8, backgroundColor: '#444' }]}
-                      onPress={verifyPredictionDatabase}
-                    >
-                      <Text style={styles.refreshTideButtonText}>
-                        🔍 Verify Database (Debug)
-                      </Text>
-                    </TouchableOpacity>
-                    
-                    {/* Force Delete Corrupt Database */}
-                    <TouchableOpacity
-                      style={[styles.clearButton, { marginTop: 8 }]}
-                      onPress={async () => {
-                        Alert.alert(
-                          'Delete Database File',
-                          'This will delete the corrupt predictions.db file so you can re-download it.\n\nContinue?',
-                          [
-                            { text: 'Cancel', style: 'cancel' },
-                            {
-                              text: 'Delete',
-                              style: 'destructive',
-                              onPress: async () => {
-                                try {
-                                  await clearPredictions();
-                                  await loadTideData(); // Refresh status
-                                  Alert.alert('Success', 'Database deleted. You can now download again.', [{ text: 'OK' }]);
-                                } catch (error: any) {
-                                  Alert.alert('Error', error.message, [{ text: 'OK' }]);
-                                }
-                              }
-                            }
-                          ]
-                        );
-                      }}
-                    >
-                      <Text style={styles.clearButtonText}>
-                        🗑️ Delete Corrupt DB
-                      </Text>
-                    </TouchableOpacity>
-                  </>
+                {/* Download Progress Indicator */}
+                {downloadingPredictions && (
+                  <View style={styles.loadingContainer}>
+                    <ActivityIndicator size="large" color="#007AFF" />
+                    <Text style={[styles.loadingText, themedStyles.label]}>
+                      {downloadProgress}
+                    </Text>
+                    <Text style={[styles.valueSmall, themedStyles.valueSmall]}>
+                      {downloadPercent}%
+                    </Text>
+                  </View>
                 )}
               </>
             )}
@@ -1068,7 +1008,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 2,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
@@ -1138,6 +1078,24 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  actionButtonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    marginTop: 12,
+    gap: 8,
+  },
+  iconButton: {
+    flex: 1,
+    paddingVertical: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    minWidth: 60,
+  },
+  iconButtonText: {
+    fontSize: 40,
+    color: '#fff',
   },
   sliderRow: {
     paddingVertical: 12,
