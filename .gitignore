@@ -62,6 +62,7 @@ src/**/*.js
 /android/app/src/main/java/com/xnautical/app/*
 !/android/app/src/main/java/com/xnautical/app/LocalTileServerModule.java
 !/android/app/src/main/java/com/xnautical/app/LocalTileServerPackage.java
+!/android/app/build.gradle
 !/android/app/src/main/assets/
 !/android/app/src/main/assets/fonts/
 
