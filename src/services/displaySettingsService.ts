@@ -223,7 +223,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   mooringSymbolHaloScale: 1.0,
   anchorSymbolHaloScale: 1.0,
   tideRipsSymbolHaloScale: 0.1,
-  tideStationSymbolHaloScale: 0.1,
+  tideStationSymbolHaloScale: 0.3,
   currentStationSymbolHaloScale: 0.3,
   // Symbol opacities
   lightSymbolOpacityScale: 1.0,

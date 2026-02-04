@@ -1170,8 +1170,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   const scaledTideStationHaloSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.3 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
-    12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
+    7, 0.3 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.3)),
+    12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.3)),
   ], [displaySettings.tideStationSymbolSizeScale, displaySettings.tideStationSymbolHaloScale]);
 
   const scaledTideStationSymbolOpacity = useMemo(() => 
@@ -1197,11 +1197,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     [displaySettings.currentStationSymbolOpacityScale]
   );
 
-  // Tide station text scaling
-  const scaledTideStationTextSize = useMemo(() => 
-    10 * (displaySettings.tideStationTextSizeScale ?? 1.0),
-    [displaySettings.tideStationTextSizeScale]
-  );
+  // Tide station text scaling - scales with zoom so em-based offsets scale proportionally
+  const scaledTideStationTextSize = useMemo(() => {
+    const baseSize = 14 * (displaySettings.tideStationTextSizeScale ?? 1.0);
+    return [
+      'interpolate', ['linear'], ['zoom'],
+      10, baseSize * 0.5,  // 50% at z10
+      13, baseSize         // 100% at z13
+    ];
+  }, [displaySettings.tideStationTextSizeScale]);
+
+  // Slightly larger version for station name labels
+  const scaledTideStationLabelSize = useMemo(() => {
+    const baseSize = 15 * (displaySettings.tideStationTextSizeScale ?? 1.0);
+    return [
+      'interpolate', ['linear'], ['zoom'],
+      10, baseSize * 0.5,  // 50% at z10
+      13, baseSize         // 100% at z13
+    ];
+  }, [displaySettings.tideStationTextSizeScale]);
 
   const scaledTideStationTextHalo = useMemo(() => 
     1.5 * (displaySettings.tideStationTextHaloScale ?? 1.0),
@@ -4984,36 +4998,50 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 iconIgnorePlacement: true,
               }}
             />
-            {/* Tide height value label */}
-            <MapLibre.SymbolLayer
-              id="tide-stations-value"
-              minZoomLevel={10}
-              style={{
-                textField: ['get', 'heightLabel'],
-                textFont: ['Noto Sans Bold'],
-                textSize: scaledTideStationTextSize,
-                textColor: '#0066CC',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: scaledTideStationTextHalo,
-                textOpacity: scaledTideStationTextOpacity,
-                textOffset: [1.2, 0],
-                textAnchor: 'left',
-                textAllowOverlap: true,
-              }}
-            />
+            {/* Tide station name - at arrow head */}
             <MapLibre.SymbolLayer
               id="tide-stations-label"
               minZoomLevel={10}
               style={{
                 textField: ['get', 'name'],
                 textFont: ['Noto Sans Regular'],
-                textSize: scaledTideStationTextSize * 1.1,
+                textSize: scaledTideStationLabelSize,
                 textColor: '#0066CC',
                 textHaloColor: '#FFFFFF',
                 textHaloWidth: scaledTideStationTextHalo * 1.33,
                 textOpacity: scaledTideStationTextOpacity,
-                textOffset: [0, 1.5],
-                textAnchor: 'top',
+                // Always at arrow head: flip offset direction when arrow points down (falling tide)
+                textOffset: [
+                  'case',
+                  ['==', ['get', 'rotation'], 180],
+                    ['literal', [0, 3.5]],   // Arrow down (falling): text below symbol (at head)
+                  ['literal', [0, -3.5]]     // Arrow up (rising): text above symbol (at head)
+                ],
+                textAnchor: 'center',
+                textAllowOverlap: true,
+              }}
+            />
+            {/* Tide height value label - further out from arrow head */}
+            <MapLibre.SymbolLayer
+              id="tide-stations-value"
+              minZoomLevel={10}
+              style={{
+                textField: ['get', 'heightLabel'],
+                textFont: ['Noto Sans Regular'],
+                textSize: scaledTideStationLabelSize,
+                textColor: '#0066CC',
+                textHaloColor: '#FFFFFF',
+                textHaloWidth: scaledTideStationTextHalo,
+                textOpacity: scaledTideStationTextOpacity,
+                // Further from head than station name
+                textOffset: [
+                  'case',
+                  ['==', ['get', 'rotation'], 180],
+                    ['literal', [0, 5.5]],   // Arrow down (falling): text further below
+                  ['literal', [0, -5.5]]     // Arrow up (rising): text further above
+                ],
+                textAnchor: 'center',
+                textAllowOverlap: true,
               }}
             />
           </MapLibre.ShapeSource>
