@@ -2704,32 +2704,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const queryTime = Date.now() - queryStart;
       logger.debug(LogCategory.UI, `Feature query: ${queryTime}ms (${allFeatures?.features?.length || 0} raw features)`);
       
-      // DEBUG: Log all features to see what we got
-      console.log('[FEATURE DEBUG] ===== RAW FEATURES FROM QUERY =====');
-      console.log('[FEATURE DEBUG] Total features:', allFeatures?.features?.length || 0);
-      if (allFeatures?.features && allFeatures.features.length > 0) {
-        // Count features by OBJL
-        const objlCounts = new Map<number, number>();
-        const soundingFeatures: any[] = [];
-        
-        for (const f of allFeatures.features) {
-          const objl = f.properties?.OBJL;
-          objlCounts.set(objl, (objlCounts.get(objl) || 0) + 1);
-          
-          // Track soundings specifically
-          if (objl === 129) {
-            soundingFeatures.push(f);
-          }
-        }
-        
-        console.log('[FEATURE DEBUG] Features by OBJL code:', Array.from(objlCounts.entries()).map(([objl, count]) => `${objl}:${count}`).join(', '));
-        console.log('[FEATURE DEBUG] Soundings (OBJL 129) found:', soundingFeatures.length);
-        if (soundingFeatures.length > 0) {
-          console.log('[FEATURE DEBUG] First sounding:', JSON.stringify(soundingFeatures[0].properties, null, 2));
-        }
-      }
-      console.log('[FEATURE DEBUG] =====================================');
-      
       // FIRST: Check for tide/current station clicks (these take priority)
       // Since ShapeSource features don't have layer.id, we identify them by properties
       if (allFeatures?.features) {
@@ -2783,8 +2757,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         22: showCables, 21: showCables, 20: showCables,
         // Pipelines (PIPSOL, PIPARE)
         94: showPipelines, 92: showPipelines,
-        // Depth contours
-        43: showDepthContours,
+        // Depth contours - EXCLUDED from click-to-identify (not useful)
+        43: false,
         // Coastline
         30: showCoastline,
         // Restricted areas
@@ -2814,35 +2788,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       };
       
       // Filter to features from visible layers only
-      console.log('[FEATURE DEBUG] ===== FILTERING FEATURES =====');
       const features = {
         features: (allFeatures?.features || []).filter((f: any) => {
           const objl = f.properties?.OBJL;
-          if (!objl) {
-            console.log('[FEATURE DEBUG] Filtered out: no OBJL property');
-            return false;
-          }
+          if (!objl) return false;
           
           // ALWAYS exclude soundings (OBJL 129) - too numerous and obvious
-          if (objl === 129) {
-            console.log('[FEATURE DEBUG] ⛔ EXPLICITLY FILTERING OUT SOUNDING (OBJL 129)');
-            return false;
-          }
+          if (objl === 129) return false;
+          
+          // ALWAYS exclude depth contours (OBJL 43) - not useful for identification
+          if (objl === 43) return false;
           
           // Include if layer is visible, or if we don't have visibility info for this OBJL (include by default)
-          const visibility = objlVisibility[objl];
-          const include = visibility !== false;
-          console.log(`[FEATURE DEBUG] OBJL ${objl}: visibility=${visibility}, include=${include}`);
-          return include;
+          return objlVisibility[objl] !== false;
         })
       };
-      console.log('[FEATURE DEBUG] After filtering: ', features.features.length, 'features');
-      console.log('[FEATURE DEBUG] =====================================');
       const filterEnd = Date.now();
       
       if (features?.features?.length > 0) {
         // Group features by layer type (OBJL) and deduplicate
-        console.log('[FEATURE DEBUG] ===== GROUPING FEATURES =====');
         const priorityStart = Date.now();
         const featuresByType = new Map<number, any>();
         
@@ -2851,18 +2815,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           const objl = props.OBJL;
           
           // Skip if no OBJL (metadata features)
-          if (!objl) {
-            console.log('[FEATURE DEBUG] Skipping feature with no OBJL');
-            continue;
-          }
-          
-          // Double-check: should never see soundings here
-          if (objl === 129) {
-            console.log('[FEATURE DEBUG] ⚠️ WARNING: SOUNDING (129) MADE IT PAST FILTER!');
-            continue;
-          }
-          
-          console.log(`[FEATURE DEBUG] Processing OBJL ${objl}:`, props.OBJNAM || props.NOBJNM || 'unnamed');
+          if (!objl) continue;
           
           // Keep only the best feature of each type (prefer points, then by priority)
           const existing = featuresByType.get(objl);
@@ -2878,17 +2831,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           }
         }
         
-        console.log('[FEATURE DEBUG] Grouped into', featuresByType.size, 'unique feature types');
-        console.log('[FEATURE DEBUG] Feature types (OBJL):', Array.from(featuresByType.keys()).join(', '));
-        console.log('[FEATURE DEBUG] =====================================');
-        
         // Convert to array of FeatureInfo objects
-        console.log('[FEATURE DEBUG] ===== CREATING FEATURE INFO =====');
         const uniqueFeatures: FeatureInfo[] = [];
         for (const [objl, feature] of featuresByType) {
           const props = feature.properties || {};
           const layer = getLayerName(props);
-          console.log(`[FEATURE DEBUG] Creating FeatureInfo for OBJL ${objl}, layer: ${layer}`);
           uniqueFeatures.push({
             type: LAYER_DISPLAY_NAMES[layer] || layer,
             properties: {
@@ -2897,8 +2844,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             },
           });
         }
-        console.log('[FEATURE DEBUG] Created', uniqueFeatures.length, 'FeatureInfo objects');
-        console.log('[FEATURE DEBUG] =====================================');
         
         // Sort by priority (highest first)
         uniqueFeatures.sort((a, b) => {
@@ -3648,28 +3593,21 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               const features = e.features || [];
               if (features.length === 0) return;
               
-              console.log('[VECTORSOURCE PRESS] Raw features:', features.length);
-              
-              // Filter out soundings (OBJL 129) and other unwanted features
+              // Filter out unwanted features (soundings, depth contours, depth areas)
               const filteredFeatures = features.filter((f: any) => {
                 const objl = f.properties?.OBJL;
                 
                 // ALWAYS exclude soundings (OBJL 129) - too numerous and obvious
-                if (objl === 129) {
-                  console.log('[VECTORSOURCE PRESS] ⛔ Filtering out sounding (OBJL 129)');
-                  return false;
-                }
+                if (objl === 129) return false;
+                
+                // ALWAYS exclude depth contours (OBJL 43) - not useful for identification
+                if (objl === 43) return false;
                 
                 // Also exclude depth areas (OBJL 42) - not useful for identification
-                if (objl === 42) {
-                  console.log('[VECTORSOURCE PRESS] ⛔ Filtering out depth area (OBJL 42)');
-                  return false;
-                }
+                if (objl === 42) return false;
                 
                 return true;
               });
-              
-              console.log('[VECTORSOURCE PRESS] After filtering:', filteredFeatures.length, 'features');
               
               if (filteredFeatures.length === 0) return;
               
@@ -3696,7 +3634,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               
               if (bestFeature) {
                 const layer = getLayerName(bestFeature.properties);
-                console.log('[VECTORSOURCE PRESS] Selected feature - OBJL:', bestFeature.properties?.OBJL, 'Layer:', layer);
                 
                 setSelectedFeature({
                   type: LAYER_DISPLAY_NAMES[layer] || layer,
