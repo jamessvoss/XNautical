@@ -785,6 +785,26 @@ let db: SQLite.SQLiteDatabase | null = null;
 let tideDbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let currentDbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
+// Track if we've initialized (to detect hot reloads)
+let isInitialized = false;
+
+/**
+ * Reset database connections (called on app startup/reload)
+ * This prevents stale connection errors when hot reloading
+ */
+function resetDatabaseConnections() {
+  console.log('[SQLITE] Resetting database connections...');
+  tideDb = null;
+  currentDb = null;
+  db = null;
+  tideDbPromise = null;
+  currentDbPromise = null;
+  isInitialized = true;
+}
+
+// Reset connections on module load (handles hot reload)
+resetDatabaseConnections();
+
 /**
  * Open the TIDE predictions database (with mutex to prevent race conditions)
  */
@@ -978,7 +998,52 @@ export async function getStationPredictionsForRange(
     }
     
     return predictions;
-  } catch (error) {
+  } catch (error: any) {
+    // Check if this is a "shared object released" error (stale connection after hot reload)
+    if (error?.message?.includes('shared object') || 
+        error?.message?.includes('already released') ||
+        error?.message?.includes('Cannot convert provided JavaScriptObject')) {
+      console.warn('[PREDICTIONS] Detected stale connection, resetting and retrying...');
+      
+      // Reset the stale connection
+      if (stationType === 'tide') {
+        tideDb = null;
+        tideDbPromise = null;
+      } else {
+        currentDb = null;
+        currentDbPromise = null;
+      }
+      
+      // Retry once with fresh connection
+      try {
+        const database = stationType === 'tide' 
+          ? await openTideDatabase() 
+          : await openCurrentDatabase();
+        
+        const startDateStr = startDate.toISOString().split('T')[0];
+        const endDateStr = endDate.toISOString().split('T')[0];
+        
+        if (stationType === 'tide') {
+          return await database.getAllAsync(
+            `SELECT * FROM tide_predictions 
+             WHERE station_id = ? AND date >= ? AND date <= ? 
+             ORDER BY date, time`,
+            [stationId, startDateStr, endDateStr]
+          );
+        } else {
+          return await database.getAllAsync(
+            `SELECT * FROM current_predictions 
+             WHERE station_id = ? AND date >= ? AND date <= ? 
+             ORDER BY date, time`,
+            [stationId, startDateStr, endDateStr]
+          );
+        }
+      } catch (retryError) {
+        console.error(`[PREDICTIONS] Retry failed:`, retryError);
+        return [];
+      }
+    }
+    
     console.error(`[PREDICTIONS] Error getting predictions for range:`, error);
     return [];
   }
@@ -1043,6 +1108,64 @@ export async function getStationPredictions(stationId: string, stationType: 'tid
       date: dateStr,
     };
   } catch (error: any) {
+    // Check if this is a "shared object released" error (stale connection after hot reload)
+    if (error?.message?.includes('shared object') || 
+        error?.message?.includes('already released') ||
+        error?.message?.includes('Cannot convert provided JavaScriptObject')) {
+      console.warn('[SQLITE] Detected stale connection, resetting and retrying...');
+      
+      // Reset the stale connection
+      if (stationType === 'tide') {
+        tideDb = null;
+        tideDbPromise = null;
+      } else {
+        currentDb = null;
+        currentDbPromise = null;
+      }
+      
+      // Retry once with fresh connection
+      try {
+        const database = stationType === 'tide' 
+          ? await openTideDatabase() 
+          : await openCurrentDatabase();
+        
+        const station = await database.getFirstAsync(
+          'SELECT * FROM stations WHERE id = ?',
+          [stationId]
+        );
+        
+        if (!station) {
+          throw new Error(`Station ${stationId} not found`);
+        }
+        
+        const today = new Date();
+        const dateStr = today.toISOString().split('T')[0];
+        
+        let predictions = [];
+        
+        if (stationType === 'tide') {
+          predictions = await database.getAllAsync(
+            'SELECT * FROM tide_predictions WHERE station_id = ? AND date = ? ORDER BY time',
+            [stationId, dateStr]
+          );
+        } else {
+          predictions = await database.getAllAsync(
+            'SELECT * FROM current_predictions WHERE station_id = ? AND date = ? ORDER BY time',
+            [stationId, dateStr]
+          );
+        }
+        
+        return {
+          station,
+          predictions,
+          date: dateStr,
+        };
+      } catch (retryError) {
+        console.error('[SQLITE] Retry failed:', retryError);
+        throw retryError;
+      }
+    }
+    
     console.error('[SQLITE] Error querying station:', error);
     throw error;
   }
