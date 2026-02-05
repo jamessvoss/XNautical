@@ -3441,23 +3441,55 @@ async function fetchBuoyObservations(stationId: string): Promise<any | null> {
       const minute = dataLine[4];
       const timestamp = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour.padStart(2, '0')}:${minute.padStart(2, '0')}:00Z`;
       
-      return {
+      // Build observation object, filtering out undefined values
+      const observation: Record<string, any> = {
         timestamp,
-        windDirection: getValue('WDIR'),
-        windSpeed: getValue('WSPD'),
-        windGust: getValue('GST'),
-        waveHeight: getValue('WVHT'),
-        dominantWavePeriod: getValue('DPD'),
-        averageWavePeriod: getValue('APD'),
-        meanWaveDirection: getValue('MWD'),
-        pressure: getValue('PRES'),
-        airTemp: getValue('ATMP'),
-        waterTemp: getValue('WTMP'),
-        dewPoint: getValue('DEWP'),
-        visibility: getValue('VIS'),
-        pressureTendency: getValue('PTDY'),
-        tide: getValue('TIDE'),
       };
+      
+      // Only add defined values
+      const windDirection = getValue('WDIR');
+      if (windDirection !== undefined) observation.windDirection = windDirection;
+      
+      const windSpeed = getValue('WSPD');
+      if (windSpeed !== undefined) observation.windSpeed = windSpeed;
+      
+      const windGust = getValue('GST');
+      if (windGust !== undefined) observation.windGust = windGust;
+      
+      const waveHeight = getValue('WVHT');
+      if (waveHeight !== undefined) observation.waveHeight = waveHeight;
+      
+      const dominantWavePeriod = getValue('DPD');
+      if (dominantWavePeriod !== undefined) observation.dominantWavePeriod = dominantWavePeriod;
+      
+      const averageWavePeriod = getValue('APD');
+      if (averageWavePeriod !== undefined) observation.averageWavePeriod = averageWavePeriod;
+      
+      const meanWaveDirection = getValue('MWD');
+      if (meanWaveDirection !== undefined) observation.meanWaveDirection = meanWaveDirection;
+      
+      const pressure = getValue('PRES');
+      if (pressure !== undefined) observation.pressure = pressure;
+      
+      const airTemp = getValue('ATMP');
+      if (airTemp !== undefined) observation.airTemp = airTemp;
+      
+      const waterTemp = getValue('WTMP');
+      if (waterTemp !== undefined) observation.waterTemp = waterTemp;
+      
+      const dewPoint = getValue('DEWP');
+      if (dewPoint !== undefined) observation.dewPoint = dewPoint;
+      
+      const visibility = getValue('VIS');
+      if (visibility !== undefined) observation.visibility = visibility;
+      
+      const pressureTendency = getValue('PTDY');
+      if (pressureTendency !== undefined) observation.pressureTendency = pressureTendency;
+      
+      const tide = getValue('TIDE');
+      if (tide !== undefined) observation.tide = tide;
+      
+      return observation;
     } catch (error) {
       // Continue to next attempt
     }
@@ -3489,16 +3521,34 @@ async function fetchBuoyObservations(stationId: string): Promise<any | null> {
         return isNaN(num) ? undefined : num;
       };
       
-      return {
+      // Build observation object, filtering out undefined values
+      const observation: Record<string, any> = {
         timestamp: new Date().toISOString(),
-        windSpeed: parseValue(data['Wind']),
-        windGust: parseValue(data['Gust']),
-        waveHeight: parseValue(data['Wave Height']),
-        dominantWavePeriod: parseValue(data['Dominant Wave Period']),
-        pressure: parseValue(data['Pressure']),
-        airTemp: parseValue(data['Air Temp']),
-        waterTemp: parseValue(data['Water Temp']),
       };
+      
+      // Only add defined values
+      const windSpeed = parseValue(data['Wind']);
+      if (windSpeed !== undefined) observation.windSpeed = windSpeed;
+      
+      const windGust = parseValue(data['Gust']);
+      if (windGust !== undefined) observation.windGust = windGust;
+      
+      const waveHeight = parseValue(data['Wave Height']);
+      if (waveHeight !== undefined) observation.waveHeight = waveHeight;
+      
+      const dominantWavePeriod = parseValue(data['Dominant Wave Period']);
+      if (dominantWavePeriod !== undefined) observation.dominantWavePeriod = dominantWavePeriod;
+      
+      const pressure = parseValue(data['Pressure']);
+      if (pressure !== undefined) observation.pressure = pressure;
+      
+      const airTemp = parseValue(data['Air Temp']);
+      if (airTemp !== undefined) observation.airTemp = airTemp;
+      
+      const waterTemp = parseValue(data['Water Temp']);
+      if (waterTemp !== undefined) observation.waterTemp = waterTemp;
+      
+      return observation;
     } catch (error) {
       // Continue to next attempt
     }
