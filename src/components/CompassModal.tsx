@@ -1,5 +1,11 @@
 /**
- * Compass Overlay - Pure React Native (NO SVG to avoid Fabric issues)
+ * Compass Modal - Smooth compass display using sensor fusion
+ * 
+ * OPTIMIZED VERSION:
+ * - Receives pre-smoothed heading from useDeviceHeading hook (60Hz sensor fusion)
+ * - Uses spring animation with native driver for butter-smooth rotation
+ * - Implements shortest-path rotation to avoid 358° backwards spin
+ * - No heavy filtering or dead zones needed (sensor fusion handles jitter)
  */
 
 import React, { useRef, useEffect } from 'react';
@@ -9,7 +15,6 @@ import {
   StyleSheet,
   Dimensions,
   Animated,
-  Easing,
 } from 'react-native';
 
 interface Props {
@@ -23,37 +28,21 @@ interface Props {
 // Chart height as percentage of screen (must match TideDetailChart/CurrentDetailChart)
 const CHART_HEIGHT_PERCENT = 0.15;
 
-// Smoothing constants - heavily damped for jittery phone magnetometers on boats
-const EMA_ALPHA = 0.08; // Very smooth (lower = smoother)
-const MAX_ROTATION_RATE = 15; // degrees per second - like a damped marine compass
-const DEAD_ZONE = 4; // Ignore changes smaller than this (degrees)
-
-// Circular EMA for heading (handles 360 wraparound)
-function circularEMA(current: number, newValue: number, alpha: number): number {
-  // Convert to radians for circular math
-  const currRad = current * Math.PI / 180;
-  const newRad = newValue * Math.PI / 180;
-  
-  // EMA on sin/cos components
-  const sinEMA = Math.sin(currRad) * (1 - alpha) + Math.sin(newRad) * alpha;
-  const cosEMA = Math.cos(currRad) * (1 - alpha) + Math.cos(newRad) * alpha;
-  
-  // Convert back to degrees
-  let result = Math.atan2(sinEMA, cosEMA) * 180 / Math.PI;
-  if (result < 0) result += 360;
-  return result;
+/**
+ * Calculate shortest rotation path to avoid spinning backwards.
+ * E.g., going from 359° to 1° should rotate +2°, not -358°.
+ */
+function shortestRotationTarget(from: number, to: number): number {
+  let delta = ((to - from + 540) % 360) - 180;
+  return from + delta;
 }
 
-// Adaptive animation duration based on heading change
-function getAnimationDuration(headingChange: number): number {
-  const absDiff = Math.abs(headingChange);
-  if (absDiff < 5) return 400;   // Small changes: smooth
-  if (absDiff < 15) return 300;  // Medium changes: normal
-  if (absDiff < 30) return 200;  // Large changes: quick
-  return 150;                     // Very large: snappy
-}
-
-export default function CompassModal({ heading, course, showTideChart = false, showCurrentChart = false }: Props) {
+export default function CompassModal({ 
+  heading, 
+  course, 
+  showTideChart = false, 
+  showCurrentChart = false 
+}: Props) {
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
   const size = Math.min(screenWidth, screenHeight) - 60;
   
@@ -63,84 +52,34 @@ export default function CompassModal({ heading, course, showTideChart = false, s
   
   // Animation for compass rotation
   const animatedRotation = useRef(new Animated.Value(0)).current;
-  const previousHeading = useRef<number>(0);
-  
-  // Smoothing state
-  const smoothedHeading = useRef<number | null>(null);
-  const lastUpdateTime = useRef<number>(Date.now());
+  const previousRotation = useRef<number>(0);
 
-  // Interpolate rotation
+  // Interpolate rotation for transform
   const rotateInterpolate = animatedRotation.interpolate({
-    inputRange: [-360, 360],
-    outputRange: ['-360deg', '360deg'],
+    inputRange: [-720, 720],
+    outputRange: ['-720deg', '720deg'],
   });
 
-  // Rate limiter function
-  const rateLimitHeading = (current: number, target: number): number => {
-    const now = Date.now();
-    const deltaTime = (now - lastUpdateTime.current) / 1000;
-    lastUpdateTime.current = now;
-    
-    const maxChange = MAX_ROTATION_RATE * deltaTime;
-    let diff = target - current;
-    
-    // Shortest path
-    if (diff > 180) diff -= 360;
-    if (diff < -180) diff += 360;
-    
-    // Clamp to max rate
-    if (Math.abs(diff) > maxChange) {
-      diff = Math.sign(diff) * maxChange;
-    }
-    
-    return (current + diff + 360) % 360;
-  };
-
-  // Animate rotation with smoothing
+  // Animate rotation with spring physics
   useEffect(() => {
     if (heading === null) return;
 
-    // Apply circular EMA smoothing
-    if (smoothedHeading.current === null) {
-      smoothedHeading.current = heading;
-    } else {
-      smoothedHeading.current = circularEMA(smoothedHeading.current, heading, EMA_ALPHA);
-    }
+    // Calculate rotation (negative because compass card rotates opposite to heading)
+    const targetRotation = -heading;
+    const current = previousRotation.current;
     
-    // Apply rate limiting
-    const rateLimitedHeading = rateLimitHeading(
-      smoothedHeading.current,
-      heading
-    );
-    smoothedHeading.current = rateLimitedHeading;
+    // Find shortest path rotation
+    const adjustedTarget = shortestRotationTarget(current, targetRotation);
+    previousRotation.current = adjustedTarget;
 
-    // Dead zone - ignore very small changes to reduce jitter
-    let deadZoneDiff = rateLimitedHeading - (-previousHeading.current);
-    if (deadZoneDiff > 180) deadZoneDiff -= 360;
-    if (deadZoneDiff < -180) deadZoneDiff += 360;
-    if (Math.abs(deadZoneDiff) < DEAD_ZONE) return;
-
-    let targetRotation = -rateLimitedHeading;
-    const current = previousHeading.current;
-    
-    // Shortest path rotation
-    let diff = targetRotation - current;
-    if (diff > 180) diff -= 360;
-    if (diff < -180) diff += 360;
-    
-    const newValue = current + diff;
-    previousHeading.current = newValue;
-
-    // Adaptive animation duration
-    const duration = getAnimationDuration(diff);
-
-    Animated.timing(animatedRotation, {
-      toValue: newValue,
-      duration,
-      easing: Easing.out(Easing.cubic),
+    // Spring animation for natural, responsive feel
+    Animated.spring(animatedRotation, {
+      toValue: adjustedTarget,
+      tension: 120,      // Higher = faster response
+      friction: 12,      // Higher = less oscillation
       useNativeDriver: true,
     }).start();
-  }, [heading]);
+  }, [heading, animatedRotation]);
 
   const displayHeading = heading !== null ? Math.round(heading) : '--';
 

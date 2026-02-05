@@ -30,6 +30,7 @@
     "expo-file-system": "^19.0.21",
     "expo-local-authentication": "~17.0.8",
     "expo-location": "^19.0.8",
+    "expo-sensors": "~15.0.8",
     "expo-sqlite": "~16.0.10",
     "expo-status-bar": "~3.0.9",
     "firebase": "^12.8.0",

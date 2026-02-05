@@ -16,7 +16,7 @@ let MapSelectionScreen: React.ComponentType | null = null;
 let DynamicChartViewer: React.ComponentType<{ onNavigateToDownloads?: () => void }> | null = null;
 let SettingsScreen: React.ComponentType | null = null;
 let WeatherScreen: React.ComponentType | null = null;
-let CompassModal: React.ComponentType<{ visible: boolean; heading: number | null; course: number | null }> | null = null;
+let CompassModal: React.ComponentType<{ visible: boolean; heading: number | null; course: number | null; showTideChart?: boolean; showCurrentChart?: boolean }> | null = null;
 let GPSInfoModal: React.ComponentType<{ visible: boolean; gpsData: any }> | null = null;
 
 // Modular Crashlytics API (v22+ requires passing instance as first param)

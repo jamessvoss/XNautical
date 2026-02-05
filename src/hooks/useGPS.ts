@@ -1,12 +1,14 @@
 /**
- * useGPS Hook - Manages GPS location and device heading tracking
+ * useGPS Hook - Manages GPS location tracking
  * 
  * Provides:
  * - Current position (lat/lon)
  * - Speed (from GPS)
  * - Course Over Ground (COG) - direction of travel
- * - Heading (from device magnetometer)
  * - Accuracy
+ * 
+ * NOTE: Device heading (compass) is now handled by useDeviceHeading hook
+ * which uses sensor fusion for smoother updates.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -23,8 +25,8 @@ export interface GPSData {
   speedKnots: number | null;   // converted to knots
   course: number | null;       // Course Over Ground (COG) - direction of travel
   
-  // Device orientation
-  heading: number | null;      // Magnetic heading from device compass
+  // Device orientation (now managed externally by useDeviceHeading)
+  heading: number | null;      // Kept for backwards compatibility
   
   // Accuracy
   accuracy: number | null;     // meters
@@ -42,7 +44,6 @@ interface UseGPSOptions {
   // Update frequency
   distanceInterval?: number;   // meters - minimum distance before update
   timeInterval?: number;       // ms - minimum time between updates
-  enableHeading?: boolean;     // Whether to track device heading
 }
 
 const MS_TO_KNOTS = 1.94384;
@@ -51,7 +52,6 @@ export function useGPS(options: UseGPSOptions = {}) {
   const {
     distanceInterval = 5,      // Update every 5 meters
     timeInterval = 1000,       // Or every 1 second
-    enableHeading = true,
   } = options;
 
   const [gpsData, setGpsData] = useState<GPSData>({
@@ -61,7 +61,7 @@ export function useGPS(options: UseGPSOptions = {}) {
     speed: null,
     speedKnots: null,
     course: null,
-    heading: null,
+    heading: null,  // Now set externally
     accuracy: null,
     timestamp: null,
     isTracking: false,
@@ -70,11 +70,8 @@ export function useGPS(options: UseGPSOptions = {}) {
   });
 
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
-  const headingSubscription = useRef<Location.LocationSubscription | null>(null);
   const previousPosition = useRef<{ lat: number; lon: number; time: number } | null>(null);
   const lastPositionUpdate = useRef<{ lat: number; lon: number } | null>(null);
-  const lastHeadingUpdate = useRef<number>(0);
-  const HEADING_THROTTLE_MS = 1000; // Limit heading updates to 1Hz (boats don't need faster)
   const MIN_POSITION_CHANGE_M = 1; // Minimum meters change to trigger position update
 
   // Calculate bearing between two points (for COG when GPS doesn't provide it)
@@ -131,6 +128,14 @@ export function useGPS(options: UseGPSOptions = {}) {
       }));
       return false;
     }
+  }, []);
+
+  // Update heading from external source (useDeviceHeading)
+  const updateHeading = useCallback((heading: number | null) => {
+    setGpsData(prev => ({
+      ...prev,
+      heading,
+    }));
   }, []);
 
   // Start tracking
@@ -201,29 +206,6 @@ export function useGPS(options: UseGPSOptions = {}) {
         }
       );
 
-      // Start heading updates (magnetometer) - throttled with minimum change threshold
-      if (enableHeading) {
-        let lastHeadingValue = 0;
-        const MIN_HEADING_CHANGE = 8; // Minimum degrees change to trigger update (heavily filtered)
-        
-        headingSubscription.current = await Location.watchHeadingAsync((headingData) => {
-          const now = Date.now();
-          const newHeading = headingData.magHeading;
-          const headingDiff = Math.abs(newHeading - lastHeadingValue);
-          
-          // Throttle updates and require minimum change to reduce jitter
-          if (now - lastHeadingUpdate.current >= HEADING_THROTTLE_MS && 
-              (headingDiff > MIN_HEADING_CHANGE || headingDiff > 358)) { // 358 handles wraparound at 0/360
-            lastHeadingUpdate.current = now;
-            lastHeadingValue = newHeading;
-            setGpsData(prev => ({
-              ...prev,
-              heading: newHeading, // Magnetic heading
-            }));
-          }
-        });
-      }
-
       setGpsData(prev => ({ ...prev, isTracking: true }));
     } catch (error) {
       setGpsData(prev => ({
@@ -232,17 +214,13 @@ export function useGPS(options: UseGPSOptions = {}) {
         error: 'Failed to start location tracking',
       }));
     }
-  }, [requestPermissions, distanceInterval, timeInterval, enableHeading, calculateBearing, calculateDistance]);
+  }, [requestPermissions, distanceInterval, timeInterval, calculateBearing, calculateDistance]);
 
   // Stop tracking
   const stopTracking = useCallback(() => {
     if (locationSubscription.current) {
       locationSubscription.current.remove();
       locationSubscription.current = null;
-    }
-    if (headingSubscription.current) {
-      headingSubscription.current.remove();
-      headingSubscription.current = null;
     }
     previousPosition.current = null;
     lastPositionUpdate.current = null;
@@ -268,9 +246,6 @@ export function useGPS(options: UseGPSOptions = {}) {
       if (locationSubscription.current) {
         locationSubscription.current.remove();
       }
-      if (headingSubscription.current) {
-        headingSubscription.current.remove();
-      }
     };
   }, []);
 
@@ -280,6 +255,7 @@ export function useGPS(options: UseGPSOptions = {}) {
     stopTracking,
     toggleTracking,
     requestPermissions,
+    updateHeading,  // Allow external heading updates
   };
 }
 
