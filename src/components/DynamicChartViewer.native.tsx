@@ -2792,6 +2792,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         features: (allFeatures?.features || []).filter((f: any) => {
           const objl = f.properties?.OBJL;
           if (!objl) return false;
+          
+          // ALWAYS exclude soundings (OBJL 129) - too numerous and obvious
+          if (objl === 129) return false;
+          
           // Include if layer is visible, or if we don't have visibility info for this OBJL (include by default)
           return objlVisibility[objl] !== false;
         })
