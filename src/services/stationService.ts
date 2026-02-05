@@ -1088,18 +1088,11 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
       currentsDbSizeMB: currentsInfo.exists && 'size' in currentsInfo ? currentsInfo.size / (1024 * 1024) : 0,
     };
     
-    // Query tide database - open fresh connection to avoid stale cache
+    // Query tide database - use existing connection if available
     if (tidesInfo.exists) {
-      let freshTideDb: SQLite.SQLiteDatabase | null = null;
       try {
-        // Reset cached connection and promise if they exist
-        if (tideDb) {
-          try { await tideDb.closeAsync(); } catch (e) { /* ignore */ }
-          tideDb = null;
-        }
-        tideDbPromise = null;
-        freshTideDb = await SQLite.openDatabaseAsync(tidesDbPath);
-        tideDb = freshTideDb; // Update cache
+        // Use existing connection or open new one (don't close existing!)
+        const freshTideDb = tideDb || await openTideDatabase();
         
         // Verify table exists
         const tideTableCheck = await freshTideDb.getFirstAsync<{ name: string }>(
@@ -1131,27 +1124,14 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
         stats.totalTidePredictions = tidePredictionCount?.count || 0;
       } catch (error) {
         console.error('[STATS] Error querying tide database:', error);
-        // Reset connection on error
-        if (freshTideDb) {
-          try { await freshTideDb.closeAsync(); } catch (e) { /* ignore */ }
-        }
-        tideDb = null;
-        tideDbPromise = null;
       }
     }
     
-    // Query currents database - open fresh connection to avoid stale cache
+    // Query currents database - use existing connection if available
     if (currentsInfo.exists) {
-      let freshCurrentDb: SQLite.SQLiteDatabase | null = null;
       try {
-        // Reset cached connection and promise if they exist
-        if (currentDb) {
-          try { await currentDb.closeAsync(); } catch (e) { /* ignore */ }
-          currentDb = null;
-        }
-        currentDbPromise = null;
-        freshCurrentDb = await SQLite.openDatabaseAsync(currentsDbPath);
-        currentDb = freshCurrentDb; // Update cache
+        // Use existing connection or open new one (don't close existing!)
+        const freshCurrentDb = currentDb || await openCurrentDatabase();
         
         // Verify table exists
         const currentTableCheck = await freshCurrentDb.getFirstAsync<{ name: string }>(
@@ -1183,12 +1163,6 @@ export async function getPredictionDatabaseStats(): Promise<PredictionDatabaseSt
         stats.totalCurrentPredictions = currentPredictionCount?.count || 0;
       } catch (error) {
         console.error('[STATS] Error querying currents database:', error);
-        // Reset connection on error
-        if (freshCurrentDb) {
-          try { await freshCurrentDb.closeAsync(); } catch (e) { /* ignore */ }
-        }
-        currentDb = null;
-        currentDbPromise = null;
       }
     }
     
