@@ -3648,11 +3648,36 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               const features = e.features || [];
               if (features.length === 0) return;
               
+              console.log('[VECTORSOURCE PRESS] Raw features:', features.length);
+              
+              // Filter out soundings (OBJL 129) and other unwanted features
+              const filteredFeatures = features.filter((f: any) => {
+                const objl = f.properties?.OBJL;
+                
+                // ALWAYS exclude soundings (OBJL 129) - too numerous and obvious
+                if (objl === 129) {
+                  console.log('[VECTORSOURCE PRESS] ⛔ Filtering out sounding (OBJL 129)');
+                  return false;
+                }
+                
+                // Also exclude depth areas (OBJL 42) - not useful for identification
+                if (objl === 42) {
+                  console.log('[VECTORSOURCE PRESS] ⛔ Filtering out depth area (OBJL 42)');
+                  return false;
+                }
+                
+                return true;
+              });
+              
+              console.log('[VECTORSOURCE PRESS] After filtering:', filteredFeatures.length, 'features');
+              
+              if (filteredFeatures.length === 0) return;
+              
               // Find best feature using OBJL-based priorities
               let bestFeature = null;
               let bestPriority = -1;
               
-              for (const feature of features) {
+              for (const feature of filteredFeatures) {
                 const objl = feature.properties?.OBJL;
                 if (!objl) continue;
                 
@@ -3671,6 +3696,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               
               if (bestFeature) {
                 const layer = getLayerName(bestFeature.properties);
+                console.log('[VECTORSOURCE PRESS] Selected feature - OBJL:', bestFeature.properties?.OBJL, 'Layer:', layer);
                 
                 setSelectedFeature({
                   type: LAYER_DISPLAY_NAMES[layer] || layer,
