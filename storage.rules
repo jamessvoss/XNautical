@@ -2,17 +2,48 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-    // Chart files - readable by authenticated users
-    match /charts/{allPaths=**} {
-      allow read: if request.auth != null;
-      allow write: if false; // Only admin/server can upload charts
+    // =================================================================
+    // District-based data structure (new)
+    // All district data is under /{districtId}/...
+    // =================================================================
+    
+    // District data - publicly readable (NOAA chart data)
+    // Structure: /{districtId}/{dataType}/{filename}
+    // Examples:
+    //   /17cgd/charts/US1.mbtiles.zip
+    //   /17cgd/basemaps/basemap.mbtiles.zip
+    //   /17cgd/satellite/satellite_z8.mbtiles.zip
+    //   /17cgd/gnis/gnis_names.mbtiles.zip
+    match /{districtId}/{dataType}/{filename} {
+      allow read: if true; // Public read access for chart data
+      allow write: if false; // Only admin/server can upload
     }
     
-    // Predictions bundle - publicly readable
+    // Also allow listing district contents (for manifest, etc.)
+    match /{districtId}/{allPaths=**} {
+      allow read: if true; // Public read access
+      allow write: if false;
+    }
+    
+    // =================================================================
+    // Legacy paths (keep for backward compatibility)
+    // =================================================================
+    
+    // Old chart files path - readable by authenticated users
+    match /charts/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+    
+    // Predictions bundle - publicly readable (legacy path)
     match /predictions/{allPaths=**} {
       allow read: if true; // Public read access
-      allow write: if false; // Only server can upload
+      allow write: if false;
     }
+    
+    // =================================================================
+    // User data
+    // =================================================================
     
     // User uploads (if needed in future)
     match /users/{userId}/{allPaths=**} {

@@ -100,3 +100,94 @@ export interface InstalledChartPack extends ChartPack {
   /** Local file path */
   localPath: string;
 }
+
+// ============================================
+// Cloud Download Types (District-based)
+// ============================================
+
+/** Download pack from Firestore districts collection */
+export interface DistrictDownloadPack {
+  /** Unique identifier (e.g., 'charts-US4', 'basemap') */
+  id: string;
+  
+  /** Type of content */
+  type: 'charts' | 'basemap' | 'satellite' | 'gnis';
+  
+  /** For charts: scale band (US1, US2, etc.) */
+  band?: string;
+  
+  /** Display name */
+  name: string;
+  
+  /** Description for UI */
+  description: string;
+  
+  /** Firebase Storage path (e.g., '17cgd/charts/US4.mbtiles.zip') */
+  storagePath: string;
+  
+  /** Compressed file size in bytes */
+  sizeBytes: number;
+  
+  /** Whether this pack is required for basic functionality */
+  required: boolean;
+}
+
+/** District information from Firestore */
+export interface District {
+  /** District code (e.g., '17 CGD') */
+  code: string;
+  
+  /** Display name (e.g., 'Alaska') */
+  name: string;
+  
+  /** Primary timezone */
+  timezone: string;
+  
+  /** Default map center [lng, lat] */
+  defaultCenter: [number, number];
+  
+  /** Geographic bounds */
+  bounds: {
+    west: number;
+    east: number;
+    south: number;
+    north: number;
+  };
+  
+  /** States included in this district */
+  states: string[];
+  
+  /** Available download packs */
+  downloadPacks: DistrictDownloadPack[];
+  
+  /** Firestore timestamps */
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+/** Download progress status */
+export interface PackDownloadStatus {
+  /** Pack being downloaded */
+  packId: string;
+  
+  /** Current status */
+  status: 'pending' | 'downloading' | 'extracting' | 'completed' | 'failed';
+  
+  /** Progress percentage (0-100) */
+  progress: number;
+  
+  /** Bytes downloaded so far */
+  bytesDownloaded: number;
+  
+  /** Total bytes to download */
+  totalBytes: number;
+  
+  /** Error message if failed */
+  error?: string;
+  
+  /** Download speed in bytes per second */
+  speedBps?: number;
+  
+  /** Estimated time remaining in seconds */
+  etaSeconds?: number;
+}

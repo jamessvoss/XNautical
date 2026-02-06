@@ -384,6 +384,42 @@ export function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
+/**
+ * Format download speed (bytes per second) to human readable string
+ */
+export function formatSpeed(bytesPerSecond: number): string {
+  if (bytesPerSecond === 0) return '0 KB/s';
+  
+  const k = 1024;
+  if (bytesPerSecond < k * k) {
+    // Less than 1 MB/s - show as KB/s
+    return `${Math.round(bytesPerSecond / k)} KB/s`;
+  } else {
+    // 1 MB/s or more - show as MB/s
+    return `${(bytesPerSecond / (k * k)).toFixed(1)} MB/s`;
+  }
+}
+
+/**
+ * Format estimated time remaining in seconds to human readable string
+ */
+export function formatEta(seconds: number | undefined): string {
+  if (seconds === undefined || seconds <= 0 || !isFinite(seconds)) {
+    return '';
+  }
+  
+  if (seconds < 60) {
+    return `~${Math.round(seconds)}s left`;
+  } else if (seconds < 3600) {
+    const mins = Math.round(seconds / 60);
+    return `~${mins} min left`;
+  } else {
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.round((seconds % 3600) / 60);
+    return mins > 0 ? `~${hours}h ${mins}m left` : `~${hours}h left`;
+  }
+}
+
 // ============================================
 // MBTiles Download Functions
 // ============================================

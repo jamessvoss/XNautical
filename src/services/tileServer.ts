@@ -59,21 +59,23 @@ export async function startTileServer(options: TileServerOptions = {}): Promise<
   }
 
   try {
-    // Check if already running
-    const isRunning = await LocalTileServer.isRunning();
-    if (isRunning) {
-      const url = await LocalTileServer.getServerUrl();
-      state.isRunning = true;
-      state.serverUrl = url;
-      logger.info(LogCategory.TILES, `Server already running at: ${url}`);
-      return url;
-    }
-
-    // Configure options - ALWAYS use external storage (survives app uninstall)
-    const mbtilesDir = options.mbtilesDir || 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
+    // Configure options - use internal storage (documentDirectory)
+    const defaultDir = FileSystem.documentDirectory 
+      ? `${FileSystem.documentDirectory}mbtiles`
+      : 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
+    const mbtilesDir = options.mbtilesDir || defaultDir;
     const port = options.port || DEFAULT_PORT;
 
-    // Start the native server
+    logger.info(LogCategory.TILES, `[DIAG] Requested mbtilesDir: ${mbtilesDir}`);
+
+    // Check if already running - stop and restart to ensure correct directory
+    const isRunning = await LocalTileServer.isRunning();
+    if (isRunning) {
+      logger.info(LogCategory.TILES, `Server already running - stopping to restart with correct directory`);
+      await LocalTileServer.stop();
+    }
+
+    // Start the native server (fresh start ensures correct directory)
     const serverUrl = await LocalTileServer.start({
       port,
       mbtilesDir,
@@ -291,9 +293,13 @@ export async function getVectorLayers(chartId: string): Promise<string[]> {
 
 /**
  * Get the MBTiles directory path
- * Uses EXTERNAL storage so files survive app uninstall
+ * Uses internal storage (documentDirectory) for reliability
  */
 export function getMBTilesDir(): string {
+  if (FileSystem.documentDirectory) {
+    return `${FileSystem.documentDirectory}mbtiles`;
+  }
+  // Fallback for edge cases
   return 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
 }
 

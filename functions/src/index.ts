@@ -3697,7 +3697,26 @@ export const dailyBuoySummary = functions
         }
         
         if (totalFailures > 0 || totalSkipped > 0) {
-          console.log(`Buoy issues: ${totalFailures} failures, ${totalSkipped} skipped`);
+          const startTime = new Date();
+          await sendJobNotification({
+            functionName: 'Daily Buoy Summary',
+            status: totalFailures > 0 ? 'failed' : 'partial',
+            startTime,
+            endTime: new Date(),
+            details: {
+              'Date': yesterdayKey,
+              'Hourly Runs with Issues': yesterdayIssues.length,
+              'Total Updates Successful': totalSuccess,
+              'Total Updates Skipped': totalSkipped,
+              'Complete Failures': totalFailures,
+              'Buoys with Issues': allSkippedBuoys.size > 0 
+                ? Array.from(allSkippedBuoys).slice(0, 10).join(', ') + (allSkippedBuoys.size > 10 ? '...' : '')
+                : 'None',
+            }
+          });
+          console.log(`Sent daily buoy summary: ${totalSkipped} skipped, ${totalFailures} failures`);
+        } else {
+          console.log('All buoy updates were successful yesterday, no email needed');
         }
       }
       

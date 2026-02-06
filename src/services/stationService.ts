@@ -63,8 +63,9 @@ let predictionsLoaded = false;
 
 /**
  * Load stations from AsyncStorage
+ * This is called on app startup and when returning from prediction downloads
  */
-async function loadFromStorage(): Promise<void> {
+export async function loadFromStorage(): Promise<void> {
   if (loadedFromStorage) return;
   
   try {
@@ -541,7 +542,7 @@ export async function downloadAllPredictions(
       throw new Error(`Currents download failed: ${currentsResult.error}`);
     }
     
-    onProgress?.('Saving metadata...', 95);
+    onProgress?.('Saving metadata...', 90);
     
     // Save metadata
     const totalSize = tidesResult.size + currentsResult.size;
@@ -562,6 +563,16 @@ export async function downloadAllPredictions(
     ]);
     
     predictionsLoaded = true;
+    
+    // Fetch station metadata now that predictions are downloaded
+    onProgress?.('Loading station locations...', 95);
+    try {
+      await fetchAllStations();
+      console.log('[PREDICTIONS] Station metadata loaded successfully');
+    } catch (error) {
+      console.warn('[PREDICTIONS] Failed to load station metadata:', error);
+      // Don't fail the whole download if station metadata fetch fails
+    }
     
     const totalTime = Date.now() - startTime;
     

@@ -24,9 +24,9 @@ const STORAGE_KEYS = {
 } as const;
 
 // Base directory for chart data - persistent external storage (survives app uninstall)
-const EXTERNAL_BASE = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/';
-const CHARTS_DIR = `${EXTERNAL_BASE}charts/`;
-const MBTILES_DIR = `${EXTERNAL_BASE}mbtiles/`;
+// Use internal storage (documentDirectory) - always writable, no permissions needed
+const CHARTS_DIR = `${documentDirectory}charts/`;
+const MBTILES_DIR = `${documentDirectory}mbtiles/`;
 
 /**
  * Initialize the cache directories (charts and mbtiles)
@@ -292,8 +292,18 @@ export async function clearAllCharts(): Promise<void> {
  */
 export async function getCacheSize(): Promise<number> {
   try {
-    const dirInfo = await getInfoAsync(CHARTS_DIR);
-    if (!dirInfo.exists) {
+    // Check if directory exists - this can throw on inaccessible external storage
+    let dirExists = false;
+    try {
+      const dirInfo = await getInfoAsync(CHARTS_DIR);
+      dirExists = dirInfo.exists;
+    } catch (e) {
+      // Directory doesn't exist or isn't accessible
+      console.log('[ChartCacheService] Charts directory not accessible');
+      return 0;
+    }
+    
+    if (!dirExists) {
       return 0;
     }
     
@@ -513,8 +523,18 @@ export async function clearAllMBTiles(): Promise<void> {
  */
 export async function getMBTilesCacheSize(): Promise<number> {
   try {
-    const dirInfo = await getInfoAsync(MBTILES_DIR);
-    if (!dirInfo.exists) {
+    // Check if directory exists - this can throw on inaccessible external storage
+    let dirExists = false;
+    try {
+      const dirInfo = await getInfoAsync(MBTILES_DIR);
+      dirExists = dirInfo.exists;
+    } catch (e) {
+      // Directory doesn't exist or isn't accessible
+      console.log('[ChartCacheService] MBTiles directory not accessible');
+      return 0;
+    }
+    
+    if (!dirExists) {
       return 0;
     }
     

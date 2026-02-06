@@ -25,6 +25,7 @@ import {
   ALL_FEATURE_TYPES,
 } from '../types/chart';
 import * as chartCacheService from '../services/chartCacheService';
+import * as chartPackService from '../services/chartPackService';
 import * as tileServer from '../services/tileServer';
 import {
   DEPTH_COLORS,
@@ -48,7 +49,7 @@ import { performanceTracker, StartupPhase, RuntimeMetric } from '../services/per
 import { stateReporter } from '../services/stateReporter';
 import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
-import { fetchTideStations, fetchCurrentStations, getCachedTideStations, getCachedCurrentStations, TideStation, CurrentStation } from '../services/stationService';
+import { fetchTideStations, fetchCurrentStations, getCachedTideStations, getCachedCurrentStations, loadFromStorage, TideStation, CurrentStation } from '../services/stationService';
 import { calculateAllStationStates, TideStationState, CurrentStationState, createIconNameMap } from '../services/stationStateService';
 import StationInfoModal from './StationInfoModal';
 import TideDetailChart from './TideDetailChart';
@@ -1266,10 +1267,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [selectedFeature, setSelectedFeature] = useState<FeatureInfo | null>(null);
   const [featureChoices, setFeatureChoices] = useState<FeatureInfo[] | null>(null); // Multiple features to choose from
   const [showControls, setShowControls] = useState(false);
+  const [showLayerSelector, setShowLayerSelector] = useState(false);
+  const [showSettingsPanel, setShowSettingsPanel] = useState(false);
   
   // Control panel tabs
-  type ControlPanelTab = 'basemap' | 'layers' | 'display' | 'symbols' | 'other';
-  const [activeTab, setActiveTab] = useState<ControlPanelTab>('basemap');
+  type ControlPanelTab = 'display' | 'symbols' | 'other';
+  const [activeTab, setActiveTab] = useState<ControlPanelTab>('display');
   const [selectedDisplayFeature, setSelectedDisplayFeature] = useState<string>('soundings');
   const [selectedSymbolFeature, setSelectedSymbolFeature] = useState<string>('lights');
   const [symbolEditMode, setSymbolEditMode] = useState<'symbol' | 'text'>('symbol');
@@ -1597,6 +1600,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const isProgrammaticCameraMove = useRef(false); // Flag to distinguish programmatic vs user camera moves
   const { gpsData, startTracking, stopTracking, toggleTracking } = useGPS();
   
+  // Memoize composite tile URL to prevent constant VectorSource re-renders
+  const compositeTileUrl = useMemo(() => {
+    return `${tileServer.getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf`;
+  }, [tileServerReady]); // Only recalculate if server restarts
+  
   // Update overlay context with GPS data
   useEffect(() => {
     updateGPSData(gpsData);
@@ -1730,7 +1738,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Button 5: Scan files on device - list all files with sizes
   const debugScanFiles = useCallback(async () => {
     const FileSystem = require('expo-file-system/legacy');
-    const mbtilesDir = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
+    const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
     
     logger.info(LogCategory.CHARTS, `Scanning files in ${mbtilesDir}`);
     
@@ -1776,6 +1784,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }
   }, []);
 
+  // Track last manifest modification time to detect downloads
+  const lastManifestTimeRef = useRef<number>(0);
+  const lastStationsTimeRef = useRef<number>(0);
+  
   // Load cached charts
   useEffect(() => {
     loadCharts();
@@ -1785,20 +1797,122 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       tileServer.stopTileServer();
     };
   }, []);
+  
+  // Check if charts or predictions were downloaded and reload if changed
+  useFocusEffect(
+    useCallback(() => {
+      const checkChangesAndReload = async () => {
+        try {
+          const FileSystem = require('expo-file-system/legacy');
+          const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+          
+          // Check for manifest changes (chart downloads)
+          const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
+          const manifestPath = `${mbtilesDir}/manifest.json`;
+          
+          const manifestInfo = await FileSystem.getInfoAsync(manifestPath);
+          if (manifestInfo.exists && manifestInfo.modificationTime) {
+            const currentTime = manifestInfo.modificationTime;
+            
+            // If manifest was modified since last check, reload charts
+            if (lastManifestTimeRef.current > 0 && currentTime > lastManifestTimeRef.current) {
+              logger.info(LogCategory.CHARTS, 'Manifest updated - reloading charts and restarting tile server');
+              
+              // Stop the tile server so it can reload the new manifest
+              await tileServer.stopTileServer();
+              
+              // Reload charts (which will restart the tile server with new manifest)
+              await loadCharts();
+            }
+            
+            lastManifestTimeRef.current = currentTime;
+          }
+          
+          // Check for station changes (prediction downloads)
+          const stationsTimestamp = await AsyncStorage.getItem('@XNautical:stationsTimestamp');
+          if (stationsTimestamp) {
+            const currentStationsTime = parseInt(stationsTimestamp);
+            
+            // If stations were updated since last check, reload stations
+            if (lastStationsTimeRef.current > 0 && currentStationsTime > lastStationsTimeRef.current) {
+              logger.info(LogCategory.CHARTS, 'Station metadata updated - reloading stations');
+              
+              // Reload stations from AsyncStorage
+              await loadFromStorage();
+              const tides = getCachedTideStations();
+              const currents = getCachedCurrentStations();
+              
+              console.log(`[MAP] Reloaded ${tides.length} tide stations and ${currents.length} current stations after prediction download`);
+              
+              // Filter current stations (highest bin only)
+              const filteredCurrents = (() => {
+                const stationsByLocation = new Map<string, CurrentStation[]>();
+                
+                for (const station of currents) {
+                  const locationKey = `${station.lat.toFixed(4)},${station.lng.toFixed(4)}`;
+                  if (!stationsByLocation.has(locationKey)) {
+                    stationsByLocation.set(locationKey, []);
+                  }
+                  stationsByLocation.get(locationKey)!.push(station);
+                }
+                
+                const result: CurrentStation[] = [];
+                for (const stations of stationsByLocation.values()) {
+                  if (stations.length === 1) {
+                    result.push(stations[0]);
+                  } else {
+                    // Multiple stations at same location - keep highest bin
+                    const highestBin = Math.max(...stations.map(s => s.bin || 0));
+                    const preferredStation = stations.find(s => s.bin === highestBin);
+                    if (preferredStation) {
+                      result.push(preferredStation);
+                    }
+                  }
+                }
+                
+                return result;
+              })();
+              
+              setTideStations(tides);
+              setCurrentStations(filteredCurrents);
+              
+              console.log(`[MAP] Filtered ${currents.length} current stations to ${filteredCurrents.length} (highest bin per location)`);
+            }
+            
+            lastStationsTimeRef.current = currentStationsTime;
+          }
+        } catch (error) {
+          logger.warn(LogCategory.CHARTS, 'Failed to check for updates', { error: (error as Error).message });
+        }
+      };
+      
+      checkChangesAndReload();
+    }, [])
+  );
 
   // Load tide and current stations from AsyncStorage on startup
-  // Data persists after user presses "Refresh Tide Data" in Settings
+  // Stations are only loaded AFTER predictions are downloaded
+  // This prevents showing empty station icons before data is available
   useEffect(() => {
     const loadStations = async () => {
       try {
-        console.log('[MAP] Starting to load stations from storage...');
-        // This will load from AsyncStorage if available
-        const [tides, currents] = await Promise.all([
-          fetchTideStations(),
-          fetchCurrentStations(),
-        ]);
+        console.log('[MAP] Loading stations from AsyncStorage (if available)...');
+        // Load from AsyncStorage without fetching from cloud
+        // Station metadata is saved when predictions are downloaded
+        await loadFromStorage();
         
-        console.log(`[MAP] Fetched ${tides.length} tide stations and ${currents.length} current stations (before bin filtering)`);
+        const tides = getCachedTideStations();
+        const currents = getCachedCurrentStations();
+        
+        // Only show stations if we actually have data
+        if (tides.length === 0 && currents.length === 0) {
+          console.log('[MAP] No station metadata found - download predictions to see stations');
+          setTideStations([]);
+          setCurrentStations([]);
+          return;
+        }
+        
+        console.log(`[MAP] Loaded ${tides.length} tide stations and ${currents.length} current stations from AsyncStorage`);
         
         // Filter current stations to only show the highest bin for each station
         // Higher bin numbers are closer to the surface
@@ -2122,21 +2236,24 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       
       const FileSystem = require('expo-file-system/legacy');
       
-      // === PHASE 1: mbtiles directory - ALWAYS external storage (survives app uninstall) ===
+      // === PHASE 1: mbtiles directory - use internal storage (always writable) ===
       performanceTracker.startPhase(StartupPhase.DIRECTORY_SETUP);
-      const mbtilesDir = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles';
+      const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
+      let mbtilesDirectoryReady = false;
       
       // Ensure directory exists
       try {
         const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
         if (!dirInfo.exists) {
           await FileSystem.makeDirectoryAsync(mbtilesDir, { intermediates: true });
-          logger.debug(LogCategory.STARTUP, 'Created external mbtiles directory');
+          logger.debug(LogCategory.STARTUP, 'Created mbtiles directory');
         }
+        mbtilesDirectoryReady = true;
       } catch (e) {
-        logger.warn(LogCategory.STARTUP, 'Could not create mbtiles directory', { error: e });
+        logger.warn(LogCategory.STARTUP, 'Could not create mbtiles directory - charts will need to be downloaded', { error: e });
+        // Continue anyway - user can still download charts through the Downloads modal
       }
-      performanceTracker.endPhase(StartupPhase.DIRECTORY_SETUP, { path: mbtilesDir });
+      performanceTracker.endPhase(StartupPhase.DIRECTORY_SETUP, { path: mbtilesDir, ready: mbtilesDirectoryReady });
       
       // === PHASE 2: Load manifest.json (chart pack index) ===
       performanceTracker.startPhase(StartupPhase.MANIFEST_LOAD);
@@ -2231,44 +2348,71 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           }
         }
         
-        // Also scan for raster files (BATHY_*)
-        try {
-          const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
-          for (const filename of filesInDir) {
-            if (filename.startsWith('BATHY_') && filename.endsWith('.mbtiles')) {
-              const chartId = filename.replace('.mbtiles', '');
-              loadedRasters.push({ chartId, path: `${mbtilesDir}/${filename}` });
+        // Also scan for raster files (BATHY_*) if directory is accessible
+        if (mbtilesDirectoryReady) {
+          try {
+            const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
+            for (const filename of filesInDir) {
+              if (filename.startsWith('BATHY_') && filename.endsWith('.mbtiles')) {
+                const chartId = filename.replace('.mbtiles', '');
+                loadedRasters.push({ chartId, path: `${mbtilesDir}/${filename}` });
+              }
             }
+          } catch (e) {
+            // Ignore scan errors for raster files
           }
-        } catch (e) {
-          // Ignore scan errors for raster files
         }
         
         logger.perf(LogCategory.CHARTS, `Built chart list from manifest.json`, { packs: loadedMbtiles.length });
       } else {
         // No manifest - scan directory for any mbtiles files
-        logger.info(LogCategory.CHARTS, 'Scanning directory for mbtiles files...');
-        try {
-          const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
-          for (const filename of filesInDir) {
-            if (filename.endsWith('.mbtiles') && !filename.startsWith('._')) {
-              const chartId = filename.replace('.mbtiles', '');
-              const path = `${mbtilesDir}/${filename}`;
-              
-              // Skip special files (GNIS, basemap)
-              if (chartId.startsWith('gnis_names_') || chartId.startsWith('basemap_')) {
-                continue;
-              }
-              
-              if (chartId.startsWith('BATHY_')) {
-                loadedRasters.push({ chartId, path });
-              } else {
-                loadedMbtiles.push({ chartId, path });
+        if (mbtilesDirectoryReady) {
+          logger.info(LogCategory.CHARTS, 'Scanning directory for mbtiles files...');
+          let hasChartPacks = false;
+          try {
+            const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
+            for (const filename of filesInDir) {
+              if (filename.endsWith('.mbtiles') && !filename.startsWith('._')) {
+                const chartId = filename.replace('.mbtiles', '');
+                const path = `${mbtilesDir}/${filename}`;
+                
+                // Skip special files (GNIS, basemap, satellite)
+                if (chartId.startsWith('gnis_names_') || chartId.startsWith('basemap_') || chartId.startsWith('satellite_')) {
+                  continue;
+                }
+                
+                if (chartId.startsWith('BATHY_')) {
+                  loadedRasters.push({ chartId, path });
+                } else {
+                  loadedMbtiles.push({ chartId, path });
+                  // Track if we found chart pack files (alaska_US*)
+                  if (chartId.match(/^[a-z]+_US\d/)) {
+                    hasChartPacks = true;
+                  }
+                }
               }
             }
+            
+            // If we found chart packs but no manifest, generate one for the native tile server
+            if (hasChartPacks) {
+              logger.info(LogCategory.CHARTS, 'Found chart packs without manifest - generating manifest.json for tile server');
+              await chartPackService.generateManifest('17cgd');
+              
+              // Re-read the manifest so the JS side also knows about it
+              const manifestPath = `${mbtilesDir}/manifest.json`;
+              const newManifestInfo = await FileSystem.getInfoAsync(manifestPath);
+              if (newManifestInfo.exists) {
+                const content = await FileSystem.readAsStringAsync(manifestPath);
+                manifest = JSON.parse(content);
+                chartPacks = (manifest?.packs || []).map((p: any) => p.id);
+                logger.info(LogCategory.CHARTS, `Generated manifest.json with ${chartPacks.length} packs`);
+              }
+            }
+          } catch (e) {
+            logger.warn(LogCategory.CHARTS, 'Directory scan failed - no charts loaded', { error: (e as Error).message });
           }
-        } catch (e) {
-          logger.error(LogCategory.CHARTS, 'Directory scan failed', e as Error);
+        } else {
+          logger.info(LogCategory.CHARTS, 'Directory not ready - skipping scan (download charts from More > Downloads)');
         }
         logger.perf(LogCategory.CHARTS, `Directory scan complete`, { charts: loadedMbtiles.length });
       }
@@ -2327,6 +2471,35 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             setTileServerReady(true);
             logger.setStartupParam('tileServerPort', 8765);
             logger.setStartupParam('tileServerStatus', 'running');
+            
+            // Diagnostic: test tile server connectivity from JS
+            try {
+              const healthUrl = `${serverUrl}/health`;
+              console.log(`[TILE-DIAG] Testing tile server at ${healthUrl}`);
+              const healthResp = await fetch(healthUrl);
+              console.log(`[TILE-DIAG] Health check: ${healthResp.status} ${healthResp.statusText}`);
+              
+              // Test an actual composite tile
+              const testTileUrl = `${serverUrl}/tiles/5/2/9.pbf`;
+              console.log(`[TILE-DIAG] Testing composite tile at ${testTileUrl}`);
+              const tileResp = await fetch(testTileUrl);
+              console.log(`[TILE-DIAG] Tile response: status=${tileResp.status}, size=${tileResp.headers.get('content-length') || 'unknown'}, type=${tileResp.headers.get('content-type')}`);
+              
+              // Test TileJSON endpoint
+              const tileJsonUrl = `${serverUrl}/tiles.json`;
+              console.log(`[TILE-DIAG] Testing TileJSON at ${tileJsonUrl}`);
+              const tileJsonResp = await fetch(tileJsonUrl);
+              const tileJson = await tileJsonResp.json();
+              console.log(`[TILE-DIAG] TileJSON: minzoom=${tileJson.minzoom}, maxzoom=${tileJson.maxzoom}, bounds=${JSON.stringify(tileJson.bounds)}, tiles=${JSON.stringify(tileJson.tiles)}`);
+              console.log(`[TILE-DIAG] TileJSON vector_layers: ${JSON.stringify(tileJson.vector_layers?.map((l: any) => l.id))}`);
+              
+              // Log the full tileUrl that MapLibre will use
+              const compositeTileUrl = `${serverUrl}/tiles/{z}/{x}/{y}.pbf`;
+              console.log(`[TILE-DIAG] MapLibre will use tileUrlTemplate: ${compositeTileUrl}`);
+              console.log(`[TILE-DIAG] getTileServerUrl() returns: ${tileServer.getTileServerUrl()}`);
+            } catch (diagErr) {
+              console.error(`[TILE-DIAG] Connectivity test FAILED:`, diagErr);
+            }
             
             const chartSummary = `${loadedMbtiles.length} charts`;
             setDebugInfo(`Server: ${serverUrl}\nCharts: ${chartSummary}\nDir: ${mbtilesDir}`);
@@ -3576,17 +3749,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Uses ~20 layers instead of 3000+ for massive performance improvement */}
         {/* Requires mbtiles converted with sourceLayerID="charts" */}
         {/* ================================================================== */}
-        {useMBTiles && tileServerReady && useCompositeTiles && (() => {
-          // Use direct tile URL template instead of TileJSON
-          // Include detail level param for server-side quilting adjustment
-          // Simple tile URL - server handles scale selection
-          // US5+US6 combine at z14+ for maximum detail
-          const tileUrl = `${tileServer.getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf`;
-          return (
+        {useMBTiles && tileServerReady && useCompositeTiles && (
           <MapLibre.VectorSource
             key={`composite-charts-${s52Mode}`}
             id="composite-charts"
-            tileUrlTemplates={[tileUrl]}
+            tileUrlTemplates={[compositeTileUrl]}
             minZoomLevel={0}
             maxZoomLevel={18}
             onPress={(e) => {
@@ -4939,8 +5106,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               }}
             />
           </MapLibre.VectorSource>
-          );
-        })()}
+        )}
 
         {/* Marker layer to establish z-order boundary between charts and labels */}
         {/* Uses an empty ShapeSource with a CircleLayer as the anchor point */}
@@ -5415,16 +5581,31 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       
       {/* Top Menu Bar - horizontal strip with main controls */}
       <View style={[styles.topMenuBar, { top: insets.top + 8 }]}>
-        {/* Layers button */}
+        {/* Layers button - opens layer selector */}
         <TouchableOpacity 
-          style={[styles.topMenuBtn, showControls && styles.topMenuBtnActive]}
-          onPress={() => setShowControls(!showControls)}
+          style={[styles.topMenuBtn, showLayerSelector && styles.topMenuBtnActive]}
+          onPress={() => {
+            setShowLayerSelector(!showLayerSelector);
+            setShowSettingsPanel(false);
+          }}
         >
           <View style={styles.layerStackIcon}>
             <View style={[styles.layerStackLine, { top: 0, left: 0 }]} />
             <View style={[styles.layerStackLine, { top: 7, left: 2 }]} />
             <View style={[styles.layerStackLine, { top: 14, left: 4 }]} />
           </View>
+        </TouchableOpacity>
+        <View style={styles.topMenuDivider} />
+        
+        {/* Settings button - opens settings panel */}
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, showSettingsPanel && styles.topMenuBtnActive]}
+          onPress={() => {
+            setShowSettingsPanel(!showSettingsPanel);
+            setShowLayerSelector(false);
+          }}
+        >
+          <Text style={styles.topMenuBtnText}>⚙️</Text>
         </TouchableOpacity>
         <View style={styles.topMenuDivider} />
         
@@ -5451,144 +5632,161 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           <Text style={styles.topMenuBtnText}>⏱</Text>
         </TouchableOpacity>
       </View>
-      
-      {/* Upper right controls - Center on location + Day/Dusk/Night toggle */}
-      <View style={[styles.upperRightControls, { top: insets.top + 8, right: 12 }]}>
-        {/* Day/Dusk/Night cycle button */}
-        <TouchableOpacity 
-          style={styles.topMenuBtn}
-          onPress={() => {
-            // Cycle through modes: day -> dusk -> night -> day
-            const nextMode = s52Mode === 'day' ? 'dusk' : s52Mode === 'dusk' ? 'night' : 'day';
-            setS52Mode(nextMode);
-          }}
-        >
-          <Text style={styles.modeToggleText}>
-            {s52Mode === 'day' ? '☀️' : s52Mode === 'dusk' ? '🌅' : '🌙'}
-          </Text>
-        </TouchableOpacity>
-        
-        <View style={styles.upperRightDivider} />
-        
-        {/* Center on location button */}
-        <TouchableOpacity 
-          style={[styles.topMenuBtn, followGPS && styles.topMenuBtnActive]}
-          key={followGPS ? 'active' : 'inactive'} // Force re-render when state changes
-          onPress={() => {
-            const newFollowGPS = !followGPS;
-            
-            // Just update state - the Camera component's centerCoordinate prop handles the rest
-            // When followGPS is true, Camera will center on GPS coords
-            // When followGPS is false, Camera's centerCoordinate is undefined so user can pan freely
-            followGPSRef.current = newFollowGPS;
-            setFollowGPS(newFollowGPS);
-            // GPS tracking is now auto-started on mount, no need to start here
-          }}
-        >
-          <Text style={styles.centerBtnText}>⌖</Text>
-        </TouchableOpacity>
-      </View>
 
-      {/* Quick Toggles - Vertical strip under layers button (upper left) */}
-      {!showControls && (
-      <View style={[styles.quickTogglesVertical, { top: insets.top + 52, left: 12 }]}>
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showDepthAreas && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('depthAreas')}
-        >
-          <Text style={styles.quickToggleBtnText}>DEP</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showDepthContours && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('depthContours')}
-        >
-          <Text style={styles.quickToggleBtnText}>CNT</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showSoundings && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('soundings')}
-        >
-          <Text style={styles.quickToggleBtnText}>SND</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showLights && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('lights')}
-        >
-          <Text style={styles.quickToggleBtnText}>LTS</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showSeabed && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('seabed')}
-        >
-          <Text style={styles.quickToggleBtnText}>SBD</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showBuoys && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('buoys')}
-        >
-          <Text style={styles.quickToggleBtnText}>BOY</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showGNISNames && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('gnisNames')}
-        >
-          <Text style={styles.quickToggleBtnText}>NAM</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showTideStations && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('tideStations')}
-        >
-          <Text style={styles.quickToggleBtnText}>TID</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showCurrentStations && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('currentStations')}
-        >
-          <Text style={styles.quickToggleBtnText}>CUR</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showTideDetails && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('tideDetails')}
-        >
-          <Text style={styles.quickToggleBtnText}>T-D</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={[styles.quickToggleBtnV, showCurrentDetails && styles.quickToggleBtnActive]}
-          onPress={() => toggleLayer('currentDetails')}
-        >
-          <Text style={styles.quickToggleBtnText}>C-D</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={styles.quickToggleBtnV}
-          onPress={() => {
-            const newZoom = Math.min(currentZoom + 0.25, effectiveMaxZoom);
-            cameraRef.current?.setCamera({ zoomLevel: newZoom, animationDuration: 200 });
-          }}
-        >
-          <Text style={[styles.quickToggleBtnText, styles.quickToggleBtnTextLarge]}>+</Text>
-        </TouchableOpacity>
-        <View style={styles.quickToggleDividerH} />
-        <TouchableOpacity 
-          style={styles.quickToggleBtnV}
-          onPress={() => {
-            const newZoom = Math.max(currentZoom - 0.25, 0);
-            cameraRef.current?.setCamera({ zoomLevel: newZoom, animationDuration: 200 });
-          }}
-        >
-          <Text style={[styles.quickToggleBtnText, styles.quickToggleBtnTextLarge]}>−</Text>
-        </TouchableOpacity>
-      </View>
+      {/* Layer Selector Panel - ForeFlight-style multi-column overlay */}
+      {showLayerSelector && (
+        <View style={[styles.layerSelectorOverlay, { top: insets.top + 52 }]}>
+          <ScrollView style={styles.layerSelectorScroll} showsVerticalScrollIndicator={true}>
+            <View style={styles.layerSelectorContent}>
+              {/* Column 1 */}
+              <View style={styles.layerSelectorColumn}>
+                {/* Base Map Section */}
+                <Text style={styles.layerSectionHeader}>Base Map</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, mapStyle === 'satellite' && styles.layerToggleRowActive]} onPress={() => setMapStyle('satellite')}>
+                  <Text style={styles.layerToggleText}>Satellite</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, mapStyle === 'light' && styles.layerToggleRowActive]} onPress={() => setMapStyle('light')}>
+                  <Text style={styles.layerToggleText}>Light</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, mapStyle === 'chart' && styles.layerToggleRowActive]} onPress={() => setMapStyle('chart')}>
+                  <Text style={styles.layerToggleText}>Chart</Text>
+                </TouchableOpacity>
+
+                {/* Display Mode Section */}
+                <Text style={styles.layerSectionHeader}>Display Mode</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, s52Mode === 'day' && styles.layerToggleRowActive]} onPress={() => setS52Mode('day')}>
+                  <Text style={styles.layerToggleText}>Day</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, s52Mode === 'dusk' && styles.layerToggleRowActive]} onPress={() => setS52Mode('dusk')}>
+                  <Text style={styles.layerToggleText}>Dusk</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, s52Mode === 'night' && styles.layerToggleRowActive]} onPress={() => setS52Mode('night')}>
+                  <Text style={styles.layerToggleText}>Night</Text>
+                </TouchableOpacity>
+
+                {/* Depth Section */}
+                <Text style={styles.layerSectionHeader}>Depth</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showDepthAreas && styles.layerToggleRowActive]} onPress={() => toggleLayer('depthAreas')}>
+                  <Text style={styles.layerToggleText}>Depth Areas</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showDepthContours && styles.layerToggleRowActive]} onPress={() => toggleLayer('depthContours')}>
+                  <Text style={styles.layerToggleText}>Depth Contours</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showSoundings && styles.layerToggleRowActive]} onPress={() => toggleLayer('soundings')}>
+                  <Text style={styles.layerToggleText}>Soundings</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showSeabed && styles.layerToggleRowActive]} onPress={() => toggleLayer('seabed')}>
+                  <Text style={styles.layerToggleText}>Seabed</Text>
+                </TouchableOpacity>
+
+                {/* Land Section */}
+                <Text style={styles.layerSectionHeader}>Land</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showLand && styles.layerToggleRowActive]} onPress={() => toggleLayer('land')}>
+                  <Text style={styles.layerToggleText}>Land</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showCoastline && styles.layerToggleRowActive]} onPress={() => toggleLayer('coastline')}>
+                  <Text style={styles.layerToggleText}>Coastline</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showLandmarks && styles.layerToggleRowActive]} onPress={() => toggleLayer('landmarks')}>
+                  <Text style={styles.layerToggleText}>Landmarks</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showBuildings && styles.layerToggleRowActive]} onPress={() => toggleLayer('buildings')}>
+                  <Text style={styles.layerToggleText}>Buildings</Text>
+                </TouchableOpacity>
+
+                {/* Names Section */}
+                <Text style={styles.layerSectionHeader}>Names</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showGNISNames && styles.layerToggleRowActive]} onPress={() => toggleLayer('gnisNames')}>
+                  <Text style={styles.layerToggleText}>GNIS Names</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showSeaAreaNames && styles.layerToggleRowActive]} onPress={() => toggleLayer('seaAreaNames')}>
+                  <Text style={styles.layerToggleText}>Sea Area Names</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showLandRegions && styles.layerToggleRowActive]} onPress={() => toggleLayer('landRegions')}>
+                  <Text style={styles.layerToggleText}>Land Regions</Text>
+                </TouchableOpacity>
+
+                {/* Infrastructure Section */}
+                <Text style={styles.layerSectionHeader}>Infrastructure</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showBridges && styles.layerToggleRowActive]} onPress={() => toggleLayer('bridges')}>
+                  <Text style={styles.layerToggleText}>Bridges</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showMoorings && styles.layerToggleRowActive]} onPress={() => toggleLayer('moorings')}>
+                  <Text style={styles.layerToggleText}>Moorings</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showShorelineConstruction && styles.layerToggleRowActive]} onPress={() => toggleLayer('shorelineConstruction')}>
+                  <Text style={styles.layerToggleText}>Shore Construction</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Column 2 */}
+              <View style={styles.layerSelectorColumn}>
+                {/* Navigation Section */}
+                <Text style={styles.layerSectionHeader}>Navigation</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showLights && styles.layerToggleRowActive]} onPress={() => toggleLayer('lights')}>
+                  <Text style={styles.layerToggleText}>Lights</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showBuoys && styles.layerToggleRowActive]} onPress={() => toggleLayer('buoys')}>
+                  <Text style={styles.layerToggleText}>Buoys</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showBeacons && styles.layerToggleRowActive]} onPress={() => toggleLayer('beacons')}>
+                  <Text style={styles.layerToggleText}>Beacons</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showSectors && styles.layerToggleRowActive]} onPress={() => toggleLayer('sectors')}>
+                  <Text style={styles.layerToggleText}>Sectors</Text>
+                </TouchableOpacity>
+
+                {/* Predictions Section */}
+                <Text style={styles.layerSectionHeader}>Predictions</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showTideStations && styles.layerToggleRowActive]} onPress={() => toggleLayer('tideStations')}>
+                  <Text style={styles.layerToggleText}>Tide Stations</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showCurrentStations && styles.layerToggleRowActive]} onPress={() => toggleLayer('currentStations')}>
+                  <Text style={styles.layerToggleText}>Current Stations</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showTideDetails && styles.layerToggleRowActive]} onPress={() => toggleLayer('tideDetails')}>
+                  <Text style={styles.layerToggleText}>Tide Details</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showCurrentDetails && styles.layerToggleRowActive]} onPress={() => toggleLayer('currentDetails')}>
+                  <Text style={styles.layerToggleText}>Current Details</Text>
+                </TouchableOpacity>
+
+                {/* Areas Section */}
+                <Text style={styles.layerSectionHeader}>Areas</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showRestrictedAreas && styles.layerToggleRowActive]} onPress={() => toggleLayer('restrictedAreas')}>
+                  <Text style={styles.layerToggleText}>Restricted</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showCautionAreas && styles.layerToggleRowActive]} onPress={() => toggleLayer('cautionAreas')}>
+                  <Text style={styles.layerToggleText}>Caution</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showMilitaryAreas && styles.layerToggleRowActive]} onPress={() => toggleLayer('militaryAreas')}>
+                  <Text style={styles.layerToggleText}>Military</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showAnchorages && styles.layerToggleRowActive]} onPress={() => toggleLayer('anchorages')}>
+                  <Text style={styles.layerToggleText}>Anchorages</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showAnchorBerths && styles.layerToggleRowActive]} onPress={() => toggleLayer('anchorBerths')}>
+                  <Text style={styles.layerToggleText}>Anchor Berths</Text>
+                </TouchableOpacity>
+
+                {/* Hazards & Utilities Section */}
+                <Text style={styles.layerSectionHeader}>Hazards & Utilities</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showHazards && styles.layerToggleRowActive]} onPress={() => toggleLayer('hazards')}>
+                  <Text style={styles.layerToggleText}>Hazards</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showCables && styles.layerToggleRowActive]} onPress={() => toggleLayer('cables')}>
+                  <Text style={styles.layerToggleText}>Cables</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showPipelines && styles.layerToggleRowActive]} onPress={() => toggleLayer('pipelines')}>
+                  <Text style={styles.layerToggleText}>Pipelines</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showMarineFarms && styles.layerToggleRowActive]} onPress={() => toggleLayer('marineFarms')}>
+                  <Text style={styles.layerToggleText}>Marine Farms</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
       )}
 
       {/* Chart Debug Overlay - Shows active chart based on zoom, right of lat/long */}
@@ -5763,23 +5961,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </View>
       )}
 
-      {/* Bottom Control Panel - Tabbed interface */}
-      {showControls && (
+      {/* Bottom Settings Panel - Display, Symbols, Other tabs */}
+      {showSettingsPanel && (
         <View style={[styles.controlPanel, themedStyles.controlPanel]}>
           {/* Tab Bar */}
           <View style={[styles.tabBar, themedStyles.tabBar]}>
-            <TouchableOpacity 
-              style={[styles.tabButton, themedStyles.tabButton, activeTab === 'basemap' && styles.tabButtonActive, activeTab === 'basemap' && themedStyles.tabButtonActive]}
-              onPress={() => setActiveTab('basemap')}
-            >
-              <Text style={[styles.tabButtonText, themedStyles.tabButtonText, activeTab === 'basemap' && styles.tabButtonTextActive, activeTab === 'basemap' && themedStyles.tabButtonTextActive]}>Base Map</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.tabButton, themedStyles.tabButton, activeTab === 'layers' && styles.tabButtonActive, activeTab === 'layers' && themedStyles.tabButtonActive]}
-              onPress={() => setActiveTab('layers')}
-            >
-              <Text style={[styles.tabButtonText, themedStyles.tabButtonText, activeTab === 'layers' && styles.tabButtonTextActive, activeTab === 'layers' && themedStyles.tabButtonTextActive]}>Layers</Text>
-            </TouchableOpacity>
             <TouchableOpacity 
               style={[styles.tabButton, themedStyles.tabButton, activeTab === 'display' && styles.tabButtonActive, activeTab === 'display' && themedStyles.tabButtonActive]}
               onPress={() => setActiveTab('display')}
@@ -5802,342 +5988,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
           {/* Tab Content */}
           <View style={styles.tabContent}>
-            {/* Tab 1: Base Map */}
-            {activeTab === 'basemap' && (
-              <ScrollView style={themedStyles.tabScrollContent} contentContainerStyle={styles.tabScrollContent}>
-                {/* S-52 Display Mode Selector */}
-                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Display Mode (S-52)</Text>
-                <View style={styles.basemapGrid}>
-                  <TouchableOpacity
-                    style={[styles.basemapOption, themedStyles.basemapOption, s52Mode === 'day' && styles.basemapOptionActive, s52Mode === 'day' && themedStyles.basemapOptionActive]}
-                    onPress={() => setS52Mode('day')}
-                  >
-                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, s52Mode === 'day' && styles.basemapOptionTextActive, s52Mode === 'day' && themedStyles.basemapOptionTextActive]}>Day</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.basemapOption, themedStyles.basemapOption, s52Mode === 'dusk' && styles.basemapOptionActive, s52Mode === 'dusk' && themedStyles.basemapOptionActive]}
-                    onPress={() => setS52Mode('dusk')}
-                  >
-                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, s52Mode === 'dusk' && styles.basemapOptionTextActive, s52Mode === 'dusk' && themedStyles.basemapOptionTextActive]}>Dusk</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.basemapOption, themedStyles.basemapOption, s52Mode === 'night' && styles.basemapOptionActive, s52Mode === 'night' && themedStyles.basemapOptionActive]}
-                    onPress={() => setS52Mode('night')}
-                  >
-                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, s52Mode === 'night' && styles.basemapOptionTextActive, s52Mode === 'night' && themedStyles.basemapOptionTextActive]}>Night</Text>
-                  </TouchableOpacity>
-                </View>
-                
-                <View style={[styles.panelDivider, themedStyles.panelDivider]} />
-                
-                {/* Base Map Type Selector */}
-                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Base Map</Text>
-                <View style={styles.basemapGrid}>
-                  <TouchableOpacity
-                    style={[styles.basemapOption, themedStyles.basemapOption, mapStyle === 'satellite' && styles.basemapOptionActive, mapStyle === 'satellite' && themedStyles.basemapOptionActive]}
-                    onPress={() => setMapStyle('satellite')}
-                  >
-                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, mapStyle === 'satellite' && styles.basemapOptionTextActive, mapStyle === 'satellite' && themedStyles.basemapOptionTextActive]}>
-                      Satellite{satelliteTileSets.length > 0 ? ' ✓' : ''}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.basemapOption, themedStyles.basemapOption, mapStyle === 'light' && styles.basemapOptionActive, mapStyle === 'light' && themedStyles.basemapOptionActive]}
-                    onPress={() => setMapStyle('light')}
-                  >
-                    <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, mapStyle === 'light' && styles.basemapOptionTextActive, mapStyle === 'light' && themedStyles.basemapOptionTextActive]}>Light</Text>
-                  </TouchableOpacity>
-                  {hasLocalBasemap && (
-                    <TouchableOpacity
-                      style={[styles.basemapOption, themedStyles.basemapOption, mapStyle === 'chart' && styles.basemapOptionActive, mapStyle === 'chart' && themedStyles.basemapOptionActive]}
-                      onPress={() => setMapStyle('chart')}
-                    >
-                      <Text style={[styles.basemapOptionText, themedStyles.basemapOptionText, mapStyle === 'chart' && styles.basemapOptionTextActive, mapStyle === 'chart' && themedStyles.basemapOptionTextActive]}>Chart</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-                
-                <View style={[styles.panelDivider, themedStyles.panelDivider]} />
-                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Display Overlays</Text>
-                <FFToggle 
-                  label="Show Coordinates" 
-                  value={showCoords} 
-                  onToggle={() => setShowCoords(!showCoords)} 
-                />
-                <FFToggle 
-                  label="Show Zoom Level" 
-                  value={showZoomLevel} 
-                  onToggle={() => setShowZoomLevel(!showZoomLevel)} 
-                />
-                <FFToggle 
-                  label="Show Active Chart" 
-                  value={showChartDebug} 
-                  onToggle={() => setShowChartDebug(!showChartDebug)} 
-                />
-                {showChartDebug && (
-                  <View style={styles.activeChartInfo}>
-                    <Text style={[styles.activeChartSubtext, themedStyles.activeChartSubtext]}>
-                      Zoom: {currentZoom.toFixed(1)} | Loaded Files: {allChartsToRender.length}
-                    </Text>
-                    {/* Show loaded chart files */}
-                    {(() => {
-                      // Categorize charts: merged regional vs direct scale
-                      const mergedCharts = allChartsToRender.filter(id => id.includes('_US') && !id.match(/^US\d/));
-                      const directCharts = allChartsToRender.filter(id => id.match(/^US\d/));
-                      
-                      // Determine expected scale at current zoom
-                      const CHART_SCALES = [
-                        { prefix: 'US1', name: 'Overview', minZoom: 0, maxZoom: 8 },
-                        { prefix: 'US2', name: 'General', minZoom: 8, maxZoom: 10 },
-                        { prefix: 'US3', name: 'Coastal', minZoom: 10, maxZoom: 13 },
-                        { prefix: 'US4', name: 'Approach', minZoom: 11, maxZoom: 16 },
-                        { prefix: 'US5', name: 'Harbor', minZoom: 13, maxZoom: 18 },
-                      ];
-                      const expectedScale = CHART_SCALES.find(
-                        s => currentZoom >= s.minZoom && currentZoom <= s.maxZoom
-                      );
-                      
-                      return (
-                        <View style={styles.chartScaleList}>
-                          {/* Expected scale at current zoom */}
-                          {expectedScale && (
-                            <View style={[styles.chartScaleRow, { backgroundColor: 'rgba(76, 175, 80, 0.2)' }]}>
-                              <Text style={[styles.chartScaleLabel, themedStyles.chartScaleLabel]}>
-                                {expectedScale.prefix}
-                              </Text>
-                              <Text style={[styles.chartScaleCount, themedStyles.chartScaleCount]}>
-                                {expectedScale.name} (z{expectedScale.minZoom}-{expectedScale.maxZoom})
-                              </Text>
-                            </View>
-                          )}
-                          
-                          {/* Merged regional charts */}
-                          {mergedCharts.length > 0 && (
-                            <View style={styles.chartScaleRow}>
-                              <Text style={[styles.chartScaleLabel, { color: '#4FC3F7' }]}>📦</Text>
-                              <Text style={[styles.chartScaleCount, themedStyles.chartScaleCount]}>
-                                {mergedCharts.length} regional (multi-scale)
-                              </Text>
-                            </View>
-                          )}
-                          
-                          {/* Direct scale charts grouped */}
-                          {directCharts.length > 0 && (() => {
-                            const byScale: Record<string, string[]> = {};
-                            directCharts.forEach(id => {
-                              const match = id.match(/^(US\d)/);
-                              const scale = match ? match[1] : 'Other';
-                              if (!byScale[scale]) byScale[scale] = [];
-                              byScale[scale].push(id);
-                            });
-                            return Object.keys(byScale).sort().map(scale => (
-                              <View key={scale} style={styles.chartScaleRow}>
-                                <Text style={[styles.chartScaleLabel, themedStyles.chartScaleLabel]}>{scale}</Text>
-                                <Text style={[styles.chartScaleCount, themedStyles.chartScaleCount]}>
-                                  {byScale[scale].length} chart{byScale[scale].length !== 1 ? 's' : ''}
-                                </Text>
-                              </View>
-                            ));
-                          })()}
-                          
-                          {allChartsToRender.length === 0 && (
-                            <Text style={[styles.activeChartSubtext, themedStyles.activeChartSubtext]}>No charts loaded</Text>
-                          )}
-                        </View>
-                      );
-                    })()}
-                  </View>
-                )}
-              </ScrollView>
-            )}
-
-            {/* Tab 2: Layers - with sub-tabs */}
-            {activeTab === 'layers' && (
-              <View style={styles.layersTabContainer}>
-                {/* Sub-tab bar */}
-                <View style={styles.subTabBar}>
-                  <TouchableOpacity 
-                    style={[styles.subTabButton, layersSubTab === 'chart' && styles.subTabButtonActive]}
-                    onPress={() => setLayersSubTab('chart')}
-                  >
-                    <Text style={[styles.subTabButtonText, layersSubTab === 'chart' && styles.subTabButtonTextActive]}>Chart Layers</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={[styles.subTabButton, layersSubTab === 'names' && styles.subTabButtonActive]}
-                    onPress={() => setLayersSubTab('names')}
-                  >
-                    <Text style={[styles.subTabButtonText, layersSubTab === 'names' && styles.subTabButtonTextActive]}>Names</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={[styles.subTabButton, layersSubTab === 'sources' && styles.subTabButtonActive]}
-                    onPress={() => setLayersSubTab('sources')}
-                  >
-                    <Text style={[styles.subTabButtonText, layersSubTab === 'sources' && styles.subTabButtonTextActive]}>Sources</Text>
-                  </TouchableOpacity>
-                </View>
-                
-                {/* Chart Layers sub-tab - multi-column */}
-                {layersSubTab === 'chart' && (
-                  <ScrollView style={styles.layersColumnsContainer} contentContainerStyle={styles.layersColumnsContent}>
-                    {/* All On/Off row at top */}
-                    <View style={styles.layersAllToggleRow}>
-                      <TouchableOpacity 
-                        style={styles.allToggleBtn} 
-                        onPress={() => dispatchLayers({ type: 'SET_ALL', value: true })}
-                      >
-                        <Text style={styles.allToggleBtnText}>All On</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity 
-                        style={styles.allToggleBtn} 
-                        onPress={() => dispatchLayers({ type: 'SET_ALL', value: false })}
-                      >
-                        <Text style={styles.allToggleBtnText}>All Off</Text>
-                      </TouchableOpacity>
-                    </View>
-                    
-                    {/* Three columns */}
-                    <View style={styles.layersThreeColumns}>
-                      {/* Column 1: Depth & Navigation */}
-                      <View style={styles.layersColumn}>
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Depth</Text>
-                        <FFToggle label="Depth Areas" value={showDepthAreas} onToggle={() => toggleLayer('depthAreas')} />
-                        <FFToggle label="Depth Contours" value={showDepthContours} onToggle={() => toggleLayer('depthContours')} />
-                        <FFToggle label="Soundings" value={showSoundings} onToggle={() => toggleLayer('soundings')} />
-                        <FFToggle label="Seabed" value={showSeabed} onToggle={() => toggleLayer('seabed')} />
-                        
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 12 }]}>Navigation</Text>
-                        <FFToggle label="Lights" value={showLights} onToggle={() => toggleLayer('lights')} />
-                        <FFToggle label="Buoys" value={showBuoys} onToggle={() => toggleLayer('buoys')} />
-                        <FFToggle label="Beacons" value={showBeacons} onToggle={() => toggleLayer('beacons')} />
-                      </View>
-                      
-                      {/* Column 2: Land & Areas */}
-                      <View style={styles.layersColumn}>
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Land</Text>
-                        <FFToggle label="Land" value={showLand} onToggle={() => toggleLayer('land')} />
-                        <FFToggle label="Coastline" value={showCoastline} onToggle={() => toggleLayer('coastline')} />
-                        <FFToggle label="Landmarks" value={showLandmarks} onToggle={() => toggleLayer('landmarks')} />
-                        
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 12 }]}>Areas</Text>
-                        <FFToggle label="Restricted" value={showRestrictedAreas} onToggle={() => toggleLayer('restrictedAreas')} />
-                        <FFToggle label="Caution" value={showCautionAreas} onToggle={() => toggleLayer('cautionAreas')} />
-                        <FFToggle label="Military" value={showMilitaryAreas} onToggle={() => toggleLayer('militaryAreas')} />
-                        <FFToggle label="Anchorages" value={showAnchorages} onToggle={() => toggleLayer('anchorages')} />
-                        <FFToggle label="Anchor Berths" value={showAnchorBerths} onToggle={() => toggleLayer('anchorBerths')} />
-                      </View>
-                      
-                      {/* Column 3: Infrastructure & Hazards */}
-                      <View style={styles.layersColumn}>
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Infrastructure</Text>
-                        <FFToggle label="Bridges" value={showBridges} onToggle={() => toggleLayer('bridges')} />
-                        <FFToggle label="Buildings" value={showBuildings} onToggle={() => toggleLayer('buildings')} />
-                        <FFToggle label="Moorings" value={showMoorings} onToggle={() => toggleLayer('moorings')} />
-                        <FFToggle label="Shore Const." value={showShorelineConstruction} onToggle={() => toggleLayer('shorelineConstruction')} />
-                        
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 12 }]}>Hazards & Utilities</Text>
-                        <FFToggle label="Hazards" value={showHazards} onToggle={() => toggleLayer('hazards')} />
-                        <FFToggle label="Cables" value={showCables} onToggle={() => toggleLayer('cables')} />
-                        <FFToggle label="Pipelines" value={showPipelines} onToggle={() => toggleLayer('pipelines')} />
-                        <FFToggle label="Marine Farms" value={showMarineFarms} onToggle={() => toggleLayer('marineFarms')} />
-                      </View>
-                    </View>
-                  </ScrollView>
-                )}
-                
-                {/* Names sub-tab */}
-                {layersSubTab === 'names' && (
-                  <ScrollView style={styles.layersColumnsContainer} contentContainerStyle={styles.layersColumnsContent}>
-                    <View style={styles.layersTwoColumns}>
-                      {/* Column 1: GNIS Place Names */}
-                      <View style={styles.layersColumn}>
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Place Names (GNIS)</Text>
-                        {gnisAvailable ? (
-                          <>
-                            <FFToggle label="Show All Names" value={showPlaceNames} onToggle={setShowPlaceNames} />
-                            <View style={styles.layersIndentGroup}>
-                              <FFToggle label="Water Bodies" value={showWaterNames} onToggle={setShowWaterNames} />
-                              <FFToggle label="Coastal Features" value={showCoastalNames} onToggle={setShowCoastalNames} />
-                              <FFToggle label="Landmarks" value={showLandmarkNames} onToggle={setShowLandmarkNames} />
-                              <FFToggle label="Towns & Ports" value={showPopulatedNames} onToggle={setShowPopulatedNames} />
-                            </View>
-                          </>
-                        ) : (
-                          <Text style={styles.layersDisabledText}>GNIS data not available</Text>
-                        )}
-                      </View>
-                      
-                      {/* Column 2: More GNIS & Chart Labels */}
-                      <View style={styles.layersColumn}>
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>More Place Names</Text>
-                        {gnisAvailable ? (
-                          <View style={styles.layersIndentGroup}>
-                            <FFToggle label="Rivers & Streams" value={showStreamNames} onToggle={setShowStreamNames} />
-                            <FFToggle label="Lakes" value={showLakeNames} onToggle={setShowLakeNames} />
-                            <FFToggle label="Terrain Features" value={showTerrainNames} onToggle={setShowTerrainNames} />
-                          </View>
-                        ) : (
-                          <Text style={styles.layersDisabledText}>GNIS data not available</Text>
-                        )}
-                        
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 16 }]}>Chart Labels</Text>
-                        <FFToggle label="Sea Area Names" value={showSeaAreaNames} onToggle={() => toggleLayer('seaAreaNames')} />
-                        <FFToggle label="Land Regions" value={showLandRegions} onToggle={() => toggleLayer('landRegions')} />
-                      </View>
-                    </View>
-                  </ScrollView>
-                )}
-                
-                {/* Data Sources sub-tab */}
-                {layersSubTab === 'sources' && (
-                  <ScrollView style={styles.layersColumnsContainer} contentContainerStyle={styles.layersColumnsContent}>
-                    <View style={styles.layersTwoColumns}>
-                      {/* Column 1: Chart Data */}
-                      <View style={styles.layersColumn}>
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Chart Data</Text>
-                        <FFToggle label={`ENC Charts (${allChartsToRender.length})`} value={useMBTiles} onToggle={setUseMBTiles} />
-                        {rasterCharts.length > 0 && (
-                          <FFToggle label={`Bathymetry (${rasterCharts.length})`} value={showBathymetry} onToggle={() => toggleLayer('bathymetry')} />
-                        )}
-                        
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle, { marginTop: 16 }]}>Zoom Settings</Text>
-                        <FFToggle 
-                          label={`Limit zoom (max z${maxAvailableZoom})`} 
-                          value={limitZoomToCharts} 
-                          onToggle={setLimitZoomToCharts} 
-                        />
-                      </View>
-                      
-                      {/* Column 2: Info */}
-                      <View style={styles.layersColumn}>
-                        <Text style={[styles.layersColumnTitle, themedStyles.layersColumnTitle]}>Loaded Data</Text>
-                        <View style={styles.dataInfoBox}>
-                          <Text style={[styles.dataInfoLabel, themedStyles.dataInfoLabel]}>MBTiles Charts</Text>
-                          <Text style={[styles.dataInfoValue, themedStyles.dataInfoValue]}>{mbtilesCharts.length}</Text>
-                        </View>
-                        <View style={styles.dataInfoBox}>
-                          <Text style={[styles.dataInfoLabel, themedStyles.dataInfoLabel]}>Charts at Zoom</Text>
-                          <Text style={[styles.dataInfoValue, themedStyles.dataInfoValue]}>{chartsAtZoom.length}</Text>
-                        </View>
-                        {rasterCharts.length > 0 && (
-                          <View style={styles.dataInfoBox}>
-                            <Text style={[styles.dataInfoLabel, themedStyles.dataInfoLabel]}>Bathymetry Tiles</Text>
-                            <Text style={[styles.dataInfoValue, themedStyles.dataInfoValue]}>{rasterCharts.length}</Text>
-                          </View>
-                        )}
-                        {satelliteTileSets.length > 0 && (
-                          <View style={styles.dataInfoBox}>
-                            <Text style={[styles.dataInfoLabel, themedStyles.dataInfoLabel]}>Satellite Tiles</Text>
-                            <Text style={[styles.dataInfoValue, themedStyles.dataInfoValue]}>{satelliteTileSets.length}</Text>
-                          </View>
-                        )}
-                      </View>
-                    </View>
-                  </ScrollView>
-                )}
-              </View>
-            )}
-
-            {/* Tab 3: Display Settings */}
+            {/* Display Settings Tab */}
             {activeTab === 'display' && (
               <View style={styles.displayTabContainer}>
                 {/* Controls at top - full width */}
@@ -6811,7 +6662,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       {/* End of mapSection wrapper */}
 
       {/* Detail Charts - Bottom of screen, flex layout sits above tab bar */}
-      {!showControls && (showTideDetails || showCurrentDetails) && (
+      {!showSettingsPanel && (showTideDetails || showCurrentDetails) && (
       <View style={styles.bottomStack}>
         <TideDetailChart
           visible={showTideDetails}
@@ -8492,5 +8343,53 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255, 255, 255, 0.6)',
     marginTop: 2,
+  },
+
+  // Layer Selector Panel - ForeFlight-style multi-column overlay (compact)
+  layerSelectorOverlay: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    backgroundColor: 'rgba(21, 21, 23, 0.94)',
+    borderRadius: 10,
+    maxHeight: '80%',
+    overflow: 'hidden',
+  },
+  layerSelectorScroll: {
+    maxHeight: '100%',
+  },
+  layerSelectorContent: {
+    flexDirection: 'row',
+    padding: 8,
+    paddingBottom: 12,
+  },
+  layerSelectorColumn: {
+    flex: 1,
+    paddingHorizontal: 4,
+  },
+  layerSectionHeader: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#4FC3F7',
+    marginTop: 8,
+    marginBottom: 2,
+    marginLeft: 2,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  layerToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+    paddingHorizontal: 4,
+    borderRadius: 4,
+    marginVertical: 0,
+  },
+  layerToggleRowActive: {
+    backgroundColor: 'rgba(79, 195, 247, 0.25)',
+  },
+  layerToggleText: {
+    fontSize: 12,
+    color: '#fff',
   },
 });

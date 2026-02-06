@@ -70,5 +70,11 @@ service cloud.firestore {
       allow read: if true; // Public read access
       allow write: if false; // Only admin/Cloud Functions can write
     }
+    
+    // Districts - read-only for all users (download pack metadata)
+    match /districts/{districtId} {
+      allow read: if true; // Public read access for district info and download packs
+      allow write: if false; // Only admin/Cloud Functions can write
+    }
   }
 }

@@ -1,22 +1,61 @@
 /**
  * Chart Pack Service
  * 
- * Manages chart pack discovery and metadata.
- * Currently reads from local manifest.json in the mbtiles directory.
- * Future: fetch remote manifest for available downloads.
+ * Manages chart pack discovery, metadata, and cloud downloads.
+ * Supports both local manifest files and Firebase Storage downloads.
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
-import { ChartPackManifest, ChartPack, InstalledChartPack, BasePack } from '../types/chartPack';
+import { unzip } from 'react-native-zip-archive';
+import { 
+  ChartPackManifest, 
+  ChartPack, 
+  InstalledChartPack, 
+  BasePack,
+  District,
+  DistrictDownloadPack,
+  PackDownloadStatus,
+} from '../types/chartPack';
 
-// ALWAYS use external storage - survives app uninstall
-const MBTILES_DIR = 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles/';
+// Use internal storage (documentDirectory) for mbtiles
+// This is always writable and doesn't require permissions
+// Data is managed via cloud downloads
+
+// Track if directory has been initialized
+let mbtilesDirectoryInitialized = false;
+let resolvedMBTilesDir: string | null = null;
 
 /**
- * Get the mbtiles directory - always external storage
+ * Get the mbtiles directory - uses internal storage
+ * Ensures the directory exists before returning
  */
 async function getMBTilesDir(): Promise<string> {
-  return MBTILES_DIR;
+  // Return cached path if already initialized
+  if (mbtilesDirectoryInitialized && resolvedMBTilesDir) {
+    return resolvedMBTilesDir;
+  }
+  
+  // Use document directory (internal storage)
+  const baseDir = FileSystem.documentDirectory;
+  if (!baseDir) {
+    throw new Error('Document directory not available');
+  }
+  
+  resolvedMBTilesDir = `${baseDir}mbtiles/`;
+  
+  try {
+    const dirInfo = await FileSystem.getInfoAsync(resolvedMBTilesDir);
+    if (!dirInfo.exists) {
+      console.log('[ChartPackService] Creating mbtiles directory:', resolvedMBTilesDir);
+      await FileSystem.makeDirectoryAsync(resolvedMBTilesDir, { intermediates: true });
+    }
+    mbtilesDirectoryInitialized = true;
+  } catch (error) {
+    console.warn('[ChartPackService] Could not create mbtiles directory:', error);
+    // Try anyway - might work
+  }
+  
+  return resolvedMBTilesDir;
 }
 
 /**
@@ -156,13 +195,448 @@ export async function getTileSourcesForPack(
   };
 }
 
-// Future: Add remote manifest fetching
-// export async function getRemoteManifest(): Promise<ChartPackManifest | null> {
-//   const response = await fetch('https://your-storage.com/charts/manifest.json');
-//   return response.json();
-// }
+// ============================================
+// Cloud Download Functions (District-based)
+// ============================================
 
-// Future: Add pack downloading
-// export async function downloadPack(pack: ChartPack, onProgress: (progress: number) => void): Promise<void> {
-//   // Download from pack.downloadUrl to MBTILES_DIR
-// }
+/**
+ * Fetch district information from Firestore.
+ * Includes available download packs with sizes and storage paths.
+ */
+export async function getDistrict(districtId: string): Promise<District | null> {
+  try {
+    const { firestore } = await import('../config/firebase');
+    const { doc, getDoc } = await import('firebase/firestore');
+    
+    const districtRef = doc(firestore, 'districts', districtId);
+    const snapshot = await getDoc(districtRef);
+    
+    if (!snapshot.exists()) {
+      console.log(`[ChartPackService] District ${districtId} not found`);
+      return null;
+    }
+    
+    const data = snapshot.data() as District;
+    console.log(`[ChartPackService] Loaded district ${districtId} with ${data.downloadPacks?.length || 0} packs`);
+    return data;
+  } catch (error) {
+    console.error('[ChartPackService] Error fetching district:', error);
+    return null;
+  }
+}
+
+/**
+ * Get list of available districts.
+ */
+export async function getAvailableDistricts(): Promise<{ id: string; name: string; code: string }[]> {
+  try {
+    const { firestore } = await import('../config/firebase');
+    const { collection, getDocs } = await import('firebase/firestore');
+    
+    const districtsRef = collection(firestore, 'districts');
+    const snapshot = await getDocs(districtsRef);
+    
+    const districts = snapshot.docs.map(doc => ({
+      id: doc.id,
+      name: doc.data().name,
+      code: doc.data().code,
+    }));
+    
+    console.log(`[ChartPackService] Found ${districts.length} districts`);
+    return districts;
+  } catch (error) {
+    console.error('[ChartPackService] Error fetching districts:', error);
+    return [];
+  }
+}
+
+/**
+ * Map storage path to local filename.
+ * e.g., '17cgd/charts/US4.mbtiles.zip' -> 'alaska_US4.mbtiles'
+ */
+function getLocalFilename(pack: DistrictDownloadPack, districtId: string): string {
+  // Get the base filename from storage path
+  const pathParts = pack.storagePath.split('/');
+  const zipFilename = pathParts[pathParts.length - 1]; // e.g., 'US4.mbtiles.zip'
+  const baseFilename = zipFilename.replace('.zip', ''); // e.g., 'US4.mbtiles'
+  
+  // Prefix with district name for charts
+  if (pack.type === 'charts' && pack.band) {
+    // Map district IDs to prefixes
+    const districtPrefixes: Record<string, string> = {
+      '17cgd': 'alaska',
+      // Add more as needed
+    };
+    const prefix = districtPrefixes[districtId] || districtId;
+    return `${prefix}_${pack.band}.mbtiles`;
+  }
+  
+  // GNIS files have region suffix in the actual filename
+  if (pack.type === 'gnis') {
+    const gnisRegionMap: Record<string, string> = {
+      '17cgd': 'gnis_names_ak.mbtiles',
+      // Add more as needed
+    };
+    return gnisRegionMap[districtId] || baseFilename;
+  }
+  
+  // Basemap files have region suffix in the actual filename
+  if (pack.type === 'basemap') {
+    const basemapRegionMap: Record<string, string> = {
+      '17cgd': 'basemap_alaska.mbtiles',
+      // Add more as needed
+    };
+    return basemapRegionMap[districtId] || baseFilename;
+  }
+  
+  // For other types, use the base filename
+  return baseFilename;
+}
+
+/**
+ * Download a pack from Firebase Storage and extract it.
+ */
+export async function downloadPack(
+  pack: DistrictDownloadPack,
+  districtId: string,
+  onProgress?: (status: PackDownloadStatus) => void
+): Promise<boolean> {
+  const { storage } = await import('../config/firebase');
+  const { ref, getDownloadURL } = await import('firebase/storage');
+  
+  const mbtilesDir = await getMBTilesDir();
+  const localFilename = getLocalFilename(pack, districtId);
+  const zipFilename = `${pack.id}.zip`;
+  const compressedPath = `${FileSystem.cacheDirectory}${zipFilename}`;
+  const finalPath = `${mbtilesDir}${localFilename}`;
+  
+  console.log(`[ChartPackService] Downloading ${pack.id} from ${pack.storagePath}`);
+  console.log(`[ChartPackService] Will save to ${finalPath}`);
+  
+  try {
+    // Track download start time for speed calculations
+    const downloadStartTime = Date.now();
+    
+    // Update status: downloading
+    onProgress?.({
+      packId: pack.id,
+      status: 'downloading',
+      progress: 0,
+      bytesDownloaded: 0,
+      totalBytes: pack.sizeBytes,
+    });
+    
+    // Get download URL from Firebase Storage
+    const storageRef = ref(storage, pack.storagePath);
+    const downloadUrl = await getDownloadURL(storageRef);
+    
+    // Download the zip file
+    const downloadResumable = FileSystem.createDownloadResumable(
+      downloadUrl,
+      compressedPath,
+      {},
+      (downloadProgress) => {
+        const { totalBytesWritten, totalBytesExpectedToWrite } = downloadProgress;
+        if (totalBytesExpectedToWrite > 0) {
+          const percent = Math.round((totalBytesWritten / totalBytesExpectedToWrite) * 100);
+          
+          // Calculate download speed and ETA
+          const elapsedMs = Date.now() - downloadStartTime;
+          const elapsedSeconds = elapsedMs / 1000;
+          const speedBps = elapsedSeconds > 0 ? totalBytesWritten / elapsedSeconds : 0;
+          const remainingBytes = totalBytesExpectedToWrite - totalBytesWritten;
+          const etaSeconds = speedBps > 0 ? remainingBytes / speedBps : undefined;
+          
+          onProgress?.({
+            packId: pack.id,
+            status: 'downloading',
+            progress: percent,
+            bytesDownloaded: totalBytesWritten,
+            totalBytes: totalBytesExpectedToWrite,
+            speedBps,
+            etaSeconds,
+          });
+        }
+      }
+    );
+    
+    const result = await downloadResumable.downloadAsync();
+    if (!result) {
+      throw new Error('Download failed - no result returned');
+    }
+    
+    // Update status: extracting
+    onProgress?.({
+      packId: pack.id,
+      status: 'extracting',
+      progress: 100,
+      bytesDownloaded: pack.sizeBytes,
+      totalBytes: pack.sizeBytes,
+    });
+    
+    // Ensure mbtiles directory exists
+    const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
+    if (!dirInfo.exists) {
+      await FileSystem.makeDirectoryAsync(mbtilesDir, { intermediates: true });
+    }
+    
+    // Extract the zip file
+    await unzip(compressedPath, mbtilesDir);
+    
+    // Clean up compressed file
+    await FileSystem.deleteAsync(compressedPath, { idempotent: true });
+    
+    // Verify extraction
+    const fileInfo = await FileSystem.getInfoAsync(finalPath);
+    if (!fileInfo.exists) {
+      // The zip might have extracted with a different name, check for it
+      console.warn(`[ChartPackService] Expected file not found: ${finalPath}`);
+      // List directory to see what was extracted
+      const files = await FileSystem.readDirectoryAsync(mbtilesDir);
+      console.log(`[ChartPackService] Files in directory: ${files.join(', ')}`);
+    }
+    
+    // Update status: completed
+    onProgress?.({
+      packId: pack.id,
+      status: 'completed',
+      progress: 100,
+      bytesDownloaded: pack.sizeBytes,
+      totalBytes: pack.sizeBytes,
+    });
+    
+    console.log(`[ChartPackService] Successfully downloaded and extracted ${pack.id}`);
+    
+    // Regenerate manifest.json so the native tile server can find the chart packs
+    if (pack.type === 'charts') {
+      await generateManifest(districtId);
+    }
+    
+    return true;
+    
+  } catch (error: any) {
+    console.error(`[ChartPackService] Error downloading ${pack.id}:`, error);
+    
+    // Clean up on failure
+    await FileSystem.deleteAsync(compressedPath, { idempotent: true }).catch(() => {});
+    
+    onProgress?.({
+      packId: pack.id,
+      status: 'failed',
+      progress: 0,
+      bytesDownloaded: 0,
+      totalBytes: pack.sizeBytes,
+      error: error.message || 'Download failed',
+    });
+    
+    return false;
+  }
+}
+
+/**
+ * Get list of installed pack IDs by checking local files.
+ */
+export async function getInstalledPackIds(districtId: string): Promise<string[]> {
+  try {
+    const mbtilesDir = await getMBTilesDir();
+    const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
+    
+    if (!dirInfo.exists) {
+      return [];
+    }
+    
+    const files = await FileSystem.readDirectoryAsync(mbtilesDir);
+    const mbtilesFiles = files.filter(f => f.endsWith('.mbtiles'));
+    
+    // Map filenames back to pack IDs
+    const districtPrefixes: Record<string, string> = {
+      '17cgd': 'alaska',
+    };
+    const prefix = districtPrefixes[districtId] || districtId;
+    
+    const installedPackIds: string[] = [];
+    
+    for (const file of mbtilesFiles) {
+      // Check for chart files (e.g., alaska_US4.mbtiles -> charts-US4)
+      if (file.startsWith(`${prefix}_US`)) {
+        const band = file.replace(`${prefix}_`, '').replace('.mbtiles', '');
+        installedPackIds.push(`charts-${band}`);
+      }
+      // Check for basemap (may be basemap.mbtiles or basemap_alaska.mbtiles)
+      else if (file === 'basemap.mbtiles' || file === 'basemap_alaska.mbtiles') {
+        installedPackIds.push('basemap');
+      }
+      // Check for GNIS (may be gnis_names.mbtiles or gnis_names_ak.mbtiles)
+      else if (file === 'gnis_names.mbtiles' || file === 'gnis_names_ak.mbtiles') {
+        installedPackIds.push('gnis');
+      }
+      // Check for satellite files (e.g., satellite_z0-5.mbtiles -> satellite-z0-5)
+      else if (file.startsWith('satellite_z')) {
+        // Extract zoom level identifier (e.g., "z0-5", "z8", "z14")
+        const zoomPart = file.replace('satellite_', '').replace('.mbtiles', '');
+        installedPackIds.push(`satellite-${zoomPart}`);
+      }
+    }
+    
+    console.log(`[ChartPackService] Found ${installedPackIds.length} installed packs:`, installedPackIds);
+    return installedPackIds;
+    
+  } catch (error) {
+    console.error('[ChartPackService] Error getting installed packs:', error);
+    return [];
+  }
+}
+
+/**
+ * Delete a downloaded pack.
+ */
+export async function deletePack(
+  pack: DistrictDownloadPack,
+  districtId: string
+): Promise<boolean> {
+  try {
+    const mbtilesDir = await getMBTilesDir();
+    const localFilename = getLocalFilename(pack, districtId);
+    const filePath = `${mbtilesDir}${localFilename}`;
+    
+    const fileInfo = await FileSystem.getInfoAsync(filePath);
+    if (fileInfo.exists) {
+      await FileSystem.deleteAsync(filePath, { idempotent: true });
+      console.log(`[ChartPackService] Deleted ${filePath}`);
+      
+      // Regenerate manifest.json after deleting a chart pack
+      if (pack.type === 'charts') {
+        await generateManifest(districtId);
+      }
+      
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    console.error(`[ChartPackService] Error deleting ${pack.id}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Generate manifest.json in the mbtiles directory.
+ * 
+ * The native tile server (LocalTileServerModule.java) reads manifest.json
+ * to know which chart packs are available and their metadata (bounds, zoom ranges).
+ * Without this file, composite tile requests (/tiles/{z}/{x}/{y}.pbf) return nothing.
+ * 
+ * This function scans the mbtiles directory for alaska_US*.mbtiles files
+ * and generates the manifest with the metadata the native server needs.
+ */
+export async function generateManifest(districtId: string): Promise<void> {
+  try {
+    const mbtilesDir = await getMBTilesDir();
+    const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
+    
+    if (!dirInfo.exists) {
+      console.log('[ChartPackService] No mbtiles directory - skipping manifest generation');
+      return;
+    }
+    
+    const files = await FileSystem.readDirectoryAsync(mbtilesDir);
+    
+    // District-specific prefix mapping
+    const districtPrefixes: Record<string, string> = {
+      '17cgd': 'alaska',
+    };
+    const prefix = districtPrefixes[districtId] || districtId;
+    
+    // Alaska bounds
+    const districtBounds: Record<string, { south: number; west: number; north: number; east: number }> = {
+      '17cgd': { south: 51.0, west: -180.0, north: 71.5, east: -130.0 },
+    };
+    const bounds = districtBounds[districtId] || { south: -90, west: -180, north: 90, east: 180 };
+    
+    // Zoom ranges for each chart scale
+    const scaleZoomRanges: Record<string, { minZoom: number; maxZoom: number }> = {
+      'US1': { minZoom: 0, maxZoom: 7 },
+      'US2': { minZoom: 4, maxZoom: 10 },
+      'US3': { minZoom: 7, maxZoom: 13 },
+      'US4': { minZoom: 10, maxZoom: 16 },
+      'US5': { minZoom: 12, maxZoom: 19 },
+      'US6': { minZoom: 14, maxZoom: 22 },
+    };
+    
+    const packs: Array<{
+      id: string;
+      bounds: typeof bounds;
+      minZoom: number;
+      maxZoom: number;
+      fileSize: number;
+    }> = [];
+    
+    for (const file of files) {
+      // Match chart pack files: alaska_US1.mbtiles, alaska_US2.mbtiles, etc.
+      if (file.startsWith(`${prefix}_US`) && file.endsWith('.mbtiles')) {
+        const band = file.replace(`${prefix}_`, '').replace('.mbtiles', ''); // e.g., "US1"
+        const packId = `${prefix}_${band}`; // e.g., "alaska_US1"
+        
+        // Get file size
+        const filePath = `${mbtilesDir}${file}`;
+        const fileInfo = await FileSystem.getInfoAsync(filePath, { size: true });
+        const fileSize = fileInfo.exists && fileInfo.size ? fileInfo.size : 0;
+        
+        const zoomRange = scaleZoomRanges[band] || { minZoom: 0, maxZoom: 22 };
+        
+        packs.push({
+          id: packId,
+          bounds,
+          minZoom: zoomRange.minZoom,
+          maxZoom: zoomRange.maxZoom,
+          fileSize,
+        });
+        
+        console.log(`[ChartPackService] Manifest pack: ${packId} (${band}) z${zoomRange.minZoom}-${zoomRange.maxZoom}, ${(fileSize / 1024 / 1024).toFixed(1)} MB`);
+      }
+    }
+    
+    // Sort packs by scale level (US1 first, US6 last)
+    packs.sort((a, b) => a.id.localeCompare(b.id));
+    
+    const manifest = { packs };
+    const manifestPath = `${mbtilesDir}manifest.json`;
+    
+    await FileSystem.writeAsStringAsync(manifestPath, JSON.stringify(manifest, null, 2));
+    console.log(`[ChartPackService] Generated manifest.json with ${packs.length} chart packs at ${manifestPath}`);
+    
+  } catch (error) {
+    console.error('[ChartPackService] Error generating manifest:', error);
+  }
+}
+
+/**
+ * Get total size of installed chart data.
+ */
+export async function getInstalledDataSize(): Promise<number> {
+  try {
+    const mbtilesDir = await getMBTilesDir();
+    const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
+    
+    if (!dirInfo.exists) {
+      return 0;
+    }
+    
+    const files = await FileSystem.readDirectoryAsync(mbtilesDir);
+    let totalSize = 0;
+    
+    for (const file of files) {
+      if (file.endsWith('.mbtiles')) {
+        const fileInfo = await FileSystem.getInfoAsync(`${mbtilesDir}${file}`);
+        if (fileInfo.exists && fileInfo.size) {
+          totalSize += fileInfo.size;
+        }
+      }
+    }
+    
+    return totalSize;
+  } catch (error) {
+    console.error('[ChartPackService] Error calculating installed size:', error);
+    return 0;
+  }
+}

@@ -38,6 +38,8 @@ import {
   getPredictionDatabaseMetadata,
 } from '../services/stationService';
 import type { TideStation, CurrentStation, PredictionDatabaseStats } from '../services/stationService';
+import * as chartPackService from '../services/chartPackService';
+import type { District, DistrictDownloadPack, PackDownloadStatus } from '../types/chartPack';
 
 export default function SettingsScreen() {
   const [cacheSize, setCacheSize] = useState<number>(0);
@@ -67,6 +69,12 @@ export default function SettingsScreen() {
   
   // Database stats (accurate values from SQLite)
   const [dbStats, setDbStats] = useState<PredictionDatabaseStats | null>(null);
+  
+  // Chart Data state
+  const [district, setDistrict] = useState<District | null>(null);
+  const [installedPackIds, setInstalledPackIds] = useState<string[]>([]);
+  const [chartDataLoading, setChartDataLoading] = useState(false);
+  const [packDownloadStatus, setPackDownloadStatus] = useState<PackDownloadStatus | null>(null);
   
   // Theme state
   const [uiTheme, setUITheme] = useState<UITheme>(themeService.getUITheme());
@@ -217,6 +225,7 @@ export default function SettingsScreen() {
     loadCacheInfo();
     loadDisplaySettings();
     loadDatabaseStats(); // Load DB stats on mount without fetching from Firestore
+    loadChartData(); // Load chart data from Firestore
   }, []);
 
   const loadCacheInfo = async () => {
@@ -288,6 +297,128 @@ export default function SettingsScreen() {
       console.error('[SETTINGS] Error loading database stats:', error);
       // Don't show alert for this - it's not critical on mount
     }
+  };
+
+  // Load chart data from Firestore
+  const loadChartData = async () => {
+    try {
+      setChartDataLoading(true);
+      
+      // For now, hardcode Alaska (17cgd) as the default district
+      const districtId = '17cgd';
+      const districtData = await chartPackService.getDistrict(districtId);
+      setDistrict(districtData);
+      
+      // Check which packs are installed locally
+      const installed = await chartPackService.getInstalledPackIds(districtId);
+      setInstalledPackIds(installed);
+      
+      console.log('[SETTINGS] Chart data loaded:', {
+        district: districtData?.name,
+        packs: districtData?.downloadPacks?.length || 0,
+        installed: installed.length,
+      });
+    } catch (error) {
+      console.error('[SETTINGS] Error loading chart data:', error);
+    } finally {
+      setChartDataLoading(false);
+    }
+  };
+
+  // Handle pack download
+  const handleDownloadPack = async (pack: DistrictDownloadPack) => {
+    if (packDownloadStatus) {
+      Alert.alert('Download in Progress', 'Please wait for the current download to complete.');
+      return;
+    }
+    
+    // Check network connection
+    const netState = await NetInfo.fetch();
+    const isConnected = netState.isConnected && netState.isInternetReachable;
+    
+    if (!isConnected) {
+      Alert.alert(
+        'No Internet Connection',
+        'You need an internet connection to download chart data. Please check your connection and try again.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+    
+    // Check if on WiFi for large downloads
+    const isWifi = netState.type === 'wifi';
+    const sizeMB = pack.sizeBytes / 1024 / 1024;
+    const wifiWarning = !isWifi && sizeMB > 50
+      ? '\n\n⚠️ WARNING: You are not connected to WiFi. This download will use cellular data.'
+      : '';
+    
+    Alert.alert(
+      'Download Pack',
+      `Download "${pack.name}"?\n\n` +
+      `Size: ${sizeMB.toFixed(1)} MB\n` +
+      `${pack.description}${wifiWarning}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Download',
+          onPress: async () => {
+            try {
+              const success = await chartPackService.downloadPack(
+                pack,
+                '17cgd', // District ID
+                (status) => setPackDownloadStatus(status)
+              );
+              
+              if (success) {
+                // Refresh installed packs
+                const installed = await chartPackService.getInstalledPackIds('17cgd');
+                setInstalledPackIds(installed);
+                
+                // Refresh storage info
+                await loadCacheInfo();
+                
+                Alert.alert('Download Complete', `"${pack.name}" has been downloaded successfully.`);
+              }
+            } catch (error: any) {
+              Alert.alert('Download Failed', error.message || 'Unknown error');
+            } finally {
+              setPackDownloadStatus(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Handle pack deletion
+  const handleDeletePack = async (pack: DistrictDownloadPack) => {
+    Alert.alert(
+      'Delete Pack',
+      `Delete "${pack.name}"? This will free up ${(pack.sizeBytes / 1024 / 1024).toFixed(1)} MB of storage.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await chartPackService.deletePack(pack, '17cgd');
+              
+              // Refresh installed packs
+              const installed = await chartPackService.getInstalledPackIds('17cgd');
+              setInstalledPackIds(installed);
+              
+              // Refresh storage info
+              await loadCacheInfo();
+              
+              Alert.alert('Deleted', `"${pack.name}" has been deleted.`);
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Failed to delete pack');
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Load station locations from Firestore (via Cloud Function)

@@ -1,21 +1,29 @@
-import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from 'react';
+console.log('[App.tsx] Module loading started...');
+
+import React, { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View, Text, Platform, ActivityIndicator, TouchableOpacity } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { NavigationContainer } from '@react-navigation/native';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { FirebaseAuthTypes, getAuth, onAuthStateChanged } from '@react-native-firebase/auth';
+
+console.log('[App.tsx] Core imports complete');
 
 // Platform-specific imports
 import ChartViewer from './src/components/ChartViewer';
 import { OverlayProvider, useOverlay } from './src/contexts/OverlayContext';
+import { NavigationProvider, useContextNav } from './src/contexts/NavigationContext';
+
+console.log('[App.tsx] Context imports complete');
 
 // Only import Firebase-based components on native platforms
 let LoginScreen: React.ComponentType<{ onLoginSuccess: () => void }> | null = null;
 let MapSelectionScreen: React.ComponentType | null = null;
 let DynamicChartViewer: React.ComponentType<{ onNavigateToDownloads?: () => void }> | null = null;
-let SettingsScreen: React.ComponentType | null = null;
 let WeatherScreen: React.ComponentType | null = null;
+let MoreScreen: React.ComponentType | null = null;
+let ContextScreen: React.ComponentType | null = null;
 let CompassModal: React.ComponentType<{ visible: boolean; heading: number | null; course: number | null; showTideChart?: boolean; showCurrentChart?: boolean }> | null = null;
 let GPSInfoModal: React.ComponentType<{ visible: boolean; gpsData: any }> | null = null;
 
@@ -30,16 +38,28 @@ let crashlyticsFns: {
 } | null = null;
 
 if (Platform.OS !== 'web') {
+  console.log('[App.tsx] Loading native screens...');
   LoginScreen = require('./src/screens/LoginScreen').default;
+  console.log('[App.tsx] LoginScreen loaded');
   MapSelectionScreen = require('./src/screens/MapSelectionScreen').default;
+  console.log('[App.tsx] MapSelectionScreen loaded');
   DynamicChartViewer = require('./src/components/DynamicChartViewer.native').default;
-  SettingsScreen = require('./src/screens/SettingsScreen').default;
+  console.log('[App.tsx] DynamicChartViewer loaded');
   WeatherScreen = require('./src/screens/WeatherScreen').default;
+  console.log('[App.tsx] WeatherScreen loaded');
+  MoreScreen = require('./src/screens/MoreScreen').default;
+  console.log('[App.tsx] MoreScreen loaded');
+  ContextScreen = require('./src/screens/ContextScreen').default;
+  console.log('[App.tsx] ContextScreen loaded');
   CompassModal = require('./src/components/CompassModal').default;
+  console.log('[App.tsx] CompassModal loaded');
   GPSInfoModal = require('./src/components/GPSInfoModal').default;
+  console.log('[App.tsx] GPSInfoModal loaded');
+  console.log('[App.tsx] All native screens loaded successfully');
   
   // Initialize Crashlytics for native platforms (modular API)
   try {
+    console.log('[App.tsx] Initializing Crashlytics...');
     const rnfbCrashlytics = require('@react-native-firebase/crashlytics');
     crashlyticsInstance = rnfbCrashlytics.getCrashlytics();
     crashlyticsFns = {
@@ -49,10 +69,13 @@ if (Platform.OS !== 'web') {
       log: rnfbCrashlytics.log,
       recordError: rnfbCrashlytics.recordError,
     };
+    console.log('[App.tsx] Crashlytics initialized');
   } catch (e) {
-    console.log('Crashlytics not available');
+    console.log('[App.tsx] Crashlytics not available');
   }
 }
+
+console.log('[App.tsx] Module loading complete');
 
 // Error Boundary to catch JavaScript errors
 interface ErrorBoundaryProps {
@@ -141,55 +164,73 @@ const errorStyles = StyleSheet.create({
 
 const Tab = createBottomTabNavigator();
 
-// Tab icon component - ForeFlight style with dark translucent background
+// Tab icon component - Professional vector icons with filled/outline states
 function TabIcon({ name, focused }: { name: string; focused: boolean }) {
-  // Icon mappings - use simple text icons for now, can replace with SVG later
-  const getIcon = () => {
+  const { Ionicons } = require('@expo/vector-icons');
+  
+  const getIconName = (): string => {
     switch (name) {
       case 'Viewer':
-        return '🗺️';
+        return focused ? 'map' : 'map-outline';
       case 'Charts':
-        return '📥';
+        return focused ? 'documents' : 'documents-outline';
       case 'Weather':
-        return '🌊';
-      case 'Settings':
-        return '⚙️';
+        return focused ? 'rainy' : 'rainy-outline';
+      case 'Context':
+        return focused ? 'stats-chart' : 'stats-chart-outline';
+      case 'More':
+        return 'ellipsis-horizontal';
       default:
-        return '📄';
+        return 'help-circle-outline';
     }
   };
   
   return (
-    <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-      <Text style={{ 
-        fontSize: 22, 
-        opacity: focused ? 1 : 0.6,
-      }}>
-        {getIcon()}
-      </Text>
-    </View>
+    <Ionicons 
+      name={getIconName()} 
+      size={24} 
+      color={focused ? '#1a1f2e' : 'rgba(255, 255, 255, 0.5)'} 
+    />
   );
 }
 
 // Wrapper components to handle navigation props
 function ChartsTab() {
+  console.log('[ChartsTab] Rendering...');
   if (!MapSelectionScreen) return null;
   return <MapSelectionScreen />;
 }
 
 function ViewerTab() {
+  console.log('[ViewerTab] Rendering...');
   if (!DynamicChartViewer) return null;
   return <DynamicChartViewer />;
 }
 
-function SettingsTab() {
-  if (!SettingsScreen) return null;
-  return <SettingsScreen />;
-}
-
 function WeatherTab() {
+  console.log('[WeatherTab] Rendering...');
   if (!WeatherScreen) return null;
   return <WeatherScreen />;
+}
+
+function ContextTab() {
+  console.log('[ContextTab] Rendering...');
+  if (!ContextScreen) {
+    console.log('[ContextTab] ContextScreen is null!');
+    return null;
+  }
+  console.log('[ContextTab] Returning ContextScreen component');
+  return <ContextScreen />;
+}
+
+function MoreTab() {
+  console.log('[MoreTab] Rendering...');
+  if (!MoreScreen) {
+    console.log('[MoreTab] MoreScreen is null!');
+    return null;
+  }
+  console.log('[MoreTab] Returning MoreScreen component');
+  return <MoreScreen />;
 }
 
 // Renders overlays outside the navigation hierarchy to avoid MapLibre conflicts
@@ -218,11 +259,13 @@ function OverlayRenderer() {
 }
 
 function AppContent() {
+  console.log('[AppContent] Initializing...');
   const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
   // Initialize Crashlytics and listen for auth state changes
   useEffect(() => {
+    console.log('[AppContent] useEffect running...');
     // Enable Crashlytics collection (disabled by default in dev)
     if (crashlyticsFns && crashlyticsInstance && !__DEV__) {
       crashlyticsFns.setCrashlyticsCollectionEnabled(crashlyticsInstance, true);
@@ -230,6 +273,7 @@ function AppContent() {
 
     // Web platform doesn't use auth
     if (Platform.OS === 'web') {
+      console.log('[AppContent] Web platform detected');
       setAuthLoading(false);
       return;
     }
@@ -255,6 +299,7 @@ function AppContent() {
 
   // Web platform - use original ChartViewer only
   if (Platform.OS === 'web') {
+    console.log('[AppContent] Rendering web version');
     return (
       <SafeAreaProvider>
         <View style={styles.container}>
@@ -267,6 +312,7 @@ function AppContent() {
 
   // Show loading while checking auth
   if (authLoading) {
+    console.log('[AppContent] Rendering loading state');
     return (
       <SafeAreaProvider>
         <View style={styles.loadingContainer}>
@@ -279,6 +325,7 @@ function AppContent() {
 
   // Show login if not authenticated
   if (!user && LoginScreen) {
+    console.log('[AppContent] Rendering login screen');
     return (
       <SafeAreaProvider>
         <LoginScreen onLoginSuccess={() => {}} />
@@ -288,68 +335,104 @@ function AppContent() {
   }
 
   // Main app with tab navigation
+  console.log('[AppContent] Rendering main app with user:', user?.email);
+  console.log('[AppContent] About to render NavigationProvider...');
   return (
     <SafeAreaProvider>
-      <OverlayProvider>
-        <NavigationContainer>
-          <Tab.Navigator
-            initialRouteName="Viewer"
-            screenOptions={({ route }) => ({
-              headerShown: false,
-              tabBarIcon: ({ focused }) => (
-                <TabIcon name={route.name} focused={focused} />
-              ),
-              tabBarActiveTintColor: '#4FC3F7',
-              tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.5)',
-              tabBarStyle: {
-                backgroundColor: 'rgba(20, 25, 35, 0.92)',
-                borderTopColor: 'rgba(255, 255, 255, 0.1)',
-                borderTopWidth: 0.5,
-                paddingBottom: 6,
-              },
-              tabBarItemStyle: {
-                paddingTop: 2,
-                paddingBottom: 2,
-              },
-              tabBarLabelStyle: {
-                fontSize: 11,
-                fontWeight: '600',
-              },
-              tabBarHideOnKeyboard: true,
-            })}
-          >
-            <Tab.Screen 
-              name="Viewer" 
-              component={ViewerTab}
-              options={{ tabBarLabel: 'Maps' }}
-            />
-            <Tab.Screen 
-              name="Charts" 
-              component={ChartsTab}
-              options={{ tabBarLabel: 'Documents' }}
-            />
-            <Tab.Screen 
-              name="Weather" 
-              component={WeatherTab}
-              options={{ tabBarLabel: 'Weather' }}
-            />
-            <Tab.Screen 
-              name="Settings" 
-              component={SettingsTab}
-              options={{ tabBarLabel: 'Settings' }}
-            />
-          </Tab.Navigator>
-        </NavigationContainer>
-        {/* Overlays rendered OUTSIDE NavigationContainer to avoid MapLibre view conflicts */}
-        <OverlayRenderer />
-        <StatusBar style="light" />
-      </OverlayProvider>
+      <NavigationProvider>
+        <OverlayProvider>
+          <AppNavigator />
+          {/* Overlays rendered OUTSIDE NavigationContainer to avoid MapLibre view conflicts */}
+          <OverlayRenderer />
+          <StatusBar style="light" />
+        </OverlayProvider>
+      </NavigationProvider>
     </SafeAreaProvider>
+  );
+}
+
+// Separate component to access NavigationContext
+function AppNavigator() {
+  console.log('[AppNavigator] Initializing...');
+  const navigationRef = useRef<NavigationContainerRef<any>>(null);
+  const insets = useSafeAreaInsets();
+  console.log('[AppNavigator] Calling useContextNav...');
+  const { setNavigationRef, contextTabName } = useContextNav();
+  console.log('[AppNavigator] useContextNav returned, contextTabName:', contextTabName);
+  
+  // Store navigation ref for programmatic navigation
+  useEffect(() => {
+    console.log('[AppNavigator] useEffect - navigationRef.current:', !!navigationRef.current);
+    if (navigationRef.current) {
+      setNavigationRef(navigationRef.current);
+    }
+  }, [navigationRef.current, setNavigationRef]);
+  
+  return (
+    <NavigationContainer ref={navigationRef}>
+      <Tab.Navigator
+        initialRouteName="Viewer"
+        screenOptions={({ route }) => ({
+          headerShown: false,
+          tabBarIcon: ({ focused }) => (
+            <TabIcon name={route.name} focused={focused} />
+          ),
+          tabBarActiveTintColor: '#1a1f2e',
+          tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.5)',
+          tabBarActiveBackgroundColor: 'rgba(255, 255, 255, 0.75)', // Reduced brightness
+          tabBarStyle: {
+            backgroundColor: 'rgba(20, 25, 35, 0.92)',
+            borderTopColor: 'rgba(255, 255, 255, 0.1)',
+            borderTopWidth: 0.5,
+            paddingBottom: insets.bottom,
+            height: 56 + insets.bottom,
+          },
+          tabBarItemStyle: {
+            marginHorizontal: 4,
+            marginTop: 4,
+            marginBottom: 4,
+            borderRadius: 8,
+          },
+          tabBarLabelStyle: {
+            fontSize: 11,
+            fontWeight: '600',
+          },
+          tabBarHideOnKeyboard: true,
+        })}
+      >
+        <Tab.Screen 
+          name="Viewer" 
+          component={ViewerTab}
+          options={{ tabBarLabel: 'Maps' }}
+        />
+        <Tab.Screen 
+          name="Charts" 
+          component={ChartsTab}
+          options={{ tabBarLabel: 'Documents' }}
+        />
+        <Tab.Screen 
+          name="Weather" 
+          component={WeatherTab}
+          options={{ tabBarLabel: 'Weather' }}
+        />
+        <Tab.Screen 
+          name="Context" 
+          component={ContextTab}
+          options={{ tabBarLabel: contextTabName }}
+        />
+        <Tab.Screen 
+          name="More" 
+          component={MoreTab}
+          options={{ tabBarLabel: 'More' }}
+        />
+      </Tab.Navigator>
+    </NavigationContainer>
   );
 }
 
 // Main App wrapper with ErrorBoundary
 export default function App() {
+  console.log('[App] Rendering App component...');
   return (
     <ErrorBoundary>
       <AppContent />
