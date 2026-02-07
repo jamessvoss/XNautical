@@ -1,11 +1,11 @@
 /**
- * Compass Modal - Smooth compass display using sensor fusion
+ * Half-Moon Compass - Semicircular compass anchored near the bottom of the screen
  * 
- * OPTIMIZED VERSION:
- * - Receives pre-smoothed heading from useDeviceHeading hook (60Hz sensor fusion)
- * - Uses spring animation with native driver for butter-smooth rotation
- * - Implements shortest-path rotation to avoid 358° backwards spin
- * - No heavy filtering or dead zones needed (sensor fusion handles jitter)
+ * Shows the top 180 degrees of a compass rose (the arc around the current heading).
+ * Positioned just above the RN Navigation tab bar, and shifts up when tide/current
+ * detail charts are visible.
+ * 
+ * Uses the same spring animation and shortest-path rotation as CompassModal.
  */
 
 import React, { useRef, useEffect } from 'react';
@@ -16,80 +16,101 @@ import {
   Dimensions,
   Animated,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   shortestRotationTarget,
   getChartsHeight,
   formatHeading,
   CARDINALS,
   DEGREE_LABELS,
+  TAB_BAR_HEIGHT,
   type CompassProps,
 } from '../utils/compassUtils';
 
-interface Props extends CompassProps {
-  visible: boolean;
-}
+const COMPASS_DIAMETER = 280;
+const HALF_HEIGHT = COMPASS_DIAMETER / 2;
 
-export default function CompassModal({ 
-  heading, 
-  course, 
-  showTideChart = false, 
-  showCurrentChart = false 
-}: Props) {
+export default function HalfMoonCompass({
+  heading,
+  course,
+  showTideChart = false,
+  showCurrentChart = false,
+}: CompassProps) {
+  const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-  const size = Math.min(screenWidth, screenHeight) - 60;
-  
-  // Calculate vertical offset based on visible charts
+
+  // Bottom offset: tab bar + safe area + charts + margin
   const chartsHeight = getChartsHeight(showTideChart, showCurrentChart);
-  
+  const bottomOffset = insets.bottom + TAB_BAR_HEIGHT + chartsHeight + 8;
+
   // Animation for compass rotation
   const animatedRotation = useRef(new Animated.Value(0)).current;
   const previousRotation = useRef<number>(0);
 
-  // Interpolate rotation for transform
   const rotateInterpolate = animatedRotation.interpolate({
     inputRange: [-720, 720],
     outputRange: ['-720deg', '720deg'],
   });
 
-  // Animate rotation with spring physics
   useEffect(() => {
     if (heading === null) return;
 
-    // Calculate rotation (negative because compass card rotates opposite to heading)
     const targetRotation = -heading;
     const current = previousRotation.current;
-    
-    // Find shortest path rotation
     const adjustedTarget = shortestRotationTarget(current, targetRotation);
     previousRotation.current = adjustedTarget;
 
-    // Spring animation for natural, responsive feel
     Animated.spring(animatedRotation, {
       toValue: adjustedTarget,
-      tension: 120,      // Higher = faster response
-      friction: 12,      // Higher = less oscillation
+      tension: 120,
+      friction: 12,
       useNativeDriver: true,
     }).start();
   }, [heading, animatedRotation]);
 
   const displayHeading = formatHeading(heading);
+  const size = COMPASS_DIAMETER;
 
   return (
-    <View style={styles.overlay} pointerEvents="none">
-      <View style={[styles.compassContainer, { width: size, height: size, marginBottom: chartsHeight }]}>
-        
+    <View
+      style={[
+        styles.container,
+        { bottom: bottomOffset },
+      ]}
+      pointerEvents="none"
+    >
+      {/* Heading readout */}
+      <View style={styles.headingBar}>
+        <Text style={styles.headingValue}>{displayHeading}°</Text>
+      </View>
+
+      {/* Semicircle clip container - shows only top half of compass */}
+      <View style={[styles.clipContainer, { width: size + 8, height: HALF_HEIGHT + 4 }]}>
         {/* Outer ring */}
-        <View style={[styles.outerRing, { width: size, height: size, borderRadius: size / 2 }]} />
-        
+        <View
+          style={[
+            styles.outerRing,
+            {
+              width: size,
+              height: size,
+              borderRadius: size / 2,
+              top: 0,
+              left: 4,
+            },
+          ]}
+        />
+
         {/* Rotating compass card */}
-        <Animated.View 
+        <Animated.View
           style={[
             styles.compassCard,
-            { 
-              width: size - 10, 
-              height: size - 10, 
+            {
+              width: size - 10,
+              height: size - 10,
               borderRadius: (size - 10) / 2,
-              transform: [{ rotate: rotateInterpolate }] 
+              top: 5,
+              left: 9,
+              transform: [{ rotate: rotateInterpolate }],
             },
           ]}
         >
@@ -109,7 +130,7 @@ export default function CompassModal({
                   style={[
                     styles.tick,
                     {
-                      height: isCardinal ? 20 : isMajor ? 15 : 8,
+                      height: isCardinal ? 18 : isMajor ? 13 : 7,
                       width: isCardinal ? 3 : isMajor ? 2 : 1,
                       backgroundColor: deg === 0 ? '#FF3333' : '#FFFFFF',
                     },
@@ -131,7 +152,7 @@ export default function CompassModal({
               <Text style={[styles.cardinalText, { color }]}>{label}</Text>
             </View>
           ))}
-          
+
           {/* Degree labels */}
           {DEGREE_LABELS.map((deg) => (
             <View
@@ -146,37 +167,43 @@ export default function CompassModal({
           ))}
         </Animated.View>
 
-        {/* Fixed lubber line at top */}
+        {/* Fixed lubber line at top center */}
         <View style={styles.lubberLine} />
-        
-        {/* Heading display just below lubber line */}
-        <View style={styles.headingDisplay}>
-          <Text style={styles.headingValue}>{displayHeading}°</Text>
-        </View>
-
-        {/* Ship icon at center */}
-        <View style={styles.shipIconContainer}>
-          <View style={styles.shipBow} />
-          <View style={styles.shipHull} />
-        </View>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  overlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
+  container: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
     alignItems: 'center',
   },
-  compassContainer: {
+  headingBar: {
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  headingValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    fontFamily: 'monospace',
+  },
+  clipContainer: {
+    overflow: 'hidden',
     alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    borderTopLeftRadius: 150,
+    borderTopRightRadius: 150,
   },
   outerRing: {
     position: 'absolute',
-    borderWidth: 4,
+    borderWidth: 3,
     borderColor: '#FFFFFF',
     backgroundColor: 'transparent',
   },
@@ -194,17 +221,17 @@ const styles = StyleSheet.create({
   },
   tick: {
     position: 'absolute',
-    top: 8,
+    top: 6,
   },
   cardinalContainer: {
     position: 'absolute',
     width: '100%',
     height: '100%',
     alignItems: 'center',
-    paddingTop: 32,
+    paddingTop: 26,
   },
   cardinalText: {
-    fontSize: 26,
+    fontSize: 20,
     fontWeight: 'bold',
     textShadowColor: '#000',
     textShadowOffset: { width: 2, height: 2 },
@@ -215,10 +242,10 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     alignItems: 'center',
-    paddingTop: 58,
+    paddingTop: 48,
   },
   degreeText: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '600',
     color: '#AAAAAA',
     textShadowColor: '#000',
@@ -228,50 +255,12 @@ const styles = StyleSheet.create({
   lubberLine: {
     position: 'absolute',
     top: -2,
-    width: 6,
-    height: 40,
+    width: 5,
+    height: 32,
     backgroundColor: '#FF3333',
-    borderRadius: 3,
+    borderRadius: 2.5,
     borderWidth: 1,
     borderColor: '#FFFFFF',
-  },
-  headingDisplay: {
-    position: 'absolute',
-    top: 45,
-    alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.85)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  headingValue: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    fontFamily: 'monospace',
-  },
-  shipIconContainer: {
-    position: 'absolute',
-    alignItems: 'center',
-    top: '50%',
-    marginTop: 50,
-  },
-  shipBow: {
-    width: 0,
-    height: 0,
-    borderLeftWidth: 8,
-    borderRightWidth: 8,
-    borderBottomWidth: 16,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderBottomColor: '#4FC3F7',
-  },
-  shipHull: {
-    width: 16,
-    height: 20,
-    backgroundColor: '#4FC3F7',
-    borderBottomLeftRadius: 8,
-    borderBottomRightRadius: 8,
-    marginTop: -2,
+    alignSelf: 'center',
   },
 });

@@ -213,18 +213,19 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   tideStationSymbolSizeScale: 1.0,    // 100% nominal (zoom-based sizing built-in)
   currentStationSymbolSizeScale: 1.0, // 100% nominal (zoom-based sizing built-in)
   // Symbol halos (white background for visibility per S-52)
-  lightSymbolHaloScale: 1.0,
-  buoySymbolHaloScale: 1.0,
-  beaconSymbolHaloScale: 1.0,
-  wreckSymbolHaloScale: 1.0,
-  rockSymbolHaloScale: 1.0,
-  hazardSymbolHaloScale: 1.0,
-  landmarkSymbolHaloScale: 1.0,
-  mooringSymbolHaloScale: 1.0,
-  anchorSymbolHaloScale: 1.0,
+  // 0.1 = 10% default for symbols with halo support
+  lightSymbolHaloScale: 0.1,
+  buoySymbolHaloScale: 0.1,
+  beaconSymbolHaloScale: 0.1,
+  wreckSymbolHaloScale: 0.1,
+  rockSymbolHaloScale: 0.1,
+  hazardSymbolHaloScale: 0.1,
+  landmarkSymbolHaloScale: 0.1,
+  mooringSymbolHaloScale: 0.1,
+  anchorSymbolHaloScale: 0.1,
   tideRipsSymbolHaloScale: 0.1,
-  tideStationSymbolHaloScale: 0.3,
-  currentStationSymbolHaloScale: 0.3,
+  tideStationSymbolHaloScale: 0.1,
+  currentStationSymbolHaloScale: 0.1,
   // Symbol opacities
   lightSymbolOpacityScale: 1.0,
   buoySymbolOpacityScale: 1.0,
@@ -240,11 +241,11 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   currentStationSymbolOpacityScale: 1.0,
   // Tide station text
   tideStationTextSizeScale: 1.0,
-  tideStationTextHaloScale: 1.0,
+  tideStationTextHaloScale: 0.1,   // 10% default, max 25%
   tideStationTextOpacityScale: 1.0,
   // Current station text
   currentStationTextSizeScale: 1.0,
-  currentStationTextHaloScale: 1.0,
+  currentStationTextHaloScale: 0.1, // 10% default, max 25%
   currentStationTextOpacityScale: 1.0,
   // Other settings
   dayNightMode: 'dusk',  // S-52 default - dark background suitable for day and twilight

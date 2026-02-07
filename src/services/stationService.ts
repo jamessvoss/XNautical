@@ -416,8 +416,8 @@ export async function getPredictionDatabaseMetadata(): Promise<{
     const { ref, getMetadata } = await import('firebase/storage');
     
     // Get metadata for both files
-    const tidesRef = ref(storage, 'predictions/tides.db.zip');
-    const currentsRef = ref(storage, 'predictions/currents.db.zip');
+    const tidesRef = ref(storage, '17cgd/predictions/tides.db.zip');
+    const currentsRef = ref(storage, '17cgd/predictions/currents.db.zip');
     
     const [tidesMetadata, currentsMetadata] = await Promise.all([
       getMetadata(tidesRef),
@@ -523,12 +523,12 @@ export async function downloadAllPredictions(
     // Download both databases in parallel
     const [tidesResult, currentsResult] = await Promise.all([
       downloadAndExtractDatabase(
-        'predictions/tides.db.zip',
+        '17cgd/predictions/tides.db.zip',
         'tides.db',
         (p) => { tidesProgress = p; updateProgress(); }
       ),
       downloadAndExtractDatabase(
-        'predictions/currents.db.zip',
+        '17cgd/predictions/currents.db.zip',
         'currents.db',
         (p) => { currentsProgress = p; updateProgress(); }
       ),

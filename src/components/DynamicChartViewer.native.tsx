@@ -42,6 +42,7 @@ import {
 import ChartDebugOverlay from './ChartDebugOverlay';
 import { useGPS } from '../hooks/useGPS';
 import { useOverlay } from '../contexts/OverlayContext';
+import { getCompassModeLabel } from '../utils/compassUtils';
 import * as displaySettingsService from '../services/displaySettingsService';
 import type { DisplaySettings } from '../services/displaySettingsService';
 import { logger, LogCategory } from '../services/loggingService';
@@ -649,6 +650,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     mooringSymbolHaloScale: 0.1,
     anchorSymbolHaloScale: 0.1,
     tideRipsSymbolHaloScale: 0.1,
+    tideStationSymbolSizeScale: 1.0,
+    currentStationSymbolSizeScale: 1.0,
+    tideStationSymbolHaloScale: 0.1,
+    currentStationSymbolHaloScale: 0.1,
     // Symbol opacities
     lightSymbolOpacityScale: 1.0,
     buoySymbolOpacityScale: 1.0,
@@ -660,6 +665,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     mooringSymbolOpacityScale: 1.0,
     anchorSymbolOpacityScale: 1.0,
     tideRipsSymbolOpacityScale: 1.0,
+    tideStationSymbolOpacityScale: 1.0,
+    currentStationSymbolOpacityScale: 1.0,
+    // Tide station text
+    tideStationTextSizeScale: 1.0,
+    tideStationTextHaloScale: 0.1,   // 10% default, max 25%
+    tideStationTextOpacityScale: 1.0,
+    // Current station text
+    currentStationTextSizeScale: 1.0,
+    currentStationTextHaloScale: 0.1, // 10% default, max 25%
+    currentStationTextOpacityScale: 1.0,
     // Other settings
     dayNightMode: 'day',
     orientationMode: 'north-up',
@@ -1171,8 +1186,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   const scaledTideStationHaloSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.3 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.3)),
-    12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.3)),
+    7, 0.3 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
+    12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
   ], [displaySettings.tideStationSymbolSizeScale, displaySettings.tideStationSymbolHaloScale]);
 
   const scaledTideStationSymbolOpacity = useMemo(() => 
@@ -1219,7 +1234,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [displaySettings.tideStationTextSizeScale]);
 
   const scaledTideStationTextHalo = useMemo(() => 
-    1.5 * (displaySettings.tideStationTextHaloScale ?? 1.0),
+    1.5 * (displaySettings.tideStationTextHaloScale ?? 0.1),
     [displaySettings.tideStationTextHaloScale]
   );
 
@@ -1249,7 +1264,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [displaySettings.currentStationTextSizeScale]);
 
   const scaledCurrentStationTextHalo = useMemo(() => 
-    1.5 * (displaySettings.currentStationTextHaloScale ?? 1.0),
+    1.5 * (displaySettings.currentStationTextHaloScale ?? 0.1),
     [displaySettings.currentStationTextHaloScale]
   );
 
@@ -1593,7 +1608,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showZoomLevel, setShowZoomLevel] = useState(true);
   
   // GPS and Navigation state - overlay visibility from context (rendered in App.tsx)
-  const { showGPSPanel, setShowGPSPanel, showCompass, setShowCompass, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails } = useOverlay();
+  const { showGPSPanel, setShowGPSPanel, showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails } = useOverlay();
   const [followGPS, setFollowGPS] = useState(false); // Follow mode - center map on position
   const followGPSRef = useRef(false); // Ref for immediate follow mode check (avoids race condition)
   const pendingCameraMoveTimeout = useRef<NodeJS.Timeout | null>(null); // Track pending camera moves
@@ -1798,34 +1813,63 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
   }, []);
   
-  // Check if charts or predictions were downloaded and reload if changed
+  // Check if any data was downloaded and reload when returning to map screen
   useFocusEffect(
     useCallback(() => {
       const checkChangesAndReload = async () => {
         try {
           const FileSystem = require('expo-file-system/legacy');
           const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+          const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
+          
+          let needsFullReload = false;
           
           // Check for manifest changes (chart downloads)
-          const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
           const manifestPath = `${mbtilesDir}/manifest.json`;
-          
           const manifestInfo = await FileSystem.getInfoAsync(manifestPath);
           if (manifestInfo.exists && manifestInfo.modificationTime) {
             const currentTime = manifestInfo.modificationTime;
-            
-            // If manifest was modified since last check, reload charts
             if (lastManifestTimeRef.current > 0 && currentTime > lastManifestTimeRef.current) {
-              logger.info(LogCategory.CHARTS, 'Manifest updated - reloading charts and restarting tile server');
-              
-              // Stop the tile server so it can reload the new manifest
-              await tileServer.stopTileServer();
-              
-              // Reload charts (which will restart the tile server with new manifest)
-              await loadCharts();
+              logger.info(LogCategory.CHARTS, 'Manifest updated - will reload charts');
+              needsFullReload = true;
             }
-            
             lastManifestTimeRef.current = currentTime;
+          }
+          
+          // Check for new satellite, GNIS, or basemap files by scanning directory
+          if (!needsFullReload) {
+            try {
+              const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
+              if (dirInfo.exists) {
+                const files = await FileSystem.readDirectoryAsync(mbtilesDir);
+                const currentSatelliteCount = files.filter((f: string) => f.startsWith('satellite_z') && f.endsWith('.mbtiles')).length;
+                const hasGnis = files.some((f: string) => f.startsWith('gnis_names'));
+                const hasBasemap = files.some((f: string) => f.startsWith('basemap_'));
+                
+                // Compare with current state
+                if (currentSatelliteCount !== satelliteTileSets.length) {
+                  logger.info(LogCategory.CHARTS, `Satellite files changed: ${satelliteTileSets.length} -> ${currentSatelliteCount}`);
+                  needsFullReload = true;
+                }
+                if (hasGnis !== gnisAvailable) {
+                  logger.info(LogCategory.CHARTS, `GNIS status changed: ${gnisAvailable} -> ${hasGnis}`);
+                  needsFullReload = true;
+                }
+                if (hasBasemap !== hasLocalBasemap) {
+                  logger.info(LogCategory.CHARTS, `Basemap status changed: ${hasLocalBasemap} -> ${hasBasemap}`);
+                  needsFullReload = true;
+                }
+              }
+            } catch (e) {
+              // Ignore scan errors
+            }
+          }
+          
+          // Full reload: stop tile server and reload everything
+          if (needsFullReload) {
+            logger.info(LogCategory.CHARTS, 'Data changed - reloading charts and restarting tile server');
+            await tileServer.stopTileServer();
+            await loadCharts();
           }
           
           // Check for station changes (prediction downloads)
@@ -1833,11 +1877,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           if (stationsTimestamp) {
             const currentStationsTime = parseInt(stationsTimestamp);
             
-            // If stations were updated since last check, reload stations
             if (lastStationsTimeRef.current > 0 && currentStationsTime > lastStationsTimeRef.current) {
               logger.info(LogCategory.CHARTS, 'Station metadata updated - reloading stations');
               
-              // Reload stations from AsyncStorage
               await loadFromStorage();
               const tides = getCachedTideStations();
               const currents = getCachedCurrentStations();
@@ -1861,7 +1903,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   if (stations.length === 1) {
                     result.push(stations[0]);
                   } else {
-                    // Multiple stations at same location - keep highest bin
                     const highestBin = Math.max(...stations.map(s => s.bin || 0));
                     const preferredStation = stations.find(s => s.bin === highestBin);
                     if (preferredStation) {
@@ -1887,7 +1928,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       };
       
       checkChangesAndReload();
-    }, [])
+    }, [satelliteTileSets.length, hasLocalBasemap, gnisAvailable])
   );
 
   // Load tide and current stations from AsyncStorage on startup
@@ -5609,15 +5650,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </TouchableOpacity>
         <View style={styles.topMenuDivider} />
         
-        {/* Compass button */}
+        {/* Compass button - cycles through modes: Off -> Full -> Arc -> Tape -> Mini -> Off */}
         <TouchableOpacity 
           style={[styles.topMenuBtn, showCompass && styles.topMenuBtnActive]}
           onPress={() => {
-            console.log(`[DynamicChartViewer] Toggling compass: ${showCompass} -> ${!showCompass}`);
-            setShowCompass(!showCompass);
+            console.log(`[DynamicChartViewer] Cycling compass mode: ${compassMode}`);
+            cycleCompassMode();
           }}
         >
           <Text style={styles.topMenuBtnText}>🧭</Text>
+          {showCompass && (
+            <Text style={{ fontSize: 8, color: '#4FC3F7', marginTop: -2 }}>
+              {getCompassModeLabel(compassMode)}
+            </Text>
+          )}
         </TouchableOpacity>
         <View style={styles.topMenuDivider} />
         
@@ -6235,7 +6281,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       if (!symbol.hasText || !symbol.textSizeKey || !symbol.textHaloKey || !symbol.textOpacityKey) return;
                       const updates: Partial<DisplaySettings> = {};
                       updates[symbol.textSizeKey] = 1.0;
-                      updates[symbol.textHaloKey] = 1.0;
+                      updates[symbol.textHaloKey] = 0.1;  // 10% default
                       updates[symbol.textOpacityKey] = 1.0;
                       const newSettings = { ...displaySettings, ...updates };
                       setDisplaySettings(newSettings);
@@ -6327,15 +6373,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                                 <Slider
                                   style={styles.displaySliderCompact}
                                   minimumValue={0}
-                                  maximumValue={2.0}
-                                  step={0.1}
+                                  maximumValue={0.25}
+                                  step={0.01}
                                   value={displaySettings[symbol.textHaloKey!] as number}
                                   onValueChange={(v) => updateValue(symbol.textHaloKey!, v)}
                                   minimumTrackTintColor="#E040FB"
                                   maximumTrackTintColor={uiTheme.sliderTrack}
                                   thumbTintColor="#E040FB"
                                 />
-                                <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>200%</Text>
+                                <Text style={[styles.sliderMaxLabelSmall, themedStyles.sliderMinMaxLabel]}>25%</Text>
                               </View>
                               <Text style={[styles.sliderValueCompact, themedStyles.sliderValueCompact]}>
                                 {formatPercent(displaySettings[symbol.textHaloKey!] as number)}

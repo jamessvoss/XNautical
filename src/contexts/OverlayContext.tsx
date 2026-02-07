@@ -11,10 +11,14 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import { GPSData } from '../hooks/useGPS';
 import { useDeviceHeading } from '../hooks/useDeviceHeading';
+import { CompassMode, getNextCompassMode } from '../utils/compassUtils';
 
 interface OverlayState {
+  compassMode: CompassMode;
+  /** @deprecated Use compassMode !== 'off' instead */
   showCompass: boolean;
   showGPSPanel: boolean;
+  showMorePanel: boolean;
   showTideDetails: boolean;
   showCurrentDetails: boolean;
   heading: number | null;
@@ -26,8 +30,13 @@ interface OverlayState {
 }
 
 interface OverlayContextType extends OverlayState {
+  setCompassMode: (mode: CompassMode) => void;
+  cycleCompassMode: () => void;
+  /** @deprecated Use setCompassMode instead */
   setShowCompass: (show: boolean) => void;
   setShowGPSPanel: (show: boolean) => void;
+  setShowMorePanel: (show: boolean) => void;
+  toggleMorePanel: () => void;
   setShowTideDetails: (show: boolean) => void;
   setShowCurrentDetails: (show: boolean) => void;
   updateGPSData: (data: GPSData) => void;
@@ -49,8 +58,10 @@ const defaultGPSData: GPSData = {
 };
 
 const OverlayContext = createContext<OverlayContextType>({
+  compassMode: 'off',
   showCompass: false,
   showGPSPanel: false,
+  showMorePanel: false,
   showTideDetails: false,
   showCurrentDetails: false,
   heading: null,
@@ -58,19 +69,42 @@ const OverlayContext = createContext<OverlayContextType>({
   gpsData: null,
   headingAccuracy: 'unknown',
   headingSensorAvailable: false,
+  setCompassMode: () => {},
+  cycleCompassMode: () => {},
   setShowCompass: () => {},
   setShowGPSPanel: () => {},
+  setShowMorePanel: () => {},
+  toggleMorePanel: () => {},
   setShowTideDetails: () => {},
   setShowCurrentDetails: () => {},
   updateGPSData: () => {},
 });
 
 export function OverlayProvider({ children }: { children: ReactNode }) {
-  const [showCompass, setShowCompass] = useState(false);
+  const [compassMode, setCompassMode] = useState<CompassMode>('off');
   const [showGPSPanel, setShowGPSPanel] = useState(false);
+  const [showMorePanel, setShowMorePanel] = useState(false);
   const [showTideDetails, setShowTideDetails] = useState(false);
   const [showCurrentDetails, setShowCurrentDetails] = useState(false);
   const [gpsData, setGPSData] = useState<GPSData>(defaultGPSData);
+
+  // Derived boolean for backward compat
+  const showCompass = compassMode !== 'off';
+
+  // Convenience: cycle through compass modes
+  const cycleCompassMode = useCallback(() => {
+    setCompassMode(prev => getNextCompassMode(prev));
+  }, []);
+
+  // Legacy setter: maps boolean to mode
+  const setShowCompass = useCallback((show: boolean) => {
+    setCompassMode(show ? 'full' : 'off');
+  }, []);
+
+  // Toggle the More panel open/closed
+  const toggleMorePanel = useCallback(() => {
+    setShowMorePanel(prev => !prev);
+  }, []);
 
   // Use sensor fusion for smooth compass heading
   // Only enable when compass is visible to save battery
@@ -99,8 +133,10 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
   }, [fusedHeading]);
 
   const value: OverlayContextType = {
+    compassMode,
     showCompass,
     showGPSPanel,
+    showMorePanel,
     showTideDetails,
     showCurrentDetails,
     // Use fused heading from sensor fusion when available, fall back to GPS data
@@ -109,8 +145,12 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     gpsData,
     headingAccuracy,
     headingSensorAvailable,
+    setCompassMode,
+    cycleCompassMode,
     setShowCompass,
     setShowGPSPanel,
+    setShowMorePanel,
+    toggleMorePanel,
     setShowTideDetails,
     setShowCurrentDetails,
     updateGPSData,

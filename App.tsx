@@ -25,7 +25,11 @@ let WeatherScreen: React.ComponentType | null = null;
 let MoreScreen: React.ComponentType | null = null;
 let ContextScreen: React.ComponentType | null = null;
 let CompassModal: React.ComponentType<{ visible: boolean; heading: number | null; course: number | null; showTideChart?: boolean; showCurrentChart?: boolean }> | null = null;
+let HalfMoonCompass: React.ComponentType<{ heading: number | null; course: number | null; showTideChart?: boolean; showCurrentChart?: boolean }> | null = null;
+let TickerTapeCompass: React.ComponentType<{ heading: number | null; course: number | null; showTideChart?: boolean; showCurrentChart?: boolean }> | null = null;
+let MinimalCompass: React.ComponentType<{ heading: number | null; course: number | null; showTideChart?: boolean; showCurrentChart?: boolean }> | null = null;
 let GPSInfoModal: React.ComponentType<{ visible: boolean; gpsData: any }> | null = null;
+let MorePanel: React.ComponentType<{ visible: boolean; onClose: () => void }> | null = null;
 
 // Modular Crashlytics API (v22+ requires passing instance as first param)
 let crashlyticsInstance: any = null;
@@ -53,8 +57,16 @@ if (Platform.OS !== 'web') {
   console.log('[App.tsx] ContextScreen loaded');
   CompassModal = require('./src/components/CompassModal').default;
   console.log('[App.tsx] CompassModal loaded');
+  HalfMoonCompass = require('./src/components/HalfMoonCompass').default;
+  console.log('[App.tsx] HalfMoonCompass loaded');
+  TickerTapeCompass = require('./src/components/TickerTapeCompass').default;
+  console.log('[App.tsx] TickerTapeCompass loaded');
+  MinimalCompass = require('./src/components/MinimalCompass').default;
+  console.log('[App.tsx] MinimalCompass loaded');
   GPSInfoModal = require('./src/components/GPSInfoModal').default;
   console.log('[App.tsx] GPSInfoModal loaded');
+  MorePanel = require('./src/components/MorePanel').default;
+  console.log('[App.tsx] MorePanel loaded');
   console.log('[App.tsx] All native screens loaded successfully');
   
   // Initialize Crashlytics for native platforms (modular API)
@@ -235,23 +247,39 @@ function MoreTab() {
 
 // Renders overlays outside the navigation hierarchy to avoid MapLibre conflicts
 function OverlayRenderer() {
-  const { showCompass, showGPSPanel, showTideDetails, showCurrentDetails, heading, course, gpsData } = useOverlay();
+  const { compassMode, showGPSPanel, showMorePanel, setShowMorePanel, showTideDetails, showCurrentDetails, heading, course, gpsData } = useOverlay();
   
+  const compassProps = {
+    heading,
+    course,
+    showTideChart: showTideDetails,
+    showCurrentChart: showCurrentDetails,
+  };
+
   return (
     <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} pointerEvents="box-none">
-      {CompassModal && showCompass && (
-        <CompassModal
-          visible={true}
-          heading={heading}
-          course={course}
-          showTideChart={showTideDetails}
-          showCurrentChart={showCurrentDetails}
-        />
+      {compassMode === 'full' && CompassModal && (
+        <CompassModal visible={true} {...compassProps} />
+      )}
+      {compassMode === 'halfmoon' && HalfMoonCompass && (
+        <HalfMoonCompass {...compassProps} />
+      )}
+      {compassMode === 'ticker' && TickerTapeCompass && (
+        <TickerTapeCompass {...compassProps} />
+      )}
+      {compassMode === 'minimal' && MinimalCompass && (
+        <MinimalCompass {...compassProps} />
       )}
       {GPSInfoModal && showGPSPanel && (
         <GPSInfoModal
           visible={true}
           gpsData={gpsData}
+        />
+      )}
+      {MorePanel && (
+        <MorePanel
+          visible={showMorePanel}
+          onClose={() => setShowMorePanel(false)}
         />
       )}
     </View>
@@ -358,6 +386,7 @@ function AppNavigator() {
   const insets = useSafeAreaInsets();
   console.log('[AppNavigator] Calling useContextNav...');
   const { setNavigationRef, contextTabName } = useContextNav();
+  const { toggleMorePanel } = useOverlay();
   console.log('[AppNavigator] useContextNav returned, contextTabName:', contextTabName);
   
   // Store navigation ref for programmatic navigation
@@ -424,6 +453,14 @@ function AppNavigator() {
           name="More" 
           component={MoreTab}
           options={{ tabBarLabel: 'More' }}
+          listeners={{
+            tabPress: (e) => {
+              // Prevent navigating to the More screen
+              e.preventDefault();
+              // Instead toggle the slide-out panel
+              toggleMorePanel();
+            },
+          }}
         />
       </Tab.Navigator>
     </NavigationContainer>

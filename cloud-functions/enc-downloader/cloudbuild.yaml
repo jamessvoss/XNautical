@@ -1,0 +1,17 @@
+# Cloud Build configuration for enc-downloader
+# Builds and pushes Docker image to Container Registry
+
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/enc-downloader:latest', '.']
+  
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/enc-downloader:latest']
+
+images:
+  - 'gcr.io/$PROJECT_ID/enc-downloader:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
