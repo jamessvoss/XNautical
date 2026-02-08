@@ -1,0 +1,17 @@
+# Cloud Build configuration for prediction-generator
+# Builds and pushes Docker image to Container Registry
+
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/prediction-generator:latest', '.']
+  
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/prediction-generator:latest']
+
+images:
+  - 'gcr.io/$PROJECT_ID/prediction-generator:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

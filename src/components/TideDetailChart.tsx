@@ -324,11 +324,9 @@ function TideDetailChart({
             {isManualSelection ? '📍 ' : ''}{stationName || 'Loading...'}
           </Text>
         </View>
-        {isManualSelection && (
-          <TouchableOpacity style={styles.clearButton} onPress={onClearSelection}>
-            <Text style={styles.clearButtonText}>✕</Text>
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity style={styles.clearButton} onPress={onClearSelection}>
+          <Text style={styles.clearButtonText}>✕</Text>
+        </TouchableOpacity>
         {nowPosition && nowPosition.value !== null && (
           <Text style={styles.currentValue}>
             {nowPosition.value.toFixed(1)} ft

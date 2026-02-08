@@ -8,7 +8,7 @@
  * for butter-smooth 60Hz updates.
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, ReactNode } from 'react';
 import { GPSData } from '../hooks/useGPS';
 import { useDeviceHeading } from '../hooks/useDeviceHeading';
 import { CompassMode, getNextCompassMode } from '../utils/compassUtils';
@@ -19,8 +19,11 @@ interface OverlayState {
   showCompass: boolean;
   showGPSPanel: boolean;
   showMorePanel: boolean;
+  showDownloads: boolean;
   showTideDetails: boolean;
   showCurrentDetails: boolean;
+  showDebugMap: boolean;
+  showNavData: boolean;
   heading: number | null;
   course: number | null;
   gpsData: GPSData | null;
@@ -37,8 +40,12 @@ interface OverlayContextType extends OverlayState {
   setShowGPSPanel: (show: boolean) => void;
   setShowMorePanel: (show: boolean) => void;
   toggleMorePanel: () => void;
+  setShowDownloads: (show: boolean) => void;
+  openDownloads: () => void;
   setShowTideDetails: (show: boolean) => void;
   setShowCurrentDetails: (show: boolean) => void;
+  setShowDebugMap: (show: boolean) => void;
+  setShowNavData: (show: boolean) => void;
   updateGPSData: (data: GPSData) => void;
 }
 
@@ -62,8 +69,11 @@ const OverlayContext = createContext<OverlayContextType>({
   showCompass: false,
   showGPSPanel: false,
   showMorePanel: false,
+  showDownloads: false,
   showTideDetails: false,
   showCurrentDetails: false,
+  showDebugMap: false,
+  showNavData: false,
   heading: null,
   course: null,
   gpsData: null,
@@ -75,8 +85,12 @@ const OverlayContext = createContext<OverlayContextType>({
   setShowGPSPanel: () => {},
   setShowMorePanel: () => {},
   toggleMorePanel: () => {},
+  setShowDownloads: () => {},
+  openDownloads: () => {},
   setShowTideDetails: () => {},
   setShowCurrentDetails: () => {},
+  setShowDebugMap: () => {},
+  setShowNavData: () => {},
   updateGPSData: () => {},
 });
 
@@ -84,8 +98,11 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
   const [compassMode, setCompassMode] = useState<CompassMode>('off');
   const [showGPSPanel, setShowGPSPanel] = useState(false);
   const [showMorePanel, setShowMorePanel] = useState(false);
+  const [showDownloads, setShowDownloads] = useState(false);
   const [showTideDetails, setShowTideDetails] = useState(false);
   const [showCurrentDetails, setShowCurrentDetails] = useState(false);
+  const [showDebugMap, setShowDebugMap] = useState(false);
+  const [showNavData, setShowNavData] = useState(false);
   const [gpsData, setGPSData] = useState<GPSData>(defaultGPSData);
 
   // Derived boolean for backward compat
@@ -103,7 +120,17 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
 
   // Toggle the More panel open/closed
   const toggleMorePanel = useCallback(() => {
-    setShowMorePanel(prev => !prev);
+    setShowMorePanel(prev => {
+      console.log('[OverlayContext] toggleMorePanel:', !prev, '(was', prev, ')');
+      return !prev;
+    });
+  }, []);
+
+  // Open Downloads: close the MorePanel and open RegionSelector in one action
+  const openDownloads = useCallback(() => {
+    console.log('[OverlayContext] openDownloads() called');
+    setShowMorePanel(false);
+    setShowDownloads(true);
   }, []);
 
   // Use sensor fusion for smooth compass heading
@@ -122,23 +149,16 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     setGPSData(data);
   }, []);
 
-  // Sync fused heading back to GPS data for components that read it from there
-  useEffect(() => {
-    if (fusedHeading !== null) {
-      setGPSData(prev => ({
-        ...prev,
-        heading: fusedHeading,
-      }));
-    }
-  }, [fusedHeading]);
-
-  const value: OverlayContextType = {
+  const value: OverlayContextType = useMemo(() => ({
     compassMode,
     showCompass,
     showGPSPanel,
     showMorePanel,
+    showDownloads,
     showTideDetails,
     showCurrentDetails,
+    showDebugMap,
+    showNavData,
     // Use fused heading from sensor fusion when available, fall back to GPS data
     heading: fusedHeading ?? gpsData.heading,
     course: gpsData.course,
@@ -151,10 +171,41 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     setShowGPSPanel,
     setShowMorePanel,
     toggleMorePanel,
+    setShowDownloads,
+    openDownloads,
     setShowTideDetails,
     setShowCurrentDetails,
+    setShowDebugMap,
+    setShowNavData,
     updateGPSData,
-  };
+  }), [
+    compassMode,
+    showCompass,
+    showGPSPanel,
+    showMorePanel,
+    showDownloads,
+    showTideDetails,
+    showCurrentDetails,
+    showDebugMap,
+    showNavData,
+    fusedHeading,
+    gpsData,
+    headingAccuracy,
+    headingSensorAvailable,
+    setCompassMode,
+    cycleCompassMode,
+    setShowCompass,
+    setShowGPSPanel,
+    setShowMorePanel,
+    toggleMorePanel,
+    setShowDownloads,
+    openDownloads,
+    setShowTideDetails,
+    setShowCurrentDetails,
+    setShowDebugMap,
+    setShowNavData,
+    updateGPSData,
+  ]);
 
   return (
     <OverlayContext.Provider value={value}>

@@ -28,7 +28,7 @@ import threading
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 from flask import Flask, request, jsonify
 from google.cloud import storage, firestore
@@ -297,6 +297,7 @@ def _convert_one(args: tuple) -> dict:
         'size_mb': 0,
         'error': None,
         'duration': 0,
+        'us1_bounds': None,
     }
 
     try:
@@ -306,6 +307,24 @@ def _convert_one(args: tuple) -> dict:
             result['success'] = True
             result['size_mb'] = mbtiles.stat().st_size / 1024 / 1024
             result['output_path'] = str(mbtiles)
+
+            # Extract bounds inline for US1 charts (eliminates separate Phase 2.5)
+            if chart_id.startswith('US1'):
+                try:
+                    conn = sqlite3.connect(str(mbtiles))
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT value FROM metadata WHERE name='bounds'")
+                    row = cursor.fetchone()
+                    conn.close()
+                    if row:
+                        b = [float(x) for x in row[0].split(',')]
+                        result['us1_bounds'] = {
+                            'name': chart_id,
+                            'west': b[0], 'south': b[1],
+                            'east': b[2], 'north': b[3],
+                        }
+                except Exception:
+                    pass
         else:
             result['error'] = 'MBTiles file not created'
     except Exception as e:
@@ -313,6 +332,56 @@ def _convert_one(args: tuple) -> dict:
 
     result['duration'] = time.time() - start
     return result
+
+
+def _merge_scale(scale: str, per_chart_dir: str, scale_pack_dir: str,
+                 district_label: str) -> tuple:
+    """Merge all per-chart MBTiles for one scale. Thread-safe.
+
+    Args:
+        scale: Scale prefix (e.g. 'US1')
+        per_chart_dir: Directory containing per-chart subdirectories
+        scale_pack_dir: Output directory for merged scale pack
+        district_label: e.g. '07cgd'
+
+    Returns:
+        (scale, result_dict_or_None)
+    """
+    input_files = []
+    per_chart_path = Path(per_chart_dir)
+    for chart_dir in per_chart_path.iterdir():
+        if chart_dir.is_dir() and chart_dir.name.startswith(scale):
+            input_files.extend(chart_dir.glob('*.mbtiles'))
+
+    if not input_files:
+        logger.info(f'  {scale}: no charts found, skipping')
+        return (scale, None)
+
+    output_path = Path(scale_pack_dir) / f'{scale}.mbtiles'
+    description = f'{scale} scale charts for {district_label}'
+
+    logger.info(f'  {scale}: merging {len(input_files)} charts...')
+
+    num_charts, size_mb, error = merge_mbtiles_batch(
+        input_files, output_path, f'{district_label}_{scale}', description
+    )
+
+    if error:
+        logger.error(f'  {scale}: FAILED - {error}')
+        return (scale, {
+            'path': None,
+            'chartCount': num_charts,
+            'sizeMB': 0,
+            'error': error,
+        })
+
+    logger.info(f'  {scale}: {num_charts} charts, {size_mb:.1f} MB')
+    return (scale, {
+        'path': output_path,
+        'chartCount': num_charts,
+        'sizeMB': size_mb,
+        'error': None,
+    })
 
 
 # ============================================================================
@@ -492,6 +561,11 @@ def convert_district():
                      f'{failed} failed, {total_size_mb:.1f} MB total, '
                      f'{convert_duration:.1f}s')
 
+        # Collect US1 chart bounds from conversion results (extracted inline
+        # during Phase 2 by _convert_one, no separate pass needed)
+        us1_bounds = [r['us1_bounds'] for r in results if r.get('us1_bounds')]
+        logger.info(f'Extracted bounds for {len(us1_bounds)} US1 charts')
+
         # Delete source files to free disk space
         logger.info('Freeing disk: removing source files...')
         shutil.rmtree(source_dir, ignore_errors=True)
@@ -504,54 +578,33 @@ def convert_district():
             'message': 'Merging charts into scale packs...',
         })
 
-        logger.info('Merging per-chart MBTiles into scale packs...')
+        logger.info('Merging per-chart MBTiles into scale packs (all scales in parallel)...')
         merge_start = time.time()
 
         scale_results = {}  # scale -> {path, chartCount, sizeMB, error}
 
-        for scale in SCALE_PREFIXES:
-            # Find all per-chart MBTiles for this scale
-            input_files = []
-            per_chart_path = Path(per_chart_dir)
-            for chart_dir in per_chart_path.iterdir():
-                if chart_dir.is_dir() and chart_dir.name.startswith(scale):
-                    mbtiles_files = list(chart_dir.glob('*.mbtiles'))
-                    input_files.extend(mbtiles_files)
+        with ThreadPoolExecutor(max_workers=len(SCALE_PREFIXES)) as merge_pool:
+            futures = {
+                merge_pool.submit(
+                    _merge_scale, scale, per_chart_dir, scale_pack_dir, district_label
+                ): scale
+                for scale in SCALE_PREFIXES
+            }
+            for future in as_completed(futures):
+                scale = futures[future]
+                try:
+                    result_scale, result_info = future.result()
+                    if result_info:
+                        scale_results[result_scale] = result_info
+                except Exception as e:
+                    logger.error(f'  {scale}: merge thread failed - {e}')
+                    scale_results[scale] = {
+                        'path': None, 'chartCount': 0, 'sizeMB': 0,
+                        'error': str(e)[:200],
+                    }
 
-            if not input_files:
-                logger.info(f'  {scale}: no charts found, skipping')
-                continue
-
-            output_path = Path(scale_pack_dir) / f'{scale}.mbtiles'
-            description = f'{scale} scale charts for {district_label}'
-
-            logger.info(f'  {scale}: merging {len(input_files)} charts...')
-
-            num_charts, size_mb, error = merge_mbtiles_batch(
-                input_files, output_path, f'{district_label}_{scale}', description
-            )
-
-            if error:
-                logger.error(f'  {scale}: FAILED - {error}')
-                scale_results[scale] = {
-                    'path': None,
-                    'chartCount': num_charts,
-                    'sizeMB': 0,
-                    'error': error,
-                }
-            else:
-                logger.info(f'  {scale}: {num_charts} charts, {size_mb:.1f} MB')
-                scale_results[scale] = {
-                    'path': output_path,
-                    'chartCount': num_charts,
-                    'sizeMB': size_mb,
-                    'error': None,
-                }
-
-            # Delete per-chart MBTiles for this scale to free disk
-            for chart_dir in per_chart_path.iterdir():
-                if chart_dir.is_dir() and chart_dir.name.startswith(scale):
-                    shutil.rmtree(chart_dir, ignore_errors=True)
+        # Clean up all per-chart dirs after all merges complete
+        shutil.rmtree(per_chart_dir, ignore_errors=True)
 
         merge_duration = time.time() - merge_start
         logger.info(f'Merge complete in {merge_duration:.1f}s')
@@ -634,6 +687,7 @@ def convert_district():
                 'completedCharts': completed,
                 'failedCharts': failed,
             },
+            'us1ChartBounds': us1_bounds,
         }, merge=True)
 
         # Build response

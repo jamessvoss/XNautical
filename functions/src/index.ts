@@ -3895,17 +3895,18 @@ async function fetchZoneForecast(zoneId: string): Promise<any> {
 }
 
 /**
- * Fetch all marine forecasts from marine.weather.gov
+ * Fetch all marine forecasts for a specific district from marine.weather.gov
  */
-async function fetchAllMarineForecasts(): Promise<Record<string, any>> {
-  const zonesSnap = await db.collection('marine-zones').get();
+async function fetchAllMarineForecastsForDistrict(districtId: string): Promise<Record<string, any>> {
+  const zonesSnap = await db.collection('marine-forecast-districts').doc(districtId)
+    .collection('marine-zones').get();
   const zones: Array<{id: string; name?: string}> = [];
   
   zonesSnap.forEach(doc => {
     zones.push({ id: doc.id, ...doc.data() as any });
   });
   
-  console.log(`Found ${zones.length} marine zones in database`);
+  console.log(`[${districtId}] Found ${zones.length} marine zones`);
   
   const forecasts: Record<string, any> = {};
   let successCount = 0;
@@ -3924,56 +3925,78 @@ async function fetchAllMarineForecasts(): Promise<Record<string, any>> {
     await delay(300);
   }
   
-  console.log(`Successfully fetched ${successCount}/${zones.length} forecasts`);
+  console.log(`[${districtId}] Successfully fetched ${successCount}/${zones.length} forecasts`);
   
   return forecasts;
 }
 
 /**
- * Save forecasts to Firebase
+ * Save forecasts to Firebase for a specific district
  */
-async function saveMarineForecasts(forecasts: Record<string, any>): Promise<number> {
+async function saveMarineForecastsForDistrict(districtId: string, forecasts: Record<string, any>): Promise<number> {
   let count = 0;
   
   for (const [zoneId, forecast] of Object.entries(forecasts)) {
     try {
-      await db.collection('marine-forecasts').doc(zoneId).set({
+      await db.collection('marine-forecast-districts').doc(districtId)
+        .collection('marine-forecasts').doc(zoneId).set({
         zoneId: zoneId,
         zoneName: forecast.zoneName || zoneId,
         advisory: forecast.advisory || '',
         synopsis: forecast.synopsis || '',
         forecast: forecast.periods,
         nwsUpdated: forecast.updated,
+        districtId: districtId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
       count++;
     } catch (error: any) {
-      console.error(`Error saving ${zoneId}:`, error.message);
+      console.error(`[${districtId}] Error saving ${zoneId}:`, error.message);
     }
   }
   
   return count;
 }
 
+// District timezone configuration
+const DISTRICT_TIMEZONES: Record<string, string> = {
+  '01cgd': 'America/New_York',      // Northeast
+  '05cgd': 'America/New_York',      // East
+  '07cgd': 'America/New_York',      // Southeast
+  '08cgd': 'America/Chicago',       // Heartland
+  '09cgd': 'America/Chicago',       // Great Lakes
+  '11cgd': 'America/Los_Angeles',   // Southwest
+  '13cgd': 'America/Los_Angeles',   // Northwest
+  '14cgd': 'Pacific/Honolulu',      // Oceania
+  '17cgd': 'America/Anchorage',     // Arctic (Alaska)
+};
+
+// NWS marine forecast update times (in local timezone)
+// NWS updates forecasts between 3-4 AM and 3-4 PM local time
+// We start checking at 3:30 AM/PM and continue until 4:30 AM/PM or until all zones are retrieved
+const NWS_UPDATE_HOURS = [3, 15]; // 3 AM and 3 PM local time (start of update window)
+
 /**
- * Check if we should be polling for updates right now
- * NWS Alaska updates at ~4 AM and ~4 PM Alaska time
+ * Check if we should be polling for updates for a specific district right now
+ * NWS updates marine forecasts between 3-4 AM and 3-4 PM in the district's local time
+ * We check from 3:30 AM/PM to 4:30 AM/PM (30 min after window starts, continues 30 min after window ends)
+ * @param districtId Optional district ID. If not provided, checks Alaska (17cgd) for backward compatibility
  */
-function isInMarineUpdateWindow(): { inWindow: boolean; windowHour?: number; minutesSinceStart?: number } {
+function isInMarineUpdateWindow(districtId?: string): { inWindow: boolean; windowHour?: number; minutesSinceStart?: number } {
+  const district = districtId || '17cgd';  // Default to Alaska for backward compatibility
+  const timezone = DISTRICT_TIMEZONES[district] || 'America/Anchorage';
   const now = new Date();
-  const alaskaTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/Anchorage' }));
-  const hour = alaskaTime.getHours();
-  const minute = alaskaTime.getMinutes();
+  const localTime = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
+  const hour = localTime.getHours();
+  const minute = localTime.getMinutes();
   const currentMinutes = hour * 60 + minute;
   
-  const UPDATE_WINDOWS = [4, 16]; // 4 AM and 4 PM Alaska time
-  
-  for (const windowHour of UPDATE_WINDOWS) {
-    const windowStart = windowHour * 60;
-    const diff = currentMinutes - windowStart;
+  for (const windowHour of NWS_UPDATE_HOURS) {
+    const windowStart = windowHour * 60 + 30; // Start checking 30 min after window begins (3:30 AM/PM)
+    const windowEnd = windowStart + 60; // Continue for 60 minutes (until 4:30 AM/PM)
     
-    if (diff >= 0 && diff < 90) {
-      return { inWindow: true, windowHour, minutesSinceStart: diff };
+    if (currentMinutes >= windowStart && currentMinutes < windowEnd) {
+      return { inWindow: true, windowHour, minutesSinceStart: currentMinutes - (windowHour * 60) };
     }
   }
   
@@ -3981,99 +4004,176 @@ function isInMarineUpdateWindow(): { inWindow: boolean; windowHour?: number; min
 }
 
 /**
- * Get the last update time from our database
+ * Get the last update info for a specific district
+ * Returns both the timestamp and the number of zones updated
+ * @param districtId Optional district ID. If not provided, checks global system collection for backward compatibility
  */
-async function getMarineLastUpdateTime(): Promise<Date | null> {
-  const metaDoc = await db.collection('system').doc('marine-forecast-meta').get();
+async function getMarineLastUpdateInfo(districtId?: string): Promise<{ timestamp: Date | null; zonesUpdated: number; totalZones: number; windowHour: number | null }> {
+  let metaDoc;
+  
+  if (districtId) {
+    metaDoc = await db.collection('marine-forecast-districts').doc(districtId)
+      .collection('system').doc('marine-forecast-meta').get();
+  } else {
+    // Backward compatibility: check global system collection
+    metaDoc = await db.collection('system').doc('marine-forecast-meta').get();
+  }
+  
   if (metaDoc.exists) {
     const data = metaDoc.data();
-    return data?.lastUpdatedAt?.toDate() || null;
+    return {
+      timestamp: data?.lastUpdatedAt?.toDate() || null,
+      zonesUpdated: data?.zonesUpdated || 0,
+      totalZones: data?.totalZones || 0,
+      windowHour: data?.windowHour || null
+    };
   }
-  return null;
+  return { timestamp: null, zonesUpdated: 0, totalZones: 0, windowHour: null };
 }
 
 /**
- * Save the last update time
+ * Save the last update info for a specific district
+ * @param districtId Optional district ID. If not provided, saves to global system collection for backward compatibility
  */
-async function saveMarineLastUpdateTime(): Promise<void> {
-  await db.collection('system').doc('marine-forecast-meta').set({
-    lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true });
+async function saveMarineLastUpdateInfo(districtId: string | undefined, zonesUpdated: number, totalZones: number, windowHour: number): Promise<void> {
+  if (districtId) {
+    await db.collection('marine-forecast-districts').doc(districtId)
+      .collection('system').doc('marine-forecast-meta').set({
+      lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      zonesUpdated,
+      totalZones,
+      windowHour
+    }, { merge: true });
+  } else {
+    // Backward compatibility: save to global system collection
+    await db.collection('system').doc('marine-forecast-meta').set({
+      lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      zonesUpdated,
+      totalZones,
+      windowHour
+    }, { merge: true });
+  }
 }
 
 /**
  * FETCH MARINE FORECASTS (Scheduled)
- * Runs every 10 minutes with smart polling during update windows
+ * Runs every 15 minutes with smart polling during update windows
+ * 
+ * Update Strategy:
+ * - NWS updates forecasts between 3-4 AM and 3-4 PM local time
+ * - We start checking at 3:30 AM/PM (30 min after window starts)
+ * - Continue checking every 15 minutes until 4:30 AM/PM OR until all zones retrieved
+ * - Supports multiple districts with different timezones
  */
 export const fetchMarineForecasts = functions
   .runWith({ timeoutSeconds: 540, memory: '1GB' })
   .pubsub
-  .schedule('every 10 minutes')
-  .timeZone('America/Anchorage')
+  .schedule('every 15 minutes')
+  .timeZone('UTC')  // Use UTC as base timezone
   .onRun(async (context) => {
-    const windowInfo = isInMarineUpdateWindow();
+    // Active districts with marine zones
+    const activeDistricts = ['17cgd', '07cgd'];  // Alaska and Southeast
     
-    if (!windowInfo.inWindow) {
-      console.log('Not in update window, skipping');
-      return null;
-    }
+    console.log('Checking marine forecast update windows for all districts...');
     
-    console.log(`In update window (${windowInfo.windowHour}:00), ${windowInfo.minutesSinceStart} min since start`);
+    const updates: Array<Promise<void>> = [];
     
-    // Check if we already updated in this window
-    const lastUpdate = await getMarineLastUpdateTime();
-    if (lastUpdate) {
-      const minutesSinceLastUpdate = (Date.now() - lastUpdate.getTime()) / 60000;
-      if (minutesSinceLastUpdate < 60) {
-        console.log(`Already updated ${Math.round(minutesSinceLastUpdate)} minutes ago, skipping`);
-        return null;
+    for (const districtId of activeDistricts) {
+      const windowInfo = isInMarineUpdateWindow(districtId);
+      
+      if (!windowInfo.inWindow) {
+        console.log(`[${districtId}] Not in update window, skipping`);
+        continue;
       }
-    }
-    
-    try {
-      console.log('Fetching forecasts from marine.weather.gov...');
-      const forecasts = await fetchAllMarineForecasts();
       
-      const count = await saveMarineForecasts(forecasts);
-      await saveMarineLastUpdateTime();
+      console.log(`[${districtId}] In update window (${windowInfo.windowHour}:00), ${windowInfo.minutesSinceStart} min since start`);
       
-      console.log(`Updated ${count} marine zone forecasts`);
+      // Check if we already successfully retrieved all zones in this window
+      const lastUpdate = await getMarineLastUpdateInfo(districtId);
       
-      // Log to daily tracker if there were issues
-      const totalZones = Object.keys(forecasts).length;
-      if (count === 0 || count < totalZones) {
-        const today = new Date().toISOString().split('T')[0];
-        const issueRef = db.collection('system').doc('marine-daily-issues');
+      if (lastUpdate.timestamp && lastUpdate.windowHour === windowInfo.windowHour) {
+        // We already updated during this window
+        if (lastUpdate.zonesUpdated === lastUpdate.totalZones && lastUpdate.totalZones > 0) {
+          console.log(`[${districtId}] Already retrieved all ${lastUpdate.totalZones} zones in this window, skipping`);
+          continue;
+        }
         
-        await issueRef.set({
-          [today]: admin.firestore.FieldValue.arrayUnion({
-            timestamp: new Date().toISOString(),
-            zonesUpdated: count,
-            totalZones,
-            updateWindow: `${windowInfo.windowHour}:00`,
-            type: count === 0 ? 'failure' : 'partial',
-          })
-        }, { merge: true });
+        // Partial update - check if we should retry
+        const minutesSinceLastUpdate = (Date.now() - lastUpdate.timestamp.getTime()) / 60000;
+        if (minutesSinceLastUpdate < 15) {
+          console.log(`[${districtId}] Recently updated ${Math.round(minutesSinceLastUpdate)} minutes ago (${lastUpdate.zonesUpdated}/${lastUpdate.totalZones} zones), waiting for next interval`);
+          continue;
+        }
       }
       
-      return null;
-    } catch (error: any) {
-      console.error('Error fetching marine forecasts:', error);
-      
+      // Schedule update for this district
+      updates.push(updateDistrictForecasts(districtId, windowInfo));
+    }
+    
+    // Wait for all district updates to complete
+    if (updates.length > 0) {
+      await Promise.all(updates);
+      console.log(`Completed ${updates.length} district update(s)`);
+    } else {
+      console.log('No districts needed updates');
+    }
+    
+    return null;
+  });
+
+/**
+ * Update forecasts for a single district
+ */
+async function updateDistrictForecasts(
+  districtId: string, 
+  windowInfo: { inWindow: boolean; windowHour?: number; minutesSinceStart?: number }
+): Promise<void> {
+  try {
+    console.log(`[${districtId}] Fetching forecasts from marine.weather.gov...`);
+    const forecasts = await fetchAllMarineForecastsForDistrict(districtId);
+    
+    const totalZones = Object.keys(forecasts).length;
+    const count = await saveMarineForecastsForDistrict(districtId, forecasts);
+    await saveMarineLastUpdateInfo(districtId, count, totalZones, windowInfo.windowHour!);
+    
+    if (count === totalZones && totalZones > 0) {
+      console.log(`[${districtId}] ✓ Successfully retrieved all ${count}/${totalZones} marine zone forecasts`);
+    } else {
+      console.log(`[${districtId}] ⚠ Partial update: ${count}/${totalZones} marine zone forecasts`);
+    }
+    
+    // Log to daily tracker if there were issues
+    if (count === 0 || count < totalZones) {
       const today = new Date().toISOString().split('T')[0];
       const issueRef = db.collection('system').doc('marine-daily-issues');
       
       await issueRef.set({
         [today]: admin.firestore.FieldValue.arrayUnion({
           timestamp: new Date().toISOString(),
-          error: error.message || 'Unknown error',
-          type: 'failure',
+          districtId,
+          zonesUpdated: count,
+          totalZones,
+          updateWindow: `${windowInfo.windowHour}:00`,
+          type: count === 0 ? 'failure' : 'partial',
         })
       }, { merge: true });
-      
-      return null;
     }
-  });
+  } catch (error: any) {
+    console.error(`[${districtId}] Error fetching marine forecasts:`, error);
+    
+    const today = new Date().toISOString().split('T')[0];
+    const issueRef = db.collection('system').doc('marine-daily-issues');
+    
+    await issueRef.set({
+      [today]: admin.firestore.FieldValue.arrayUnion({
+        timestamp: new Date().toISOString(),
+        districtId,
+        error: error.message || 'Unknown error',
+        type: 'failure',
+      })
+    }, { merge: true });
+  }
+}
 
 /**
  * DAILY MARINE FORECAST SUMMARY (Scheduled)
@@ -4145,24 +4245,71 @@ export const dailyMarineForecastSummary = functions
 /**
  * REFRESH MARINE FORECASTS (Manual HTTP Trigger)
  * Bypasses smart polling to immediately refresh all forecasts
+ * Supports district parameter: /refreshMarineForecasts?district=07cgd
+ * or all districts: /refreshMarineForecasts
  */
 export const refreshMarineForecasts = functions
   .runWith({ timeoutSeconds: 540, memory: '1GB' })
   .https.onRequest(async (req, res) => {
     try {
-      console.log('Manual marine forecast refresh triggered');
+      const districtId = req.query.district as string | undefined;
       
-      const forecasts = await fetchAllMarineForecasts();
-      const count = await saveMarineForecasts(forecasts);
-      await saveMarineLastUpdateTime();
-      
-      console.log(`Manual refresh complete: ${count} zones updated`);
-      
-      res.json({
-        success: true,
-        forecastsUpdated: count,
-        totalZonesFetched: Object.keys(forecasts).length,
-      });
+      if (districtId) {
+        console.log(`Manual marine forecast refresh triggered for district: ${districtId}`);
+        
+        const forecasts = await fetchAllMarineForecastsForDistrict(districtId);
+        const totalZones = Object.keys(forecasts).length;
+        const count = await saveMarineForecastsForDistrict(districtId, forecasts);
+        
+        // Save with current hour as window (for manual refresh tracking)
+        const now = new Date();
+        const timezone = DISTRICT_TIMEZONES[districtId] || 'America/New_York';
+        const localTime = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
+        const currentHour = localTime.getHours();
+        
+        await saveMarineLastUpdateInfo(districtId, count, totalZones, currentHour);
+        
+        console.log(`Manual refresh complete for ${districtId}: ${count} zones updated`);
+        
+        res.json({
+          success: true,
+          districtId,
+          forecastsUpdated: count,
+          totalZonesFetched: totalZones,
+        });
+      } else {
+        console.log('Manual marine forecast refresh triggered for all districts');
+        
+        const activeDistricts = ['17cgd', '07cgd'];  // Alaska and Southeast
+        const results = [];
+        
+        for (const district of activeDistricts) {
+          const forecasts = await fetchAllMarineForecastsForDistrict(district);
+          const totalZones = Object.keys(forecasts).length;
+          const count = await saveMarineForecastsForDistrict(district, forecasts);
+          
+          // Save with current hour as window (for manual refresh tracking)
+          const now = new Date();
+          const timezone = DISTRICT_TIMEZONES[district] || 'America/New_York';
+          const localTime = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
+          const currentHour = localTime.getHours();
+          
+          await saveMarineLastUpdateInfo(district, count, totalZones, currentHour);
+          
+          results.push({
+            districtId: district,
+            forecastsUpdated: count,
+            totalZonesFetched: totalZones,
+          });
+          
+          console.log(`Refreshed ${district}: ${count} zones updated`);
+        }
+        
+        res.json({
+          success: true,
+          districts: results,
+        });
+      }
     } catch (error: any) {
       console.error('Error in manual marine forecast refresh:', error);
       res.status(500).json({ success: false, error: error.message });

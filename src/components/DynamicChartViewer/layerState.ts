@@ -26,6 +26,19 @@ export const initialLayerVisibility: LayerVisibility = {
   anchorages: true,
   anchorBerths: true,
   marineFarms: true,
+  // Additional layers
+  bridges: true,
+  buildings: true,
+  moorings: true,
+  shorelineConstruction: true,
+  seaAreaNames: false,
+  landRegions: false,
+  gnisNames: false,
+  tideStations: true,
+  currentStations: true,
+  liveBuoys: true,
+  tideDetails: false,
+  currentDetails: false,
 };
 
 export function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityAction): LayerVisibility {

@@ -51,6 +51,19 @@ export interface LayerVisibility {
   anchorages: boolean;
   anchorBerths: boolean;
   marineFarms: boolean;
+  // Additional layers
+  bridges: boolean;
+  buildings: boolean;
+  moorings: boolean;
+  shorelineConstruction: boolean;
+  seaAreaNames: boolean;
+  landRegions: boolean;
+  gnisNames: boolean;
+  tideStations: boolean;
+  currentStations: boolean;
+  liveBuoys: boolean;
+  tideDetails: boolean;
+  currentDetails: boolean;
 }
 
 export type LayerVisibilityAction = 

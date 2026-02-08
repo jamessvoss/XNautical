@@ -251,8 +251,78 @@ export async function getAvailableDistricts(): Promise<{ id: string; name: strin
 }
 
 /**
+ * District prefix mapping.
+ * Maps Firestore district IDs to local filename prefixes for chart files.
+ * Alaska uses 'alaska' for backward compatibility; others use their district ID.
+ */
+const DISTRICT_PREFIXES: Record<string, string> = {
+  '01cgd': 'd01',
+  '05cgd': 'd05',
+  '07cgd': 'd07',
+  '08cgd': 'd08',
+  '09cgd': 'd09',
+  '11cgd': 'd11',
+  '13cgd': 'd13',
+  '14cgd': 'd14',
+  '17cgd': 'alaska', // legacy naming
+};
+
+/**
+ * GNIS filename mapping per district.
+ */
+const GNIS_FILENAMES: Record<string, string> = {
+  '01cgd': 'gnis_names_ne.mbtiles',
+  '05cgd': 'gnis_names_ma.mbtiles',
+  '07cgd': 'gnis_names_se.mbtiles',
+  '08cgd': 'gnis_names_gc.mbtiles',
+  '09cgd': 'gnis_names_gl.mbtiles',
+  '11cgd': 'gnis_names_sw.mbtiles',
+  '13cgd': 'gnis_names_pnw.mbtiles',
+  '14cgd': 'gnis_names_hi.mbtiles',
+  '17cgd': 'gnis_names_ak.mbtiles',
+};
+
+/**
+ * Basemap filename mapping per district.
+ */
+const BASEMAP_FILENAMES: Record<string, string> = {
+  '01cgd': 'basemap_ne.mbtiles',
+  '05cgd': 'basemap_ma.mbtiles',
+  '07cgd': 'basemap_se.mbtiles',
+  '08cgd': 'basemap_gc.mbtiles',
+  '09cgd': 'basemap_gl.mbtiles',
+  '11cgd': 'basemap_sw.mbtiles',
+  '13cgd': 'basemap_pnw.mbtiles',
+  '14cgd': 'basemap_hi.mbtiles',
+  '17cgd': 'basemap_alaska.mbtiles',
+};
+
+/**
+ * District bounds mapping for manifest generation.
+ */
+const DISTRICT_BOUNDS: Record<string, { south: number; west: number; north: number; east: number }> = {
+  '01cgd': { south: 39.5, west: -74.5, north: 47.5, east: -65.5 },
+  '05cgd': { south: 33.0, west: -81.0, north: 41.0, east: -73.5 },
+  '07cgd': { south: 17.0, west: -83.5, north: 34.0, east: -64.0 },
+  '08cgd': { south: 24.0, west: -98.0, north: 31.0, east: -82.0 },
+  '09cgd': { south: 40.5, west: -95.0, north: 49.5, east: -75.5 },
+  '11cgd': { south: 32.0, west: -123.5, north: 37.5, east: -117.0 },
+  '13cgd': { south: 35.0, west: -127.0, north: 49.5, east: -122.0 },
+  '14cgd': { south: 18.0, west: -162.0, north: 23.0, east: -154.0 },
+  '17cgd': { south: 51.0, west: -180.0, north: 71.5, east: -130.0 },
+};
+
+/**
+ * Get the file prefix for a district.
+ */
+function getDistrictPrefix(districtId: string): string {
+  return DISTRICT_PREFIXES[districtId] || districtId;
+}
+
+/**
  * Map storage path to local filename.
  * e.g., '17cgd/charts/US4.mbtiles.zip' -> 'alaska_US4.mbtiles'
+ * e.g., '11cgd/charts/US4.mbtiles.zip' -> 'd11_US4.mbtiles'
  */
 function getLocalFilename(pack: DistrictDownloadPack, districtId: string): string {
   // Get the base filename from storage path
@@ -262,34 +332,27 @@ function getLocalFilename(pack: DistrictDownloadPack, districtId: string): strin
   
   // Prefix with district name for charts
   if (pack.type === 'charts' && pack.band) {
-    // Map district IDs to prefixes
-    const districtPrefixes: Record<string, string> = {
-      '17cgd': 'alaska',
-      // Add more as needed
-    };
-    const prefix = districtPrefixes[districtId] || districtId;
+    const prefix = getDistrictPrefix(districtId);
     return `${prefix}_${pack.band}.mbtiles`;
   }
   
-  // GNIS files have region suffix in the actual filename
+  // GNIS files - use district-specific filenames
   if (pack.type === 'gnis') {
-    const gnisRegionMap: Record<string, string> = {
-      '17cgd': 'gnis_names_ak.mbtiles',
-      // Add more as needed
-    };
-    return gnisRegionMap[districtId] || baseFilename;
+    return GNIS_FILENAMES[districtId] || baseFilename;
   }
   
-  // Basemap files have region suffix in the actual filename
+  // Basemap files - use district-specific filenames
   if (pack.type === 'basemap') {
-    const basemapRegionMap: Record<string, string> = {
-      '17cgd': 'basemap_alaska.mbtiles',
-      // Add more as needed
-    };
-    return basemapRegionMap[districtId] || baseFilename;
+    return BASEMAP_FILENAMES[districtId] || baseFilename;
   }
   
-  // For other types, use the base filename
+  // Ocean and terrain files - use the base filename directly (per-zoom pattern)
+  // e.g., ocean_z0-5.mbtiles, terrain_z8.mbtiles
+  if (pack.type === 'ocean' || pack.type === 'terrain') {
+    return baseFilename;
+  }
+  
+  // For other types (satellite, etc.), use the base filename
   return baseFilename;
 }
 
@@ -449,10 +512,7 @@ export async function getInstalledPackIds(districtId: string): Promise<string[]>
     const mbtilesFiles = files.filter(f => f.endsWith('.mbtiles'));
     
     // Map filenames back to pack IDs
-    const districtPrefixes: Record<string, string> = {
-      '17cgd': 'alaska',
-    };
-    const prefix = districtPrefixes[districtId] || districtId;
+    const prefix = getDistrictPrefix(districtId);
     
     const installedPackIds: string[] = [];
     
@@ -462,19 +522,36 @@ export async function getInstalledPackIds(districtId: string): Promise<string[]>
         const band = file.replace(`${prefix}_`, '').replace('.mbtiles', '');
         installedPackIds.push(`charts-${band}`);
       }
-      // Check for basemap (may be basemap.mbtiles or basemap_alaska.mbtiles)
-      else if (file === 'basemap.mbtiles' || file === 'basemap_alaska.mbtiles') {
-        installedPackIds.push('basemap');
+      // Check for basemap (any district basemap file)
+      else if (file.startsWith('basemap') && file.endsWith('.mbtiles')) {
+        // Check if this basemap belongs to the requested district
+        const expectedBasemap = BASEMAP_FILENAMES[districtId];
+        if (file === expectedBasemap || file === 'basemap.mbtiles') {
+          installedPackIds.push('basemap');
+        }
       }
-      // Check for GNIS (may be gnis_names.mbtiles or gnis_names_ak.mbtiles)
-      else if (file === 'gnis_names.mbtiles' || file === 'gnis_names_ak.mbtiles') {
-        installedPackIds.push('gnis');
+      // Check for GNIS (any district gnis file)
+      else if (file.startsWith('gnis_names') && file.endsWith('.mbtiles')) {
+        // Check if this GNIS belongs to the requested district
+        const expectedGnis = GNIS_FILENAMES[districtId];
+        if (file === expectedGnis || file === 'gnis_names.mbtiles') {
+          installedPackIds.push('gnis');
+        }
       }
       // Check for satellite files (e.g., satellite_z0-5.mbtiles -> satellite-z0-5)
       else if (file.startsWith('satellite_z')) {
-        // Extract zoom level identifier (e.g., "z0-5", "z8", "z14")
         const zoomPart = file.replace('satellite_', '').replace('.mbtiles', '');
         installedPackIds.push(`satellite-${zoomPart}`);
+      }
+      // Check for ocean files (e.g., ocean_z0-5.mbtiles -> ocean-z0-5)
+      else if (file.startsWith('ocean_z') && file.endsWith('.mbtiles')) {
+        const zoomPart = file.replace('ocean_', '').replace('.mbtiles', '');
+        installedPackIds.push(`ocean-${zoomPart}`);
+      }
+      // Check for terrain files (e.g., terrain_z0-5.mbtiles -> terrain-z0-5)
+      else if (file.startsWith('terrain_z') && file.endsWith('.mbtiles')) {
+        const zoomPart = file.replace('terrain_', '').replace('.mbtiles', '');
+        installedPackIds.push(`terrain-${zoomPart}`);
       }
     }
     
@@ -541,17 +618,9 @@ export async function generateManifest(districtId: string): Promise<void> {
     
     const files = await FileSystem.readDirectoryAsync(mbtilesDir);
     
-    // District-specific prefix mapping
-    const districtPrefixes: Record<string, string> = {
-      '17cgd': 'alaska',
-    };
-    const prefix = districtPrefixes[districtId] || districtId;
-    
-    // Alaska bounds
-    const districtBounds: Record<string, { south: number; west: number; north: number; east: number }> = {
-      '17cgd': { south: 51.0, west: -180.0, north: 71.5, east: -130.0 },
-    };
-    const bounds = districtBounds[districtId] || { south: -90, west: -180, north: 90, east: 180 };
+    // Use generalized prefix and bounds mappings
+    const prefix = getDistrictPrefix(districtId);
+    const bounds = DISTRICT_BOUNDS[districtId] || { south: -90, west: -180, north: 90, east: 180 };
     
     // Zoom ranges for each chart scale
     const scaleZoomRanges: Record<string, { minZoom: number; maxZoom: number }> = {

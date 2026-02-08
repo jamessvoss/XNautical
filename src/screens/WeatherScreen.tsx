@@ -82,6 +82,10 @@ export default function WeatherScreen() {
   const [activeView, setActiveView] = useState<WeatherView>('zones');
   const [isFullscreen, setIsFullscreen] = useState(true);
   
+  // TODO: Integrate with region selector to allow users to choose district
+  // For now, default to Alaska (17cgd) where marine zone data exists
+  const [currentDistrict] = useState<string>('17cgd');
+  
   // Marine zones state
   const [zones, setZones] = useState<MarineZone[]>([]);
   const [loadingZones, setLoadingZones] = useState(false);
@@ -115,7 +119,7 @@ export default function WeatherScreen() {
     setLoadingZones(true);
     try {
       await waitForAuth();
-      const zoneList = await getMarineZones(); // Get full geometry for map
+      const zoneList = await getMarineZones(currentDistrict); // Get full geometry for map
       setZones(zoneList);
     } catch (error) {
       console.error('Error loading marine zones:', error);
@@ -139,7 +143,7 @@ export default function WeatherScreen() {
     setSelectedZone(zone);
     setLoadingForecast(true);
     try {
-      const forecast = await getMarineForecast(zone.id);
+      const forecast = await getMarineForecast(currentDistrict, zone.id);
       setZoneForecast(forecast);
     } catch (error) {
       console.error('Error loading forecast:', error);

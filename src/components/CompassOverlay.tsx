@@ -33,6 +33,7 @@ interface Props {
   visible: boolean;
   showTideChart?: boolean;    // Tide detail chart visible at bottom
   showCurrentChart?: boolean; // Current detail chart visible at bottom
+  showNavData?: boolean;      // Nav data boxes visible (reduces compass size)
 }
 
 // Chart height as percentage of screen (must match TideDetailChart/CurrentDetailChart)
@@ -343,9 +344,15 @@ export default function CompassOverlay({
   visible,
   showTideChart = false,
   showCurrentChart = false,
+  showNavData = false,
 }: Props) {
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
-  const size = Math.min(screenWidth, screenHeight) - 20;
+  
+  // Calculate compass size
+  // When nav data is showing, constrain to fit between the lower left/right boxes
+  // The nav boxes have minWidth: 80px but can be wider with content, so add extra margin
+  const availableWidth = showNavData ? screenWidth - 200 : screenWidth; // Conservative: 100px margin on each side
+  const size = Math.min(availableWidth, screenHeight) - 20;
   const center = size / 2;
   
   // Calculate vertical offset based on visible charts

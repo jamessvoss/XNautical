@@ -14,6 +14,8 @@ import {
   Alert,
   InteractionManager,
   Dimensions,
+  Switch,
+  Modal,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -52,9 +54,12 @@ import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
 import { fetchTideStations, fetchCurrentStations, getCachedTideStations, getCachedCurrentStations, loadFromStorage, TideStation, CurrentStation } from '../services/stationService';
 import { calculateAllStationStates, TideStationState, CurrentStationState, createIconNameMap } from '../services/stationStateService';
+import { getBuoysCatalog, getBuoy, BuoySummary, Buoy } from '../services/buoyService';
 import StationInfoModal from './StationInfoModal';
 import TideDetailChart from './TideDetailChart';
 import CurrentDetailChart from './CurrentDetailChart';
+import BuoyDetailModal from './BuoyDetailModal';
+import { Ionicons } from '@expo/vector-icons';
 
 // MapLibre doesn't require an access token
 
@@ -149,6 +154,9 @@ const NAV_SYMBOLS: Record<string, any> = {
   'current-100': require('../../assets/symbols/png/current-100.png'),
   // Shared halo for tide and current icons
   'arrow-halo': require('../../assets/symbols/png/arrow-halo.png'),
+  // Live Buoys
+  'livebuoy': require('../../assets/symbols/Custom Symbols/LiveBuoy.png'),
+  'livebuoy-halo': require('../../assets/symbols/Custom Symbols/LiveBuoy-halo.png'),
 };
 
 // Display feature configuration for the Display Settings tab
@@ -241,6 +249,7 @@ const SYMBOL_FEATURES: SymbolFeatureConfig[] = [
   { id: 'tideRips', label: 'Tide Rips', sizeKey: 'tideRipsSymbolSizeScale', haloKey: 'tideRipsSymbolHaloScale', opacityKey: 'tideRipsSymbolOpacityScale', color: '#00CED1', hasHalo: true },
   { id: 'tideStations', label: 'Tide Stations', sizeKey: 'tideStationSymbolSizeScale', haloKey: 'tideStationSymbolHaloScale', opacityKey: 'tideStationSymbolOpacityScale', color: '#0066CC', hasHalo: true, hasText: true, textSizeKey: 'tideStationTextSizeScale', textHaloKey: 'tideStationTextHaloScale', textOpacityKey: 'tideStationTextOpacityScale' },
   { id: 'currentStations', label: 'Current Stations', sizeKey: 'currentStationSymbolSizeScale', haloKey: 'currentStationSymbolHaloScale', opacityKey: 'currentStationSymbolOpacityScale', color: '#CC0066', hasHalo: true, hasText: true, textSizeKey: 'currentStationTextSizeScale', textHaloKey: 'currentStationTextHaloScale', textOpacityKey: 'currentStationTextOpacityScale' },
+  { id: 'liveBuoys', label: 'Live Buoys', sizeKey: 'liveBuoySymbolSizeScale', haloKey: 'liveBuoySymbolHaloScale', opacityKey: 'liveBuoySymbolOpacityScale', color: '#FF8C00', hasHalo: true },
 ];
 
 // Feature lookup optimization constants (moved outside component for performance)
@@ -530,6 +539,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     gnisNames: showGNISNames,
     tideStations: showTideStations,
     currentStations: showCurrentStations,
+    liveBuoys: showLiveBuoys,
     tideDetails: showTideDetails,
     currentDetails: showCurrentDetails,
   } = layers;
@@ -545,9 +555,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [tideStations, setTideStations] = useState<TideStation[]>([]);
   const [currentStations, setCurrentStations] = useState<CurrentStation[]>([]);
   
+  // Live Buoy data
+  const [liveBuoys, setLiveBuoys] = useState<BuoySummary[]>([]);
+  const [selectedBuoy, setSelectedBuoy] = useState<Buoy | null>(null);
+  const [loadingBuoyDetail, setLoadingBuoyDetail] = useState(false);
+  
   // Station icon states (calculated every 15 minutes)
-  const [tideIconMap, setTideIconMap] = useState<Map<string, { iconName: string; rotation: number; currentHeight: number | null }>>(new Map());
-  const [currentIconMap, setCurrentIconMap] = useState<Map<string, { iconName: string; rotation: number; currentVelocity: number | null }>>(new Map());
+  const [tideIconMap, setTideIconMap] = useState<Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null }>>(new Map());
+  const [currentIconMap, setCurrentIconMap] = useState<Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null }>>(new Map());
   
   // Station modal state
   const [selectedStation, setSelectedStation] = useState<{
@@ -559,6 +574,46 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // State for detail chart station selection (separate from modal selection)
   const [detailChartTideStationId, setDetailChartTideStationId] = useState<string | null>(null);
   const [detailChartCurrentStationId, setDetailChartCurrentStationId] = useState<string | null>(null);
+  
+  // Handler for buoy clicks - load and display buoy detail
+  const handleBuoyClick = async (buoyId: string) => {
+    console.log('[BUOY] Clicked:', buoyId);
+    setLoadingBuoyDetail(true);
+    try {
+      const detail = await getBuoy(buoyId);
+      setSelectedBuoy(detail);
+      console.log('[BUOY] Loaded detail:', detail?.name);
+    } catch (error) {
+      console.error('[BUOY] Error loading detail:', error);
+      setSelectedBuoy(null);
+    } finally {
+      setLoadingBuoyDetail(false);
+    }
+  };
+
+  // Handler for selecting a special feature (tide/current station, live buoy) from the picker
+  const handleSpecialFeatureSelect = (feature: FeatureInfo) => {
+    const specialType = feature.properties?._specialType;
+    const id = feature.properties?.id;
+    if (!id) return;
+    
+    switch (specialType) {
+      case 'tideStation':
+        console.log('[TIDE PIN SELECT] Station:', id);
+        setDetailChartTideStationId(id);
+        dispatchLayers({ type: 'SET', layer: 'tideDetails', value: true });
+        break;
+      case 'currentStation':
+        console.log('[CURRENT PIN SELECT] Station:', id);
+        setDetailChartCurrentStationId(id);
+        dispatchLayers({ type: 'SET', layer: 'currentDetails', value: true });
+        break;
+      case 'liveBuoy':
+        console.log('[BUOY PIN SELECT] Buoy:', id);
+        handleBuoyClick(id);
+        break;
+    }
+  };
   
   const [showPopulatedNames, setShowPopulatedNames] = useState(true); // Towns, ports
   const [showStreamNames, setShowStreamNames] = useState(false);    // Rivers, creeks (off by default - too many)
@@ -667,13 +722,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     tideRipsSymbolOpacityScale: 1.0,
     tideStationSymbolOpacityScale: 1.0,
     currentStationSymbolOpacityScale: 1.0,
+    // Live Buoy symbol
+    liveBuoySymbolSizeScale: 1.0,
+    liveBuoySymbolHaloScale: 0.05,
+    liveBuoySymbolOpacityScale: 1.0,
     // Tide station text
     tideStationTextSizeScale: 1.0,
-    tideStationTextHaloScale: 0.1,   // 10% default, max 25%
+    tideStationTextHaloScale: 0.05,  // 5% default, max 25%
     tideStationTextOpacityScale: 1.0,
     // Current station text
     currentStationTextSizeScale: 1.0,
-    currentStationTextHaloScale: 0.1, // 10% default, max 25%
+    currentStationTextHaloScale: 0.05, // 5% default, max 25%
     currentStationTextOpacityScale: 1.0,
     // Other settings
     dayNightMode: 'day',
@@ -1234,7 +1293,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [displaySettings.tideStationTextSizeScale]);
 
   const scaledTideStationTextHalo = useMemo(() => 
-    1.5 * (displaySettings.tideStationTextHaloScale ?? 0.1),
+    15 * (displaySettings.tideStationTextHaloScale ?? 0.05),
     [displaySettings.tideStationTextHaloScale]
   );
 
@@ -1264,13 +1323,33 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [displaySettings.currentStationTextSizeScale]);
 
   const scaledCurrentStationTextHalo = useMemo(() => 
-    1.5 * (displaySettings.currentStationTextHaloScale ?? 0.1),
+    15 * (displaySettings.currentStationTextHaloScale ?? 0.05),
     [displaySettings.currentStationTextHaloScale]
   );
 
   const scaledCurrentStationTextOpacity = useMemo(() => 
     Math.min(1, Math.max(0, displaySettings.currentStationTextOpacityScale ?? 1.0)),
     [displaySettings.currentStationTextOpacityScale]
+  );
+
+  // Live buoy symbol scaling
+  const scaledLiveBuoyIconSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    5, 0.2 * (displaySettings.liveBuoySymbolSizeScale ?? 1.0),
+    10, 0.5 * (displaySettings.liveBuoySymbolSizeScale ?? 1.0),
+    14, 1.0 * (displaySettings.liveBuoySymbolSizeScale ?? 1.0),
+  ], [displaySettings.liveBuoySymbolSizeScale]);
+
+  const scaledLiveBuoyHaloSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    5, 0.2 * (displaySettings.liveBuoySymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.liveBuoySymbolHaloScale ?? 0.05)),
+    10, 0.5 * (displaySettings.liveBuoySymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.liveBuoySymbolHaloScale ?? 0.05)),
+    14, 1.0 * (displaySettings.liveBuoySymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.liveBuoySymbolHaloScale ?? 0.05)),
+  ], [displaySettings.liveBuoySymbolSizeScale, displaySettings.liveBuoySymbolHaloScale]);
+
+  const scaledLiveBuoySymbolOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.liveBuoySymbolOpacityScale ?? 1.0)),
+    [displaySettings.liveBuoySymbolOpacityScale]
   );
 
   // Note: Symbol halos disabled - will implement with white symbol versions later
@@ -1312,10 +1391,41 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [s52Mode, setS52ModeInternal] = useState<S52DisplayMode>('dusk');
   const [uiTheme, setUITheme] = useState(themeService.getUITheme('dusk'));
   
-  // Map style options (satellite, light basemap, or chart-based)
-  type MapStyleOption = 'satellite' | 'light' | 'chart';
+  // Map style options
+  type MapStyleOption = 'satellite' | 'light' | 'dark' | 'nautical' | 'street' | 'ocean' | 'terrain';
   const [mapStyle, setMapStyleInternal] = useState<MapStyleOption>('satellite');
+  
+  // Which styles use the vector basemap tiles (Light/Dark/Nautical/Street all share one download)
+  const VECTOR_BASEMAP_STYLES: MapStyleOption[] = ['light', 'dark', 'nautical', 'street'];
+  const isVectorStyle = VECTOR_BASEMAP_STYLES.includes(mapStyle);
+  
+  // Local basemap availability
   const [hasLocalBasemap, setHasLocalBasemap] = useState(false);
+  
+  // Ocean and Terrain tile sets - per-zoom MBTiles (same pattern as satellite)
+  interface TileSet { id: string; minZoom: number; maxZoom: number; }
+  const [oceanTileSets, setOceanTileSets] = useState<TileSet[]>([]);
+  const [terrainTileSets, setTerrainTileSets] = useState<TileSet[]>([]);
+  const hasLocalOcean = oceanTileSets.length > 0;
+  const hasLocalTerrain = terrainTileSets.length > 0;
+  
+  // Basemap tile sets - per-zoom vector MBTiles
+  const [basemapTileSets, setBasemapTileSets] = useState<TileSet[]>([]);
+  
+  // Debug map overrides - toggle individual map sources on/off
+  // Keys: 'satellite', 'charts', 'bathymetry', 'gnis', 'basemap', 'ocean', 'terrain'
+  const [debugHiddenSources, setDebugHiddenSources] = useState<Set<string>>(new Set());
+  const debugIsSourceVisible = useCallback((sourceId: string) => {
+    return !debugHiddenSources.has(sourceId);
+  }, [debugHiddenSources]);
+  const debugToggleSource = useCallback((sourceId: string) => {
+    setDebugHiddenSources(prev => {
+      const next = new Set(prev);
+      if (next.has(sourceId)) next.delete(sourceId);
+      else next.add(sourceId);
+      return next;
+    });
+  }, []);
   
   // Set S-52 display mode and update theme
   const setS52Mode = useCallback(async (mode: S52DisplayMode) => {
@@ -1460,19 +1570,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     featurePopupText: {
       color: uiTheme.textSecondary,
     },
-    // Zoom badge
-    zoomBadge: {
-      backgroundColor: s52Mode === 'day' ? 'rgba(0,0,0,0.5)' : uiTheme.cardBackground,
-    },
-    zoomText: {
-      color: '#FFFFFF', // Always white on dark translucent badge
-    },
-    coordBadge: {
-      backgroundColor: s52Mode === 'day' ? 'rgba(0,0,0,0.5)' : uiTheme.cardBackground,
-    },
-    coordText: {
-      color: '#FFFFFF', // Always white on dark translucent badge
-    },
     // Layers tab
     layersColumnTitle: {
       color: uiTheme.textPrimary,
@@ -1550,12 +1647,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   
   // Satellite tile sets - each file covers specific zoom levels
   // Format: satellite_z8.mbtiles, satellite_z0-5.mbtiles, etc.
-  interface SatelliteTileSet {
-    id: string;      // filename without .mbtiles
-    minZoom: number;
-    maxZoom: number;
-  }
-  const [satelliteTileSets, setSatelliteTileSets] = useState<SatelliteTileSet[]>([]);
+  const [satelliteTileSets, setSatelliteTileSets] = useState<TileSet[]>([]);
   
   // Wrapper for setMapStyle with timing logs
   const setMapStyle = useCallback((newStyle: MapStyleOption) => {
@@ -1577,38 +1669,244 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Get S-52 colors for current mode
   const s52Colors = useMemo(() => themeService.getS52ColorTable(s52Mode), [s52Mode]);
   
-  // Minimal offline style - land colored background, water rendered on top
-  // Uses S-52 color tokens for proper day/dusk/night support
-  const localOfflineStyle = useMemo(() => ({
-    version: 8,
-    name: 'Local Offline',
-    glyphs: glyphsUrl,
-    sources: {},
-    layers: [
-      {
-        id: 'background',
-        type: 'background',
-        paint: { 'background-color': s52Colors.LANDA } // Land color from S-52 theme
-      }
-    ]
-  }), [s52Colors, glyphsUrl]);
-  
-  // MapLibre uses S-52 themed backgrounds
-  const mapStyleUrls = useMemo<Record<MapStyleOption, string | object>>(() => ({
+  // Basemap color palettes - one palette per vector style, driven by S-52 mode
+  // These are used by the shared VectorSource layers to render Light/Dark/Nautical/Street
+  const basemapPalette = useMemo(() => {
+    const palettes = {
+      light: {
+        bg: '#f5f5f5',
+        water: '#aadaff',
+        waterway: '#aadaff',
+        ice: '#ffffff',
+        grass: '#d8e8c8',
+        wood: '#c5ddb0',
+        wetland: '#d0e8d8',
+        residential: '#eee8e0',
+        industrial: '#e8e0d8',
+        park: '#c8e6c9',
+        building: '#e0d8d0',
+        road: '#ffffff',
+        roadCasing: '#cccccc',
+        text: '#333333',
+        textHalo: '#ffffff',
+        grid: '#c8c8c8',
+        waterText: '#5d8cae',
+        landcoverOpacity: 0.6,
+        buildingOpacity: 0.8,
+        parkOpacity: 0.4,
+        roadNightDim: 1,
+      },
+      dark: {
+        bg: '#1a1a2e',
+        water: '#1a3a5c',
+        waterway: '#1a3a5c',
+        ice: '#303040',
+        grass: '#1a2818',
+        wood: '#142014',
+        wetland: '#152818',
+        residential: '#252028',
+        industrial: '#201c24',
+        park: '#152018',
+        building: '#302830',
+        road: '#444444',
+        roadCasing: '#222222',
+        text: '#cccccc',
+        textHalo: '#1a1a2e',
+        grid: '#404050',
+        waterText: '#4a6a8a',
+        landcoverOpacity: 0.4,
+        buildingOpacity: 0.5,
+        parkOpacity: 0.3,
+        roadNightDim: 0.6,
+      },
+      nautical: {
+        bg: s52Colors.LANDA,
+        water: s52Colors.WATRW,
+        waterway: s52Colors.WATRW,
+        ice: s52Mode === 'day' ? '#ffffff' : s52Mode === 'dusk' ? '#404050' : '#202028',
+        grass: s52Mode === 'day' ? '#d8e8c8' : s52Mode === 'dusk' ? '#2a3a28' : '#181c18',
+        wood: s52Mode === 'day' ? '#c5ddb0' : s52Mode === 'dusk' ? '#283820' : '#141c14',
+        wetland: s52Mode === 'day' ? '#d0e8d8' : s52Mode === 'dusk' ? '#203830' : '#101814',
+        residential: s52Colors.CHBRN,
+        industrial: s52Colors.CHBRN,
+        park: s52Mode === 'day' ? '#c8e6c9' : s52Mode === 'dusk' ? '#203828' : '#101810',
+        building: s52Colors.CHBRN,
+        road: s52Colors.ROADF,
+        roadCasing: s52Colors.ROADC,
+        text: s52Colors.CHBLK,
+        textHalo: s52Mode === 'day' ? '#FFFFFF' : s52Colors.LANDA,
+        grid: s52Colors.CHGRD,
+        waterText: s52Mode === 'day' ? '#5d8cae' : s52Mode === 'dusk' ? '#6080a0' : '#304050',
+        landcoverOpacity: s52Mode === 'day' ? 0.6 : s52Mode === 'dusk' ? 0.3 : 0.1,
+        buildingOpacity: s52Mode === 'day' ? 0.8 : s52Mode === 'dusk' ? 0.4 : 0.15,
+        parkOpacity: s52Mode === 'day' ? 0.4 : s52Mode === 'dusk' ? 0.2 : 0.08,
+        roadNightDim: s52Mode === 'night' ? 0.3 : s52Mode === 'dusk' ? 0.7 : 1,
+      },
+      street: {
+        bg: '#f0ede8',
+        water: '#aadaff',
+        waterway: '#aadaff',
+        ice: '#f0f0f0',
+        grass: '#cde6b8',
+        wood: '#b8d8a0',
+        wetland: '#c0dcc8',
+        residential: '#f0e8e0',
+        industrial: '#e8dcd0',
+        park: '#b8d8a0',
+        building: '#d8d0c0',
+        road: '#fff5c0',
+        roadCasing: '#c8b870',
+        text: '#333333',
+        textHalo: '#ffffff',
+        grid: '#c8c8c8',
+        waterText: '#5d8cae',
+        landcoverOpacity: 0.7,
+        buildingOpacity: 0.85,
+        parkOpacity: 0.5,
+        roadNightDim: 1,
+      },
+    };
+    // Only return palette for vector styles; raster styles don't need one
+    if (mapStyle === 'light' || mapStyle === 'dark' || mapStyle === 'nautical' || mapStyle === 'street') {
+      return palettes[mapStyle];
+    }
+    return palettes.light; // fallback
+  }, [mapStyle, s52Colors, s52Mode]);
+
+  // MapLibre background styles per mode
+  const mapStyleUrls = useMemo<Record<MapStyleOption, object>>(() => ({
     satellite: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.DEPDW } }] },
-    light: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f0f0f0' } }] },
-    chart: localOfflineStyle, // Use local offline style for chart mode
-  }), [s52Colors, localOfflineStyle, glyphsUrl]);
+    light: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f5f5f5' } }] },
+    dark: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a1a2e' } }] },
+    nautical: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.LANDA } }] },
+    street: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f0ede8' } }] },
+    ocean: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a3a5c' } }] },
+    terrain: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#dfe6e9' } }] },
+  }), [s52Colors, glyphsUrl]);
 
   // Debug state
   const [debugInfo, setDebugInfo] = useState<string>('');
   const [showDebug, setShowDebug] = useState(false);
   const [showChartDebug, setShowChartDebug] = useState(false);
-  const [showCoords, setShowCoords] = useState(true);
-  const [showZoomLevel, setShowZoomLevel] = useState(true);
+
+  // Debug Map diagnostics - collected on demand
+  const [debugDiagnostics, setDebugDiagnostics] = useState<{
+    timestamp: string;
+    mapStyle: string;
+    s52Mode: string;
+    tileServerReady: boolean;
+    hasLocalBasemap: boolean;
+    hasLocalOcean: boolean;
+    hasLocalTerrain: boolean;
+    gnisAvailable: boolean;
+    useMBTiles: boolean;
+    useCompositeTiles: boolean;
+    tileServerUrl: string;
+    styleJSON: string;
+    gates: { label: string; expression: string; pass: boolean }[];
+    mapLibreSources: { id: string; type: string; urls?: string[] }[];
+    mapLibreLayers: { id: string; type: string; source?: string; sourceLayer?: string; visibility?: string }[];
+    styleError?: string;
+  } | null>(null);
+
+  const runDiagnostics = useCallback(async () => {
+    const serverUrl = tileServer.getTileServerUrl();
+    const currentStyleJSON = JSON.stringify(mapStyleUrls[mapStyle]);
+
+    // Render gate checks
+    const gates = [
+      {
+        label: 'Vector basemap renders',
+        expression: `tileServerReady(${tileServerReady}) && hasLocalBasemap(${hasLocalBasemap}) && isVectorStyle(${isVectorStyle})`,
+        pass: tileServerReady && hasLocalBasemap && isVectorStyle,
+      },
+      {
+        label: 'Ocean source renders',
+        expression: `tileServerReady(${tileServerReady}) && oceanTileSets.length(${oceanTileSets.length}) > 0 && mapStyle === 'ocean'`,
+        pass: tileServerReady && oceanTileSets.length > 0 && mapStyle === 'ocean',
+      },
+      {
+        label: 'Terrain source renders',
+        expression: `tileServerReady(${tileServerReady}) && terrainTileSets.length(${terrainTileSets.length}) > 0 && mapStyle === 'terrain'`,
+        pass: tileServerReady && terrainTileSets.length > 0 && mapStyle === 'terrain',
+      },
+      {
+        label: 'Charts source renders',
+        expression: `useMBTiles(${useMBTiles}) && tileServerReady(${tileServerReady}) && useCompositeTiles(${useCompositeTiles})`,
+        pass: useMBTiles && tileServerReady && useCompositeTiles,
+      },
+      {
+        label: 'Satellite source renders',
+        expression: `tileServerReady(${tileServerReady}) && satelliteTileSets.length(${satelliteTileSets.length}) > 0`,
+        pass: tileServerReady && satelliteTileSets.length > 0,
+      },
+      {
+        label: 'GNIS source renders',
+        expression: `tileServerReady(${tileServerReady}) && gnisAvailable(${gnisAvailable}) && showGNISNames(${showGNISNames}) && showPlaceNames(${showPlaceNames})`,
+        pass: tileServerReady && gnisAvailable && showGNISNames && showPlaceNames,
+      },
+    ];
+
+    // Query MapLibre for the live style
+    let mapLibreSources: { id: string; type: string; urls?: string[] }[] = [];
+    let mapLibreLayers: { id: string; type: string; source?: string; sourceLayer?: string; visibility?: string }[] = [];
+    let styleError: string | undefined;
+
+    try {
+      if (mapRef.current) {
+        // getStyle() returns the current computed style from the native map
+        const style = await mapRef.current.getStyle();
+        if (style) {
+          // Extract sources
+          if (style.sources) {
+            mapLibreSources = Object.entries(style.sources).map(([id, src]: [string, any]) => ({
+              id,
+              type: src.type || 'unknown',
+              urls: src.tiles || src.url ? [...(src.tiles || []), ...(src.url ? [src.url] : [])] : undefined,
+            }));
+          }
+          // Extract layers in render order
+          if (style.layers && Array.isArray(style.layers)) {
+            mapLibreLayers = style.layers.map((layer: any) => ({
+              id: layer.id || '?',
+              type: layer.type || '?',
+              source: layer.source,
+              sourceLayer: layer['source-layer'],
+              visibility: layer.layout?.visibility || 'visible',
+            }));
+          }
+        } else {
+          styleError = 'getStyle() returned null/undefined';
+        }
+      } else {
+        styleError = 'mapRef.current is null';
+      }
+    } catch (e: any) {
+      styleError = `getStyle() error: ${e.message || e}`;
+    }
+
+    setDebugDiagnostics({
+      timestamp: new Date().toISOString(),
+      mapStyle,
+      s52Mode,
+      tileServerReady,
+      hasLocalBasemap,
+      hasLocalOcean,
+      hasLocalTerrain,
+      gnisAvailable,
+      useMBTiles,
+      useCompositeTiles,
+      tileServerUrl: serverUrl,
+      styleJSON: currentStyleJSON.length > 300 ? currentStyleJSON.substring(0, 300) + '...' : currentStyleJSON,
+      gates,
+      mapLibreSources,
+      mapLibreLayers,
+      styleError,
+    });
+  }, [mapStyle, s52Mode, tileServerReady, hasLocalBasemap, hasLocalOcean, hasLocalTerrain, isVectorStyle, gnisAvailable, useMBTiles, useCompositeTiles, satelliteTileSets, oceanTileSets, terrainTileSets, showGNISNames, showPlaceNames, mapStyleUrls]);
   
   // GPS and Navigation state - overlay visibility from context (rendered in App.tsx)
-  const { showGPSPanel, setShowGPSPanel, showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails } = useOverlay();
+  const { showGPSPanel, setShowGPSPanel, showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails, showDebugMap, setShowDebugMap, showNavData, setShowNavData } = useOverlay();
   const [followGPS, setFollowGPS] = useState(false); // Follow mode - center map on position
   const followGPSRef = useRef(false); // Ref for immediate follow mode check (avoids race condition)
   const pendingCameraMoveTimeout = useRef<NodeJS.Timeout | null>(null); // Track pending camera moves
@@ -1836,19 +2134,34 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             lastManifestTimeRef.current = currentTime;
           }
           
-          // Check for new satellite, GNIS, or basemap files by scanning directory
+          // Check for new tile files by scanning directory
           if (!needsFullReload) {
             try {
               const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
               if (dirInfo.exists) {
                 const files = await FileSystem.readDirectoryAsync(mbtilesDir);
                 const currentSatelliteCount = files.filter((f: string) => f.startsWith('satellite_z') && f.endsWith('.mbtiles')).length;
+                const currentBasemapCount = files.filter((f: string) => f.startsWith('basemap_z') && f.endsWith('.mbtiles')).length;
+                const currentOceanCount = files.filter((f: string) => f.startsWith('ocean_z') && f.endsWith('.mbtiles')).length;
+                const currentTerrainCount = files.filter((f: string) => f.startsWith('terrain_z') && f.endsWith('.mbtiles')).length;
                 const hasGnis = files.some((f: string) => f.startsWith('gnis_names'));
-                const hasBasemap = files.some((f: string) => f.startsWith('basemap_'));
+                const hasBasemap = currentBasemapCount > 0 || files.some((f: string) => f.startsWith('basemap') && f.endsWith('.mbtiles'));
                 
                 // Compare with current state
                 if (currentSatelliteCount !== satelliteTileSets.length) {
                   logger.info(LogCategory.CHARTS, `Satellite files changed: ${satelliteTileSets.length} -> ${currentSatelliteCount}`);
+                  needsFullReload = true;
+                }
+                if (currentBasemapCount !== basemapTileSets.length) {
+                  logger.info(LogCategory.CHARTS, `Basemap files changed: ${basemapTileSets.length} -> ${currentBasemapCount}`);
+                  needsFullReload = true;
+                }
+                if (currentOceanCount !== oceanTileSets.length) {
+                  logger.info(LogCategory.CHARTS, `Ocean files changed: ${oceanTileSets.length} -> ${currentOceanCount}`);
+                  needsFullReload = true;
+                }
+                if (currentTerrainCount !== terrainTileSets.length) {
+                  logger.info(LogCategory.CHARTS, `Terrain files changed: ${terrainTileSets.length} -> ${currentTerrainCount}`);
                   needsFullReload = true;
                 }
                 if (hasGnis !== gnisAvailable) {
@@ -1928,7 +2241,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       };
       
       checkChangesAndReload();
-    }, [satelliteTileSets.length, hasLocalBasemap, gnisAvailable])
+    }, [satelliteTileSets.length, basemapTileSets.length, oceanTileSets.length, terrainTileSets.length, hasLocalBasemap, gnisAvailable])
   );
 
   // Load tide and current stations from AsyncStorage on startup
@@ -2056,6 +2369,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       clearInterval(intervalId);
     };
   }, [tideStations, currentStations]);
+
+  // Load live buoys catalog from Firestore on startup
+  useEffect(() => {
+    const loadBuoys = async () => {
+      try {
+        console.log('[MAP] Loading live buoys catalog...');
+        const buoyCatalog = await getBuoysCatalog();
+        setLiveBuoys(buoyCatalog);
+        console.log(`[MAP] Loaded ${buoyCatalog.length} live buoys`);
+      } catch (error) {
+        console.warn('[MAP] Error loading buoys:', error);
+      }
+    };
+    
+    loadBuoys();
+  }, []);
 
   // Load and subscribe to display settings
   useEffect(() => {
@@ -2324,47 +2653,76 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       let tier2ChartIds: string[] = [];
       let totalChartCount = chartPacks.length;
       
-      // === PHASE 3: Check for special files (GNIS, basemap, satellite) ===
+      // === PHASE 3: Check for special files (GNIS, satellite, basemap, ocean, terrain) ===
       performanceTracker.startPhase(StartupPhase.SPECIAL_FILES);
-      const [gnisInfo, basemapInfo] = await Promise.all([
-        FileSystem.getInfoAsync(`${mbtilesDir}/gnis_names_ak.mbtiles`),
-        FileSystem.getInfoAsync(`${mbtilesDir}/basemap_alaska.mbtiles`),
-      ]);
+      const gnisInfo = await FileSystem.getInfoAsync(`${mbtilesDir}/gnis_names_ak.mbtiles`);
       
       const gnisFound = gnisInfo.exists;
-      const basemapFound = basemapInfo.exists;
       
       setGnisAvailable(gnisFound);
-      setHasLocalBasemap(basemapFound);
       
-      // Scan for satellite tile files (satellite_z*.mbtiles pattern)
-      // Format: satellite_z8.mbtiles (single zoom) or satellite_z0-5.mbtiles (range)
-      const foundSatelliteSets: SatelliteTileSet[] = [];
-      try {
-        const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
+      // Helper: scan for per-zoom MBTiles files matching a prefix pattern
+      // Returns sorted TileSet[] parsed from filenames like prefix_z8.mbtiles or prefix_z0-5.mbtiles
+      const scanTileSets = (filesInDir: string[], prefix: string): TileSet[] => {
+        const sets: TileSet[] = [];
+        const pattern = new RegExp(`^${prefix}_z(\\d+)(?:-(\\d+))?\\.mbtiles$`);
         for (const filename of filesInDir) {
-          if (filename.startsWith('satellite_z') && filename.endsWith('.mbtiles')) {
-            const id = filename.replace('.mbtiles', '');
-            // Parse zoom levels: satellite_z8 or satellite_z0-5
-            const zoomMatch = filename.match(/satellite_z(\d+)(?:-(\d+))?\.mbtiles/);
-            if (zoomMatch) {
-              const minZoom = parseInt(zoomMatch[1], 10);
-              const maxZoom = zoomMatch[2] ? parseInt(zoomMatch[2], 10) : minZoom;
-              foundSatelliteSets.push({ id, minZoom, maxZoom });
-            }
+          const match = filename.match(pattern);
+          if (match) {
+            const minZoom = parseInt(match[1], 10);
+            const maxZoom = match[2] ? parseInt(match[2], 10) : minZoom;
+            sets.push({ id: filename.replace('.mbtiles', ''), minZoom, maxZoom });
           }
         }
-        // Sort by minZoom for orderly rendering
-        foundSatelliteSets.sort((a, b) => a.minZoom - b.minZoom);
+        return sets.sort((a, b) => a.minZoom - b.minZoom);
+      };
+      
+      // Scan directory for all tile set types
+      let foundSatelliteSets: TileSet[] = [];
+      let foundBasemapSets: TileSet[] = [];
+      let foundOceanSets: TileSet[] = [];
+      let foundTerrainSets: TileSet[] = [];
+      let basemapFound = false;
+      
+      try {
+        const filesInDir = await FileSystem.readDirectoryAsync(mbtilesDir);
+        
+        foundSatelliteSets = scanTileSets(filesInDir, 'satellite');
+        foundBasemapSets = scanTileSets(filesInDir, 'basemap');
+        foundOceanSets = scanTileSets(filesInDir, 'ocean');
+        foundTerrainSets = scanTileSets(filesInDir, 'terrain');
+        
+        // Also check for legacy monolithic basemap file
+        if (foundBasemapSets.length === 0) {
+          basemapFound = filesInDir.some(f => f.startsWith('basemap') && f.endsWith('.mbtiles'));
+        } else {
+          basemapFound = true;
+        }
       } catch (e) {
-        logger.warn(LogCategory.STARTUP, 'Error scanning for satellite files', { error: e });
+        logger.warn(LogCategory.STARTUP, 'Error scanning for tile files', { error: e });
       }
       
       setSatelliteTileSets(foundSatelliteSets);
+      setBasemapTileSets(foundBasemapSets);
+      setOceanTileSets(foundOceanSets);
+      setTerrainTileSets(foundTerrainSets);
+      setHasLocalBasemap(basemapFound);
       
       // Store special files info
-      logger.setStartupParam('specialFiles', { gnis: gnisFound, basemap: basemapFound, satellite: foundSatelliteSets.length });
-      performanceTracker.endPhase(StartupPhase.SPECIAL_FILES, { gnis: gnisFound, basemap: basemapFound, satelliteCount: foundSatelliteSets.length });
+      logger.setStartupParam('specialFiles', {
+        gnis: gnisFound,
+        satellite: foundSatelliteSets.length,
+        basemap: foundBasemapSets.length,
+        ocean: foundOceanSets.length,
+        terrain: foundTerrainSets.length,
+      });
+      performanceTracker.endPhase(StartupPhase.SPECIAL_FILES, {
+        gnis: gnisFound,
+        satelliteCount: foundSatelliteSets.length,
+        basemapCount: foundBasemapSets.length,
+        oceanCount: foundOceanSets.length,
+        terrainCount: foundTerrainSets.length,
+      });
       
       // === PHASE 4: Build chart list from manifest.json or directory scan ===
       performanceTracker.startPhase(StartupPhase.CHART_DISCOVERY);
@@ -2582,7 +2940,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       // === FINAL SUMMARY ===
       const totalTime = performanceTracker.completeStartup();
       logger.info(LogCategory.STARTUP, `Tile mode: COMPOSITE (server-side quilting, ~20 layers)`);
-      logger.info(LogCategory.STARTUP, `Special files: GNIS=${gnisFound}, Basemap=${basemapFound}`);
+      logger.info(LogCategory.STARTUP, `Special files: GNIS=${gnisFound}, Basemap=${foundBasemapSets.length} sets, Ocean=${foundOceanSets.length} sets, Terrain=${foundTerrainSets.length} sets`);
       
     } catch (error) {
       logger.error(LogCategory.STARTUP, 'STARTUP ERROR', error as Error);
@@ -2804,6 +3162,60 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }
   }, []);
 
+  // Scale bar calculation based on current zoom level and latitude
+  const scaleBarData = useMemo(() => {
+    // Ground resolution in meters per pixel at given zoom & latitude
+    // Formula: 156543.03392 * cos(lat) / 2^zoom
+    const lat = centerCoord[1];
+    const metersPerPixel = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, currentZoom);
+    
+    // We want a scale bar that's roughly 80-150 pixels wide
+    // Pick a "nice" distance in nautical miles and compute bar width
+    const METERS_PER_NM = 1852;
+    const targetWidthPx = 100;
+    const targetDistanceM = metersPerPixel * targetWidthPx;
+    const targetDistanceNM = targetDistanceM / METERS_PER_NM;
+    
+    // Nice round numbers for nautical miles
+    const niceValues = [
+      0.01, 0.02, 0.05,
+      0.1, 0.2, 0.5,
+      1, 2, 5,
+      10, 20, 50,
+      100, 200, 500,
+      1000, 2000, 5000,
+    ];
+    
+    // Find the nice value closest to our target
+    let bestNM = niceValues[0];
+    let bestDiff = Math.abs(Math.log(targetDistanceNM) - Math.log(niceValues[0]));
+    for (const v of niceValues) {
+      const diff = Math.abs(Math.log(targetDistanceNM) - Math.log(v));
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestNM = v;
+      }
+    }
+    
+    const barWidthPx = (bestNM * METERS_PER_NM) / metersPerPixel;
+    
+    // Format the label
+    let label: string;
+    if (bestNM >= 1) {
+      label = `${bestNM} nm`;
+    } else {
+      // Show in feet for very small distances (< 0.05 nm ≈ 300 ft)
+      if (bestNM < 0.05) {
+        const feet = Math.round(bestNM * METERS_PER_NM * 3.28084);
+        label = `${feet} ft`;
+      } else {
+        label = `${bestNM} nm`;
+      }
+    }
+    
+    return { barWidthPx: Math.round(barWidthPx), label };
+  }, [currentZoom, centerCoord]);
+
   // Charts visible at current zoom level - for display and debugging
   const chartsAtZoom = useMemo(() => {
     return allChartsToRender
@@ -2920,32 +3332,64 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       
       // FIRST: Check for tide/current station clicks (these take priority)
       // Since ShapeSource features don't have layer.id, we identify them by properties
+      // Collect special features (tide stations, current stations, live buoys) into unified list
+      // Deduplicate by ID since queryRenderedFeaturesInRect returns features from
+      // multiple sublayers (halo, icon, label) for the same source feature
+      const specialFeatures: FeatureInfo[] = [];
+      const seenSpecialIds = new Set<string>();
+      
       if (allFeatures?.features) {
         for (const feature of allFeatures.features) {
           const props = feature.properties;
           
           // Check for current station click (has 'bin' property)
           if (props?.bin !== undefined && props?.id && props?.name) {
-            console.log('[CURRENT PIN CLICK] Feature:', props);
-            // Update detail chart station (auto-enable detail view if not visible)
-            setDetailChartCurrentStationId(props.id);
-            if (!showCurrentDetails) {
-              toggleLayer('currentDetails');
+            const key = `current-${props.id}`;
+            if (!seenSpecialIds.has(key)) {
+              seenSpecialIds.add(key);
+              specialFeatures.push({
+                type: 'Current Station',
+                properties: {
+                  ...props,
+                  _specialType: 'currentStation',
+                  _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
+                },
+              });
             }
-            endTapMetric();
-            return; // Stop processing, we handled the current station click
           }
           
           // Check for tide station click (has type: 'tide_prediction' or similar)
-          if (props?.type === 'tide_prediction' && props?.id && props?.name) {
-            console.log('[TIDE PIN CLICK] Feature:', props);
-            // Update detail chart station (auto-enable detail view if not visible)
-            setDetailChartTideStationId(props.id);
-            if (!showTideDetails) {
-              toggleLayer('tideDetails');
+          else if (props?.type === 'tide_prediction' && props?.id && props?.name) {
+            const key = `tide-${props.id}`;
+            if (!seenSpecialIds.has(key)) {
+              seenSpecialIds.add(key);
+              specialFeatures.push({
+                type: 'Tide Station',
+                properties: {
+                  ...props,
+                  _specialType: 'tideStation',
+                  OBJNAM: props.name,
+                  _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
+                },
+              });
             }
-            endTapMetric();
-            return; // Stop processing, we handled the tide station click
+          }
+          
+          // Check for live buoy click (has isLiveBuoy flag)
+          else if (props?.isLiveBuoy && props?.id) {
+            const key = `buoy-${props.id}`;
+            if (!seenSpecialIds.has(key)) {
+              seenSpecialIds.add(key);
+              specialFeatures.push({
+                type: 'Live Buoy',
+                properties: {
+                  ...props,
+                  _specialType: 'liveBuoy',
+                  OBJNAM: props.name,
+                  _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
+                },
+              });
+            }
           }
         }
       }
@@ -3068,20 +3512,39 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           return prioB - prioA;
         });
         
-        const priorityEnd = Date.now();
-        logger.debug(LogCategory.UI, `Grouped ${features.features.length} → ${uniqueFeatures.length} unique types (${priorityEnd - priorityStart}ms)`);
+        // Merge special features (tide/current stations, live buoys) with chart features
+        // Special features go first since they have highest interaction priority
+        const allTapFeatures = [...specialFeatures, ...uniqueFeatures];
         
-        if (uniqueFeatures.length === 1) {
-          // Single feature type - show it directly
-          startTransition(() => {
-            setFeatureChoices(null);
-            setSelectedFeature(uniqueFeatures[0]);
-          });
-        } else if (uniqueFeatures.length > 1) {
-          // Multiple feature types - let user choose
+        const priorityEnd = Date.now();
+        logger.debug(LogCategory.UI, `Grouped ${features.features.length} chart + ${specialFeatures.length} special → ${allTapFeatures.length} total (${priorityEnd - priorityStart}ms)`);
+        
+        if (allTapFeatures.length === 1) {
+          // Single feature - handle directly
+          const feature = allTapFeatures[0];
+          if (feature.properties?._specialType) {
+            handleSpecialFeatureSelect(feature);
+          } else {
+            startTransition(() => {
+              setFeatureChoices(null);
+              setSelectedFeature(feature);
+            });
+          }
+        } else if (allTapFeatures.length > 1) {
+          // Multiple features - let user choose
           startTransition(() => {
             setSelectedFeature(null);
-            setFeatureChoices(uniqueFeatures);
+            setFeatureChoices(allTapFeatures);
+          });
+        }
+      } else if (specialFeatures.length > 0) {
+        // No chart features but we have special features
+        if (specialFeatures.length === 1) {
+          handleSpecialFeatureSelect(specialFeatures[0]);
+        } else {
+          startTransition(() => {
+            setSelectedFeature(null);
+            setFeatureChoices(specialFeatures);
           });
         }
       }
@@ -3289,8 +3752,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`map-${mapStyle}-${s52Mode}`}
         ref={mapRef}
         style={styles.map}
-        styleURL={typeof mapStyleUrls[mapStyle] === 'string' ? mapStyleUrls[mapStyle] : undefined}
-        styleJSON={typeof mapStyleUrls[mapStyle] === 'object' ? JSON.stringify(mapStyleUrls[mapStyle]) : undefined}
+        // Always use styleJSON - passing styleURL={undefined} causes MapLibre to
+        // fall back to its default demo tiles (colorful world map), which bleeds
+        // through under all modes. By omitting styleURL entirely and only using
+        // styleJSON, MapLibre renders just our minimal background style.
+        styleJSON={JSON.stringify(mapStyleUrls[mapStyle])}
         onMapIdle={handleMapIdle}
         onRegionWillChange={handleRegionWillChange}
         onRegionDidChange={handleCameraChanged}
@@ -3306,8 +3772,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         // @ts-ignore - MapLibre callback types may differ slightly
         onDidFinishRenderingFrame={handleDidFinishRenderingFrame}
         onDidFinishRenderingFrameFully={handleDidFinishRenderingFrameFully}
-        scaleBarEnabled={true}
-        scaleBarPosition={{ bottom: 100, right: 16 }}
+        scaleBarEnabled={false}
         logoEnabled={false}
         attributionEnabled={false}
       >
@@ -3334,7 +3799,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Satellite Imagery - renders at very bottom when available */}
         {/* Each satellite_z*.mbtiles file is loaded as a separate source with its zoom range */}
         {tileServerReady && satelliteTileSets.length > 0 && satelliteTileSets.map((tileSet) => {
-          const satelliteVisible = mapStyle === 'satellite' ? 1 : 0;
+          const satelliteVisible = (mapStyle === 'satellite' && debugIsSourceVisible('satellite')) ? 1 : 0;
           // Log satellite visibility during style switch
           if (styleSwitchStartRef.current > 0 && mapStyle === 'satellite' && tileSet.minZoom === 0) {
           }
@@ -3373,414 +3838,109 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               <MapLibre.RasterLayer
                 id={`raster-layer-${chart.chartId}`}
                 style={{
-                  rasterOpacity: showBathymetry ? 0.7 : 0,
+                  rasterOpacity: (showBathymetry && debugIsSourceVisible('bathymetry')) ? 0.7 : 0,
                 }}
               />
             </MapLibre.RasterSource>
           );
         })}
 
-        {/* Local Offline Basemap - OpenMapTiles vector tiles */}
-        {/* PERF: Always mounted when available, visibility toggled for instant switching */}
-        {tileServerReady && hasLocalBasemap && (() => {
-          const basemapVisible = mapStyle === 'chart' ? 'visible' : 'none';
-          // S-52 themed basemap colors - adapt all basemap features to theme
-          const waterColor = s52Colors.WATRW;
-          const landColor = s52Colors.LANDA;
-          const textColor = s52Colors.CHBLK;
-          const textHaloColor = s52Mode === 'day' ? '#FFFFFF' : s52Colors.LANDA;
-          const gridColor = s52Colors.CHGRD;
-          const roadFillColor = s52Colors.ROADF;
-          const roadCasingColor = s52Colors.ROADC;
-          const builtUpColor = s52Colors.CHBRN;
-          // Land cover colors - adjust opacity and saturation based on mode
-          const landCoverOpacity = s52Mode === 'day' ? 0.6 : s52Mode === 'dusk' ? 0.3 : 0.1;
-          const buildingOpacity = s52Mode === 'day' ? 0.8 : s52Mode === 'dusk' ? 0.4 : 0.15;
-          const parkOpacity = s52Mode === 'day' ? 0.4 : s52Mode === 'dusk' ? 0.2 : 0.08;
-          // === STYLE SWITCH: Log basemap visibility during render ===
-          if (styleSwitchStartRef.current > 0) {
-          }
+        {/* ================================================================== */}
+        {/* OCEAN BASEMAP - ESRI Ocean raster tiles (per zoom level)           */}
+        {/* Same pattern as satellite: one RasterSource per ocean_z*.mbtiles   */}
+        {/* ================================================================== */}
+        {tileServerReady && oceanTileSets.length > 0 && oceanTileSets.map((tileSet) => {
+          const oceanVisible = (mapStyle === 'ocean' && debugIsSourceVisible('ocean')) ? 1 : 0;
+          return (
+            <MapLibre.RasterSource
+              key={`ocean-src-${tileSet.id}`}
+              id={`ocean-src-${tileSet.id}`}
+              tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/${tileSet.id}/{z}/{x}/{y}.png`]}
+              tileSize={256}
+              minZoomLevel={tileSet.minZoom}
+              maxZoomLevel={tileSet.maxZoom}
+            >
+              <MapLibre.RasterLayer
+                id={`ocean-layer-${tileSet.id}`}
+                style={{ rasterOpacity: oceanVisible }}
+              />
+            </MapLibre.RasterSource>
+          );
+        })}
+
+        {/* ================================================================== */}
+        {/* TERRAIN BASEMAP - OpenTopoMap raster tiles (per zoom level)        */}
+        {/* Same pattern as satellite: one RasterSource per terrain_z*.mbtiles */}
+        {/* ================================================================== */}
+        {tileServerReady && terrainTileSets.length > 0 && terrainTileSets.map((tileSet) => {
+          const terrainVisible = (mapStyle === 'terrain' && debugIsSourceVisible('terrain')) ? 1 : 0;
+          return (
+            <MapLibre.RasterSource
+              key={`terrain-src-${tileSet.id}`}
+              id={`terrain-src-${tileSet.id}`}
+              tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/${tileSet.id}/{z}/{x}/{y}.png`]}
+              tileSize={256}
+              minZoomLevel={tileSet.minZoom}
+              maxZoomLevel={tileSet.maxZoom}
+            >
+              <MapLibre.RasterLayer
+                id={`terrain-layer-${tileSet.id}`}
+                style={{ rasterOpacity: terrainVisible }}
+              />
+            </MapLibre.RasterSource>
+          );
+        })}
+
+        {/* ================================================================== */}
+        {/* VECTOR BASEMAP (BACKGROUND) - water, landcover, landuse, parks     */}
+        {/* Powers: Light, Dark, Nautical, Street modes from one download      */}
+        {/* Colors are driven by basemapPalette (changes per selected style)   */}
+        {/* Foreground layers (roads, labels) are in BASEMAP OVERLAY below     */}
+        {/* ================================================================== */}
+        {tileServerReady && hasLocalBasemap && isVectorStyle && debugIsSourceVisible('basemap') && (() => {
+          const p = basemapPalette;
+          const vis = 'visible';
+          // Use per-zoom basemap tile sets if available, otherwise fall back to legacy monolithic file
+          const basemapTileUrl = basemapTileSets.length > 0
+            ? `${tileServer.getTileServerUrl()}/tiles/${basemapTileSets[0].id}/{z}/{x}/{y}.pbf`
+            : `${tileServer.getTileServerUrl()}/tiles/basemap_alaska/{z}/{x}/{y}.pbf`;
           return (
           <MapLibre.VectorSource
-            key={`local-basemap-source-${s52Mode}`}
-            id="local-basemap-source"
-            tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/basemap_alaska/{z}/{x}/{y}.pbf`]}
+            key={`basemap-bg-${mapStyle}-${s52Mode}`}
+            id="basemap-bg-source"
+            tileUrlTemplates={[basemapTileUrl]}
             minZoomLevel={0}
             maxZoomLevel={14}
           >
-            {/* === WATER (renders on top of land background) === */}
-            <MapLibre.FillLayer
-              id="basemap-water"
-              sourceLayerID="water"
-              style={{
-                fillColor: waterColor,
-                fillOpacity: 1,
-                visibility: basemapVisible,
-              }}
-            />
-            
-            {/* Rivers and streams */}
-            <MapLibre.LineLayer
-              id="basemap-waterway"
-              sourceLayerID="waterway"
-              style={{
-                lineColor: waterColor,
-                lineWidth: [
-                  'interpolate', ['linear'], ['zoom'],
-                  8, 0.5,
-                  12, 1.5,
-                  14, 3,
-                ],
-                visibility: basemapVisible,
-              }}
-            />
-            
-            {/* === LAND COVER - S-52 themed === */}
-            <MapLibre.FillLayer
-              id="basemap-landcover-ice"
-              sourceLayerID="landcover"
+            {/* Water */}
+            <MapLibre.FillLayer id="basemap-water" sourceLayerID="water"
+              style={{ fillColor: p.water, fillOpacity: 1, visibility: vis }} />
+            <MapLibre.LineLayer id="basemap-waterway" sourceLayerID="waterway"
+              style={{ lineColor: p.waterway, lineWidth: ['interpolate', ['linear'], ['zoom'], 8, 0.5, 12, 1.5, 14, 3], visibility: vis }} />
+            {/* Land Cover */}
+            <MapLibre.FillLayer id="basemap-landcover-ice" sourceLayerID="landcover"
               filter={['==', ['get', 'class'], 'ice']}
-              style={{
-                fillColor: s52Mode === 'day' ? '#ffffff' : s52Mode === 'dusk' ? '#404050' : '#202028',
-                fillOpacity: s52Mode === 'day' ? 0.9 : 0.5,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.FillLayer
-              id="basemap-landcover-grass"
-              sourceLayerID="landcover"
+              style={{ fillColor: p.ice, fillOpacity: p.landcoverOpacity, visibility: vis }} />
+            <MapLibre.FillLayer id="basemap-landcover-grass" sourceLayerID="landcover"
               filter={['==', ['get', 'class'], 'grass']}
-              style={{
-                fillColor: s52Mode === 'day' ? '#d8e8c8' : s52Mode === 'dusk' ? '#2a3a28' : '#181c18',
-                fillOpacity: landCoverOpacity,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.FillLayer
-              id="basemap-landcover-wood"
-              sourceLayerID="landcover"
+              style={{ fillColor: p.grass, fillOpacity: p.landcoverOpacity, visibility: vis }} />
+            <MapLibre.FillLayer id="basemap-landcover-wood" sourceLayerID="landcover"
               filter={['any', ['==', ['get', 'class'], 'wood'], ['==', ['get', 'class'], 'forest']]}
-              style={{
-                fillColor: s52Mode === 'day' ? '#c5ddb0' : s52Mode === 'dusk' ? '#283820' : '#141c14',
-                fillOpacity: landCoverOpacity,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.FillLayer
-              id="basemap-landcover-wetland"
-              sourceLayerID="landcover"
+              style={{ fillColor: p.wood, fillOpacity: p.landcoverOpacity, visibility: vis }} />
+            <MapLibre.FillLayer id="basemap-landcover-wetland" sourceLayerID="landcover"
               filter={['==', ['get', 'class'], 'wetland']}
-              style={{
-                fillColor: s52Mode === 'day' ? '#d0e8d8' : s52Mode === 'dusk' ? '#203830' : '#101814',
-                fillOpacity: landCoverOpacity,
-                visibility: basemapVisible,
-              }}
-            />
-            
-            {/* === LAND USE - S-52 themed === */}
-            <MapLibre.FillLayer
-              id="basemap-landuse-residential"
-              sourceLayerID="landuse"
-              filter={['==', ['get', 'class'], 'residential']}
-              minZoomLevel={10}
-              style={{
-                fillColor: builtUpColor,
-                fillOpacity: landCoverOpacity * 0.8,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.FillLayer
-              id="basemap-landuse-industrial"
-              sourceLayerID="landuse"
+              style={{ fillColor: p.wetland, fillOpacity: p.landcoverOpacity, visibility: vis }} />
+            {/* Land Use */}
+            <MapLibre.FillLayer id="basemap-landuse-residential" sourceLayerID="landuse"
+              filter={['==', ['get', 'class'], 'residential']} minZoomLevel={10}
+              style={{ fillColor: p.residential, fillOpacity: p.landcoverOpacity * 0.8, visibility: vis }} />
+            <MapLibre.FillLayer id="basemap-landuse-industrial" sourceLayerID="landuse"
               filter={['any', ['==', ['get', 'class'], 'industrial'], ['==', ['get', 'class'], 'commercial']]}
               minZoomLevel={10}
-              style={{
-                fillColor: builtUpColor,
-                fillOpacity: landCoverOpacity * 0.6,
-                visibility: basemapVisible,
-              }}
-            />
-            
-            {/* === PARKS & PROTECTED AREAS - S-52 themed === */}
-            <MapLibre.FillLayer
-              id="basemap-park"
-              sourceLayerID="park"
-              style={{
-                fillColor: s52Mode === 'day' ? '#c8e6c9' : s52Mode === 'dusk' ? '#203828' : '#101810',
-                fillOpacity: parkOpacity,
-                visibility: basemapVisible,
-              }}
-            />
-            
-            {/* === BUILDINGS (high zoom) - S-52 themed === */}
-            <MapLibre.FillLayer
-              id="basemap-building"
-              sourceLayerID="building"
-              minZoomLevel={13}
-              style={{
-                fillColor: builtUpColor,
-                fillOpacity: buildingOpacity,
-                visibility: basemapVisible,
-              }}
-            />
-            
-            {/* === BOUNDARIES - S-52 themed === */}
-            <MapLibre.LineLayer
-              id="basemap-boundary-state"
-              sourceLayerID="boundary"
-              filter={['==', ['get', 'admin_level'], 4]}
-              style={{
-                lineColor: gridColor,
-                lineWidth: 1,
-                lineDasharray: [3, 2],
-                lineOpacity: s52Mode === 'day' ? 0.6 : s52Mode === 'dusk' ? 0.4 : 0.2,
-                visibility: basemapVisible,
-              }}
-            />
-            
-            {/* === TRANSPORTATION - S-52 themed === */}
-            <MapLibre.LineLayer
-              id="basemap-roads-motorway-casing"
-              sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'motorway']}
-              style={{
-                lineColor: roadCasingColor,
-                lineWidth: [
-                  'interpolate', ['linear'], ['zoom'],
-                  6, 1,
-                  10, 3,
-                  14, 6,
-                ],
-                lineOpacity: s52Mode === 'night' ? 0.5 : 1,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.LineLayer
-              id="basemap-roads-motorway"
-              sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'motorway']}
-              style={{
-                lineColor: roadFillColor,
-                lineWidth: [
-                  'interpolate', ['linear'], ['zoom'],
-                  6, 0.5,
-                  10, 2,
-                  14, 4,
-                ],
-                lineOpacity: s52Mode === 'night' ? 0.4 : 1,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.LineLayer
-              id="basemap-roads-trunk-casing"
-              sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'trunk']}
-              style={{
-                lineColor: roadCasingColor,
-                lineWidth: [
-                  'interpolate', ['linear'], ['zoom'],
-                  6, 0.8,
-                  10, 2.5,
-                  14, 5,
-                ],
-                lineOpacity: s52Mode === 'night' ? 0.4 : 0.8,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.LineLayer
-              id="basemap-roads-trunk"
-              sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'trunk']}
-              style={{
-                lineColor: roadFillColor,
-                lineWidth: [
-                  'interpolate', ['linear'], ['zoom'],
-                  6, 0.4,
-                  10, 1.5,
-                  14, 3,
-                ],
-                lineOpacity: s52Mode === 'night' ? 0.3 : 0.8,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.LineLayer
-              id="basemap-roads-primary"
-              sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'primary']}
-              style={{
-                lineColor: roadFillColor,
-                lineWidth: [
-                  'interpolate', ['linear'], ['zoom'],
-                  6, 0.3,
-                  10, 1,
-                  14, 2.5,
-                ],
-                lineOpacity: s52Mode === 'night' ? 0.3 : 0.7,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.LineLayer
-              id="basemap-roads-secondary"
-              sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'secondary']}
-              minZoomLevel={9}
-              style={{
-                lineColor: roadFillColor,
-                lineWidth: [
-                  'interpolate', ['linear'], ['zoom'],
-                  9, 0.5,
-                  14, 2,
-                ],
-                lineOpacity: s52Mode === 'night' ? 0.25 : 0.6,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.LineLayer
-              id="basemap-roads-tertiary"
-              sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'tertiary']}
-              minZoomLevel={11}
-              style={{
-                lineColor: roadFillColor,
-                lineWidth: [
-                  'interpolate', ['linear'], ['zoom'],
-                  11, 0.4,
-                  14, 1.5,
-                ],
-                lineOpacity: s52Mode === 'night' ? 0.2 : 0.5,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.LineLayer
-              id="basemap-roads-minor"
-              sourceLayerID="transportation"
-              filter={['any', ['==', ['get', 'class'], 'minor'], ['==', ['get', 'class'], 'service']]}
-              minZoomLevel={13}
-              style={{
-                lineColor: roadFillColor,
-                lineWidth: 1,
-                lineOpacity: s52Mode === 'night' ? 0.15 : s52Mode === 'dusk' ? 0.5 : 0.8,
-                visibility: basemapVisible,
-              }}
-            />
-            
-            {/* === AIRPORTS - S-52 themed === */}
-            <MapLibre.FillLayer
-              id="basemap-aeroway-area"
-              sourceLayerID="aeroway"
-              filter={['==', ['geometry-type'], 'Polygon']}
-              minZoomLevel={10}
-              style={{
-                fillColor: builtUpColor,
-                fillOpacity: s52Mode === 'night' ? 0.2 : s52Mode === 'dusk' ? 0.4 : 0.7,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.LineLayer
-              id="basemap-aeroway-runway"
-              sourceLayerID="aeroway"
-              filter={['==', ['get', 'class'], 'runway']}
-              minZoomLevel={10}
-              style={{
-                lineColor: gridColor,
-                lineWidth: [
-                  'interpolate', ['linear'], ['zoom'],
-                  10, 2,
-                  14, 8,
-                ],
-                lineOpacity: s52Mode === 'night' ? 0.3 : s52Mode === 'dusk' ? 0.6 : 1,
-                visibility: basemapVisible,
-              }}
-            />
-            
-            {/* === LABELS - S-52 themed === */}
-            <MapLibre.SymbolLayer
-              id="basemap-place-city"
-              sourceLayerID="place"
-              filter={['==', ['get', 'class'], 'city']}
-              style={{
-                textField: ['get', 'name'],
-                textSize: [
-                  'interpolate', ['linear'], ['zoom'],
-                  4, 12,
-                  10, 20,
-                ],
-                textColor: textColor,
-                textHaloColor: textHaloColor,
-                textHaloWidth: 2,
-                textFont: ['Noto Sans Bold'],
-                textTransform: 'uppercase',
-                textLetterSpacing: 0.1,
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.SymbolLayer
-              id="basemap-place-town"
-              sourceLayerID="place"
-              filter={['==', ['get', 'class'], 'town']}
-              minZoomLevel={6}
-              style={{
-                textField: ['get', 'name'],
-                textSize: [
-                  'interpolate', ['linear'], ['zoom'],
-                  6, 10,
-                  12, 14,
-                ],
-                textColor: textColor,
-                textHaloColor: textHaloColor,
-                textHaloWidth: 1.5,
-                textFont: ['Noto Sans Bold'],
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.SymbolLayer
-              id="basemap-place-village"
-              sourceLayerID="place"
-              filter={['==', ['get', 'class'], 'village']}
-              minZoomLevel={9}
-              style={{
-                textField: ['get', 'name'],
-                textSize: [
-                  'interpolate', ['linear'], ['zoom'],
-                  9, 9,
-                  14, 12,
-                ],
-                textColor: textColor,
-                textHaloColor: textHaloColor,
-                textHaloWidth: 1,
-                textFont: ['Noto Sans Regular'],
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.SymbolLayer
-              id="basemap-water-name"
-              sourceLayerID="water_name"
-              minZoomLevel={8}
-              style={{
-                textField: ['get', 'name'],
-                textSize: 11,
-                textColor: s52Mode === 'day' ? '#5d8cae' : s52Mode === 'dusk' ? '#6080a0' : '#304050',
-                textHaloColor: textHaloColor,
-                textHaloWidth: 1,
-                textFont: ['Noto Sans Italic'],
-                visibility: basemapVisible,
-              }}
-            />
-            <MapLibre.SymbolLayer
-              id="basemap-road-label"
-              sourceLayerID="transportation_name"
-              minZoomLevel={12}
-              style={{
-                textField: ['get', 'name'],
-                textSize: 10,
-                symbolPlacement: 'line',
-                textColor: textColor,
-                textHaloColor: textHaloColor,
-                textHaloWidth: 1,
-                textFont: ['Noto Sans Regular'],
-                visibility: basemapVisible,
-              }}
-            />
+              style={{ fillColor: p.industrial, fillOpacity: p.landcoverOpacity * 0.6, visibility: vis }} />
+            {/* Parks */}
+            <MapLibre.FillLayer id="basemap-park" sourceLayerID="park"
+              style={{ fillColor: p.park, fillOpacity: p.parkOpacity, visibility: vis }} />
           </MapLibre.VectorSource>
           );
         })()}
@@ -3790,68 +3950,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Uses ~20 layers instead of 3000+ for massive performance improvement */}
         {/* Requires mbtiles converted with sourceLayerID="charts" */}
         {/* ================================================================== */}
-        {useMBTiles && tileServerReady && useCompositeTiles && (
+        {useMBTiles && tileServerReady && useCompositeTiles && debugIsSourceVisible('charts') && (
           <MapLibre.VectorSource
             key={`composite-charts-${s52Mode}`}
             id="composite-charts"
             tileUrlTemplates={[compositeTileUrl]}
             minZoomLevel={0}
             maxZoomLevel={18}
-            onPress={(e) => {
-              const features = e.features || [];
-              if (features.length === 0) return;
-              
-              // Filter out unwanted features (soundings, depth contours, depth areas)
-              const filteredFeatures = features.filter((f: any) => {
-                const objl = f.properties?.OBJL;
-                
-                // ALWAYS exclude soundings (OBJL 129) - too numerous and obvious
-                if (objl === 129) return false;
-                
-                // ALWAYS exclude depth contours (OBJL 43) - not useful for identification
-                if (objl === 43) return false;
-                
-                // Also exclude depth areas (OBJL 42) - not useful for identification
-                if (objl === 42) return false;
-                
-                return true;
-              });
-              
-              if (filteredFeatures.length === 0) return;
-              
-              // Find best feature using OBJL-based priorities
-              let bestFeature = null;
-              let bestPriority = -1;
-              
-              for (const feature of filteredFeatures) {
-                const objl = feature.properties?.OBJL;
-                if (!objl) continue;
-                
-                let priority = OBJL_PRIORITIES.get(objl) || 0;
-                
-                // Boost point features
-                if (feature.geometry?.type === 'Point') {
-                  priority += 50;
-                }
-                
-                if (priority > bestPriority) {
-                  bestPriority = priority;
-                  bestFeature = feature;
-                }
-              }
-              
-              if (bestFeature) {
-                const layer = getLayerName(bestFeature.properties);
-                
-                setSelectedFeature({
-                  type: LAYER_DISPLAY_NAMES[layer] || layer,
-                  properties: {
-                    ...bestFeature.properties,
-                    _tapCoordinates: `${e.coordinates?.latitude?.toFixed(5) || '?'}°, ${e.coordinates?.longitude?.toFixed(5) || '?'}°`,
-                  },
-                });
-              }
-            }}
             // @ts-ignore - undocumented but useful for debugging
             onMapboxError={(e: any) => logger.error(LogCategory.TILES, 'VectorSource error', e)}
           >
@@ -5149,6 +5254,86 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </MapLibre.VectorSource>
         )}
 
+        {/* ================================================================== */}
+        {/* BASEMAP OVERLAY - Roads, buildings, labels rendered ABOVE charts   */}
+        {/* Uses a separate VectorSource so these land-context features appear */}
+        {/* on top of the opaque chart fills (DEPARE, LNDARE)                 */}
+        {/* ================================================================== */}
+        {tileServerReady && hasLocalBasemap && isVectorStyle && debugIsSourceVisible('basemap') && (() => {
+          const p = basemapPalette;
+          const vis = 'visible';
+          const basemapTileUrl = basemapTileSets.length > 0
+            ? `${tileServer.getTileServerUrl()}/tiles/${basemapTileSets[0].id}/{z}/{x}/{y}.pbf`
+            : `${tileServer.getTileServerUrl()}/tiles/basemap_alaska/{z}/{x}/{y}.pbf`;
+          return (
+          <MapLibre.VectorSource
+            key={`basemap-overlay-${mapStyle}-${s52Mode}`}
+            id="basemap-overlay-source"
+            tileUrlTemplates={[basemapTileUrl]}
+            minZoomLevel={0}
+            maxZoomLevel={14}
+          >
+            {/* Buildings */}
+            <MapLibre.FillLayer id="basemap-building" sourceLayerID="building" minZoomLevel={13}
+              style={{ fillColor: p.building, fillOpacity: p.buildingOpacity, visibility: vis }} />
+            {/* Boundaries */}
+            <MapLibre.LineLayer id="basemap-boundary-state" sourceLayerID="boundary"
+              filter={['==', ['get', 'admin_level'], 4]}
+              style={{ lineColor: p.grid, lineWidth: 1, lineDasharray: [3, 2], lineOpacity: p.roadNightDim * 0.6, visibility: vis }} />
+            {/* Roads */}
+            <MapLibre.LineLayer id="basemap-roads-motorway-casing" sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'motorway']}
+              style={{ lineColor: p.roadCasing, lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 10, 3, 14, 6], lineOpacity: p.roadNightDim, visibility: vis }} />
+            <MapLibre.LineLayer id="basemap-roads-motorway" sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'motorway']}
+              style={{ lineColor: p.road, lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 0.5, 10, 2, 14, 4], lineOpacity: p.roadNightDim, visibility: vis }} />
+            <MapLibre.LineLayer id="basemap-roads-trunk" sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'trunk']}
+              style={{ lineColor: p.road, lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 0.4, 10, 1.5, 14, 3], lineOpacity: p.roadNightDim * 0.8, visibility: vis }} />
+            <MapLibre.LineLayer id="basemap-roads-primary" sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'primary']}
+              style={{ lineColor: p.road, lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 0.3, 10, 1, 14, 2.5], lineOpacity: p.roadNightDim * 0.7, visibility: vis }} />
+            <MapLibre.LineLayer id="basemap-roads-secondary" sourceLayerID="transportation"
+              filter={['==', ['get', 'class'], 'secondary']} minZoomLevel={9}
+              style={{ lineColor: p.road, lineWidth: ['interpolate', ['linear'], ['zoom'], 9, 0.5, 14, 2], lineOpacity: p.roadNightDim * 0.6, visibility: vis }} />
+            <MapLibre.LineLayer id="basemap-roads-minor" sourceLayerID="transportation"
+              filter={['any', ['==', ['get', 'class'], 'tertiary'], ['==', ['get', 'class'], 'minor'], ['==', ['get', 'class'], 'service']]}
+              minZoomLevel={11}
+              style={{ lineColor: p.road, lineWidth: 1, lineOpacity: p.roadNightDim * 0.5, visibility: vis }} />
+            {/* Airports */}
+            <MapLibre.FillLayer id="basemap-aeroway-area" sourceLayerID="aeroway"
+              filter={['==', ['geometry-type'], 'Polygon']} minZoomLevel={10}
+              style={{ fillColor: p.building, fillOpacity: p.buildingOpacity * 0.7, visibility: vis }} />
+            <MapLibre.LineLayer id="basemap-aeroway-runway" sourceLayerID="aeroway"
+              filter={['==', ['get', 'class'], 'runway']} minZoomLevel={10}
+              style={{ lineColor: p.grid, lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 8], lineOpacity: p.roadNightDim, visibility: vis }} />
+            {/* Labels */}
+            <MapLibre.SymbolLayer id="basemap-place-city" sourceLayerID="place"
+              filter={['==', ['get', 'class'], 'city']}
+              style={{ textField: ['get', 'name'], textSize: ['interpolate', ['linear'], ['zoom'], 4, 12, 10, 20],
+                textColor: p.text, textHaloColor: p.textHalo, textHaloWidth: 2,
+                textFont: ['Noto Sans Bold'], textTransform: 'uppercase', textLetterSpacing: 0.1, visibility: vis }} />
+            <MapLibre.SymbolLayer id="basemap-place-town" sourceLayerID="place"
+              filter={['==', ['get', 'class'], 'town']} minZoomLevel={6}
+              style={{ textField: ['get', 'name'], textSize: ['interpolate', ['linear'], ['zoom'], 6, 10, 12, 14],
+                textColor: p.text, textHaloColor: p.textHalo, textHaloWidth: 1.5,
+                textFont: ['Noto Sans Bold'], visibility: vis }} />
+            <MapLibre.SymbolLayer id="basemap-place-village" sourceLayerID="place"
+              filter={['==', ['get', 'class'], 'village']} minZoomLevel={9}
+              style={{ textField: ['get', 'name'], textSize: ['interpolate', ['linear'], ['zoom'], 9, 9, 14, 12],
+                textColor: p.text, textHaloColor: p.textHalo, textHaloWidth: 1,
+                textFont: ['Noto Sans Regular'], visibility: vis }} />
+            <MapLibre.SymbolLayer id="basemap-water-name" sourceLayerID="water_name" minZoomLevel={8}
+              style={{ textField: ['get', 'name'], textSize: 11, textColor: p.waterText,
+                textHaloColor: p.textHalo, textHaloWidth: 1, textFont: ['Noto Sans Italic'], visibility: vis }} />
+            <MapLibre.SymbolLayer id="basemap-road-label" sourceLayerID="transportation_name" minZoomLevel={12}
+              style={{ textField: ['get', 'name'], textSize: 10, symbolPlacement: 'line',
+                textColor: p.text, textHaloColor: p.textHalo, textHaloWidth: 1,
+                textFont: ['Noto Sans Regular'], visibility: vis }} />
+          </MapLibre.VectorSource>
+          );
+        })()}
+
         {/* Marker layer to establish z-order boundary between charts and labels */}
         {/* Uses an empty ShapeSource with a CircleLayer as the anchor point */}
         {/* GNIS layers reference this to ensure they render above ALL chart content */}
@@ -5174,7 +5359,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               features: tideStations.map(station => {
                 const state = tideIconMap.get(station.id);
                 const heightStr = state?.currentHeight != null 
-                  ? `${state.currentHeight.toFixed(1)} ft` 
+                  ? state?.targetHeight != null
+                    ? `${state.currentHeight.toFixed(1)} ft / ${state.targetHeight.toFixed(1)} ft`
+                    : `${state.currentHeight.toFixed(1)} ft`
                   : '';
                 return {
                   type: 'Feature',
@@ -5210,17 +5397,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <MapLibre.SymbolLayer
               id="tide-stations-icon"
               minZoomLevel={7}
-              onPress={(e) => {
-                const feature = e.features?.[0];
-                console.log('[TIDE PIN CLICK] Feature:', feature?.properties);
-                if (feature?.properties?.id) {
-                  // Update detail chart station (auto-enable detail view if not visible)
-                  setDetailChartTideStationId(feature.properties.id);
-                  if (!showTideDetails) {
-                    toggleLayer('tideDetails');
-                  }
-                }
-              }}
               style={{
                 iconImage: ['get', 'iconName'],
                 iconRotate: ['get', 'rotation'],
@@ -5289,9 +5465,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               type: 'FeatureCollection',
               features: currentStations.map(station => {
                 const state = currentIconMap.get(station.id);
-                const velocityStr = state?.currentVelocity != null 
-                  ? `${Math.abs(state.currentVelocity).toFixed(1)} kn` 
-                  : '';
+                let velocityStr = '';
+                if (state?.currentVelocity != null) {
+                  const curVel = `${Math.abs(state.currentVelocity).toFixed(1)} kn`;
+                  const maxVel = state?.targetVelocity != null 
+                    ? ` / ${Math.abs(state.targetVelocity).toFixed(1)} kn` 
+                    : '';
+                  const slackStr = state?.nextSlackTime 
+                    ? ` / Next Slack: ${state.nextSlackTime}` 
+                    : '';
+                  velocityStr = `${curVel}${maxVel}${slackStr}`;
+                }
                 const rotation = state?.rotation || 0;
                 // Pre-calculate label offset to position at tail of arrow
                 const rotationRad = rotation * Math.PI / 180;
@@ -5333,17 +5517,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <MapLibre.SymbolLayer
               id="current-stations-icon"
               minZoomLevel={7}
-              onPress={(e) => {
-                const feature = e.features?.[0];
-                console.log('[CURRENT PIN CLICK] Feature:', feature?.properties);
-                if (feature?.properties?.id) {
-                  // Update detail chart station (auto-enable detail view if not visible)
-                  setDetailChartCurrentStationId(feature.properties.id);
-                  if (!showCurrentDetails) {
-                    toggleLayer('currentDetails');
-                  }
-                }
-              }}
               style={{
                 iconImage: ['get', 'iconName'],
                 iconRotate: ['get', 'rotation'],
@@ -5388,6 +5561,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textHaloColor: '#FFFFFF',
                 textHaloWidth: scaledCurrentStationTextHalo,
                 textOpacity: scaledCurrentStationTextOpacity,
+                textMaxWidth: 50,  // Prevent line wrapping (50 ems is very wide)
                 // Further from head than station name
                 textOffset: [
                   'case',
@@ -5403,11 +5577,80 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </>
         )}
 
+        {/* Live Buoys Layer */}
+        {showLiveBuoys && liveBuoys.length > 0 && (
+          <>
+            <MapLibre.ShapeSource
+              id="live-buoys-source"
+              shape={{
+                type: 'FeatureCollection',
+                features: liveBuoys.map((buoy) => {
+                  return {
+                    type: 'Feature',
+                    geometry: {
+                      type: 'Point',
+                      coordinates: [buoy.longitude, buoy.latitude],
+                    },
+                    properties: {
+                      id: buoy.id,
+                      name: buoy.name,
+                      buoyType: buoy.type,
+                      isLiveBuoy: true,
+                    },
+                  };
+                }),
+              }}
+            >
+              {/* Live buoy halo - white background for visibility */}
+              <MapLibre.SymbolLayer
+                id="live-buoys-halo"
+                minZoomLevel={5}
+                style={{
+                  iconImage: 'livebuoy-halo',
+                  iconSize: scaledLiveBuoyHaloSize,
+                  iconOpacity: scaledLiveBuoySymbolOpacity,
+                  iconAllowOverlap: true,
+                  iconIgnorePlacement: true,
+                }}
+              />
+              {/* Live buoy icon */}
+              <MapLibre.SymbolLayer
+                id="live-buoys-icon"
+                minZoomLevel={5}
+                style={{
+                  iconImage: 'livebuoy',
+                  iconSize: scaledLiveBuoyIconSize,
+                  iconOpacity: scaledLiveBuoySymbolOpacity,
+                  iconAllowOverlap: true,
+                  iconIgnorePlacement: true,
+                }}
+              />
+              {/* Live buoy name label */}
+              <MapLibre.SymbolLayer
+                id="live-buoys-label"
+                minZoomLevel={8}
+                style={{
+                  textField: ['get', 'name'],
+                  textFont: ['Noto Sans Regular'],
+                  textSize: 12,
+                  textColor: '#FF8C00',
+                  textHaloColor: '#FFFFFF',
+                  textHaloWidth: 2,
+                  textOpacity: 1.0,
+                  textOffset: [0, 2],
+                  textAnchor: 'top',
+                  textAllowOverlap: false,
+                }}
+              />
+            </MapLibre.ShapeSource>
+          </>
+        )}
+
         {/* ===== GNIS NAMES MOVED HERE TO RENDER ON TOP ===== */}
 
         {/* GNIS Place Names Layer - Reference data from USGS */}
         {/* IMPORTANT: Rendered AFTER tide/current stations so names appear on top */}
-        {tileServerReady && gnisAvailable && showGNISNames && showPlaceNames && (
+        {tileServerReady && gnisAvailable && showGNISNames && showPlaceNames && debugIsSourceVisible('gnis') && (
           <MapLibre.VectorSource
             id="gnis-names-source"
             tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/gnis_names_ak/{z}/{x}/{y}.pbf`]}
@@ -5601,6 +5844,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         )}
 
       </MapLibre.MapView>
+
       </View>
 
       {/* Chart Loading Progress Indicator - shows during background chart loading */}
@@ -5667,16 +5911,28 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </TouchableOpacity>
         <View style={styles.topMenuDivider} />
         
-        {/* Telemetry button */}
+        {/* Nav Data button - toggles navigation data displays */}
         <TouchableOpacity 
-          style={[styles.topMenuBtn, showGPSPanel && styles.topMenuBtnActive]}
-          onPress={() => {
-            console.log(`[DynamicChartViewer] Toggling GPS panel: ${showGPSPanel} -> ${!showGPSPanel}`);
-            setShowGPSPanel(!showGPSPanel);
-          }}
+          style={[styles.topMenuBtn, showNavData && styles.topMenuBtnActive]}
+          onPress={() => setShowNavData(!showNavData)}
         >
-          <Text style={styles.topMenuBtnText}>⏱</Text>
+          <Ionicons 
+            name={showNavData ? "speedometer" : "speedometer-outline"} 
+            size={24} 
+            color="#fff" 
+          />
         </TouchableOpacity>
+      </View>
+
+      {/* Scale Bar - centered below top menu bar */}
+      <View style={[styles.scaleBarContainer, { top: insets.top + 58 }]} pointerEvents="none">
+        <View style={styles.scaleBarInner}>
+          <View style={[styles.scaleBarLine, { width: scaleBarData.barWidthPx }]}>
+            <View style={styles.scaleBarEndCapLeft} />
+            <View style={styles.scaleBarEndCapRight} />
+          </View>
+          <Text style={styles.scaleBarLabel}>{scaleBarData.label}</Text>
+        </View>
       </View>
 
       {/* Layer Selector Panel - ForeFlight-style multi-column overlay */}
@@ -5686,16 +5942,51 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <View style={styles.layerSelectorContent}>
               {/* Column 1 */}
               <View style={styles.layerSelectorColumn}>
-                {/* Base Map Section */}
-                <Text style={styles.layerSectionHeader}>Base Map</Text>
+                {/* Base Map - Imagery */}
+                <Text style={styles.layerSectionHeader}>Imagery</Text>
                 <TouchableOpacity style={[styles.layerToggleRow, mapStyle === 'satellite' && styles.layerToggleRowActive]} onPress={() => setMapStyle('satellite')}>
                   <Text style={styles.layerToggleText}>Satellite</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.layerToggleRow, mapStyle === 'light' && styles.layerToggleRowActive]} onPress={() => setMapStyle('light')}>
-                  <Text style={styles.layerToggleText}>Light</Text>
+                <TouchableOpacity
+                  style={[styles.layerToggleRow, mapStyle === 'ocean' && styles.layerToggleRowActive, !hasLocalOcean && { opacity: 0.4 }]}
+                  onPress={() => hasLocalOcean && setMapStyle('ocean')}
+                  disabled={!hasLocalOcean}
+                >
+                  <Text style={styles.layerToggleText}>Ocean{!hasLocalOcean ? ' ⬇' : ''}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.layerToggleRow, mapStyle === 'chart' && styles.layerToggleRowActive]} onPress={() => setMapStyle('chart')}>
-                  <Text style={styles.layerToggleText}>Chart</Text>
+                <TouchableOpacity
+                  style={[styles.layerToggleRow, mapStyle === 'terrain' && styles.layerToggleRowActive, !hasLocalTerrain && { opacity: 0.4 }]}
+                  onPress={() => hasLocalTerrain && setMapStyle('terrain')}
+                  disabled={!hasLocalTerrain}
+                >
+                  <Text style={styles.layerToggleText}>Terrain{!hasLocalTerrain ? ' ⬇' : ''}</Text>
+                </TouchableOpacity>
+
+                {/* Base Map - Map Styles */}
+                <Text style={styles.layerSectionHeader}>Map</Text>
+                <TouchableOpacity
+                  style={[styles.layerToggleRow, mapStyle === 'light' && styles.layerToggleRowActive, !hasLocalBasemap && { opacity: 0.4 }]}
+                  onPress={() => hasLocalBasemap ? setMapStyle('light') : setMapStyle('light')}
+                >
+                  <Text style={styles.layerToggleText}>Light{!hasLocalBasemap ? ' ⬇' : ''}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.layerToggleRow, mapStyle === 'dark' && styles.layerToggleRowActive, !hasLocalBasemap && { opacity: 0.4 }]}
+                  onPress={() => hasLocalBasemap ? setMapStyle('dark') : setMapStyle('dark')}
+                >
+                  <Text style={styles.layerToggleText}>Dark{!hasLocalBasemap ? ' ⬇' : ''}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.layerToggleRow, mapStyle === 'street' && styles.layerToggleRowActive, !hasLocalBasemap && { opacity: 0.4 }]}
+                  onPress={() => hasLocalBasemap ? setMapStyle('street') : setMapStyle('street')}
+                >
+                  <Text style={styles.layerToggleText}>Street{!hasLocalBasemap ? ' ⬇' : ''}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.layerToggleRow, mapStyle === 'nautical' && styles.layerToggleRowActive, !hasLocalBasemap && { opacity: 0.4 }]}
+                  onPress={() => hasLocalBasemap ? setMapStyle('nautical') : setMapStyle('nautical')}
+                >
+                  <Text style={styles.layerToggleText}>Nautical{!hasLocalBasemap ? ' ⬇' : ''}</Text>
                 </TouchableOpacity>
 
                 {/* Display Mode Section */}
@@ -5790,6 +6081,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 <TouchableOpacity style={[styles.layerToggleRow, showCurrentStations && styles.layerToggleRowActive]} onPress={() => toggleLayer('currentStations')}>
                   <Text style={styles.layerToggleText}>Current Stations</Text>
                 </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showLiveBuoys && styles.layerToggleRowActive]} onPress={() => toggleLayer('liveBuoys')}>
+                  <Text style={styles.layerToggleText}>Live Buoys</Text>
+                </TouchableOpacity>
                 <TouchableOpacity style={[styles.layerToggleRow, showTideDetails && styles.layerToggleRowActive]} onPress={() => toggleLayer('tideDetails')}>
                   <Text style={styles.layerToggleText}>Tide Details</Text>
                 </TouchableOpacity>
@@ -5843,7 +6137,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         mbtilesCharts={mbtilesCharts}
         tileServerReady={tileServerReady}
         topOffset={insets.top + 52}
-        leftOffset={showCoords ? 200 : 12}
+        leftOffset={12}
       />
 
       {/* Technical Debug Info Panel */}
@@ -5958,6 +6252,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 setCharts([]);
                 setGnisAvailable(false);
                 setHasLocalBasemap(false);
+                setSatelliteTileSets([]);
+                setBasemapTileSets([]);
+                setOceanTileSets([]);
+                setTerrainTileSets([]);
                 setTileServerReady(false);
                 // Increment cache buster to force Mapbox to re-fetch tiles
                 setCacheBuster(prev => prev + 1);
@@ -5979,25 +6277,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         </View>
       )}
 
-      {/* Upper right info stack - Coordinates then Zoom (under Day/Dusk/Night) */}
-      <View style={[styles.upperRightInfoStack, { top: insets.top + 52, right: 12 }]}>
-        {showCoords && (
-          <View style={[styles.coordBadge, themedStyles.coordBadge]}>
-            <Text style={[styles.coordText, themedStyles.coordText]}>
-              {Math.abs(centerCoord[1]).toFixed(4)}°{centerCoord[1] >= 0 ? 'N' : 'S'}{' '}
-              {Math.abs(centerCoord[0]).toFixed(4)}°{centerCoord[0] >= 0 ? 'E' : 'W'}
-            </Text>
-          </View>
-        )}
-        {showZoomLevel && (
-          <View style={[styles.zoomBadge, themedStyles.zoomBadge, isAtMaxZoom && styles.zoomBadgeAtMax]}>
-            <Text style={[styles.zoomText, themedStyles.zoomText, isAtMaxZoom && styles.zoomTextAtMax]}>
-              {currentZoom.toFixed(1)}x{isAtMaxZoom ? ' MAX' : ''}
-            </Text>
-          </View>
-        )}
-      </View>
-      
       {/* Max zoom indicator - shows when limited and near max */}
       {limitZoomToCharts && currentZoom >= maxAvailableZoom - 2 && (
         <View style={[styles.maxZoomIndicator, { bottom: 42, right: 12 }]}>
@@ -6652,6 +6931,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       )}
 
       {/* Feature Picker - When multiple features found at tap location */}
+
       {featureChoices && featureChoices.length > 1 && (
         <View style={styles.featurePickerContainer}>
           <View style={styles.featurePickerHeader}>
@@ -6670,12 +6950,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 style={styles.featurePickerItem}
                 onPress={() => {
                   setFeatureChoices(null);
-                  setSelectedFeature(feature);
+                  if (feature.properties?._specialType) {
+                    handleSpecialFeatureSelect(feature);
+                  } else {
+                    setSelectedFeature(feature);
+                  }
                 }}
               >
                 <Text style={styles.featurePickerItemText}>{feature.type}</Text>
-                {feature.properties?.OBJNAM && (
-                  <Text style={styles.featurePickerItemSubtext}>{String(feature.properties.OBJNAM)}</Text>
+                {(feature.properties?.OBJNAM || feature.properties?.name) && (
+                  <Text style={styles.featurePickerItemSubtext}>{String(feature.properties.OBJNAM || feature.properties.name)}</Text>
                 )}
               </TouchableOpacity>
             ))}
@@ -6717,7 +7001,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             ? [gpsData.longitude, gpsData.latitude] 
             : null}
           tideStations={tideStations}
-          onClearSelection={() => setDetailChartTideStationId(null)}
+          onClearSelection={() => {
+            setDetailChartTideStationId(null);
+            dispatchLayers({ type: 'SET', layer: 'tideDetails', value: false });
+          }}
         />
         <CurrentDetailChart
           visible={showCurrentDetails}
@@ -6726,14 +7013,647 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             ? [gpsData.longitude, gpsData.latitude] 
             : null}
           currentStations={currentStations}
-          onClearSelection={() => setDetailChartCurrentStationId(null)}
+          onClearSelection={() => {
+            setDetailChartCurrentStationId(null);
+            dispatchLayers({ type: 'SET', layer: 'currentDetails', value: false });
+          }}
         />
       </View>
       )}
 
+      {/* Buoy Detail Modal */}
+      <BuoyDetailModal
+        visible={selectedBuoy !== null}
+        buoy={selectedBuoy}
+        loading={loadingBuoyDetail}
+        onClose={() => setSelectedBuoy(null)}
+      />
+
+      {/* Navigation Data Displays */}
+      {showNavData && (
+        <>
+          {/* Upper Left - Speed */}
+          <View style={[styles.navDataBox, styles.navDataUpperLeft, { top: insets.top }]}>
+            <Text style={styles.navDataLabel}>SPD</Text>
+            <Text style={styles.navDataValue}>{gpsData.speed !== null ? `${gpsData.speed.toFixed(1)}` : '--'}</Text>
+            <Text style={styles.navDataUnit}>kn</Text>
+          </View>
+
+          {/* Upper Right - GPS Position */}
+          <View style={[styles.navDataBox, styles.navDataUpperRight, { top: insets.top }]}>
+            <View style={styles.navDataLabelRow}>
+              <Text style={styles.navDataLabel}>GPS</Text>
+              <Text style={styles.navDataZoom}>z{currentZoom.toFixed(1)}</Text>
+            </View>
+            <Text style={styles.navDataValueSmall}>
+              {gpsData.latitude !== null ? `${Math.abs(gpsData.latitude).toFixed(4)}°${gpsData.latitude >= 0 ? 'N' : 'S'}` : '--'}
+            </Text>
+            <Text style={styles.navDataValueSmall}>
+              {gpsData.longitude !== null ? `${Math.abs(gpsData.longitude).toFixed(4)}°${gpsData.longitude >= 0 ? 'E' : 'W'}` : '--'}
+            </Text>
+          </View>
+
+          {/* Lower Left - Heading (high z-index to stay above detail charts) */}
+          <View style={[
+            styles.navDataBox, 
+            styles.navDataLowerLeft, 
+            { 
+              bottom: showTideDetails && showCurrentDetails
+                ? Dimensions.get('window').height * 0.30  // Both charts = 30% (15% each)
+                : (showTideDetails || showCurrentDetails)
+                  ? Dimensions.get('window').height * 0.15  // One chart = 15%
+                  : 0  // No charts = tab bar level
+            }
+          ]}>
+            <Text style={styles.navDataLabel}>HDG</Text>
+            <Text style={styles.navDataValue}>{gpsData.heading !== null ? `${Math.round(gpsData.heading)}` : '--'}</Text>
+            <Text style={styles.navDataUnit}>°</Text>
+          </View>
+
+          {/* Lower Right - Bearing Next (high z-index to stay above detail charts) */}
+          <View style={[
+            styles.navDataBox, 
+            styles.navDataLowerRight, 
+            { 
+              bottom: showTideDetails && showCurrentDetails
+                ? Dimensions.get('window').height * 0.30  // Both charts = 30% (15% each)
+                : (showTideDetails || showCurrentDetails)
+                  ? Dimensions.get('window').height * 0.15  // One chart = 15%
+                  : 0  // No charts = tab bar level
+            }
+          ]}>
+            <Text style={styles.navDataLabel}>BRG</Text>
+            <Text style={styles.navDataValue}>--</Text>
+            <Text style={styles.navDataUnit}>°</Text>
+          </View>
+
+          {/* Middle Left - COG (position adjusted for detail charts) */}
+          <View style={[
+            styles.navDataBox, 
+            styles.navDataMiddleLeft,
+            { 
+              top: showTideDetails && showCurrentDetails
+                ? '30%'  // Both charts (30% bottom) - center in remaining 70%
+                : (showTideDetails || showCurrentDetails)
+                  ? '40%'  // One chart (15% bottom) - center in remaining 85%
+                  : '50%', // No charts - center in full screen
+              marginTop: -30 
+            }
+          ]}>
+            <Text style={styles.navDataLabel}>COG</Text>
+            <Text style={styles.navDataValue}>--</Text>
+            <Text style={styles.navDataUnit}>°</Text>
+          </View>
+
+          {/* Middle Right - ETE (position adjusted for detail charts) */}
+          <View style={[
+            styles.navDataBox, 
+            styles.navDataMiddleRight,
+            { 
+              top: showTideDetails && showCurrentDetails
+                ? '30%'  // Both charts (30% bottom) - center in remaining 70%
+                : (showTideDetails || showCurrentDetails)
+                  ? '40%'  // One chart (15% bottom) - center in remaining 85%
+                  : '50%', // No charts - center in full screen
+              marginTop: -30 
+            }
+          ]}>
+            <Text style={styles.navDataLabel}>ETE</Text>
+            <Text style={styles.navDataValue}>--</Text>
+            <Text style={styles.navDataUnit}>min</Text>
+          </View>
+        </>
+      )}
+
+      {/* Debug Map Modal - Map source toggle panel */}
+      <Modal
+        visible={showDebugMap}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowDebugMap(false)}
+      >
+        <View style={debugStyles.container}>
+          <View style={debugStyles.header}>
+            <Text style={debugStyles.headerTitle}>Debug Map</Text>
+            <TouchableOpacity onPress={() => setShowDebugMap(false)} style={debugStyles.closeBtn}>
+              <Text style={debugStyles.closeBtnText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={debugStyles.scroll} contentContainerStyle={debugStyles.scrollContent}>
+            {/* Quick actions */}
+            <View style={debugStyles.quickActions}>
+              <TouchableOpacity
+                style={debugStyles.quickActionBtn}
+                onPress={() => setDebugHiddenSources(new Set())}
+              >
+                <Text style={debugStyles.quickActionText}>Show All</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={debugStyles.quickActionBtn}
+                onPress={() => setDebugHiddenSources(new Set([
+                  'satellite', 'basemap', 'ocean', 'terrain', 'charts', 'bathymetry', 'gnis',
+                ]))}
+              >
+                <Text style={debugStyles.quickActionText}>Hide All</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Active state indicator */}
+            {debugHiddenSources.size > 0 && (
+              <View style={debugStyles.debugBanner}>
+                <Text style={debugStyles.debugBannerText}>
+                  {debugHiddenSources.size} source{debugHiddenSources.size > 1 ? 's' : ''} hidden
+                </Text>
+              </View>
+            )}
+
+            {/* Base Map Mode */}
+            <Text style={debugStyles.sectionTitle}>BASE MAP MODE</Text>
+            <View style={debugStyles.card}>
+              <DebugToggle label="Satellite" value={mapStyle === 'satellite'} onToggle={() => setMapStyle('satellite')} radio />
+              <DebugToggle label="Light" value={mapStyle === 'light'} onToggle={() => setMapStyle('light')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
+              <DebugToggle label="Dark" value={mapStyle === 'dark'} onToggle={() => setMapStyle('dark')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
+              <DebugToggle label="Street" value={mapStyle === 'street'} onToggle={() => setMapStyle('street')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
+              <DebugToggle label="Nautical (S-52)" value={mapStyle === 'nautical'} onToggle={() => setMapStyle('nautical')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
+              <DebugToggle label="Ocean" value={mapStyle === 'ocean'} onToggle={() => setMapStyle('ocean')} radio subtitle={hasLocalOcean ? `${oceanTileSets.length} zoom sets` : 'Not downloaded'} />
+              <DebugToggle label="Terrain" value={mapStyle === 'terrain'} onToggle={() => setMapStyle('terrain')} radio subtitle={hasLocalTerrain ? `${terrainTileSets.length} zoom sets` : 'Not downloaded'} />
+            </View>
+
+            {/* Display Mode */}
+            <Text style={debugStyles.sectionTitle}>S-52 DISPLAY MODE</Text>
+            <View style={debugStyles.card}>
+              <DebugToggle label="Day" value={s52Mode === 'day'} onToggle={() => setS52Mode('day')} radio />
+              <DebugToggle label="Dusk" value={s52Mode === 'dusk'} onToggle={() => setS52Mode('dusk')} radio />
+              <DebugToggle label="Night" value={s52Mode === 'night'} onToggle={() => setS52Mode('night')} radio />
+            </View>
+
+            {/* MAP SOURCES - the main purpose of this debug panel */}
+            <Text style={debugStyles.sectionTitle}>MAP SOURCES</Text>
+            <View style={debugStyles.card}>
+              <DebugToggle 
+                label="Satellite Imagery" 
+                value={debugIsSourceVisible('satellite')} 
+                onToggle={() => debugToggleSource('satellite')} 
+                subtitle={satelliteTileSets.length > 0 ? `${satelliteTileSets.length} tile sets loaded` : 'No tiles'}
+              />
+              <DebugToggle 
+                label="Vector Basemap" 
+                value={debugIsSourceVisible('basemap')} 
+                onToggle={() => debugToggleSource('basemap')} 
+                subtitle={hasLocalBasemap ? `${basemapTileSets.length} zoom sets` : 'Not downloaded'}
+              />
+              <DebugToggle 
+                label="Ocean Raster" 
+                value={debugIsSourceVisible('ocean')} 
+                onToggle={() => debugToggleSource('ocean')} 
+                subtitle={hasLocalOcean ? `${oceanTileSets.length} zoom sets` : 'Not downloaded'}
+              />
+              <DebugToggle 
+                label="Terrain Raster" 
+                value={debugIsSourceVisible('terrain')} 
+                onToggle={() => debugToggleSource('terrain')} 
+                subtitle={hasLocalTerrain ? `${terrainTileSets.length} zoom sets` : 'Not downloaded'}
+              />
+              <DebugToggle 
+                label="NOAA Charts (Composite)" 
+                value={debugIsSourceVisible('charts')} 
+                onToggle={() => debugToggleSource('charts')} 
+                subtitle={`${mbtilesCharts.length} chart packs`}
+              />
+              <DebugToggle 
+                label="Raster Bathymetry" 
+                value={debugIsSourceVisible('bathymetry')} 
+                onToggle={() => debugToggleSource('bathymetry')} 
+              />
+              <DebugToggle 
+                label="GNIS Place Names" 
+                value={debugIsSourceVisible('gnis')} 
+                onToggle={() => debugToggleSource('gnis')} 
+                subtitle={gnisAvailable ? 'Available' : 'Not loaded'}
+              />
+            </View>
+
+            {/* Status */}
+            <Text style={debugStyles.sectionTitle}>STATUS</Text>
+            <View style={debugStyles.card}>
+              <DebugToggle label="Local Basemap" value={hasLocalBasemap} onToggle={() => {}} disabled />
+              <DebugToggle label={`Ocean Tiles (${oceanTileSets.length})`} value={hasLocalOcean} onToggle={() => {}} disabled />
+              <DebugToggle label={`Terrain Tiles (${terrainTileSets.length})`} value={hasLocalTerrain} onToggle={() => {}} disabled />
+              <DebugToggle label="GNIS Available" value={gnisAvailable} onToggle={() => {}} disabled />
+              <DebugToggle label={`Satellite Tiles (${satelliteTileSets.length})`} value={satelliteTileSets.length > 0} onToggle={() => {}} disabled />
+              <DebugToggle label={`Chart Packs (${mbtilesCharts.length})`} value={mbtilesCharts.length > 0} onToggle={() => {}} disabled />
+              <DebugToggle label="Tile Server" value={tileServerReady} onToggle={() => {}} disabled />
+            </View>
+
+            {/* DIAGNOSTICS */}
+            <Text style={debugStyles.sectionTitle}>DIAGNOSTICS</Text>
+            <TouchableOpacity
+              style={[debugStyles.quickActionBtn, { marginBottom: 12 }]}
+              onPress={runDiagnostics}
+            >
+              <Text style={debugStyles.quickActionText}>Run Diagnostics</Text>
+            </TouchableOpacity>
+
+            {debugDiagnostics && (
+              <View style={debugStyles.card}>
+                {/* Timestamp */}
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>Captured</Text>
+                  <Text style={diagStyles.value}>{debugDiagnostics.timestamp}</Text>
+                </View>
+
+                {/* Render Gate Checks */}
+                <View style={diagStyles.sectionHeader}>
+                  <Text style={diagStyles.sectionHeaderText}>RENDER GATES</Text>
+                </View>
+                {debugDiagnostics.gates.map((gate, i) => (
+                  <View key={`gate-${i}`} style={diagStyles.row}>
+                    <Text style={diagStyles.label}>
+                      {gate.pass ? '\u2705' : '\u274C'} {gate.label}
+                    </Text>
+                    <Text style={[diagStyles.mono, { fontSize: 10 }]}>{gate.expression}</Text>
+                  </View>
+                ))}
+
+                {/* State Dump */}
+                <View style={diagStyles.sectionHeader}>
+                  <Text style={diagStyles.sectionHeaderText}>STATE</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>mapStyle</Text>
+                  <Text style={diagStyles.value}>{debugDiagnostics.mapStyle}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>s52Mode</Text>
+                  <Text style={diagStyles.value}>{debugDiagnostics.s52Mode}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>tileServerReady</Text>
+                  <Text style={diagStyles.value}>{String(debugDiagnostics.tileServerReady)}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>hasLocalBasemap</Text>
+                  <Text style={diagStyles.value}>{String(debugDiagnostics.hasLocalBasemap)}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>hasLocalOcean</Text>
+                  <Text style={diagStyles.value}>{String(debugDiagnostics.hasLocalOcean)}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>hasLocalTerrain</Text>
+                  <Text style={diagStyles.value}>{String(debugDiagnostics.hasLocalTerrain)}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>gnisAvailable</Text>
+                  <Text style={diagStyles.value}>{String(debugDiagnostics.gnisAvailable)}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>useMBTiles</Text>
+                  <Text style={diagStyles.value}>{String(debugDiagnostics.useMBTiles)}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>useCompositeTiles</Text>
+                  <Text style={diagStyles.value}>{String(debugDiagnostics.useCompositeTiles)}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>Tile Server URL</Text>
+                  <Text style={diagStyles.mono}>{debugDiagnostics.tileServerUrl}</Text>
+                </View>
+                {/* styleJSON */}
+                <View style={diagStyles.sectionHeader}>
+                  <Text style={diagStyles.sectionHeaderText}>STYLE JSON (passed to MapLibre)</Text>
+                </View>
+                <View style={diagStyles.codeBlock}>
+                  <Text style={diagStyles.codeText}>{debugDiagnostics.styleJSON}</Text>
+                </View>
+
+                {/* MapLibre Sources */}
+                <View style={diagStyles.sectionHeader}>
+                  <Text style={diagStyles.sectionHeaderText}>
+                    MAPLIBRE SOURCES ({debugDiagnostics.mapLibreSources.length})
+                  </Text>
+                </View>
+                {debugDiagnostics.styleError ? (
+                  <View style={diagStyles.errorBlock}>
+                    <Text style={diagStyles.errorText}>{debugDiagnostics.styleError}</Text>
+                  </View>
+                ) : debugDiagnostics.mapLibreSources.length === 0 ? (
+                  <View style={diagStyles.row}>
+                    <Text style={diagStyles.label}>No sources found in style</Text>
+                  </View>
+                ) : (
+                  debugDiagnostics.mapLibreSources.map((src, i) => (
+                    <View key={`src-${i}`} style={diagStyles.layerItem}>
+                      <Text style={diagStyles.layerId}>{src.id}</Text>
+                      <Text style={diagStyles.layerMeta}>type: {src.type}</Text>
+                      {src.urls && src.urls.map((url, j) => (
+                        <Text key={`url-${j}`} style={diagStyles.mono}>{url}</Text>
+                      ))}
+                    </View>
+                  ))
+                )}
+
+                {/* MapLibre Layers */}
+                <View style={diagStyles.sectionHeader}>
+                  <Text style={diagStyles.sectionHeaderText}>
+                    MAPLIBRE LAYERS ({debugDiagnostics.mapLibreLayers.length}) - render order bottom to top
+                  </Text>
+                </View>
+                {debugDiagnostics.mapLibreLayers.length === 0 && !debugDiagnostics.styleError ? (
+                  <View style={diagStyles.row}>
+                    <Text style={diagStyles.label}>No layers found in style</Text>
+                  </View>
+                ) : (
+                  debugDiagnostics.mapLibreLayers.map((layer, i) => (
+                    <View key={`layer-${i}`} style={diagStyles.layerItem}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={diagStyles.layerIndex}>{i}</Text>
+                        <Text style={diagStyles.layerId}>{layer.id}</Text>
+                        <Text style={[diagStyles.layerBadge, 
+                          layer.visibility === 'none' && diagStyles.layerBadgeHidden
+                        ]}>
+                          {layer.type}
+                        </Text>
+                      </View>
+                      <Text style={diagStyles.layerMeta}>
+                        {layer.source ? `src: ${layer.source}` : 'no source'}
+                        {layer.sourceLayer ? ` | layer: ${layer.sourceLayer}` : ''}
+                        {` | vis: ${layer.visibility || 'visible'}`}
+                      </Text>
+                    </View>
+                  ))
+                )}
+              </View>
+            )}
+
+            <View style={{ height: 40 }} />
+          </ScrollView>
+        </View>
+      </Modal>
+
     </View>
   );
 }
+
+// Debug Map toggle row component
+function DebugToggle({ label, value, onToggle, radio, disabled, subtitle }: { 
+  label: string; value: boolean; onToggle: () => void; radio?: boolean; disabled?: boolean; subtitle?: string;
+}) {
+  return (
+    <TouchableOpacity 
+      style={debugStyles.toggleRow} 
+      onPress={disabled ? undefined : onToggle}
+      activeOpacity={disabled ? 1 : 0.6}
+    >
+      <View style={{ flex: 1 }}>
+        <Text style={[debugStyles.toggleLabel, disabled && debugStyles.toggleLabelDisabled]}>{label}</Text>
+        {subtitle && <Text style={debugStyles.toggleSubtitle}>{subtitle}</Text>}
+      </View>
+      {radio ? (
+        <View style={[debugStyles.radioOuter, value && debugStyles.radioOuterActive]}>
+          {value && <View style={debugStyles.radioInner} />}
+        </View>
+      ) : (
+        <Switch
+          value={value}
+          onValueChange={disabled ? undefined : onToggle}
+          disabled={disabled}
+          trackColor={{ false: '#3a3a3c', true: '#34c759' }}
+          thumbColor="#fff"
+          style={{ transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }] }}
+        />
+      )}
+    </TouchableOpacity>
+  );
+}
+
+const debugStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#1c1c1e',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    paddingTop: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.1)',
+  },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  closeBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(79,195,247,0.15)',
+  },
+  closeBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#4FC3F7',
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 16,
+  },
+  quickActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  quickActionBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center',
+  },
+  quickActionText: {
+    color: '#4FC3F7',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.45)',
+    letterSpacing: 0.8,
+    marginBottom: 6,
+    marginTop: 12,
+    marginLeft: 4,
+  },
+  card: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    overflow: 'hidden',
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  toggleLabel: {
+    fontSize: 15,
+    color: '#fff',
+    flex: 1,
+  },
+  toggleLabelDisabled: {
+    color: 'rgba(255,255,255,0.4)',
+  },
+  toggleSubtitle: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.35)',
+    marginTop: 2,
+  },
+  debugBanner: {
+    backgroundColor: 'rgba(255, 149, 0, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 149, 0, 0.3)',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  debugBannerText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FF9500',
+    textAlign: 'center',
+  },
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterActive: {
+    borderColor: '#4FC3F7',
+  },
+  radioInner: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#4FC3F7',
+  },
+});
+
+const diagStyles = StyleSheet.create({
+  row: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  label: {
+    fontSize: 13,
+    color: '#fff',
+    marginBottom: 2,
+  },
+  value: {
+    fontSize: 13,
+    color: '#4FC3F7',
+    fontWeight: '500',
+  },
+  mono: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.5)',
+    fontFamily: 'monospace',
+  },
+  sectionHeader: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+  },
+  sectionHeaderText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.5)',
+    letterSpacing: 0.6,
+  },
+  codeBlock: {
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    padding: 10,
+    margin: 8,
+    borderRadius: 6,
+  },
+  codeText: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.6)',
+    fontFamily: 'monospace',
+  },
+  errorBlock: {
+    backgroundColor: 'rgba(255,59,48,0.15)',
+    padding: 10,
+    margin: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,59,48,0.3)',
+  },
+  errorText: {
+    fontSize: 12,
+    color: '#FF3B30',
+    fontFamily: 'monospace',
+  },
+  layerItem: {
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
+  },
+  layerIndex: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.3)',
+    fontFamily: 'monospace',
+    width: 20,
+  },
+  layerId: {
+    fontSize: 12,
+    color: '#fff',
+    fontWeight: '600',
+    flex: 1,
+  },
+  layerMeta: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.4)',
+    marginTop: 2,
+    fontFamily: 'monospace',
+  },
+  layerBadge: {
+    fontSize: 9,
+    color: '#4FC3F7',
+    backgroundColor: 'rgba(79,195,247,0.15)',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+    overflow: 'hidden',
+    fontWeight: '600',
+  },
+  layerBadgeHidden: {
+    color: '#FF9500',
+    backgroundColor: 'rgba(255,149,0,0.15)',
+  },
+});
 
 // Helper to get feature identifier for title
 function getFeatureId(feature: FeatureInfo): string {
@@ -7225,12 +8145,6 @@ const styles = StyleSheet.create({
   mapSection: { flex: 1 },
   mapTouchWrapper: { flex: 1 },
   map: { flex: 1 },
-  // Upper right info stack (coords + zoom)
-  upperRightInfoStack: {
-    position: 'absolute',
-    alignItems: 'flex-end',
-    gap: 4,
-  },
   // Bottom stack for detail charts - flex layout, sits above tab bar naturally
   bottomStack: {
     // No absolute positioning - flex child that takes its content height
@@ -7313,16 +8227,6 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 4,
   },
-  zoomText: { fontSize: 11, color: '#fff', fontWeight: '500', fontFamily: 'monospace' },
-  zoomBadgeAtMax: {
-    backgroundColor: 'rgba(244, 67, 54, 0.8)',
-    borderWidth: 1,
-    borderColor: '#F44336',
-  },
-  zoomTextAtMax: {
-    color: '#fff',
-    fontWeight: '700',
-  },
   maxZoomIndicator: {
     position: 'absolute',
     backgroundColor: 'rgba(255, 152, 0, 0.85)',
@@ -7335,13 +8239,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
   },
-  coordBadge: {
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 4,
-  },
-  coordText: { fontSize: 11, color: '#fff', fontWeight: '500', fontFamily: 'monospace' },
   layersBtn: {
     position: 'absolute',
     backgroundColor: 'rgba(255,255,255,0.9)',
@@ -7737,7 +8634,7 @@ const styles = StyleSheet.create({
   // Top menu bar - horizontal strip (same button size as vertical quick toggles)
   topMenuBar: {
     position: 'absolute',
-    left: 12,
+    alignSelf: 'center',
     flexDirection: 'row',
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
     borderRadius: 8,
@@ -7765,6 +8662,49 @@ const styles = StyleSheet.create({
     width: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.15)',
     marginVertical: 6,
+  },
+  
+  // Scale bar - centered below top menu bar
+  scaleBarContainer: {
+    position: 'absolute',
+    alignSelf: 'center',
+    alignItems: 'center',
+  },
+  scaleBarInner: {
+    alignItems: 'center',
+  },
+  scaleBarLine: {
+    height: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 1,
+    position: 'relative',
+  },
+  scaleBarEndCapLeft: {
+    position: 'absolute',
+    left: 0,
+    top: -3,
+    width: 2,
+    height: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 1,
+  },
+  scaleBarEndCapRight: {
+    position: 'absolute',
+    right: 0,
+    top: -3,
+    width: 2,
+    height: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 1,
+  },
+  scaleBarLabel: {
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.9)',
+    marginTop: 2,
+    fontWeight: '600',
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   
   // 3D layer stack icon (bigger)
@@ -8437,5 +9377,75 @@ const styles = StyleSheet.create({
   layerToggleText: {
     fontSize: 12,
     color: '#fff',
+  },
+  
+  // Navigation data boxes
+  navDataBox: {
+    position: 'absolute',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 8,
+    padding: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    minWidth: 80,
+  },
+  navDataUpperLeft: {
+    left: 0,
+    zIndex: 100,
+  },
+  navDataUpperRight: {
+    right: 0,
+    zIndex: 100,
+  },
+  navDataLowerLeft: {
+    left: 0,
+    zIndex: 1000, // Above detail charts
+  },
+  navDataLowerRight: {
+    right: 0,
+    zIndex: 1000, // Above detail charts
+  },
+  navDataMiddleLeft: {
+    left: 0,
+    zIndex: 100,
+  },
+  navDataMiddleRight: {
+    right: 0,
+    zIndex: 100,
+  },
+  navDataLabel: {
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.6)',
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  navDataLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    marginBottom: 2,
+  },
+  navDataZoom: {
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '500',
+  },
+  navDataValue: {
+    fontSize: 28,
+    color: '#fff',
+    fontWeight: 'bold',
+    fontVariant: ['tabular-nums'],
+  },
+  navDataValueSmall: {
+    fontSize: 13,
+    color: '#fff',
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  navDataUnit: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginTop: -2,
   },
 });

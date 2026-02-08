@@ -92,6 +92,7 @@ export interface DisplaySettings {
   tideRipsSymbolSizeScale: number;
   tideStationSymbolSizeScale: number;
   currentStationSymbolSizeScale: number;
+  liveBuoySymbolSizeScale: number;
   
   // Symbol/icon halo multipliers (1.0 = default, 0 = no halo)
   lightSymbolHaloScale: number;
@@ -106,6 +107,7 @@ export interface DisplaySettings {
   tideRipsSymbolHaloScale: number;
   tideStationSymbolHaloScale: number;
   currentStationSymbolHaloScale: number;
+  liveBuoySymbolHaloScale: number;
   
   // Symbol/icon opacity multipliers (1.0 = default)
   lightSymbolOpacityScale: number;
@@ -120,6 +122,7 @@ export interface DisplaySettings {
   tideRipsSymbolOpacityScale: number;
   tideStationSymbolOpacityScale: number;
   currentStationSymbolOpacityScale: number;
+  liveBuoySymbolOpacityScale: number;
   
   // Tide station text settings
   tideStationTextSizeScale: number;
@@ -212,6 +215,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   tideRipsSymbolSizeScale: 1.5, // 150% nominal
   tideStationSymbolSizeScale: 1.0,    // 100% nominal (zoom-based sizing built-in)
   currentStationSymbolSizeScale: 1.0, // 100% nominal (zoom-based sizing built-in)
+  liveBuoySymbolSizeScale: 1.0,       // 100% nominal
   // Symbol halos (white background for visibility per S-52)
   // 0.1 = 10% default for symbols with halo support
   lightSymbolHaloScale: 0.1,
@@ -226,6 +230,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   tideRipsSymbolHaloScale: 0.1,
   tideStationSymbolHaloScale: 0.1,
   currentStationSymbolHaloScale: 0.1,
+  liveBuoySymbolHaloScale: 0.05,  // 5% default per user request
   // Symbol opacities
   lightSymbolOpacityScale: 1.0,
   buoySymbolOpacityScale: 1.0,
@@ -239,6 +244,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   tideRipsSymbolOpacityScale: 1.0,
   tideStationSymbolOpacityScale: 1.0,
   currentStationSymbolOpacityScale: 1.0,
+  liveBuoySymbolOpacityScale: 1.0,
   // Tide station text
   tideStationTextSizeScale: 1.0,
   tideStationTextHaloScale: 0.1,   // 10% default, max 25%

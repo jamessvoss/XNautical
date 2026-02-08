@@ -17,7 +17,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useContextNav, ContextView } from '../contexts/NavigationContext';
-import DownloadsModal from '../components/DownloadsModal';
+import RegionSelector from '../components/RegionSelector';
 import * as themeService from '../services/themeService';
 import type { UITheme } from '../services/themeService';
 
@@ -30,8 +30,7 @@ interface ViewItem {
 
 const VIEWS: ViewItem[] = [
   { id: 'stats', name: 'Stats', icon: 'stats-chart', description: 'Account, storage, and data info' },
-  // Future views can be added here:
-  // { id: 'scratchpad', name: 'Scratch Pad', icon: 'document-text', description: 'Notes and quick reference' },
+  { id: 'scratchpad', name: 'Scratch Pads', icon: 'document-text', description: 'Freeform drawing and notes' },
 ];
 
 export default function MoreScreen() {
@@ -168,8 +167,8 @@ export default function MoreScreen() {
         <View style={{ height: 40 }} />
       </ScrollView>
 
-      {/* Downloads Modal */}
-      <DownloadsModal
+      {/* Region Selector (replaces old DownloadsModal) */}
+      <RegionSelector
         visible={showDownloads}
         onClose={() => setShowDownloads(false)}
       />

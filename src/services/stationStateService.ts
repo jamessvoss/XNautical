@@ -31,6 +31,7 @@ export interface TideStationState {
   iconName: string;     // e.g., 'tide-60'
   rotation: number;     // 0 = up/rising, 180 = down/falling
   currentHeight: number | null;  // Current interpolated height
+  targetHeight: number | null;   // Next extreme: next High if rising, next Low if falling
 }
 
 export interface CurrentStationState {
@@ -39,6 +40,8 @@ export interface CurrentStationState {
   iconName: string;       // e.g., 'current-60'
   rotation: number;       // Direction in degrees (0=North, clockwise)
   currentVelocity: number | null;  // Current interpolated velocity
+  targetVelocity: number | null;   // Peak velocity it's heading towards
+  nextSlackTime: string | null;    // Next slack time as "HH:MM" display string
 }
 
 export interface AllStationStates {
@@ -117,6 +120,7 @@ export async function calculateTideStationState(
         iconName: 'tide-40',
         rotation: 0,
         currentHeight: null,
+        targetHeight: null,
       };
     }
     
@@ -140,11 +144,36 @@ export async function calculateTideStationState(
     
     const direction = getTideState(todayEvents, currentTimeStr) || 'rising';
     
+    // Find the next extreme event (target height the tide is heading towards)
+    // Rising → next High, Falling → next Low
+    const nowTs = now.getTime();
+    let targetHeight: number | null = null;
+    try {
+      const targetType = direction === 'rising' ? 'H' : 'L';
+      // Use events (already have timestamps from convertToTideEvents)
+      for (const evt of events) {
+        if (evt.timestamp! > nowTs && evt.type === targetType) {
+          targetHeight = evt.height;
+          break;
+        }
+      }
+    } catch (e) {
+      // Non-critical: target height is optional enhancement
+      console.warn(`[StationState] Could not determine target height for ${station.id}:`, e);
+    }
+    
     // Calculate fill percentage based on position between low and high
     const range = getChartRange(curve);
     let fillPercent = 40;
     if (currentHeight !== null && range.max !== range.min) {
-      fillPercent = ((currentHeight - range.min) / (range.max - range.min)) * 100;
+      if (direction === 'rising') {
+        // Rising: fill represents progress toward max (high tide)
+        fillPercent = ((currentHeight - range.min) / (range.max - range.min)) * 100;
+      } else {
+        // Falling: fill represents progress toward min (low tide)
+        // Inverted so fill increases as we approach low tide
+        fillPercent = ((range.max - currentHeight) / (range.max - range.min)) * 100;
+      }
     }
     
     const quantizedFill = quantizeToTwenty(fillPercent);
@@ -159,6 +188,7 @@ export async function calculateTideStationState(
       iconName,
       rotation,
       currentHeight,
+      targetHeight,
     };
   } catch (error) {
     console.error(`[StationState] Error calculating tide state for ${station.id}:`, error);
@@ -196,6 +226,8 @@ export async function calculateCurrentStationState(
         iconName: 'current-0',
         rotation: 0,
         currentVelocity: null,
+        targetVelocity: null,
+        nextSlackTime: null,
       };
     }
     
@@ -234,6 +266,34 @@ export async function calculateCurrentStationState(
     const maxVelocity = Math.max(Math.abs(range.min), Math.abs(range.max));
     const fillPercent = velocityToFillPercent(currentVelocity ?? 0, maxVelocity || 2.0);
     
+    // Find the next peak velocity event (flood or ebb) after now
+    let targetVelocity: number | null = null;
+    let nextSlackTime: string | null = null;
+    try {
+      for (const event of events) {
+        // Database stores single-char types: 'f' (flood), 'e' (ebb), 's' (slack)
+        if (event.timestamp! > nowTs && (event.type === 'f' || event.type === 'e')) {
+          targetVelocity = event.velocity;
+          break;
+        }
+      }
+      
+      // Find the next slack event after now
+      for (const event of events) {
+        if (event.timestamp! > nowTs && event.type === 's') {
+          // Format as local time HH:MM
+          const slackDate = new Date(event.timestamp!);
+          const hours = String(slackDate.getHours()).padStart(2, '0');
+          const minutes = String(slackDate.getMinutes()).padStart(2, '0');
+          nextSlackTime = `${hours}:${minutes}`;
+          break;
+        }
+      }
+    } catch (e) {
+      // Non-critical: target velocity and slack time are optional enhancements
+      console.warn(`[StationState] Could not determine target/slack for ${station.id}:`, e);
+    }
+    
     // Icon name is fill percentage (rotation handled separately)
     const iconName = `current-${fillPercent}`;
     
@@ -243,6 +303,8 @@ export async function calculateCurrentStationState(
       iconName,
       rotation,
       currentVelocity,
+      targetVelocity,
+      nextSlackTime,
     };
   } catch (error) {
     console.error(`[StationState] Error calculating current state for ${station.id}:`, error);
@@ -309,27 +371,38 @@ export async function calculateAllStationStates(
  * Get a map of station ID to icon state for quick lookup
  */
 export function createIconNameMap(states: AllStationStates): {
-  tides: Map<string, { iconName: string; rotation: number; currentHeight: number | null }>;
-  currents: Map<string, { iconName: string; rotation: number; currentVelocity: number | null }>;
+  tides: Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null }>;
+  currents: Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null }>;
 } {
-  const tideMap = new Map<string, { iconName: string; rotation: number; currentHeight: number | null }>();
-  const currentMap = new Map<string, { iconName: string; rotation: number; currentVelocity: number | null }>();
+  const tideMap = new Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null }>();
+  const currentMap = new Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null }>();
   
+  let tideWithTarget = 0;
   for (const state of states.tides) {
     tideMap.set(state.stationId, { 
       iconName: state.iconName, 
       rotation: state.rotation,
       currentHeight: state.currentHeight,
+      targetHeight: state.targetHeight,
     });
+    if (state.targetHeight != null) tideWithTarget++;
   }
   
+  let currentWithTarget = 0;
+  let currentWithSlack = 0;
   for (const state of states.currents) {
     currentMap.set(state.stationId, { 
       iconName: state.iconName, 
       rotation: state.rotation,
       currentVelocity: state.currentVelocity,
+      targetVelocity: state.targetVelocity,
+      nextSlackTime: state.nextSlackTime,
     });
+    if (state.targetVelocity != null) currentWithTarget++;
+    if (state.nextSlackTime != null) currentWithSlack++;
   }
+  
+  console.log(`[StationState] Icon map stats: tides=${tideMap.size} (${tideWithTarget} with targetHeight), currents=${currentMap.size} (${currentWithTarget} with targetVelocity, ${currentWithSlack} with nextSlack)`);
   
   return { tides: tideMap, currents: currentMap };
 }

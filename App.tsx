@@ -1,6 +1,6 @@
 console.log('[App.tsx] Module loading started...');
 
-import React, { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Component, ErrorInfo, ReactNode } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View, Text, Platform, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -30,6 +30,7 @@ let TickerTapeCompass: React.ComponentType<{ heading: number | null; course: num
 let MinimalCompass: React.ComponentType<{ heading: number | null; course: number | null; showTideChart?: boolean; showCurrentChart?: boolean }> | null = null;
 let GPSInfoModal: React.ComponentType<{ visible: boolean; gpsData: any }> | null = null;
 let MorePanel: React.ComponentType<{ visible: boolean; onClose: () => void }> | null = null;
+let RegionSelector: React.ComponentType<{ visible: boolean; onClose: () => void }> | null = null;
 
 // Modular Crashlytics API (v22+ requires passing instance as first param)
 let crashlyticsInstance: any = null;
@@ -67,6 +68,8 @@ if (Platform.OS !== 'web') {
   console.log('[App.tsx] GPSInfoModal loaded');
   MorePanel = require('./src/components/MorePanel').default;
   console.log('[App.tsx] MorePanel loaded');
+  RegionSelector = require('./src/components/RegionSelector').default;
+  console.log('[App.tsx] RegionSelector loaded');
   console.log('[App.tsx] All native screens loaded successfully');
   
   // Initialize Crashlytics for native platforms (modular API)
@@ -247,14 +250,15 @@ function MoreTab() {
 
 // Renders overlays outside the navigation hierarchy to avoid MapLibre conflicts
 function OverlayRenderer() {
-  const { compassMode, showGPSPanel, showMorePanel, setShowMorePanel, showTideDetails, showCurrentDetails, heading, course, gpsData } = useOverlay();
-  
-  const compassProps = {
+  const { compassMode, showGPSPanel, showMorePanel, setShowMorePanel, showDownloads, setShowDownloads, showTideDetails, showCurrentDetails, showNavData, heading, course, gpsData } = useOverlay();
+
+  const compassProps = useMemo(() => ({
     heading,
     course,
     showTideChart: showTideDetails,
     showCurrentChart: showCurrentDetails,
-  };
+    showNavData,
+  }), [heading, course, showTideDetails, showCurrentDetails, showNavData]);
 
   return (
     <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} pointerEvents="box-none">
@@ -280,6 +284,12 @@ function OverlayRenderer() {
         <MorePanel
           visible={showMorePanel}
           onClose={() => setShowMorePanel(false)}
+        />
+      )}
+      {RegionSelector && (
+        <RegionSelector
+          visible={showDownloads}
+          onClose={() => setShowDownloads(false)}
         />
       )}
     </View>
@@ -384,14 +394,11 @@ function AppNavigator() {
   console.log('[AppNavigator] Initializing...');
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const insets = useSafeAreaInsets();
-  console.log('[AppNavigator] Calling useContextNav...');
   const { setNavigationRef, contextTabName } = useContextNav();
   const { toggleMorePanel } = useOverlay();
-  console.log('[AppNavigator] useContextNav returned, contextTabName:', contextTabName);
   
   // Store navigation ref for programmatic navigation
   useEffect(() => {
-    console.log('[AppNavigator] useEffect - navigationRef.current:', !!navigationRef.current);
     if (navigationRef.current) {
       setNavigationRef(navigationRef.current);
     }
@@ -455,6 +462,7 @@ function AppNavigator() {
           options={{ tabBarLabel: 'More' }}
           listeners={{
             tabPress: (e) => {
+              console.log('[AppNavigator] More tab pressed');
               // Prevent navigating to the More screen
               e.preventDefault();
               // Instead toggle the slide-out panel

@@ -10,6 +10,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useContextNav } from '../contexts/NavigationContext';
 import StatsContent from '../components/StatsContent';
+import ScratchPadListView from '../components/ScratchPadListView';
 import * as themeService from '../services/themeService';
 
 export default function ContextScreen() {
@@ -40,13 +41,7 @@ export default function ContextScreen() {
         return <StatsContent />;
       
       case 'scratchpad':
-        // Placeholder for future Scratch Pad implementation
-        return (
-          <View style={styles.placeholder}>
-            <Text style={styles.placeholderText}>Scratch Pad</Text>
-            <Text style={styles.placeholderSubtext}>Coming soon...</Text>
-          </View>
-        );
+        return <ScratchPadListView />;
       
       default:
         return (

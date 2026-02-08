@@ -9,7 +9,7 @@
  * Downloads/Settings top buttons, Views list).
  */
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -23,7 +23,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useContextNav, ContextView } from '../contexts/NavigationContext';
-import DownloadsModal from './DownloadsModal';
+import { useOverlay } from '../contexts/OverlayContext';
 
 interface ViewItem {
   id: ContextView;
@@ -33,6 +33,7 @@ interface ViewItem {
 
 const VIEWS: ViewItem[] = [
   { id: 'stats', name: 'Stats', icon: 'stats-chart' },
+  { id: 'scratchpad', name: 'Scratch Pads', icon: 'document-text' },
 ];
 
 // Panel width: 25% of screen, but at least 220px for usability
@@ -46,7 +47,7 @@ interface Props {
 export default function MorePanel({ visible, onClose }: Props) {
   const insets = useSafeAreaInsets();
   const { setContextView, contextTabView } = useContextNav();
-  const [showDownloads, setShowDownloads] = useState(false);
+  const { openDownloads, setShowDebugMap, setShowMorePanel } = useOverlay();
 
   // Slide animation
   const slideAnim = useRef(new Animated.Value(PANEL_WIDTH)).current;
@@ -126,7 +127,10 @@ export default function MorePanel({ visible, onClose }: Props) {
         <View style={styles.actionRow}>
           <TouchableOpacity
             style={styles.actionButton}
-            onPress={() => setShowDownloads(true)}
+            onPress={() => {
+              console.log('[MorePanel] Downloads button pressed');
+              openDownloads();
+            }}
           >
             <Ionicons name="download" size={24} color="#4FC3F7" />
             <Text style={styles.actionButtonText}>Downloads</Text>
@@ -174,6 +178,21 @@ export default function MorePanel({ visible, onClose }: Props) {
 
         <View style={styles.divider} />
 
+        {/* Developer Section */}
+        <Text style={styles.sectionTitle}>DEVELOPER</Text>
+        <TouchableOpacity
+          style={styles.menuItem}
+          onPress={() => {
+            setShowMorePanel(false);
+            setShowDebugMap(true);
+          }}
+        >
+          <Ionicons name="layers" size={20} color="#FF9800" style={styles.menuItemIcon} />
+          <Text style={styles.menuItemText} numberOfLines={1}>Debug Map</Text>
+        </TouchableOpacity>
+
+        <View style={styles.divider} />
+
         {/* Account */}
         <TouchableOpacity
           style={styles.menuItem}
@@ -185,12 +204,6 @@ export default function MorePanel({ visible, onClose }: Props) {
           <Text style={styles.menuItemText} numberOfLines={1}>Account</Text>
         </TouchableOpacity>
       </Animated.View>
-
-      {/* Downloads Modal */}
-      <DownloadsModal
-        visible={showDownloads}
-        onClose={() => setShowDownloads(false)}
-      />
     </View>
   );
 }

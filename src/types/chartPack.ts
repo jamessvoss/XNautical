@@ -160,6 +160,9 @@ export interface District {
   /** Available download packs */
   downloadPacks: DistrictDownloadPack[];
   
+  /** US1 chart bounding boxes (auto-extracted during ENC conversion) */
+  us1ChartBounds?: { name: string; west: number; south: number; east: number; north: number }[];
+  
   /** Firestore timestamps */
   createdAt?: any;
   updatedAt?: any;
