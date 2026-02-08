@@ -11,7 +11,6 @@ import { FirebaseAuthTypes, getAuth, onAuthStateChanged } from '@react-native-fi
 console.log('[App.tsx] Core imports complete');
 
 // Platform-specific imports
-import ChartViewer from './src/components/ChartViewer';
 import { OverlayProvider, useOverlay } from './src/contexts/OverlayContext';
 import { NavigationProvider, useContextNav } from './src/contexts/NavigationContext';
 import { WaypointProvider } from './src/contexts/WaypointContext';
@@ -329,19 +328,6 @@ function AppContent() {
     });
     return unsubscribe;
   }, []);
-
-  // Web platform - use original ChartViewer only
-  if (Platform.OS === 'web') {
-    console.log('[AppContent] Rendering web version');
-    return (
-      <SafeAreaProvider>
-        <View style={styles.container}>
-          <ChartViewer />
-          <StatusBar style="light" />
-        </View>
-      </SafeAreaProvider>
-    );
-  }
 
   // Show loading while checking auth
   if (authLoading) {
