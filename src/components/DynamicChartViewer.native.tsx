@@ -402,6 +402,7 @@ interface LayerVisibility {
   gnisNames: boolean;  // Master toggle for all GNIS place names
   tideStations: boolean;  // Tide station markers
   currentStations: boolean;  // Current station markers
+  liveBuoys: boolean;  // Live weather buoy markers
   tideDetails: boolean;  // Tide detail chart at bottom
   currentDetails: boolean;  // Current detail chart at bottom
 }
@@ -443,6 +444,7 @@ const initialLayerVisibility: LayerVisibility = {
   gnisNames: true,  // Master toggle for all GNIS place names
   tideStations: true,  // Show tide stations by default
   currentStations: true,  // Show current stations by default
+  liveBuoys: true,  // Show live buoys by default
   tideDetails: false,  // Tide detail chart hidden by default
   currentDetails: false,  // Current detail chart hidden by default
 };
@@ -6081,14 +6083,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 <TouchableOpacity style={[styles.layerToggleRow, showCurrentStations && styles.layerToggleRowActive]} onPress={() => toggleLayer('currentStations')}>
                   <Text style={styles.layerToggleText}>Current Stations</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.layerToggleRow, showLiveBuoys && styles.layerToggleRowActive]} onPress={() => toggleLayer('liveBuoys')}>
-                  <Text style={styles.layerToggleText}>Live Buoys</Text>
-                </TouchableOpacity>
                 <TouchableOpacity style={[styles.layerToggleRow, showTideDetails && styles.layerToggleRowActive]} onPress={() => toggleLayer('tideDetails')}>
                   <Text style={styles.layerToggleText}>Tide Details</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.layerToggleRow, showCurrentDetails && styles.layerToggleRowActive]} onPress={() => toggleLayer('currentDetails')}>
                   <Text style={styles.layerToggleText}>Current Details</Text>
+                </TouchableOpacity>
+
+                {/* Weather Section */}
+                <Text style={styles.layerSectionHeader}>Weather</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showLiveBuoys && styles.layerToggleRowActive]} onPress={() => toggleLayer('liveBuoys')}>
+                  <Text style={styles.layerToggleText}>Live Buoys</Text>
                 </TouchableOpacity>
 
                 {/* Areas Section */}
@@ -9334,8 +9339,7 @@ const styles = StyleSheet.create({
   // Layer Selector Panel - ForeFlight-style multi-column overlay (compact)
   layerSelectorOverlay: {
     position: 'absolute',
-    left: 12,
-    right: 12,
+    left: 6,
     backgroundColor: 'rgba(21, 21, 23, 0.94)',
     borderRadius: 10,
     maxHeight: '80%',
@@ -9346,11 +9350,12 @@ const styles = StyleSheet.create({
   },
   layerSelectorContent: {
     flexDirection: 'row',
+    justifyContent: 'flex-start',
     padding: 8,
     paddingBottom: 12,
+    gap: 12,
   },
   layerSelectorColumn: {
-    flex: 1,
     paddingHorizontal: 4,
   },
   layerSectionHeader: {

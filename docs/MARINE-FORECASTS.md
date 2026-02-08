@@ -142,7 +142,7 @@ marine-forecasts/          # Flat collection
 ### Firestore Structure (Proposed)
 
 ```
-districts/
+marine-forecast-districts/
   17cgd/                          # Alaska
     marine-zones/                 # Subcollection
       PKZ722/
@@ -222,7 +222,7 @@ const DISTRICT_CONFIGS = {
      - Compare zone centroid to district bounds from `src/config/regionData.ts`
      - A zone may belong to multiple districts if it spans boundaries
 4. Write to Firestore:
-   - Path: `districts/{districtId}/marine-zones/{zoneId}`
+   - Path: `marine-forecast-districts/{districtId}/marine-zones/{zoneId}`
    - Include: id, name, wfo, centroid, geometryJson, districtId
 
 ## Technical Notes

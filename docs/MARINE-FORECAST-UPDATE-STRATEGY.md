@@ -45,7 +45,7 @@ The system **stops polling early** when either:
 
 ### Metadata Tracking
 
-Stored in `districts/{districtId}/system/marine-forecast-meta`:
+Stored in `marine-forecast-districts/{districtId}/system/marine-forecast-meta`:
 ```typescript
 {
   lastUpdatedAt: Timestamp,
