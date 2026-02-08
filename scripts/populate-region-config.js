@@ -60,8 +60,14 @@ const regions = [
     center: { lat: 62.0, lon: -153.0 },
     mapBounds: { west: -180, south: 48, east: -130, north: 72 },
 
-    // Cloud function: satellite tile generation bounds
+    // Cloud function: satellite tile generation bounds (broad for offshore coverage)
     satelliteBounds: [
+      { west: -180, south: 50, east: -129, north: 72 },
+      { west: 170, south: 50, east: 180, north: 65 },
+    ],
+
+    // Station assignment bounds (precise USCG district coverage for NOAA station discovery)
+    stationBounds: [
       { west: -180, south: 50, east: -129, north: 72 },
       { west: 170, south: 50, east: 180, north: 65 },
     ],
@@ -147,6 +153,11 @@ const regions = [
       { west: -162, south: 17, east: -153, north: 24 },
     ],
 
+    // Station assignment bounds (Hawaiian Islands)
+    stationBounds: [
+      { west: -162, south: 17, east: -153, north: 24 },
+    ],
+
     satelliteConfig: {
       bufferNm: 25,
       coastalFilterMinZoom: 6,
@@ -206,6 +217,11 @@ const regions = [
       { west: -130, south: 33, east: -119, north: 50 },
     ],
 
+    // Station assignment bounds (WA, OR, Northern CA coast)
+    stationBounds: [
+      { west: -130, south: 38, east: -119, north: 50 },
+    ],
+
     satelliteConfig: {
       bufferNm: 25,
       coastalFilterMinZoom: 6,
@@ -263,6 +279,11 @@ const regions = [
 
     satelliteBounds: [
       { west: -126, south: 30, east: -114, north: 39 },
+    ],
+
+    // Station assignment bounds (Southern CA coast, ~Point Conception to Mexico border)
+    stationBounds: [
+      { west: -126, south: 30, east: -114, north: 38 },
     ],
 
     satelliteConfig: {
@@ -330,6 +351,11 @@ const regions = [
       { west: -100, south: 23, east: -80, north: 33 },
     ],
 
+    // Station assignment bounds (TX, LA, MS, AL, western FL panhandle to ~Apalachicola)
+    stationBounds: [
+      { west: -98, south: 25, east: -85, north: 31 },
+    ],
+
     satelliteConfig: {
       bufferNm: 25,
       coastalFilterMinZoom: 6,
@@ -388,6 +414,11 @@ const regions = [
     mapBounds: { west: -93, south: 41, east: -76, north: 49 },
 
     satelliteBounds: [
+      { west: -94, south: 40, east: -75, north: 50 },
+    ],
+
+    // Station assignment bounds (Great Lakes region)
+    stationBounds: [
       { west: -94, south: 40, east: -75, north: 50 },
     ],
 
@@ -450,6 +481,11 @@ const regions = [
       { west: -76, south: 39, east: -65, north: 48 },
     ],
 
+    // Station assignment bounds (New England: ME, NH, MA, RI, CT, NY/NJ border area)
+    stationBounds: [
+      { west: -76, south: 40, east: -65, north: 48 },
+    ],
+
     satelliteConfig: {
       bufferNm: 25,
       coastalFilterMinZoom: 6,
@@ -509,6 +545,11 @@ const regions = [
       { west: -82, south: 32, east: -72, north: 42 },
     ],
 
+    // Station assignment bounds (Mid-Atlantic: NC, VA, MD, DE, NJ, PA, DC)
+    stationBounds: [
+      { west: -80, south: 33.8, east: -72, north: 40 },
+    ],
+
     satelliteConfig: {
       bufferNm: 25,
       coastalFilterMinZoom: 6,
@@ -566,6 +607,13 @@ const regions = [
 
     satelliteBounds: [
       { west: -85, south: 23, east: -63, north: 35 },
+    ],
+
+    // Station assignment bounds (FL east of Apalachicola, GA, SC, Puerto Rico, USVI)
+    // Separate boxes to exclude Bermuda (~-64.7W) and NC (belongs to 05cgd)
+    stationBounds: [
+      { west: -85, south: 24, east: -79.5, north: 33.8 },  // FL, GA, SC mainland coast
+      { west: -67.5, south: 17, east: -64, north: 19 },     // Puerto Rico & USVI
     ],
 
     satelliteConfig: {

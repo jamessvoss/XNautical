@@ -1,11 +1,19 @@
 /**
  * Buoy Service
  * 
- * Fetches live buoy data from Firestore
+ * Fetches live buoy data from Firestore with local caching for offline use.
+ * 
+ * When a district is downloaded, the buoy catalog is cached locally via AsyncStorage.
+ * The map loads from cache first and falls back to Firestore when online.
  */
 
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { firestore } from '../config/firebase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// AsyncStorage keys
+const BUOY_CATALOG_KEY = (districtId: string) => `@XNautical:buoyCatalog:${districtId}`;
+const BUOY_DOWNLOADED_KEY = (districtId: string) => `@XNautical:buoysDownloaded:${districtId}`;
 
 export interface BuoyObservation {
   timestamp: string;
@@ -74,6 +82,9 @@ export interface BuoySummary {
 /**
  * Fetch the catalog of all buoys
  * @param districtId - Optional USCG district ID (e.g., '17cgd', '07cgd'). If provided, returns only buoys for that district.
+ * 
+ * When called without districtId, tries district-scoped catalogs first,
+ * then falls back to the legacy top-level buoys/catalog collection.
  */
 export async function getBuoysCatalog(districtId?: string): Promise<BuoySummary[]> {
   try {
@@ -83,14 +94,14 @@ export async function getBuoysCatalog(districtId?: string): Promise<BuoySummary[
       const catalogSnap = await getDoc(catalogRef);
       
       if (!catalogSnap.exists()) {
-        console.log(`Buoys catalog not found for district ${districtId}`);
+        console.log(`[Buoy] Catalog not found for district ${districtId}`);
         return [];
       }
       
       const data = catalogSnap.data();
       return data.stations || [];
     } else {
-      // Fetch from all districts
+      // Try district-scoped catalogs first
       const allBuoys: BuoySummary[] = [];
       const districtsRef = collection(firestore, 'districts');
       const districtsSnap = await getDocs(districtsRef);
@@ -106,7 +117,23 @@ export async function getBuoysCatalog(districtId?: string): Promise<BuoySummary[
         }
       }
       
-      return allBuoys;
+      if (allBuoys.length > 0) {
+        return allBuoys;
+      }
+
+      // Fallback: read from legacy top-level buoys/catalog
+      console.log('[Buoy] No district catalogs found, trying legacy buoys/catalog...');
+      const legacyCatalogRef = doc(firestore, 'buoys', 'catalog');
+      const legacyCatalogSnap = await getDoc(legacyCatalogRef);
+
+      if (legacyCatalogSnap.exists()) {
+        const data = legacyCatalogSnap.data();
+        const stations = data.stations || [];
+        console.log(`[Buoy] Loaded ${stations.length} buoys from legacy catalog`);
+        return stations;
+      }
+
+      return [];
     }
   } catch (error: any) {
     if (!error?.message?.includes('offline')) {
@@ -119,7 +146,7 @@ export async function getBuoysCatalog(districtId?: string): Promise<BuoySummary[
 /**
  * Fetch a specific buoy with its latest observation
  * @param buoyId - The buoy ID (e.g., '46060')
- * @param districtId - Optional USCG district ID. If not provided, searches all districts.
+ * @param districtId - Optional USCG district ID. If not provided, searches all districts then legacy collection.
  */
 export async function getBuoy(buoyId: string, districtId?: string): Promise<Buoy | null> {
   try {
@@ -128,12 +155,19 @@ export async function getBuoy(buoyId: string, districtId?: string): Promise<Buoy
       const buoyRef = doc(firestore, 'districts', districtId, 'buoys', buoyId);
       const buoySnap = await getDoc(buoyRef);
       
-      if (!buoySnap.exists()) {
-        console.log(`Buoy ${buoyId} not found in district ${districtId}`);
-        return null;
+      if (buoySnap.exists()) {
+        return buoySnap.data() as Buoy;
       }
-      
-      return buoySnap.data() as Buoy;
+
+      // Fallback: try legacy top-level buoys collection
+      const legacyRef = doc(firestore, 'buoys', buoyId);
+      const legacySnap = await getDoc(legacyRef);
+      if (legacySnap.exists()) {
+        return legacySnap.data() as Buoy;
+      }
+
+      console.log(`[Buoy] ${buoyId} not found in district ${districtId} or legacy`);
+      return null;
     } else {
       // Search all districts
       const districtsRef = collection(firestore, 'districts');
@@ -147,8 +181,15 @@ export async function getBuoy(buoyId: string, districtId?: string): Promise<Buoy
           return buoySnap.data() as Buoy;
         }
       }
+
+      // Fallback: try legacy top-level buoys collection
+      const legacyRef = doc(firestore, 'buoys', buoyId);
+      const legacySnap = await getDoc(legacyRef);
+      if (legacySnap.exists()) {
+        return legacySnap.data() as Buoy;
+      }
       
-      console.log(`Buoy ${buoyId} not found in any district`);
+      console.log(`[Buoy] ${buoyId} not found in any district or legacy`);
       return null;
     }
   } catch (error: any) {
@@ -158,6 +199,124 @@ export async function getBuoy(buoyId: string, districtId?: string): Promise<Buoy
     return null;
   }
 }
+
+// ============================================
+// Download & Cache Functions
+// ============================================
+
+/**
+ * Download and cache the buoy catalog for a district.
+ * Fetches all buoy summaries from Firestore and stores them in AsyncStorage.
+ * Called during the district download flow.
+ */
+export async function downloadBuoyCatalog(
+  districtId: string,
+  onProgress?: (message: string, percent: number) => void
+): Promise<{ success: boolean; stationCount: number; error?: string }> {
+  try {
+    onProgress?.('Fetching buoy catalog...', 10);
+
+    // Fetch catalog from Firestore
+    const catalogRef = doc(firestore, 'districts', districtId, 'buoys', 'catalog');
+    const catalogSnap = await getDoc(catalogRef);
+
+    if (!catalogSnap.exists()) {
+      // No buoys for this district - still mark as downloaded (empty)
+      await AsyncStorage.setItem(BUOY_CATALOG_KEY(districtId), JSON.stringify([]));
+      await AsyncStorage.setItem(BUOY_DOWNLOADED_KEY(districtId), JSON.stringify({
+        downloadedAt: new Date().toISOString(),
+        stationCount: 0,
+      }));
+      onProgress?.('No buoys found for this district', 100);
+      return { success: true, stationCount: 0 };
+    }
+
+    const data = catalogSnap.data();
+    const stations: BuoySummary[] = data.stations || [];
+
+    onProgress?.(`Caching ${stations.length} buoy stations...`, 60);
+
+    // Cache to AsyncStorage
+    await AsyncStorage.setItem(BUOY_CATALOG_KEY(districtId), JSON.stringify(stations));
+    await AsyncStorage.setItem(BUOY_DOWNLOADED_KEY(districtId), JSON.stringify({
+      downloadedAt: new Date().toISOString(),
+      stationCount: stations.length,
+    }));
+
+    onProgress?.(`${stations.length} buoys cached`, 100);
+    return { success: true, stationCount: stations.length };
+  } catch (error: any) {
+    console.error(`[Buoy] Error downloading catalog for ${districtId}:`, error);
+    return { success: false, stationCount: 0, error: error.message || 'Download failed' };
+  }
+}
+
+/**
+ * Get the cached buoy catalog for a district.
+ * Returns cached data from AsyncStorage, or falls back to Firestore if not cached.
+ */
+export async function getCachedBuoyCatalog(districtId: string): Promise<BuoySummary[]> {
+  try {
+    // Try local cache first
+    const cached = await AsyncStorage.getItem(BUOY_CATALOG_KEY(districtId));
+    if (cached) {
+      const stations = JSON.parse(cached) as BuoySummary[];
+      return stations;
+    }
+
+    // Fall back to Firestore
+    return await getBuoysCatalog(districtId);
+  } catch (error: any) {
+    console.log(`[Buoy] Error reading cached catalog for ${districtId}:`, error?.message);
+    // Last resort: try Firestore
+    return await getBuoysCatalog(districtId);
+  }
+}
+
+/**
+ * Check if buoy data has been downloaded for a district.
+ */
+export async function areBuoysDownloaded(districtId: string): Promise<boolean> {
+  try {
+    const meta = await AsyncStorage.getItem(BUOY_DOWNLOADED_KEY(districtId));
+    return meta !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Get buoy download metadata for a district (station count, download time).
+ */
+export async function getBuoyDownloadMetadata(districtId: string): Promise<{
+  downloadedAt: string;
+  stationCount: number;
+} | null> {
+  try {
+    const meta = await AsyncStorage.getItem(BUOY_DOWNLOADED_KEY(districtId));
+    return meta ? JSON.parse(meta) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clear cached buoy data for a district.
+ */
+export async function clearBuoys(districtId: string): Promise<void> {
+  try {
+    await AsyncStorage.multiRemove([
+      BUOY_CATALOG_KEY(districtId),
+      BUOY_DOWNLOADED_KEY(districtId),
+    ]);
+  } catch (error: any) {
+    console.error(`[Buoy] Error clearing buoys for ${districtId}:`, error);
+  }
+}
+
+// ============================================
+// Formatting Utilities
+// ============================================
 
 /**
  * Format temperature for display (Celsius to Fahrenheit)

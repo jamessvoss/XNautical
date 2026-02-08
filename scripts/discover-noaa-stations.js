@@ -4,9 +4,9 @@
  *
  * Queries the NOAA CO-OPS metadata API for all US tide prediction and
  * tidal current prediction stations, assigns each to a geographic region
- * by checking lat/lng against the satelliteBounds stored in the Firestore
- * `regions` collection, then writes a `predictionConfig` object to each
- * region document.
+ * by checking lat/lng against the stationBounds (or satelliteBounds as
+ * fallback) stored in the Firestore `districts` collection, then writes
+ * a `predictionConfig` object to each district document.
  *
  * predictionConfig shape:
  *   {
@@ -217,7 +217,8 @@ function pointInBounds(lat, lng, boundsArray) {
 }
 
 /**
- * Assign stations to regions based on satelliteBounds.
+ * Assign stations to regions based on stationBounds (precise USCG district coverage).
+ * Falls back to satelliteBounds if stationBounds is not defined.
  * Returns a Map<regionId, { tideStations, currentStations }>.
  */
 function assignStationsToRegions(tideStations, currentStations, regions) {
@@ -236,9 +237,11 @@ function assignStationsToRegions(tideStations, currentStations, regions) {
   // Sort regions so that smaller (more specific) regions are checked first
   // This handles overlap (e.g., 01cgd overlaps with 05cgd at the boundary)
   const sortedRegions = [...regions].sort((a, b) => {
-    const areaA = a.satelliteBounds.reduce((sum, bb) =>
+    const boundsA = a.stationBounds || a.satelliteBounds;
+    const boundsB = b.stationBounds || b.satelliteBounds;
+    const areaA = boundsA.reduce((sum, bb) =>
       sum + (bb.east - bb.west) * (bb.north - bb.south), 0);
-    const areaB = b.satelliteBounds.reduce((sum, bb) =>
+    const areaB = boundsB.reduce((sum, bb) =>
       sum + (bb.east - bb.west) * (bb.north - bb.south), 0);
     return areaA - areaB; // Smaller regions first
   });
@@ -252,7 +255,8 @@ function assignStationsToRegions(tideStations, currentStations, regions) {
   for (const station of tideStations) {
     let assigned = false;
     for (const region of sortedRegions) {
-      if (pointInBounds(station.lat, station.lng, region.satelliteBounds)) {
+      const bounds = region.stationBounds || region.satelliteBounds;
+      if (pointInBounds(station.lat, station.lng, bounds)) {
         assignments.get(region.regionId).tideStations.push({
           id: station.id,
           name: station.name,
@@ -272,7 +276,8 @@ function assignStationsToRegions(tideStations, currentStations, regions) {
   for (const station of currentStations) {
     let assigned = false;
     for (const region of sortedRegions) {
-      if (pointInBounds(station.lat, station.lng, region.satelliteBounds)) {
+      const bounds = region.stationBounds || region.satelliteBounds;
+      if (pointInBounds(station.lat, station.lng, bounds)) {
         assignments.get(region.regionId).currentStations.push({
           id: station.id,
           name: station.name,
@@ -317,8 +322,10 @@ async function main() {
 
   regionsSnapshot.forEach((doc) => {
     const data = doc.data();
-    if (!data.satelliteBounds || !Array.isArray(data.satelliteBounds)) {
-      console.warn(`  Skipping ${doc.id}: no satelliteBounds`);
+    // Prefer stationBounds for station assignment; fall back to satelliteBounds
+    const bounds = data.stationBounds || data.satelliteBounds;
+    if (!bounds || !Array.isArray(bounds)) {
+      console.warn(`  Skipping ${doc.id}: no stationBounds or satelliteBounds`);
       return;
     }
     if (regionFilter && doc.id !== regionFilter) return;
@@ -326,7 +333,8 @@ async function main() {
     regions.push({
       regionId: doc.id,
       name: data.name,
-      satelliteBounds: data.satelliteBounds,
+      stationBounds: data.stationBounds || null,
+      satelliteBounds: data.satelliteBounds || null,
     });
   });
 

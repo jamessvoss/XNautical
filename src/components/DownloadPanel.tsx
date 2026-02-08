@@ -32,6 +32,11 @@ import {
   clearPredictions,
   getPredictionDatabaseMetadata,
 } from '../services/stationService';
+import {
+  downloadBuoyCatalog,
+  areBuoysDownloaded,
+  clearBuoys,
+} from '../services/buoyService';
 import type { Region, SatelliteResolution } from '../config/regionData';
 import { SATELLITE_OPTIONS } from '../config/regionData';
 import type { District, DistrictDownloadPack, PackDownloadStatus } from '../types/chartPack';
@@ -75,6 +80,11 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
   const [downloadingPredictions, setDownloadingPredictions] = useState(false);
   const [predictionsPercent, setPredictionsPercent] = useState(0);
 
+  // Buoys state
+  const [buoysDownloaded, setBuoysDownloaded] = useState(false);
+  const [downloadingBuoys, setDownloadingBuoys] = useState(false);
+  const [buoysPercent, setBuoysPercent] = useState(0);
+
   const firestoreId = region?.firestoreId || '';
 
   // ============================================
@@ -103,6 +113,10 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       // Check predictions status
       const predDownloaded = await arePredictionsDownloaded();
       setPredictionsDownloaded(predDownloaded);
+
+      // Check buoys status
+      const buoysDl = await areBuoysDownloaded(region.firestoreId);
+      setBuoysDownloaded(buoysDl);
     } catch (error) {
       console.error('[DownloadPanel] Error loading data:', error);
     } finally {
@@ -137,17 +151,46 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       });
     }
 
-    // Predictions (not a Firestore pack - handled separately)
+    // Predictions (required - not a Firestore pack, handled separately)
     cats.push({
       id: 'predictions',
       label: 'Predictions (Tides & Currents)',
       description: 'Tide and current prediction data',
       icon: 'water',
       sizeBytes: 48 * 1024 * 1024, // ~48 MB estimate
-      required: false,
+      required: true,
       installed: predictionsDownloaded,
       packs: [],
     });
+
+    // Live Buoys (required - cached from Firestore for offline use)
+    cats.push({
+      id: 'buoys',
+      label: 'Live Buoys',
+      description: 'Weather buoy locations & observations',
+      icon: 'radio-outline',
+      sizeBytes: 1 * 1024 * 1024, // ~1 MB estimate (small catalog)
+      required: true,
+      installed: buoysDownloaded,
+      packs: [],
+    });
+
+    // GNIS Place Names (required - small overlay)
+    const gnisPacks = packs.filter(p => p.type === 'gnis');
+    if (gnisPacks.length > 0) {
+      const totalSize = gnisPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+      const allInstalled = gnisPacks.every(p => installedPackIds.includes(p.id));
+      cats.push({
+        id: 'gnis',
+        label: 'Place Names (GNIS)',
+        description: 'Geographic names overlay',
+        icon: 'text',
+        sizeBytes: totalSize,
+        required: true,
+        installed: allInstalled,
+        packs: gnisPacks,
+      });
+    }
 
     // Satellite imagery - based on selected resolution
     const satellitePacks = packs.filter(p => p.type === 'satellite');
@@ -227,27 +270,9 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       }
     }
 
-    // GNIS Place Names - only include if selected in optional maps picker
-    if (!selectedOptionalMaps || selectedOptionalMaps.has('gnis')) {
-      const gnisPacks = packs.filter(p => p.type === 'gnis');
-      if (gnisPacks.length > 0) {
-        const totalSize = gnisPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
-        const allInstalled = gnisPacks.every(p => installedPackIds.includes(p.id));
-        cats.push({
-          id: 'gnis',
-          label: 'Place Names (GNIS)',
-          description: 'Geographic names overlay',
-          icon: 'text',
-          sizeBytes: totalSize,
-          required: false,
-          installed: allInstalled,
-          packs: gnisPacks,
-        });
-      }
-    }
 
     return cats;
-  }, [districtData, installedPackIds, satelliteResolution, predictionsDownloaded, selectedOptionalMaps]);
+  }, [districtData, installedPackIds, satelliteResolution, predictionsDownloaded, buoysDownloaded, selectedOptionalMaps]);
 
   // ============================================
   // Total size calculation
@@ -316,11 +341,28 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
 
           const result = await downloadAllPredictions((message, percent) => {
             setPredictionsPercent(percent);
-          });
+          }, firestoreId);
 
           setDownloadingPredictions(false);
           if (result.success) {
             setPredictionsDownloaded(true);
+          }
+          continue;
+        }
+
+        if (category.id === 'buoys') {
+          // Handle buoys separately
+          setCurrentDownloadItem('Live Buoys');
+          setDownloadingBuoys(true);
+          setBuoysPercent(0);
+
+          const result = await downloadBuoyCatalog(firestoreId, (message, percent) => {
+            setBuoysPercent(percent);
+          });
+
+          setDownloadingBuoys(false);
+          if (result.success) {
+            setBuoysDownloaded(true);
           }
           continue;
         }
@@ -348,6 +390,8 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       setInstalledPackIds(installed);
       const predDownloaded = await arePredictionsDownloaded();
       setPredictionsDownloaded(predDownloaded);
+      const buoysDl = await areBuoysDownloaded(firestoreId);
+      setBuoysDownloaded(buoysDl);
 
       Alert.alert('Complete', 'All data downloaded successfully.');
     } catch (error: any) {
@@ -360,7 +404,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
   };
 
   const handleDownloadCategory = async (category: DownloadCategory) => {
-    if (downloadingAll || packDownloadStatus || downloadingPredictions) {
+    if (downloadingAll || packDownloadStatus || downloadingPredictions || downloadingBuoys) {
       Alert.alert('Download in Progress', 'Please wait for the current download to complete.');
       return;
     }
@@ -373,6 +417,11 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
 
     if (category.id === 'predictions') {
       handleDownloadPredictions();
+      return;
+    }
+
+    if (category.id === 'buoys') {
+      handleDownloadBuoys();
       return;
     }
 
@@ -409,7 +458,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
 
   const handleDownloadPredictions = async () => {
     try {
-      const metadata = await getPredictionDatabaseMetadata();
+      const metadata = await getPredictionDatabaseMetadata(firestoreId);
       Alert.alert(
         'Download Predictions',
         `Download tide and current predictions?\n\n` +
@@ -426,7 +475,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               try {
                 const result = await downloadAllPredictions((message, percent) => {
                   setPredictionsPercent(percent);
-                });
+                }, firestoreId);
                 if (result.success) {
                   setPredictionsDownloaded(true);
                   Alert.alert('Complete', 'Predictions downloaded successfully.');
@@ -448,6 +497,39 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
     }
   };
 
+  const handleDownloadBuoys = async () => {
+    Alert.alert(
+      'Download Live Buoys',
+      'Download buoy station locations and latest observations for offline use?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Download',
+          onPress: async () => {
+            setDownloadingBuoys(true);
+            setBuoysPercent(0);
+            try {
+              const result = await downloadBuoyCatalog(firestoreId, (message, percent) => {
+                setBuoysPercent(percent);
+              });
+              if (result.success) {
+                setBuoysDownloaded(true);
+                Alert.alert('Complete', `${result.stationCount} buoy stations cached.`);
+              } else {
+                Alert.alert('Error', result.error || 'Download failed');
+              }
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Download failed');
+            } finally {
+              setDownloadingBuoys(false);
+              setBuoysPercent(0);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleDeleteCategory = async (category: DownloadCategory) => {
     if (category.id === 'predictions') {
       Alert.alert(
@@ -462,6 +544,29 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               try {
                 await clearPredictions();
                 setPredictionsDownloaded(false);
+              } catch (error: any) {
+                Alert.alert('Error', error.message || 'Delete failed');
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    if (category.id === 'buoys') {
+      Alert.alert(
+        'Delete Live Buoys',
+        'Delete cached buoy data?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await clearBuoys(firestoreId);
+                setBuoysDownloaded(false);
               } catch (error: any) {
                 Alert.alert('Error', error.message || 'Delete failed');
               }
@@ -519,7 +624,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
   }
 
   const regionName = region?.name || 'Region';
-  const isDownloading = downloadingAll || !!packDownloadStatus || downloadingPredictions;
+  const isDownloading = downloadingAll || !!packDownloadStatus || downloadingPredictions || downloadingBuoys;
 
   return (
     <ScrollView style={styles.scrollContainer} showsVerticalScrollIndicator={false}>
@@ -536,6 +641,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       {categories.map(category => {
         const isThisDownloading =
           (category.id === 'predictions' && downloadingPredictions) ||
+          (category.id === 'buoys' && downloadingBuoys) ||
           (category.packs.some(p => packDownloadStatus?.packId === p.id));
         const sizeMB = category.sizeBytes / 1024 / 1024;
 
@@ -576,6 +682,8 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
                   <Text style={styles.progressText}>
                     {category.id === 'predictions'
                       ? `${predictionsPercent}%`
+                      : category.id === 'buoys'
+                      ? `${buoysPercent}%`
                       : `${packDownloadStatus?.progress || 0}%`}
                   </Text>
                 </View>

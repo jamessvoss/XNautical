@@ -2379,14 +2379,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
   }, [tideStations, currentStations]);
 
-  // Load live buoys catalog from Firestore on startup
+  // Load live buoys catalog - try local cache first, fall back to Firestore
   useEffect(() => {
     const loadBuoys = async () => {
       try {
         console.log('[MAP] Loading live buoys catalog...');
-        const buoyCatalog = await getBuoysCatalog();
-        setLiveBuoys(buoyCatalog);
-        console.log(`[MAP] Loaded ${buoyCatalog.length} live buoys`);
+        // Load buoys from all districts (cache-first, falls back to Firestore)
+        const allBuoys = await getBuoysCatalog();
+        setLiveBuoys(allBuoys);
+        console.log(`[MAP] Loaded ${allBuoys.length} live buoys`);
       } catch (error) {
         console.warn('[MAP] Error loading buoys:', error);
       }

@@ -405,7 +405,7 @@ function unpackCurrentPredictions(packedDays: Record<number, string>): Record<st
 /**
  * Get metadata for prediction databases (file sizes) before downloading
  */
-export async function getPredictionDatabaseMetadata(): Promise<{
+export async function getPredictionDatabaseMetadata(districtId: string = '17cgd'): Promise<{
   tidesSize: number;
   currentsSize: number;
   totalSize: number;
@@ -416,8 +416,8 @@ export async function getPredictionDatabaseMetadata(): Promise<{
     const { ref, getMetadata } = await import('firebase/storage');
     
     // Get metadata for both files
-    const tidesRef = ref(storage, '17cgd/predictions/tides.db.zip');
-    const currentsRef = ref(storage, '17cgd/predictions/currents.db.zip');
+    const tidesRef = ref(storage, `${districtId}/predictions/tides.db.zip`);
+    const currentsRef = ref(storage, `${districtId}/predictions/currents.db.zip`);
     
     const [tidesMetadata, currentsMetadata] = await Promise.all([
       getMetadata(tidesRef),
@@ -505,7 +505,8 @@ async function downloadAndExtractDatabase(
  * Downloads tides.db.zip and currents.db.zip in parallel
  */
 export async function downloadAllPredictions(
-  onProgress?: (message: string, percent: number) => void
+  onProgress?: (message: string, percent: number) => void,
+  districtId: string = '17cgd'
 ): Promise<{ success: boolean; error?: string; stats?: any }> {
   try {
     const startTime = Date.now();
@@ -520,15 +521,15 @@ export async function downloadAllPredictions(
     
     onProgress?.('Downloading prediction databases...', 10);
     
-    // Download both databases in parallel
+    // Download both databases in parallel using district-specific paths
     const [tidesResult, currentsResult] = await Promise.all([
       downloadAndExtractDatabase(
-        '17cgd/predictions/tides.db.zip',
+        `${districtId}/predictions/tides.db.zip`,
         'tides.db',
         (p) => { tidesProgress = p; updateProgress(); }
       ),
       downloadAndExtractDatabase(
-        '17cgd/predictions/currents.db.zip',
+        `${districtId}/predictions/currents.db.zip`,
         'currents.db',
         (p) => { currentsProgress = p; updateProgress(); }
       ),

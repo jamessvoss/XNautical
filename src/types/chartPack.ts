@@ -111,7 +111,7 @@ export interface DistrictDownloadPack {
   id: string;
   
   /** Type of content */
-  type: 'charts' | 'basemap' | 'satellite' | 'gnis';
+  type: 'charts' | 'predictions' | 'buoys' | 'basemap' | 'satellite' | 'ocean' | 'terrain' | 'gnis';
   
   /** For charts: scale band (US1, US2, etc.) */
   band?: string;

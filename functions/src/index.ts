@@ -3608,72 +3608,94 @@ async function fetchBuoyObservations(stationId: string): Promise<any | null> {
 
 /**
  * UPDATE BUOY DATA (Scheduled)
- * Fetches latest observations from NOAA/NDBC buoys hourly
+ * Fetches latest observations from NOAA/NDBC buoys hourly.
+ * Reads/writes buoy data under districts/{districtId}/buoys/.
  */
 export const updateBuoyData = functions
   .runWith({ 
-    timeoutSeconds: 120,
+    timeoutSeconds: 300,
     memory: '256MB',
   })
   .pubsub.schedule('15 * * * *') // Every hour at :15
   .timeZone('America/Anchorage')
   .onRun(async (context) => {
-    console.log('Starting hourly buoy data update...');
+    console.log('Starting hourly buoy data update (district-scoped)...');
     const skippedBuoys: string[] = [];
 
     try {
-      const catalogDoc = await db.collection('buoys').doc('catalog').get();
+      // Iterate all districts that have buoy catalogs
+      const districtsSnap = await db.collection('districts').get();
       
-      if (!catalogDoc.exists) {
-        console.log('No buoys catalog found');
-        return null;
-      }
+      let totalSuccess = 0;
+      let totalSkip = 0;
+      let totalStations = 0;
+      let districtsProcessed = 0;
 
-      const catalog = catalogDoc.data()!;
-      const stations = catalog.stations as Array<{ id: string; name: string }>;
-      
-      console.log(`Updating ${stations.length} buoys...`);
-
-      let successCount = 0;
-      let skipCount = 0;
-
-      for (const station of stations) {
-        const obs = await fetchBuoyObservations(station.id);
+      for (const districtDoc of districtsSnap.docs) {
+        const districtId = districtDoc.id;
+        const catalogDoc = await db.collection('districts').doc(districtId)
+          .collection('buoys').doc('catalog').get();
         
-        if (obs) {
-          await db.collection('buoys').doc(station.id).update({
-            latestObservation: obs,
+        if (!catalogDoc.exists) {
+          continue; // No buoys for this district
+        }
+
+        const catalog = catalogDoc.data()!;
+        const stations = catalog.stations as Array<{ id: string; name: string; districtId?: string }>;
+        
+        if (!stations || stations.length === 0) continue;
+        
+        console.log(`[${districtId}] Updating ${stations.length} buoys...`);
+        districtsProcessed++;
+        totalStations += stations.length;
+
+        let successCount = 0;
+        let skipCount = 0;
+
+        for (const station of stations) {
+          const obs = await fetchBuoyObservations(station.id);
+          
+          if (obs) {
+            await db.collection('districts').doc(districtId)
+              .collection('buoys').doc(station.id).update({
+                latestObservation: obs,
+                lastUpdated: new Date().toISOString(),
+              });
+            successCount++;
+          } else {
+            skipCount++;
+            skippedBuoys.push(station.name || station.id);
+          }
+          
+          // Small delay to avoid rate limiting
+          await delay(50);
+        }
+
+        // Update catalog timestamp for this district
+        await db.collection('districts').doc(districtId)
+          .collection('buoys').doc('catalog').update({
             lastUpdated: new Date().toISOString(),
           });
-          successCount++;
-        } else {
-          skipCount++;
-          skippedBuoys.push(station.name || station.id);
-        }
-        
-        // Small delay to avoid rate limiting
-        await delay(50);
+
+        totalSuccess += successCount;
+        totalSkip += skipCount;
+        console.log(`[${districtId}] ${successCount} updated, ${skipCount} skipped`);
       }
 
-      // Update catalog timestamp
-      await db.collection('buoys').doc('catalog').update({
-        lastUpdated: new Date().toISOString(),
-      });
-
-      console.log(`Buoy update complete: ${successCount} updated, ${skipCount} skipped`);
+      console.log(`Buoy update complete: ${districtsProcessed} districts, ${totalSuccess} updated, ${totalSkip} skipped out of ${totalStations} total`);
       
       // Log to daily issues tracker if there were problems
-      if (skipCount > 0 || successCount === 0) {
+      if (totalSkip > 0 || totalSuccess === 0) {
         const today = new Date().toISOString().split('T')[0];
         const issueRef = db.collection('system').doc('buoy-daily-issues');
         
         await issueRef.set({
           [today]: admin.firestore.FieldValue.arrayUnion({
             timestamp: new Date().toISOString(),
-            successCount,
-            skipCount,
+            successCount: totalSuccess,
+            skipCount: totalSkip,
             skippedBuoys,
-            totalBuoys: stations.length,
+            totalBuoys: totalStations,
           })
         }, { merge: true });
       }
@@ -3798,47 +3820,76 @@ export const dailyBuoySummary = functions
 
 /**
  * TRIGGER BUOY UPDATE (Manual)
- * Callable function to force immediate buoy data refresh
+ * Callable function to force immediate buoy data refresh.
+ * Reads/writes buoy data under districts/{districtId}/buoys/.
+ * Optionally pass { districtId: '17cgd' } to update a single district.
  */
 export const triggerBuoyUpdate = functions.https.onCall(async (data, context) => {
-  console.log('Manual buoy update triggered...');
+  const targetDistrict = data?.districtId || null;
+  console.log(`Manual buoy update triggered${targetDistrict ? ` for ${targetDistrict}` : ' (all districts)'}...`);
 
   try {
-    const catalogDoc = await db.collection('buoys').doc('catalog').get();
-    
-    if (!catalogDoc.exists) {
-      return { success: false, message: 'No buoys catalog found' };
+    let totalSuccess = 0;
+    let totalSkip = 0;
+    let totalStations = 0;
+    let districtsProcessed = 0;
+
+    // Get districts to process
+    const districtIds: string[] = [];
+    if (targetDistrict) {
+      districtIds.push(targetDistrict);
+    } else {
+      const districtsSnap = await db.collection('districts').get();
+      districtsSnap.forEach(doc => districtIds.push(doc.id));
     }
 
-    const catalog = catalogDoc.data()!;
-    const stations = catalog.stations as Array<{ id: string; name: string }>;
-
-    let successCount = 0;
-    let skipCount = 0;
-
-    for (const station of stations) {
-      const obs = await fetchBuoyObservations(station.id);
+    for (const districtId of districtIds) {
+      const catalogDoc = await db.collection('districts').doc(districtId)
+        .collection('buoys').doc('catalog').get();
       
-      if (obs) {
-        await db.collection('buoys').doc(station.id).update({
-          latestObservation: obs,
+      if (!catalogDoc.exists) continue;
+
+      const catalog = catalogDoc.data()!;
+      const stations = catalog.stations as Array<{ id: string; name: string; districtId?: string }>;
+      if (!stations || stations.length === 0) continue;
+
+      console.log(`[${districtId}] Updating ${stations.length} buoys...`);
+      districtsProcessed++;
+      totalStations += stations.length;
+
+      let successCount = 0;
+      let skipCount = 0;
+
+      for (const station of stations) {
+        const obs = await fetchBuoyObservations(station.id);
+        
+        if (obs) {
+          await db.collection('districts').doc(districtId)
+            .collection('buoys').doc(station.id).update({
+              latestObservation: obs,
+              lastUpdated: new Date().toISOString(),
+            });
+          successCount++;
+        } else {
+          skipCount++;
+        }
+        
+        await delay(50);
+      }
+
+      await db.collection('districts').doc(districtId)
+        .collection('buoys').doc('catalog').update({
           lastUpdated: new Date().toISOString(),
         });
-        successCount++;
-      } else {
-        skipCount++;
-      }
-      
-      await delay(50);
-    }
 
-    await db.collection('buoys').doc('catalog').update({
-      lastUpdated: new Date().toISOString(),
-    });
+      totalSuccess += successCount;
+      totalSkip += skipCount;
+      console.log(`[${districtId}] ${successCount} updated, ${skipCount} skipped`);
+    }
 
     return {
       success: true,
-      message: `Updated ${successCount} buoys, skipped ${skipCount}`,
+      message: `${districtsProcessed} districts: updated ${totalSuccess} buoys, skipped ${totalSkip}`,
       timestamp: new Date().toISOString(),
     };
   } catch (error: any) {
