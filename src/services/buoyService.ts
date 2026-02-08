@@ -4,7 +4,7 @@
  * Fetches live buoy data from Firestore
  */
 
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { firestore } from '../config/firebase';
 
 export interface BuoyObservation {
@@ -57,6 +57,7 @@ export interface Buoy {
   longitude: number;
   type: string;
   owner: string;
+  districtId?: string;  // USCG district (e.g., '17cgd', '07cgd') - transitional field for region-scoped migration
   latestObservation?: BuoyObservation;
   lastUpdated?: string;
 }
@@ -67,23 +68,46 @@ export interface BuoySummary {
   latitude: number;
   longitude: number;
   type: string;
+  districtId?: string;  // USCG district (e.g., '17cgd', '07cgd') - transitional field for region-scoped migration
 }
 
 /**
  * Fetch the catalog of all buoys
+ * @param districtId - Optional USCG district ID (e.g., '17cgd', '07cgd'). If provided, returns only buoys for that district.
  */
-export async function getBuoysCatalog(): Promise<BuoySummary[]> {
+export async function getBuoysCatalog(districtId?: string): Promise<BuoySummary[]> {
   try {
-    const catalogRef = doc(firestore, 'buoys', 'catalog');
-    const catalogSnap = await getDoc(catalogRef);
-    
-    if (!catalogSnap.exists()) {
-      console.log('Buoys catalog not found');
-      return [];
+    if (districtId) {
+      // Fetch from district-scoped collection
+      const catalogRef = doc(firestore, 'districts', districtId, 'buoys', 'catalog');
+      const catalogSnap = await getDoc(catalogRef);
+      
+      if (!catalogSnap.exists()) {
+        console.log(`Buoys catalog not found for district ${districtId}`);
+        return [];
+      }
+      
+      const data = catalogSnap.data();
+      return data.stations || [];
+    } else {
+      // Fetch from all districts
+      const allBuoys: BuoySummary[] = [];
+      const districtsRef = collection(firestore, 'districts');
+      const districtsSnap = await getDocs(districtsRef);
+      
+      for (const districtDoc of districtsSnap.docs) {
+        const catalogRef = doc(firestore, 'districts', districtDoc.id, 'buoys', 'catalog');
+        const catalogSnap = await getDoc(catalogRef);
+        
+        if (catalogSnap.exists()) {
+          const data = catalogSnap.data();
+          const stations = data.stations || [];
+          allBuoys.push(...stations);
+        }
+      }
+      
+      return allBuoys;
     }
-    
-    const data = catalogSnap.data();
-    return data.stations || [];
   } catch (error: any) {
     if (!error?.message?.includes('offline')) {
       console.log('[Buoy] Error fetching catalog:', error?.message || error);
@@ -94,18 +118,39 @@ export async function getBuoysCatalog(): Promise<BuoySummary[]> {
 
 /**
  * Fetch a specific buoy with its latest observation
+ * @param buoyId - The buoy ID (e.g., '46060')
+ * @param districtId - Optional USCG district ID. If not provided, searches all districts.
  */
-export async function getBuoy(buoyId: string): Promise<Buoy | null> {
+export async function getBuoy(buoyId: string, districtId?: string): Promise<Buoy | null> {
   try {
-    const buoyRef = doc(firestore, 'buoys', buoyId);
-    const buoySnap = await getDoc(buoyRef);
-    
-    if (!buoySnap.exists()) {
-      console.log(`Buoy ${buoyId} not found`);
+    if (districtId) {
+      // Fetch from specific district
+      const buoyRef = doc(firestore, 'districts', districtId, 'buoys', buoyId);
+      const buoySnap = await getDoc(buoyRef);
+      
+      if (!buoySnap.exists()) {
+        console.log(`Buoy ${buoyId} not found in district ${districtId}`);
+        return null;
+      }
+      
+      return buoySnap.data() as Buoy;
+    } else {
+      // Search all districts
+      const districtsRef = collection(firestore, 'districts');
+      const districtsSnap = await getDocs(districtsRef);
+      
+      for (const districtDoc of districtsSnap.docs) {
+        const buoyRef = doc(firestore, 'districts', districtDoc.id, 'buoys', buoyId);
+        const buoySnap = await getDoc(buoyRef);
+        
+        if (buoySnap.exists()) {
+          return buoySnap.data() as Buoy;
+        }
+      }
+      
+      console.log(`Buoy ${buoyId} not found in any district`);
       return null;
     }
-    
-    return buoySnap.data() as Buoy;
   } catch (error: any) {
     if (!error?.message?.includes('offline')) {
       console.log(`[Buoy] Error fetching ${buoyId}:`, error?.message || error);

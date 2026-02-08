@@ -14,6 +14,7 @@ console.log('[App.tsx] Core imports complete');
 import ChartViewer from './src/components/ChartViewer';
 import { OverlayProvider, useOverlay } from './src/contexts/OverlayContext';
 import { NavigationProvider, useContextNav } from './src/contexts/NavigationContext';
+import { WaypointProvider } from './src/contexts/WaypointContext';
 
 console.log('[App.tsx] Context imports complete');
 
@@ -31,6 +32,7 @@ let MinimalCompass: React.ComponentType<{ heading: number | null; course: number
 let GPSInfoModal: React.ComponentType<{ visible: boolean; gpsData: any }> | null = null;
 let MorePanel: React.ComponentType<{ visible: boolean; onClose: () => void }> | null = null;
 let RegionSelector: React.ComponentType<{ visible: boolean; onClose: () => void }> | null = null;
+let WaypointCreationModal: React.ComponentType | null = null;
 
 // Modular Crashlytics API (v22+ requires passing instance as first param)
 let crashlyticsInstance: any = null;
@@ -70,6 +72,8 @@ if (Platform.OS !== 'web') {
   console.log('[App.tsx] MorePanel loaded');
   RegionSelector = require('./src/components/RegionSelector').default;
   console.log('[App.tsx] RegionSelector loaded');
+  WaypointCreationModal = require('./src/components/WaypointCreationModal').default;
+  console.log('[App.tsx] WaypointCreationModal loaded');
   console.log('[App.tsx] All native screens loaded successfully');
   
   // Initialize Crashlytics for native platforms (modular API)
@@ -250,7 +254,7 @@ function MoreTab() {
 
 // Renders overlays outside the navigation hierarchy to avoid MapLibre conflicts
 function OverlayRenderer() {
-  const { compassMode, showGPSPanel, showMorePanel, setShowMorePanel, showDownloads, setShowDownloads, showTideDetails, showCurrentDetails, showNavData, heading, course, gpsData } = useOverlay();
+  const { compassMode, showGPSPanel, showMorePanel, setShowMorePanel, showDownloads, setShowDownloads, showTideDetails, showCurrentDetails, showNavData, heading, course, gpsData, handleMorePanelClosed } = useOverlay();
 
   const compassProps = useMemo(() => ({
     heading,
@@ -284,6 +288,7 @@ function OverlayRenderer() {
         <MorePanel
           visible={showMorePanel}
           onClose={() => setShowMorePanel(false)}
+          onCloseComplete={handleMorePanelClosed}
         />
       )}
       {RegionSelector && (
@@ -292,6 +297,7 @@ function OverlayRenderer() {
           onClose={() => setShowDownloads(false)}
         />
       )}
+      {WaypointCreationModal && <WaypointCreationModal />}
     </View>
   );
 }
@@ -379,10 +385,12 @@ function AppContent() {
     <SafeAreaProvider>
       <NavigationProvider>
         <OverlayProvider>
-          <AppNavigator />
-          {/* Overlays rendered OUTSIDE NavigationContainer to avoid MapLibre view conflicts */}
-          <OverlayRenderer />
-          <StatusBar style="light" />
+          <WaypointProvider>
+            <AppNavigator />
+            {/* Overlays rendered OUTSIDE NavigationContainer to avoid MapLibre view conflicts */}
+            <OverlayRenderer />
+            <StatusBar style="light" />
+          </WaypointProvider>
         </OverlayProvider>
       </NavigationProvider>
     </SafeAreaProvider>

@@ -41,6 +41,11 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
     
+    // User's waypoints - markers, fishing spots, etc.
+    match /users/{userId}/waypoints/{waypointId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
     // Tidal stations - read-only for all users (authenticated or not)
     match /tidal-stations/{stationId} {
       allow read: if true; // Public read access
@@ -67,7 +72,7 @@ service cloud.firestore {
       allow write: if false; // Only admin/Cloud Functions can write
     }
     
-    // Marine forecast districts - read-only for all users
+    // Marine forecast districts (LEGACY - deprecated, use districts instead)
     match /marine-forecast-districts/{districtId} {
       allow read: if true; // Public read access for district info
       allow write: if false; // Only admin/Cloud Functions can write
@@ -91,16 +96,88 @@ service cloud.firestore {
       }
     }
     
-    // Live buoy data - read-only for all users
+    // Live buoy data (LEGACY - flat collection, deprecated, use districts instead)
     match /buoys/{buoyId} {
       allow read: if true; // Public read access
       allow write: if false; // Only admin/Cloud Functions can write
     }
     
-    // Districts - read-only for all users (download pack metadata)
+    // Regions collection (LEGACY - deprecated, use districts instead)
+    match /regions/{regionId} {
+      allow read: if true; // Public read access for region info
+      allow write: if false; // Only admin/Cloud Functions can write
+      
+      // Tidal stations within regions
+      match /tidal-stations/{stationId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
+      
+      // Current stations within regions
+      match /current-stations/{stationId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+        
+        // Predictions subcollection
+        match /predictions/{month} {
+          allow read: if true; // Public read access
+          allow write: if false; // Only admin/Cloud Functions can write
+        }
+      }
+      
+      // Buoys within regions
+      match /buoys/{buoyId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
+    }
+    
+    // Districts - unified collection for all district-scoped data
     match /districts/{districtId} {
       allow read: if true; // Public read access for district info and download packs
       allow write: if false; // Only admin/Cloud Functions can write
+      
+      // Marine zones within districts
+      match /marine-zones/{zoneId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
+      
+      // Marine forecasts within districts
+      match /marine-forecasts/{zoneId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
+      
+      // Tidal stations within districts
+      match /tidal-stations/{stationId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
+      
+      // Current stations within districts
+      match /current-stations/{stationId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+        
+        // Predictions subcollection
+        match /predictions/{month} {
+          allow read: if true; // Public read access
+          allow write: if false; // Only admin/Cloud Functions can write
+        }
+      }
+      
+      // Buoys within districts
+      match /buoys/{buoyId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
+      
+      // System metadata within districts
+      match /system/{docId} {
+        allow read: if true; // Public read access for metadata
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
     }
   }
 }

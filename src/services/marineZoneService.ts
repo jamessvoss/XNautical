@@ -2,7 +2,7 @@
  * Marine Zone Service
  * Fetches marine zone boundaries and forecasts from Firebase
  * 
- * Now supports multi-district architecture:
+ * Multi-district architecture:
  * - Zones are stored under districts/{districtId}/marine-zones
  * - Forecasts are stored under districts/{districtId}/marine-forecasts
  */
@@ -63,7 +63,7 @@ const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
  */
 export async function getMarineZoneSummaries(districtId: string): Promise<MarineZoneSummary[]> {
   try {
-    const zonesRef = collection(firestore, 'marine-forecast-districts', districtId, 'marine-zones');
+    const zonesRef = collection(firestore, 'districts', districtId, 'marine-zones');
     const snapshot = await getDocs(zonesRef);
     
     return snapshot.docs.map(doc => {
@@ -93,7 +93,7 @@ export async function getMarineZones(districtId: string): Promise<MarineZone[]> 
   }
   
   try {
-    const zonesRef = collection(firestore, 'marine-forecast-districts', districtId, 'marine-zones');
+    const zonesRef = collection(firestore, 'districts', districtId, 'marine-zones');
     const snapshot = await getDocs(zonesRef);
     
     const zones = snapshot.docs.map(doc => {
@@ -129,7 +129,7 @@ export async function getMarineZones(districtId: string): Promise<MarineZone[]> 
  */
 export async function getMarineZone(districtId: string, zoneId: string): Promise<MarineZone | null> {
   try {
-    const docRef = doc(firestore, 'marine-forecast-districts', districtId, 'marine-zones', zoneId);
+    const docRef = doc(firestore, 'districts', districtId, 'marine-zones', zoneId);
     const docSnap = await getDoc(docRef);
     
     if (!docSnap.exists()) {
@@ -161,7 +161,7 @@ export async function getMarineZone(districtId: string, zoneId: string): Promise
 export async function getMarineForecast(districtId: string, zoneId: string): Promise<MarineForecast | null> {
   try {
     console.log(`[Marine] Fetching forecast for district ${districtId}, zone:`, zoneId);
-    const docRef = doc(firestore, 'marine-forecast-districts', districtId, 'marine-forecasts', zoneId);
+    const docRef = doc(firestore, 'districts', districtId, 'marine-forecasts', zoneId);
     const docSnap = await getDoc(docRef);
     
     if (!docSnap.exists()) {

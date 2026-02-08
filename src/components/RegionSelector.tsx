@@ -735,7 +735,7 @@ const styles = StyleSheet.create({
     padding: 8,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
-    minWidth: 100,
+    width: 150,
   },
   resPickerTitle: {
     fontSize: 9,
@@ -775,14 +775,14 @@ const styles = StyleSheet.create({
   // Optional maps picker (upper-right of map, below satellite)
   optMapsPicker: {
     position: 'absolute',
-    top: 130,
+    top: 138,
     right: 10,
     backgroundColor: 'rgba(15, 25, 35, 0.92)',
     borderRadius: 10,
     padding: 8,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
-    minWidth: 140,
+    width: 150,
   },
 
   // Bottom Panel

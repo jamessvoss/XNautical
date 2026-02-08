@@ -24,9 +24,9 @@ Request body for /generate:
   }
 
 Firestore writes:
-  regions/{regionId}/tidal-stations/{stationId}           - station metadata + predictions
-  regions/{regionId}/current-stations/{stationId}         - station metadata
-  regions/{regionId}/current-stations/{stationId}/predictions/{month} - packed daily strings
+  districts/{regionId}/tidal-stations/{stationId}           - station metadata + predictions
+  districts/{regionId}/current-stations/{stationId}         - station metadata
+  districts/{regionId}/current-stations/{stationId}/predictions/{month} - packed daily strings
 
 Firebase Storage uploads:
   {regionId}/predictions/tides.db.zip
@@ -328,7 +328,7 @@ def month_range_list(start_date, end_date):
 def update_status(db_client, region_id, status_dict):
     """Write prediction generation status to Firestore."""
     try:
-        doc_ref = db_client.collection('regions').document(region_id)
+        doc_ref = db_client.collection('districts').document(region_id)
         doc_ref.set({'predictionStatus': status_dict}, merge=True)
     except Exception as e:
         logger.warning(f'Failed to update Firestore status: {e}')
@@ -382,7 +382,7 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
             total_events += event_count
 
             # Write to Firestore
-            doc_ref = (db_client.collection('regions').document(region_id)
+            doc_ref = (db_client.collection('districts').document(region_id)
                        .collection('tidal-stations').document(station_id))
 
             doc_ref.set({
@@ -441,7 +441,7 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
 
             # Handle weak and variable stations: write metadata, skip predictions
             if noaa_type == 'W':
-                station_doc_ref = (db_client.collection('regions').document(region_id)
+                station_doc_ref = (db_client.collection('districts').document(region_id)
                                   .collection('current-stations').document(station_id))
 
                 station_doc_ref.set({
@@ -507,7 +507,7 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
             ebb_dir = round(sum(p['direction'] for p in ebbs) / len(ebbs)) if ebbs else 180
 
             # Write station metadata
-            station_doc_ref = (db_client.collection('regions').document(region_id)
+            station_doc_ref = (db_client.collection('districts').document(region_id)
                               .collection('current-stations').document(station_id))
 
             station_doc_ref.set({
@@ -594,7 +594,7 @@ def build_tide_database(db_client, region_id, stations, work_dir):
 
     for station in stations:
         station_id = station['id']
-        doc = (db_client.collection('regions').document(region_id)
+        doc = (db_client.collection('districts').document(region_id)
                .collection('tidal-stations').document(station_id)).get()
 
         if not doc.exists:
@@ -676,7 +676,7 @@ def build_current_database(db_client, region_id, stations, work_dir):
 
     for station in stations:
         station_id = station['id']
-        station_doc = (db_client.collection('regions').document(region_id)
+        station_doc = (db_client.collection('districts').document(region_id)
                       .collection('current-stations').document(station_id)).get()
 
         if not station_doc.exists:
@@ -699,7 +699,7 @@ def build_current_database(db_client, region_id, stations, work_dir):
         if is_weak:
             continue
 
-        pred_docs = (db_client.collection('regions').document(region_id)
+        pred_docs = (db_client.collection('districts').document(region_id)
                     .collection('current-stations').document(station_id)
                     .collection('predictions').stream())
 
@@ -816,7 +816,7 @@ def generate_predictions():
     try:
         # 1. Read station list
         logger.info('Reading predictionConfig from Firestore...')
-        region_doc = db_client.collection('regions').document(region_id).get()
+        region_doc = db_client.collection('districts').document(region_id).get()
 
         if not region_doc.exists:
             return jsonify({'error': f'Region {region_id} not found in Firestore'}), 404
@@ -977,7 +977,7 @@ def generate_predictions():
             'generationDurationSeconds': round(total_duration, 1),
         }
 
-        region_doc_ref = db_client.collection('regions').document(region_id)
+        region_doc_ref = db_client.collection('districts').document(region_id)
         region_doc_ref.set({
             'predictionData': prediction_data,
             'predictionStatus': {
@@ -1041,7 +1041,7 @@ def get_status():
 
     try:
         db_client = firestore.Client()
-        doc = db_client.collection('regions').document(region_id).get()
+        doc = db_client.collection('districts').document(region_id).get()
 
         if not doc.exists:
             return jsonify({

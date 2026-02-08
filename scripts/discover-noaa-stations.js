@@ -312,7 +312,7 @@ async function main() {
 
   // 1. Load regions from Firestore
   console.log('Loading regions from Firestore...');
-  const regionsSnapshot = await db.collection('regions').get();
+  const regionsSnapshot = await db.collection('districts').get();
   const regions = [];
 
   regionsSnapshot.forEach((doc) => {
@@ -375,7 +375,7 @@ async function main() {
     console.log('Writing predictionConfig to Firestore...\n');
 
     for (const [regionId, assignment] of assignments) {
-      const docRef = db.collection('regions').doc(regionId);
+      const docRef = db.collection('districts').doc(regionId);
 
       const weakStations = assignment.currentStations.filter(s => s.noaaType === 'W');
       const predictionConfig = {

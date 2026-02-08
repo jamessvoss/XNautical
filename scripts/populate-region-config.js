@@ -623,7 +623,7 @@ async function main() {
 
   for (const region of regions) {
     const docId = region.regionId;
-    const docRef = db.collection('regions').doc(docId);
+    const docRef = db.collection('districts').doc(docId);
 
     // Add metadata timestamps
     const doc = {

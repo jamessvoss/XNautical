@@ -20,6 +20,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapView, { Marker, Polygon, Region } from 'react-native-maps';
 import { X, Maximize2, Minimize2, RotateCcw } from 'lucide-react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 
 // Firebase
@@ -484,7 +485,7 @@ export default function WeatherScreen() {
             style={[styles.sidebarButton, activeView === 'buoys' && styles.sidebarButtonActive]}
             onPress={() => setActiveView('buoys')}
           >
-            <Text style={styles.sidebarIcon}>📡</Text>
+            <MaterialCommunityIcons name="radio-tower" size={22} color="#FFFFFF" />
             <Text style={styles.sidebarLabel}>Buoys</Text>
           </TouchableOpacity>
         </View>

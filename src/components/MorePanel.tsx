@@ -34,6 +34,7 @@ interface ViewItem {
 const VIEWS: ViewItem[] = [
   { id: 'stats', name: 'Stats', icon: 'stats-chart' },
   { id: 'scratchpad', name: 'Scratch Pads', icon: 'document-text' },
+  { id: 'waypoints', name: 'Waypoints', icon: 'location-sharp' },
 ];
 
 // Panel width: 25% of screen, but at least 220px for usability
@@ -42,9 +43,10 @@ const PANEL_WIDTH = Math.max(Dimensions.get('window').width * 0.25, 220);
 interface Props {
   visible: boolean;
   onClose: () => void;
+  onCloseComplete?: () => void;
 }
 
-export default function MorePanel({ visible, onClose }: Props) {
+export default function MorePanel({ visible, onClose, onCloseComplete }: Props) {
   const insets = useSafeAreaInsets();
   const { setContextView, contextTabView } = useContextNav();
   const { openDownloads, setShowDebugMap, setShowMorePanel } = useOverlay();
@@ -85,6 +87,7 @@ export default function MorePanel({ visible, onClose }: Props) {
         }),
       ]).start(() => {
         setRenderPanel(false);
+        onCloseComplete?.();
       });
     }
   }, [visible, slideAnim, backdropAnim]);

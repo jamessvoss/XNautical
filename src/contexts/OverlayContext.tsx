@@ -8,7 +8,7 @@
  * for butter-smooth 60Hz updates.
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
 import { GPSData } from '../hooks/useGPS';
 import { useDeviceHeading } from '../hooks/useDeviceHeading';
 import { CompassMode, getNextCompassMode } from '../utils/compassUtils';
@@ -42,6 +42,7 @@ interface OverlayContextType extends OverlayState {
   toggleMorePanel: () => void;
   setShowDownloads: (show: boolean) => void;
   openDownloads: () => void;
+  handleMorePanelClosed: () => void;
   setShowTideDetails: (show: boolean) => void;
   setShowCurrentDetails: (show: boolean) => void;
   setShowDebugMap: (show: boolean) => void;
@@ -87,6 +88,7 @@ const OverlayContext = createContext<OverlayContextType>({
   toggleMorePanel: () => {},
   setShowDownloads: () => {},
   openDownloads: () => {},
+  handleMorePanelClosed: () => {},
   setShowTideDetails: () => {},
   setShowCurrentDetails: () => {},
   setShowDebugMap: () => {},
@@ -126,11 +128,23 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // Open Downloads: close the MorePanel and open RegionSelector in one action
+  // Pending action to run after MorePanel close animation completes
+  const pendingActionRef = useRef<(() => void) | null>(null);
+
+  // Open Downloads: close the MorePanel first, then open RegionSelector
+  // after the close animation finishes (via handleMorePanelClosed callback)
   const openDownloads = useCallback(() => {
     console.log('[OverlayContext] openDownloads() called');
     setShowMorePanel(false);
-    setShowDownloads(true);
+    pendingActionRef.current = () => setShowDownloads(true);
+  }, []);
+
+  // Called by MorePanel when its close animation completes
+  const handleMorePanelClosed = useCallback(() => {
+    if (pendingActionRef.current) {
+      pendingActionRef.current();
+      pendingActionRef.current = null;
+    }
   }, []);
 
   // Use sensor fusion for smooth compass heading
@@ -173,6 +187,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     toggleMorePanel,
     setShowDownloads,
     openDownloads,
+    handleMorePanelClosed,
     setShowTideDetails,
     setShowCurrentDetails,
     setShowDebugMap,
@@ -200,6 +215,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     toggleMorePanel,
     setShowDownloads,
     openDownloads,
+    handleMorePanelClosed,
     setShowTideDetails,
     setShowCurrentDetails,
     setShowDebugMap,

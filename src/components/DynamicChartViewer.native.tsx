@@ -60,6 +60,8 @@ import TideDetailChart from './TideDetailChart';
 import CurrentDetailChart from './CurrentDetailChart';
 import BuoyDetailModal from './BuoyDetailModal';
 import { Ionicons } from '@expo/vector-icons';
+import { useWaypoints } from '../contexts/WaypointContext';
+import { WaypointMapPin } from './WaypointIcons';
 
 // MapLibre doesn't require an access token
 
@@ -405,6 +407,7 @@ interface LayerVisibility {
   liveBuoys: boolean;  // Live weather buoy markers
   tideDetails: boolean;  // Tide detail chart at bottom
   currentDetails: boolean;  // Current detail chart at bottom
+  waypoints: boolean;  // User waypoint markers
 }
 
 type LayerVisibilityAction = 
@@ -447,6 +450,7 @@ const initialLayerVisibility: LayerVisibility = {
   liveBuoys: true,  // Show live buoys by default
   tideDetails: false,  // Tide detail chart hidden by default
   currentDetails: false,  // Current detail chart hidden by default
+  waypoints: true,  // Show user waypoints by default
 };
 
 function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityAction): LayerVisibility {
@@ -467,6 +471,8 @@ function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityA
 }
 
 export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}) {
+  // Waypoint context
+  const { waypoints: userWaypoints, openCreationModal: openWaypointCreation, openEditModal: openWaypointEdit } = useWaypoints();
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<any>(null);
@@ -544,6 +550,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     liveBuoys: showLiveBuoys,
     tideDetails: showTideDetails,
     currentDetails: showCurrentDetails,
+    waypoints: showWaypoints,
   } = layers;
   
   // GNIS Place Names layer toggles
@@ -3561,6 +3568,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       showMarineFarms, showSeabed, showBridges, showBuildings, showMoorings,
       showShorelineConstruction, showDepthAreas, showLand]);
 
+  // Handle map long press - create a waypoint at the pressed location
+  const handleMapLongPress = useCallback((e: any) => {
+    const { geometry } = e;
+    if (!geometry?.coordinates) return;
+    
+    const [longitude, latitude] = geometry.coordinates;
+    console.log(`[DynamicChartViewer] Long press at: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+    openWaypointCreation(longitude, latitude);
+  }, [openWaypointCreation]);
+
   // Calculate initial center from loaded charts (prefer MBTiles if available)
   const initialCenter = useMemo(() => {
     // If we have MBTiles charts, use appropriate center
@@ -3764,6 +3781,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         onRegionDidChange={handleCameraChanged}
         onRegionIsChanging={handleCameraChanged}
         onPress={handleMapPress}
+        onLongPress={handleMapLongPress}
         // @ts-ignore - MapLibre callback types may differ slightly
         onWillStartLoadingMap={handleWillStartLoadingMap}
         onDidFinishLoadingMap={handleDidFinishLoadingMap}
@@ -5822,6 +5840,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </MapLibre.VectorSource>
         )}
 
+        {/* User Waypoint Markers */}
+        {showWaypoints && userWaypoints.map((wp) => (
+          <MapLibre.MarkerView
+            key={wp.id}
+            coordinate={[wp.longitude, wp.latitude]}
+            anchor={{ x: 0.5, y: 1.0 }}
+          >
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => openWaypointEdit(wp)}
+            >
+              <WaypointMapPin category={wp.category} color={wp.color} size={32} />
+            </TouchableOpacity>
+          </MapLibre.MarkerView>
+        ))}
+
         {/* GPS Position Marker - always show when GPS available */}
         {gpsData.latitude !== null && gpsData.longitude !== null && (
           <MapLibre.MarkerView
@@ -6094,6 +6128,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 <Text style={styles.layerSectionHeader}>Weather</Text>
                 <TouchableOpacity style={[styles.layerToggleRow, showLiveBuoys && styles.layerToggleRowActive]} onPress={() => toggleLayer('liveBuoys')}>
                   <Text style={styles.layerToggleText}>Live Buoys</Text>
+                </TouchableOpacity>
+
+                {/* Waypoints Section */}
+                <Text style={styles.layerSectionHeader}>Waypoints</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, showWaypoints && styles.layerToggleRowActive]} onPress={() => toggleLayer('waypoints')}>
+                  <Text style={styles.layerToggleText}>Waypoints</Text>
                 </TouchableOpacity>
 
                 {/* Areas Section */}

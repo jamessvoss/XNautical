@@ -60,6 +60,8 @@ const bucket = admin.storage().bucket();
 /**
  * Get all tide and current station locations (without predictions)
  * Returns compact JSON with just the metadata needed for map display
+ * 
+ * @param data.regionId - USCG district ID (e.g., '17cgd', '07cgd'). If not provided, returns all stations from all regions.
  */
 export const getStationLocations = functions
   .runWith({
@@ -68,54 +70,80 @@ export const getStationLocations = functions
   })
   .https.onCall(async (data, context) => {
     try {
-      console.log('Fetching station locations...');
+      const regionId = data?.regionId;
+      console.log(`Fetching station locations${regionId ? ` for region ${regionId}` : ' (all regions)'}...`);
       
-      // Fetch both collections in parallel, but only select the fields we need
-      const [tideSnapshot, currentSnapshot] = await Promise.all([
-        db.collection('tidal-stations')
-          .select('name', 'latitude', 'longitude', 'type') // Use latitude/longitude (not lat/lng)
-          .get(),
-        db.collection('current-stations-packed')
-          .select('name', 'latitude', 'longitude') // Current stations don't have a simple bin field
-          .get(),
-      ]);
-      
-      // Extract tide station data
-      const tideStations = tideSnapshot.docs.map(doc => ({
-        id: doc.id,
-        name: doc.get('name') || 'Unknown',
-        lat: doc.get('latitude') || 0,   // Map latitude -> lat
-        lng: doc.get('longitude') || 0,  // Map longitude -> lng
-        type: doc.get('type') || 'S',
-      }));
-      
-      // Extract current station data - these are stored differently
-      // The catalog document contains all stations in an array
+      const tideStations: any[] = [];
       const currentStations: any[] = [];
-      currentSnapshot.docs.forEach(doc => {
-        if (doc.id === 'catalog') {
-          // Catalog document has locations array
-          const locations = doc.get('locations') || [];
-          locations.forEach((loc: any) => {
-            currentStations.push({
-              id: loc.id || loc.noaaId || 'unknown',
-              name: loc.name || 'Unknown',
-              lat: loc.latitude || 0,
-              lng: loc.longitude || 0,
-              bin: loc.bin || 0,
-            });
+      
+      if (regionId) {
+        // Fetch from district-scoped collections
+        const [tideSnapshot, currentSnapshot] = await Promise.all([
+          db.collection('districts').doc(regionId).collection('tidal-stations')
+            .select('name', 'latitude', 'longitude', 'type')
+            .get(),
+          db.collection('districts').doc(regionId).collection('current-stations')
+            .select('name', 'latitude', 'longitude')
+            .get(),
+        ]);
+        
+        // Extract tide station data
+        tideSnapshot.docs.forEach(doc => {
+          tideStations.push({
+            id: doc.id,
+            name: doc.get('name') || 'Unknown',
+            lat: doc.get('latitude') || 0,
+            lng: doc.get('longitude') || 0,
+            type: doc.get('type') || 'S',
           });
-        } else {
-          // Individual station documents
+        });
+        
+        // Extract current station data
+        currentSnapshot.docs.forEach(doc => {
           currentStations.push({
             id: doc.id,
             name: doc.get('name') || 'Unknown',
             lat: doc.get('latitude') || 0,
             lng: doc.get('longitude') || 0,
-            bin: 0,
+            bin: doc.get('bin') || 0,
+          });
+        });
+      } else {
+        // Fetch from all districts
+        const districtsSnapshot = await db.collection('districts').get();
+        
+        for (const districtDoc of districtsSnapshot.docs) {
+          const districtId = districtDoc.id;
+          const [tideSnapshot, currentSnapshot] = await Promise.all([
+            db.collection('districts').doc(districtId).collection('tidal-stations')
+              .select('name', 'latitude', 'longitude', 'type')
+              .get(),
+            db.collection('districts').doc(districtId).collection('current-stations')
+              .select('name', 'latitude', 'longitude')
+              .get(),
+          ]);
+          
+          tideSnapshot.docs.forEach(doc => {
+            tideStations.push({
+              id: doc.id,
+              name: doc.get('name') || 'Unknown',
+              lat: doc.get('latitude') || 0,
+              lng: doc.get('longitude') || 0,
+              type: doc.get('type') || 'S',
+            });
+          });
+          
+          currentSnapshot.docs.forEach(doc => {
+            currentStations.push({
+              id: doc.id,
+              name: doc.get('name') || 'Unknown',
+              lat: doc.get('latitude') || 0,
+              lng: doc.get('longitude') || 0,
+              bin: doc.get('bin') || 0,
+            });
           });
         }
-      });
+      }
       
       console.log(`Returning ${tideStations.length} tide stations and ${currentStations.length} current stations`);
       
@@ -135,6 +163,8 @@ export const getStationLocations = functions
  * Returns ONLY High/Low events (not full tide curves)
  * Used for bulk download to device for offline access
  * 
+ * @param data.regionId - USCG district ID (e.g., '17cgd', '07cgd'). If not provided, returns predictions from all regions.
+ * 
  * TIDE PREDICTIONS:
  *   - Stored directly in document as predictions: { "YYYY-MM-DD": [TideEvent, ...] }
  *   - ~4 H/L events per day
@@ -153,95 +183,114 @@ export const getStationPredictions = functions
   })
   .https.onCall(async (data, context) => {
     try {
-      console.log('Packaging all station predictions...');
+      const regionId = data?.regionId;
+      console.log(`Packaging station predictions${regionId ? ` for region ${regionId}` : ' (all regions)'}...`);
       const startTime = Date.now();
       
-      // TIDE PREDICTIONS: Process in smaller batches to avoid OOM
-      console.log('Fetching tide predictions...');
-      const tideSnapshot = await db.collection('tidal-stations')
-        .select('predictions')
-        .get();
-      
       const tidePredictions: Record<string, Record<string, any[]>> = {};
+      const currentPredictions: Record<string, Record<string, any>> = {};
       let tideStationCount = 0;
       let tideDateCount = 0;
+      let currentStationCount = 0;
+      let currentMonthCount = 0;
       
-      // Process tide stations in batches to manage memory
-      const TIDE_BATCH_SIZE = 50;
-      for (let i = 0; i < tideSnapshot.docs.length; i += TIDE_BATCH_SIZE) {
-        const batch = tideSnapshot.docs.slice(i, i + TIDE_BATCH_SIZE);
+      const regionsToProcess: string[] = [];
+      
+      if (regionId) {
+        regionsToProcess.push(regionId);
+      } else {
+        // Get all districts
+        const districtsSnapshot = await db.collection('districts').get();
+        districtsSnapshot.docs.forEach(doc => regionsToProcess.push(doc.id));
+      }
+      
+      // Process each district
+      for (const currentRegionId of regionsToProcess) {
+        console.log(`Processing district ${currentRegionId}...`);
         
-        for (const doc of batch) {
-          const preds = doc.get('predictions');
-          if (preds && typeof preds === 'object') {
-            tidePredictions[doc.id] = preds;
-            tideStationCount++;
-            tideDateCount += Object.keys(preds).length;
+        // TIDE PREDICTIONS: Process in smaller batches to avoid OOM
+        console.log(`  Fetching tide predictions for ${currentRegionId}...`);
+        const tideSnapshot = await db.collection('districts')
+          .doc(currentRegionId)
+          .collection('tidal-stations')
+          .select('predictions')
+          .get();
+        
+        // Process tide stations in batches to manage memory
+        const TIDE_BATCH_SIZE = 50;
+        for (let i = 0; i < tideSnapshot.docs.length; i += TIDE_BATCH_SIZE) {
+          const batch = tideSnapshot.docs.slice(i, i + TIDE_BATCH_SIZE);
+          
+          for (const doc of batch) {
+            const preds = doc.get('predictions');
+            if (preds && typeof preds === 'object') {
+              tidePredictions[doc.id] = preds;
+              tideStationCount++;
+              tideDateCount += Object.keys(preds).length;
+            }
+          }
+          
+          // Log progress
+          if ((i + TIDE_BATCH_SIZE) % 100 === 0) {
+            console.log(`    Processed ${Math.min(i + TIDE_BATCH_SIZE, tideSnapshot.docs.length)}/${tideSnapshot.docs.length} tide stations`);
           }
         }
         
-        // Log progress
-        if ((i + TIDE_BATCH_SIZE) % 100 === 0) {
-          console.log(`Processed ${Math.min(i + TIDE_BATCH_SIZE, tideSnapshot.docs.length)}/${tideSnapshot.docs.length} tide stations`);
+        // CURRENT PREDICTIONS: Get all station docs with months available
+        console.log(`  Fetching current predictions for ${currentRegionId}...`);
+        const currentStationsSnapshot = await db.collection('districts')
+          .doc(currentRegionId)
+          .collection('current-stations')
+          .select('monthsAvailable')
+          .get();
+        
+        // Process current stations in smaller batches
+        const CURRENT_BATCH_SIZE = 25; // Smaller because we fetch subcollections
+        const stationDocs = currentStationsSnapshot.docs;
+        
+        for (let i = 0; i < stationDocs.length; i += CURRENT_BATCH_SIZE) {
+          const batch = stationDocs.slice(i, i + CURRENT_BATCH_SIZE);
+          
+          for (const stationDoc of batch) {
+            const monthsAvailable = stationDoc.get('monthsAvailable');
+            if (!monthsAvailable || !Array.isArray(monthsAvailable)) continue;
+            
+            currentPredictions[stationDoc.id] = {};
+            
+            // Fetch monthly predictions for this station
+            for (const month of monthsAvailable) {
+              try {
+                const predDoc = await db.collection('districts')
+                  .doc(currentRegionId)
+                  .collection('current-stations')
+                  .doc(stationDoc.id)
+                  .collection('predictions')
+                  .doc(month)
+                  .get();
+                
+                if (predDoc.exists) {
+                  const predData = predDoc.data();
+                  if (predData && predData.d) {
+                    currentPredictions[stationDoc.id][month] = predData.d;
+                    currentMonthCount++;
+                  }
+                }
+              } catch (err) {
+                console.warn(`    Error fetching predictions for ${stationDoc.id}/${month}:`, err);
+              }
+            }
+            
+            currentStationCount++;
+          }
+          
+          // Log progress every 50 stations
+          if ((i + CURRENT_BATCH_SIZE) % 50 === 0 || (i + CURRENT_BATCH_SIZE) >= stationDocs.length) {
+            console.log(`    Progress: ${Math.min(i + CURRENT_BATCH_SIZE, stationDocs.length)}/${stationDocs.length} current stations processed`);
+          }
         }
       }
       
       console.log(`Packaged ${tideStationCount} tide stations with ${tideDateCount} total dates`);
-      
-      // CURRENT PREDICTIONS: Get all station docs with months available
-      console.log('Fetching current predictions...');
-      const currentStationsSnapshot = await db.collection('current-stations-packed')
-        .where(admin.firestore.FieldPath.documentId(), '!=', 'catalog')
-        .select('monthsAvailable')
-        .get();
-      
-      const currentPredictions: Record<string, Record<string, any>> = {};
-      let currentStationCount = 0;
-      let currentMonthCount = 0;
-      
-      // Process current stations in smaller batches
-      const CURRENT_BATCH_SIZE = 25; // Smaller because we fetch subcollections
-      const stationDocs = currentStationsSnapshot.docs;
-      
-      for (let i = 0; i < stationDocs.length; i += CURRENT_BATCH_SIZE) {
-        const batch = stationDocs.slice(i, i + CURRENT_BATCH_SIZE);
-        
-        for (const stationDoc of batch) {
-          const monthsAvailable = stationDoc.get('monthsAvailable');
-          if (!monthsAvailable || !Array.isArray(monthsAvailable)) continue;
-          
-          currentPredictions[stationDoc.id] = {};
-          
-          // Fetch monthly predictions for this station
-          for (const month of monthsAvailable) {
-            try {
-              const predDoc = await db.collection('current-stations-packed')
-                .doc(stationDoc.id)
-                .collection('predictions')
-                .doc(month)
-                .get();
-              
-              if (predDoc.exists) {
-                const predData = predDoc.data();
-                if (predData && predData.d) {
-                  currentPredictions[stationDoc.id][month] = predData.d;
-                  currentMonthCount++;
-                }
-              }
-            } catch (err) {
-              console.warn(`Error fetching predictions for ${stationDoc.id}/${month}:`, err);
-            }
-          }
-          
-          currentStationCount++;
-        }
-        
-        // Log progress every 50 stations
-        if ((i + CURRENT_BATCH_SIZE) % 50 === 0 || (i + CURRENT_BATCH_SIZE) >= stationDocs.length) {
-          console.log(`Progress: ${Math.min(i + CURRENT_BATCH_SIZE, stationDocs.length)}/${stationDocs.length} current stations processed`);
-        }
-      }
-      
       console.log(`Packaged ${currentStationCount} current stations with ${currentMonthCount} total months`);
       
       const elapsedSec = Math.round((Date.now() - startTime) / 1000);
@@ -3898,7 +3947,7 @@ async function fetchZoneForecast(zoneId: string): Promise<any> {
  * Fetch all marine forecasts for a specific district from marine.weather.gov
  */
 async function fetchAllMarineForecastsForDistrict(districtId: string): Promise<Record<string, any>> {
-  const zonesSnap = await db.collection('marine-forecast-districts').doc(districtId)
+  const zonesSnap = await db.collection('districts').doc(districtId)
     .collection('marine-zones').get();
   const zones: Array<{id: string; name?: string}> = [];
   
@@ -3938,7 +3987,7 @@ async function saveMarineForecastsForDistrict(districtId: string, forecasts: Rec
   
   for (const [zoneId, forecast] of Object.entries(forecasts)) {
     try {
-      await db.collection('marine-forecast-districts').doc(districtId)
+      await db.collection('districts').doc(districtId)
         .collection('marine-forecasts').doc(zoneId).set({
         zoneId: zoneId,
         zoneName: forecast.zoneName || zoneId,
@@ -4012,7 +4061,7 @@ async function getMarineLastUpdateInfo(districtId?: string): Promise<{ timestamp
   let metaDoc;
   
   if (districtId) {
-    metaDoc = await db.collection('marine-forecast-districts').doc(districtId)
+    metaDoc = await db.collection('districts').doc(districtId)
       .collection('system').doc('marine-forecast-meta').get();
   } else {
     // Backward compatibility: check global system collection
@@ -4037,7 +4086,7 @@ async function getMarineLastUpdateInfo(districtId?: string): Promise<{ timestamp
  */
 async function saveMarineLastUpdateInfo(districtId: string | undefined, zonesUpdated: number, totalZones: number, windowHour: number): Promise<void> {
   if (districtId) {
-    await db.collection('marine-forecast-districts').doc(districtId)
+    await db.collection('districts').doc(districtId)
       .collection('system').doc('marine-forecast-meta').set({
       lastUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
       zonesUpdated,

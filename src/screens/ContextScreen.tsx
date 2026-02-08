@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useContextNav } from '../contexts/NavigationContext';
 import StatsContent from '../components/StatsContent';
 import ScratchPadListView from '../components/ScratchPadListView';
+import WaypointManager from '../components/WaypointManager';
 import * as themeService from '../services/themeService';
 
 export default function ContextScreen() {
@@ -42,6 +43,9 @@ export default function ContextScreen() {
       
       case 'scratchpad':
         return <ScratchPadListView />;
+      
+      case 'waypoints':
+        return <WaypointManager />;
       
       default:
         return (

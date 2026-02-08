@@ -60,7 +60,14 @@
       "@react-native-firebase/app",
       "@react-native-firebase/crashlytics",
       "@react-native-firebase/auth",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow XNautical to access your photos to attach to waypoints.",
+          "cameraPermission": "Allow XNautical to use the camera to take photos for waypoints."
+        }
+      ]
     ]
   }
 }
