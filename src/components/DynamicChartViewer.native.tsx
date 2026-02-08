@@ -41,7 +41,6 @@ import {
   formatCableInfo,
   formatDepthInfo,
 } from '../utils/chartRendering';
-import ChartDebugOverlay from './ChartDebugOverlay';
 import { useGPS } from '../hooks/useGPS';
 import { useOverlay } from '../contexts/OverlayContext';
 import { getCompassModeLabel } from '../utils/compassUtils';
@@ -1796,7 +1795,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Debug state
   const [debugInfo, setDebugInfo] = useState<string>('');
   const [showDebug, setShowDebug] = useState(false);
-  const [showChartDebug, setShowChartDebug] = useState(false);
 
   // Debug Map diagnostics - collected on demand
   const [debugDiagnostics, setDebugDiagnostics] = useState<{
@@ -6174,17 +6172,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </ScrollView>
         </View>
       )}
-
-      {/* Chart Debug Overlay - Shows active chart based on zoom, right of lat/long */}
-      <ChartDebugOverlay
-        visible={showChartDebug}
-        currentZoom={currentZoom}
-        centerCoord={centerCoord}
-        mbtilesCharts={mbtilesCharts}
-        tileServerReady={tileServerReady}
-        topOffset={insets.top + 52}
-        leftOffset={12}
-      />
 
       {/* Technical Debug Info Panel */}
       {showDebug && (
