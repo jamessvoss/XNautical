@@ -48,6 +48,7 @@ import {
 } from '../services/buoyService';
 
 // Components
+import BuoyDetailModal from '../components/BuoyDetailModal';
 import WindyMap from '../components/WindyMap';
 import FAAWeatherCamsView from '../components/FAAWeatherCamsView';
 
@@ -339,91 +340,23 @@ export default function WeatherScreen() {
               latitude: buoy.latitude,
               longitude: buoy.longitude,
             }}
-            pinColor="#FF9800"
             onPress={() => handleBuoyPress(buoy)}
-            tracksViewChanges={false}
+            anchor={{ x: 0.5, y: 0.5 }}
+            image={require('../../assets/symbols/Custom Symbols/LiveBuoy-lg.png')}
           />
         ))}
       </MapView>
 
-      {/* Buoy Detail Panel */}
-      {selectedBuoy && (
-        <View style={styles.detailPanel}>
-          <View style={styles.detailHeader}>
-            <View style={styles.buoyIcon}>
-              <Text style={styles.buoyIconText}>📡</Text>
-            </View>
-            <View style={styles.detailTitleContainer}>
-              <Text style={styles.detailTitle} numberOfLines={1}>{selectedBuoy.name}</Text>
-              <Text style={styles.detailSubtitle}>{selectedBuoy.type || 'Weather Buoy'}</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.closeButton}
-              onPress={() => {
-                setSelectedBuoy(null);
-                setBuoyDetail(null);
-              }}
-            >
-              <Text style={styles.closeButtonText}>✕</Text>
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView style={styles.detailScroll} contentContainerStyle={styles.detailScrollContent}>
-            {loadingBuoyDetail ? (
-              <ActivityIndicator size="small" color="#4FC3F7" style={{ marginTop: 20 }} />
-            ) : buoyDetail?.latestObservation ? (
-              <>
-                <View style={styles.buoyDataGrid}>
-                  <View style={styles.buoyDataItem}>
-                    <Text style={styles.buoyDataLabel}>Water Temp</Text>
-                    <Text style={styles.buoyDataValue}>
-                      {formatTemp(buoyDetail.latestObservation.waterTemp)}
-                    </Text>
-                  </View>
-                  <View style={styles.buoyDataItem}>
-                    <Text style={styles.buoyDataLabel}>Air Temp</Text>
-                    <Text style={styles.buoyDataValue}>
-                      {formatTemp(buoyDetail.latestObservation.airTemp)}
-                    </Text>
-                  </View>
-                  <View style={styles.buoyDataItem}>
-                    <Text style={styles.buoyDataLabel}>Wind</Text>
-                    <Text style={styles.buoyDataValue}>
-                      {formatWindSpeed(buoyDetail.latestObservation.windSpeed)}{' '}
-                      {formatWindDirection(buoyDetail.latestObservation.windDirection)}
-                    </Text>
-                  </View>
-                  <View style={styles.buoyDataItem}>
-                    <Text style={styles.buoyDataLabel}>Waves</Text>
-                    <Text style={styles.buoyDataValue}>
-                      {formatWaveHeight(buoyDetail.latestObservation.waveHeight)}
-                    </Text>
-                  </View>
-                  <View style={styles.buoyDataItem}>
-                    <Text style={styles.buoyDataLabel}>Pressure</Text>
-                    <Text style={styles.buoyDataValue}>
-                      {formatPressure(buoyDetail.latestObservation.pressure)}
-                    </Text>
-                  </View>
-                  {buoyDetail.latestObservation.swellHeight && (
-                    <View style={styles.buoyDataItem}>
-                      <Text style={styles.buoyDataLabel}>Swell</Text>
-                      <Text style={styles.buoyDataValue}>
-                        {formatWaveHeight(buoyDetail.latestObservation.swellHeight)}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.updateTime}>
-                  Updated: {formatBuoyTimestamp(buoyDetail.latestObservation.timestamp)}
-                </Text>
-              </>
-            ) : (
-              <Text style={styles.noDataText}>No observation data available</Text>
-            )}
-          </ScrollView>
-        </View>
-      )}
+      {/* Buoy Detail Modal - matches map page */}
+      <BuoyDetailModal
+        visible={selectedBuoy !== null}
+        buoy={buoyDetail}
+        loading={loadingBuoyDetail}
+        onClose={() => {
+          setSelectedBuoy(null);
+          setBuoyDetail(null);
+        }}
+      />
     </View>
   );
 
@@ -443,8 +376,7 @@ export default function WeatherScreen() {
   };
 
   const handleClose = () => {
-    // Navigate back to Charts tab (or whichever was previous)
-    navigation.navigate('Charts' as never);
+    setActiveView('zones');
   };
 
   // Get header title based on active view
@@ -465,12 +397,10 @@ export default function WeatherScreen() {
 
   // Render active view content
   const renderContent = () => {
-    console.log('[WeatherScreen] renderContent called, activeView:', activeView);
     switch (activeView) {
       case 'zones':
         return renderZonesView();
       case 'wind':
-        console.log('[WeatherScreen] Rendering WindyMap component');
         return <WindyMap visible={true} embedded={true} />;
       case 'cams':
         return <FAAWeatherCamsView visible={true} embedded={true} />;
@@ -708,18 +638,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  buoyIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 152, 0, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  buoyIconText: {
-    fontSize: 20,
-  },
   detailTitleContainer: {
     flex: 1,
   },
@@ -781,36 +699,11 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.7)',
     lineHeight: 20,
   },
-  updateTime: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.4)',
-    marginTop: 8,
-  },
   noDataText: {
     fontSize: 14,
     color: 'rgba(255, 255, 255, 0.5)',
     fontStyle: 'italic',
     marginTop: 20,
     textAlign: 'center',
-  },
-  buoyDataGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginHorizontal: -8,
-  },
-  buoyDataItem: {
-    width: '50%',
-    paddingHorizontal: 8,
-    marginBottom: 12,
-  },
-  buoyDataLabel: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginBottom: 2,
-  },
-  buoyDataValue: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#fff',
   },
 });

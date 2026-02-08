@@ -53,16 +53,42 @@ service cloud.firestore {
       allow write: if false; // Only admin/Cloud Functions can write
     }
     
-    // Marine weather zones - read-only for all users (like tidal-stations)
+    // Marine weather zones (LEGACY - flat collection, deprecated)
+    // Use marine-forecast-districts instead
     match /marine-zones/{zoneId} {
       allow read: if true; // Public read access
       allow write: if false; // Only admin/Cloud Functions can write
     }
     
-    // Marine forecasts - read-only for all users
+    // Marine forecasts (LEGACY - flat collection, deprecated)
+    // Use marine-forecast-districts instead
     match /marine-forecasts/{zoneId} {
       allow read: if true; // Public read access
       allow write: if false; // Only admin/Cloud Functions can write
+    }
+    
+    // Marine forecast districts - read-only for all users
+    match /marine-forecast-districts/{districtId} {
+      allow read: if true; // Public read access for district info
+      allow write: if false; // Only admin/Cloud Functions can write
+      
+      // Marine zones within districts
+      match /marine-zones/{zoneId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
+      
+      // Marine forecasts within districts
+      match /marine-forecasts/{zoneId} {
+        allow read: if true; // Public read access
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
+      
+      // System metadata within districts
+      match /system/{docId} {
+        allow read: if true; // Public read access for metadata
+        allow write: if false; // Only admin/Cloud Functions can write
+      }
     }
     
     // Live buoy data - read-only for all users
