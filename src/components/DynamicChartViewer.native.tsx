@@ -250,7 +250,7 @@ const SYMBOL_FEATURES: SymbolFeatureConfig[] = [
   { id: 'tideRips', label: 'Tide Rips', sizeKey: 'tideRipsSymbolSizeScale', haloKey: 'tideRipsSymbolHaloScale', opacityKey: 'tideRipsSymbolOpacityScale', color: '#00CED1', hasHalo: true },
   { id: 'tideStations', label: 'Tide Stations', sizeKey: 'tideStationSymbolSizeScale', haloKey: 'tideStationSymbolHaloScale', opacityKey: 'tideStationSymbolOpacityScale', color: '#0066CC', hasHalo: true, hasText: true, textSizeKey: 'tideStationTextSizeScale', textHaloKey: 'tideStationTextHaloScale', textOpacityKey: 'tideStationTextOpacityScale' },
   { id: 'currentStations', label: 'Current Stations', sizeKey: 'currentStationSymbolSizeScale', haloKey: 'currentStationSymbolHaloScale', opacityKey: 'currentStationSymbolOpacityScale', color: '#CC0066', hasHalo: true, hasText: true, textSizeKey: 'currentStationTextSizeScale', textHaloKey: 'currentStationTextHaloScale', textOpacityKey: 'currentStationTextOpacityScale' },
-  { id: 'liveBuoys', label: 'Live Buoys', sizeKey: 'liveBuoySymbolSizeScale', haloKey: 'liveBuoySymbolHaloScale', opacityKey: 'liveBuoySymbolOpacityScale', color: '#FF8C00', hasHalo: true },
+  { id: 'liveBuoys', label: 'Live Buoys', sizeKey: 'liveBuoySymbolSizeScale', haloKey: 'liveBuoySymbolHaloScale', opacityKey: 'liveBuoySymbolOpacityScale', color: '#FF8C00', hasHalo: true, hasText: true, textSizeKey: 'liveBuoyTextSizeScale', textHaloKey: 'liveBuoyTextHaloScale', textOpacityKey: 'liveBuoyTextOpacityScale' },
 ];
 
 // Feature lookup optimization constants (moved outside component for performance)
@@ -734,6 +734,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     liveBuoySymbolSizeScale: 1.0,
     liveBuoySymbolHaloScale: 0.05,
     liveBuoySymbolOpacityScale: 1.0,
+    // Live buoy text
+    liveBuoyTextSizeScale: 1.0,
+    liveBuoyTextHaloScale: 0.05,   // 5% default
+    liveBuoyTextOpacityScale: 1.0,
     // Tide station text
     tideStationTextSizeScale: 1.0,
     tideStationTextHaloScale: 0.05,  // 5% default, max 25%
@@ -1358,6 +1362,26 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const scaledLiveBuoySymbolOpacity = useMemo(() => 
     Math.min(1, Math.max(0, displaySettings.liveBuoySymbolOpacityScale ?? 1.0)),
     [displaySettings.liveBuoySymbolOpacityScale]
+  );
+
+  // Live buoy text scaling
+  const scaledLiveBuoyTextSize = useMemo(() => {
+    const baseSize = 12 * (displaySettings.liveBuoyTextSizeScale ?? 1.0);
+    return [
+      'interpolate', ['linear'], ['zoom'],
+      8, baseSize * 0.7,   // 70% at z8
+      12, baseSize          // 100% at z12
+    ];
+  }, [displaySettings.liveBuoyTextSizeScale]);
+
+  const scaledLiveBuoyTextHalo = useMemo(() => 
+    15 * (displaySettings.liveBuoyTextHaloScale ?? 0.05),
+    [displaySettings.liveBuoyTextHaloScale]
+  );
+
+  const scaledLiveBuoyTextOpacity = useMemo(() => 
+    Math.min(1, Math.max(0, displaySettings.liveBuoyTextOpacityScale ?? 1.0)),
+    [displaySettings.liveBuoyTextOpacityScale]
   );
 
   // Note: Symbol halos disabled - will implement with white symbol versions later
@@ -3389,7 +3413,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             if (!seenSpecialIds.has(key)) {
               seenSpecialIds.add(key);
               specialFeatures.push({
-                type: 'Live Buoy',
+                type: 'Wx Buoy',
                 properties: {
                   ...props,
                   _specialType: 'liveBuoy',
@@ -5651,11 +5675,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 style={{
                   textField: ['get', 'name'],
                   textFont: ['Noto Sans Regular'],
-                  textSize: 12,
+                  textSize: scaledLiveBuoyTextSize,
                   textColor: '#FF8C00',
                   textHaloColor: '#FFFFFF',
-                  textHaloWidth: 2,
-                  textOpacity: 1.0,
+                  textHaloWidth: scaledLiveBuoyTextHalo,
+                  textOpacity: scaledLiveBuoyTextOpacity,
                   textOffset: [0, 2],
                   textAnchor: 'top',
                   textAllowOverlap: false,
@@ -6126,7 +6150,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 {/* Weather Section */}
                 <Text style={styles.layerSectionHeader}>Weather</Text>
                 <TouchableOpacity style={[styles.layerToggleRow, showLiveBuoys && styles.layerToggleRowActive]} onPress={() => toggleLayer('liveBuoys')}>
-                  <Text style={styles.layerToggleText}>Live Buoys</Text>
+                  <Text style={styles.layerToggleText}>Wx Buoys</Text>
                 </TouchableOpacity>
 
                 {/* Waypoints Section */}

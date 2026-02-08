@@ -14,6 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
+      "deploymentTarget": "15.5",
       "bundleIdentifier": "com.xnautical.app",
       "googleServicesFile": "./GoogleService-Info.plist",
       "config": {
@@ -67,7 +68,9 @@
           "photosPermission": "Allow XNautical to access your photos to attach to waypoints.",
           "cameraPermission": "Allow XNautical to use the camera to take photos for waypoints."
         }
-      ]
+      ],
+      "./plugins/local-tile-server/withLocalTileServer.js",
+      "./plugins/gnss-satellite-tracker/withGnssSatellite.js"
     ]
   }
 }

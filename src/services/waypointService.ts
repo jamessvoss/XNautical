@@ -91,6 +91,7 @@ function getWaypointDoc(userId: string, waypointId: string) {
 export function subscribeToWaypoints(
   userId: string,
   callback: (waypoints: Waypoint[]) => void,
+  onError?: (error: any) => void,
 ): () => void {
   if (!firestoreDb || !firestoreFns) {
     console.warn('[WaypointService] Firestore not available, returning empty');
@@ -127,6 +128,9 @@ export function subscribeToWaypoints(
     },
     (error: any) => {
       console.error('[WaypointService] Snapshot error:', error);
+      if (onError) {
+        onError(error);
+      }
     },
   );
 

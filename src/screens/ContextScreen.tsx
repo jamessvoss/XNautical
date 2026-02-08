@@ -12,6 +12,7 @@ import { useContextNav } from '../contexts/NavigationContext';
 import StatsContent from '../components/StatsContent';
 import ScratchPadListView from '../components/ScratchPadListView';
 import WaypointManager from '../components/WaypointManager';
+import GPSSensorsView from '../components/GPSSensorsView';
 import * as themeService from '../services/themeService';
 
 export default function ContextScreen() {
@@ -46,6 +47,9 @@ export default function ContextScreen() {
       
       case 'waypoints':
         return <WaypointManager />;
+      
+      case 'gpssensors':
+        return <GPSSensorsView />;
       
       default:
         return (

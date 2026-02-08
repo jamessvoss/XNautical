@@ -15,10 +15,12 @@ import { getDefaultColor } from '../components/WaypointIcons';
 
 // Auth helpers
 let getCurrentUser: (() => any) | null = null;
+let waitForAuth: (() => Promise<any>) | null = null;
 if (Platform.OS !== 'web') {
   try {
     const firebase = require('../config/firebase');
     getCurrentUser = firebase.getCurrentUser;
+    waitForAuth = firebase.waitForAuth;
   } catch (e) {
     console.log('[WaypointContext] Firebase config not available');
   }
@@ -89,48 +91,80 @@ export function WaypointProvider({ children }: WaypointProviderProps) {
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const userIdRef = useRef<string | null>(null);
 
-  // Set up Firestore listener
+  // Set up Firestore listener (waits for auth, retries on permission-denied)
   useEffect(() => {
     if (Platform.OS === 'web') {
       setLoading(false);
       return;
     }
 
-    const setupListener = () => {
-      const user = getCurrentUser?.();
-      if (!user?.uid) {
-        console.log('[WaypointContext] No authenticated user, will retry...');
-        setLoading(false);
-        return;
-      }
+    let cancelled = false;
+    let retryCount = 0;
+    const MAX_RETRIES = 3;
 
-      // Already listening for this user
-      if (userIdRef.current === user.uid && unsubscribeRef.current) {
-        return;
-      }
+    const setupListener = async () => {
+      try {
+        // Wait for auth to be fully ready instead of a fixed timeout
+        const user = waitForAuth ? await waitForAuth() : getCurrentUser?.();
 
-      // Clean up previous listener
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
-      }
+        if (cancelled) return;
 
-      userIdRef.current = user.uid;
-      console.log(`[WaypointContext] Setting up listener for user: ${user.uid}`);
-
-      unsubscribeRef.current = waypointService.subscribeToWaypoints(
-        user.uid,
-        (updatedWaypoints) => {
-          setWaypoints(updatedWaypoints);
+        if (!user?.uid) {
+          console.log('[WaypointContext] No authenticated user after waiting for auth');
           setLoading(false);
-        },
-      );
+          return;
+        }
+
+        // Already listening for this user
+        if (userIdRef.current === user.uid && unsubscribeRef.current) {
+          return;
+        }
+
+        // Clean up previous listener
+        if (unsubscribeRef.current) {
+          unsubscribeRef.current();
+        }
+
+        userIdRef.current = user.uid;
+        console.log(`[WaypointContext] Setting up listener for user: ${user.uid}`);
+
+        unsubscribeRef.current = waypointService.subscribeToWaypoints(
+          user.uid,
+          (updatedWaypoints) => {
+            setWaypoints(updatedWaypoints);
+            setLoading(false);
+            retryCount = 0; // Reset retry count on success
+          },
+          (error: any) => {
+            // Retry on permission-denied (auth token may not be ready yet)
+            if (cancelled) return;
+            const errorCode = error?.code || error?.message || '';
+            const isPermissionDenied = String(errorCode).includes('permission-denied');
+
+            if (isPermissionDenied && retryCount < MAX_RETRIES) {
+              retryCount++;
+              console.log(`[WaypointContext] Permission denied, retrying (${retryCount}/${MAX_RETRIES})...`);
+              if (unsubscribeRef.current) {
+                unsubscribeRef.current();
+                unsubscribeRef.current = null;
+              }
+              setTimeout(setupListener, 2000 * retryCount);
+            } else if (isPermissionDenied) {
+              console.error(`[WaypointContext] Permission denied after ${MAX_RETRIES} retries, giving up`);
+              setLoading(false);
+            }
+          },
+        );
+      } catch (e) {
+        console.error('[WaypointContext] Error setting up listener:', e);
+        setLoading(false);
+      }
     };
 
-    // Small delay to ensure auth state is ready
-    const timer = setTimeout(setupListener, 500);
+    setupListener();
 
     return () => {
-      clearTimeout(timer);
+      cancelled = true;
       if (unsubscribeRef.current) {
         unsubscribeRef.current();
         unsubscribeRef.current = null;

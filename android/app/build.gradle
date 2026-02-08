@@ -187,8 +187,8 @@ dependencies {
     } else {
         implementation jscFlavor
     }
-    
-    // NanoHTTPD for local tile server
+
+    // NanoHTTPD for local tile server (injected by withLocalTileServer plugin)
     implementation 'org.nanohttpd:nanohttpd:2.3.1'
 }
 

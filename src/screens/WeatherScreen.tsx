@@ -19,9 +19,10 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapView, { Marker, Polygon, Region } from 'react-native-maps';
-import { X, Maximize2, Minimize2, RotateCcw } from 'lucide-react-native';
+
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
+import NetInfo from '@react-native-community/netinfo';
 
 // Firebase
 import { waitForAuth } from '../config/firebase';
@@ -82,7 +83,15 @@ export default function WeatherScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const [activeView, setActiveView] = useState<WeatherView>('zones');
-  const [isFullscreen, setIsFullscreen] = useState(true);
+  const [isConnected, setIsConnected] = useState<boolean>(true);
+
+  // Subscribe to network connectivity changes
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      setIsConnected(state.isConnected ?? false);
+    });
+    return () => unsubscribe();
+  }, []);
   
   // TODO: Integrate with region selector to allow users to choose district
   // For now, default to Alaska (17cgd) where marine zone data exists
@@ -361,25 +370,6 @@ export default function WeatherScreen() {
     </View>
   );
 
-  const handleRefresh = () => {
-    console.log('[WeatherScreen] Refresh requested for view:', activeView);
-    switch (activeView) {
-      case 'zones':
-        loadZones();
-        break;
-      case 'buoys':
-        loadBuoys();
-        break;
-      default:
-        // Wind and Cams don't need refresh
-        break;
-    }
-  };
-
-  const handleClose = () => {
-    setActiveView('zones');
-  };
-
   // Get header title based on active view
   const getHeaderTitle = () => {
     switch (activeView) {
@@ -417,30 +407,7 @@ export default function WeatherScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>{getHeaderTitle()}</Text>
-        <View style={styles.headerButtons}>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={handleRefresh}
-          >
-            <RotateCcw size={20} color="#FFF" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={() => setIsFullscreen(!isFullscreen)}
-          >
-            {isFullscreen ? (
-              <Minimize2 size={20} color="#FFF" />
-            ) : (
-              <Maximize2 size={20} color="#FFF" />
-            )}
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.headerButton}
-            onPress={handleClose}
-          >
-            <X size={20} color="#FFF" />
-          </TouchableOpacity>
-        </View>
+        <View style={styles.headerButtons} />
       </View>
       
       <View style={styles.content}>
@@ -455,8 +422,8 @@ export default function WeatherScreen() {
             style={[styles.sidebarButton, activeView === 'zones' && styles.sidebarButtonActive]}
             onPress={() => setActiveView('zones')}
           >
-            <Text style={styles.sidebarIcon}>🌊</Text>
-            <Text style={styles.sidebarLabel}>Zones</Text>
+            <MaterialCommunityIcons name="weather-cloudy" size={22} color="#FFFFFF" />
+            <Text style={styles.sidebarLabel}>Wx Zones</Text>
           </TouchableOpacity>
           
           <View style={styles.sidebarDivider} />
@@ -466,7 +433,7 @@ export default function WeatherScreen() {
             onPress={() => setActiveView('wind')}
           >
             <Text style={styles.sidebarIcon}>💨</Text>
-            <Text style={styles.sidebarLabel}>Wind</Text>
+            <Text style={styles.sidebarLabel}>Wind & Wave</Text>
           </TouchableOpacity>
           
           <View style={styles.sidebarDivider} />
@@ -486,9 +453,18 @@ export default function WeatherScreen() {
             onPress={() => setActiveView('buoys')}
           >
             <MaterialCommunityIcons name="radio-tower" size={22} color="#FFFFFF" />
-            <Text style={styles.sidebarLabel}>Buoys</Text>
+            <Text style={styles.sidebarLabel}>Wx Buoys</Text>
           </TouchableOpacity>
         </View>
+
+        {/* Offline overlay */}
+        {!isConnected && (
+          <View style={styles.offlineOverlay}>
+            <MaterialCommunityIcons name="wifi-off" size={64} color="rgba(255, 255, 255, 0.5)" />
+            <Text style={styles.offlineTitle}>No Data Connection</Text>
+            <Text style={styles.offlineSubtitle}>Weather features require an internet connection</Text>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -523,6 +499,24 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  offlineOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+  },
+  offlineTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginTop: 16,
+  },
+  offlineSubtitle: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginTop: 8,
   },
   mainContent: {
     flex: 1,

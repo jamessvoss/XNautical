@@ -35,6 +35,7 @@ const VIEWS: ViewItem[] = [
   { id: 'stats', name: 'Stats', icon: 'stats-chart' },
   { id: 'scratchpad', name: 'Scratch Pads', icon: 'document-text' },
   { id: 'waypoints', name: 'Waypoints', icon: 'location-sharp' },
+  { id: 'gpssensors', name: 'GPS & Sensors', icon: 'navigate-circle' },
 ];
 
 // Panel width: 25% of screen, but at least 220px for usability

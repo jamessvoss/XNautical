@@ -8,7 +8,7 @@
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 
 // Available views that can be shown in the context tab
-export type ContextView = 'stats' | 'scratchpad' | 'waypoints';
+export type ContextView = 'stats' | 'scratchpad' | 'waypoints' | 'gpssensors';
 
 interface NavigationContextState {
   /** Current name displayed on the context tab */
@@ -34,6 +34,7 @@ const VIEW_NAMES: Record<ContextView, string> = {
   stats: 'Stats',
   scratchpad: 'Scratch Pad',
   waypoints: 'Waypoints',
+  gpssensors: 'GPS & Sensors',
 };
 
 interface NavigationProviderProps {

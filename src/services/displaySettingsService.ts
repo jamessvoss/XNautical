@@ -124,6 +124,11 @@ export interface DisplaySettings {
   currentStationSymbolOpacityScale: number;
   liveBuoySymbolOpacityScale: number;
   
+  // Live buoy text settings
+  liveBuoyTextSizeScale: number;
+  liveBuoyTextHaloScale: number;
+  liveBuoyTextOpacityScale: number;
+  
   // Tide station text settings
   tideStationTextSizeScale: number;
   tideStationTextHaloScale: number;
@@ -245,6 +250,10 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   tideStationSymbolOpacityScale: 1.0,
   currentStationSymbolOpacityScale: 1.0,
   liveBuoySymbolOpacityScale: 1.0,
+  // Live buoy text
+  liveBuoyTextSizeScale: 1.0,
+  liveBuoyTextHaloScale: 0.05,   // 5% default
+  liveBuoyTextOpacityScale: 1.0,
   // Tide station text
   tideStationTextSizeScale: 1.0,
   tideStationTextHaloScale: 0.1,   // 10% default, max 25%

@@ -30,7 +30,7 @@ export default function BuoyDetailModal({ visible, buoy, loading, onClose }: Pro
           {/* Header - title + timestamp + close */}
           <View style={styles.header}>
             <View style={styles.headerText}>
-              <Text style={styles.title}>{buoy?.name || 'Live Buoy'}</Text>
+              <Text style={styles.title}>{buoy?.name || 'Wx Buoy'}</Text>
               {buoy?.lastUpdated && (
                 <Text style={styles.timestamp}>Last Updated: {formatBuoyTimestamp(buoy.lastUpdated)}</Text>
               )}
