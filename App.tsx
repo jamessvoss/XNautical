@@ -20,7 +20,6 @@ console.log('[App.tsx] Context imports complete');
 
 // Only import Firebase-based components on native platforms
 let LoginScreen: React.ComponentType<{ onLoginSuccess: () => void }> | null = null;
-let MapSelectionScreen: React.ComponentType | null = null;
 let DynamicChartViewer: React.ComponentType<{ onNavigateToDownloads?: () => void }> | null = null;
 let WeatherScreen: React.ComponentType | null = null;
 let MoreScreen: React.ComponentType | null = null;
@@ -48,8 +47,6 @@ if (Platform.OS !== 'web') {
   console.log('[App.tsx] Loading native screens...');
   LoginScreen = require('./src/screens/LoginScreen').default;
   console.log('[App.tsx] LoginScreen loaded');
-  MapSelectionScreen = require('./src/screens/MapSelectionScreen').default;
-  console.log('[App.tsx] MapSelectionScreen loaded');
   DynamicChartViewer = require('./src/components/DynamicChartViewer.native').default;
   console.log('[App.tsx] DynamicChartViewer loaded');
   WeatherScreen = require('./src/screens/WeatherScreen').default;
@@ -191,8 +188,6 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
     switch (name) {
       case 'Viewer':
         return focused ? 'map' : 'map-outline';
-      case 'Charts':
-        return focused ? 'documents' : 'documents-outline';
       case 'Weather':
         return focused ? 'rainy' : 'rainy-outline';
       case 'Context':
@@ -214,12 +209,6 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
 }
 
 // Wrapper components to handle navigation props
-function ChartsTab() {
-  console.log('[ChartsTab] Rendering...');
-  if (!MapSelectionScreen) return null;
-  return <MapSelectionScreen />;
-}
-
 function ViewerTab() {
   console.log('[ViewerTab] Rendering...');
   if (!DynamicChartViewer) return null;
@@ -448,11 +437,6 @@ function AppNavigator() {
           name="Viewer" 
           component={ViewerTab}
           options={{ tabBarLabel: 'Maps' }}
-        />
-        <Tab.Screen 
-          name="Charts" 
-          component={ChartsTab}
-          options={{ tabBarLabel: 'Documents' }}
         />
         <Tab.Screen 
           name="Weather" 
