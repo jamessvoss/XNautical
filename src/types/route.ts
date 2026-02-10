@@ -46,6 +46,17 @@ export interface RoutePoint {
   notes?: string;
 }
 
+/** Performance calculation method */
+export type PerformanceMethod = 'speed' | 'rpm' | 'boat-profile';
+
+/** Boat performance profile (for future use with saved boat data) */
+export interface BoatProfile {
+  id: string;
+  name: string;
+  fuelCapacity: number; // gallons
+  fuelBurnRate: number; // gallons per hour at cruising
+}
+
 /** Navigation route with multiple points */
 export interface Route {
   /** Unique route ID (Firestore document ID or generated UUID) */
@@ -64,6 +75,21 @@ export interface Route {
   notes: string;
   /** Storage type preference */
   storageType: RouteStorageType;
+  
+  // Performance settings for calculations
+  /** Performance calculation method */
+  performanceMethod: PerformanceMethod;
+  /** Cruising speed in knots (used when method is 'speed') */
+  cruisingSpeed: number;
+  /** RPM setting (used when method is 'rpm', requires boat profile) */
+  cruisingRPM: number | null;
+  /** Boat profile reference (used when method is 'boat-profile') */
+  boatProfileId: string | null;
+  /** Fuel consumption rate in gallons per hour */
+  fuelBurnRate: number;
+  /** Estimated fuel consumption for route in gallons */
+  estimatedFuel: number;
+  
   /** ISO timestamp of creation */
   createdAt: string;
   /** ISO timestamp of last edit */
@@ -116,3 +142,4 @@ export const DEFAULT_ROUTE_COLOR = '#FF6B35'; // Orange
 export const DEFAULT_ARRIVAL_RADIUS = 0.1; // nautical miles (about 600 feet)
 export const DEFAULT_CRUISING_SPEED = 8; // knots (typical displacement cruising boat)
 export const DEFAULT_ROUTE_LINE_WIDTH = 3; // pixels
+export const DEFAULT_FUEL_BURN_RATE = 2.5; // gallons per hour (typical small cruiser)

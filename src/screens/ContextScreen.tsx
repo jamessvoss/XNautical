@@ -13,6 +13,7 @@ import StatsContent from '../components/StatsContent';
 import ScratchPadListView from '../components/ScratchPadListView';
 import WaypointManager from '../components/WaypointManager';
 import GPSSensorsView from '../components/GPSSensorsView';
+import BoatPerformanceScreen from './BoatPerformanceScreen';
 import * as themeService from '../services/themeService';
 
 export default function ContextScreen() {
@@ -50,6 +51,9 @@ export default function ContextScreen() {
       
       case 'gpssensors':
         return <GPSSensorsView />;
+      
+      case 'boatperformance':
+        return <BoatPerformanceScreen />;
       
       default:
         return (

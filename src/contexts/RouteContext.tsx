@@ -53,6 +53,8 @@ interface RouteContextType {
   startNewRoute: (name: string) => void;
   /** Load an existing route for editing */
   loadRoute: (route: Route) => void;
+  /** Update active route metadata (name, settings, etc.) */
+  updateActiveRouteMetadata: (updates: Partial<Route>) => void;
   /** Add a point to the active route */
   addPointToActiveRoute: (position: Position, options?: { name?: string; waypointRef?: string }) => void;
   /** Remove a point from the active route */
@@ -101,6 +103,7 @@ const RouteContext = createContext<RouteContextType>({
   activeRoute: null,
   startNewRoute: () => {},
   loadRoute: () => {},
+  updateActiveRouteMetadata: () => {},
   addPointToActiveRoute: () => {},
   removePointFromActiveRoute: () => {},
   updatePointInActiveRoute: () => {},
@@ -345,6 +348,12 @@ export function RouteProvider({ children }: RouteProviderProps) {
       storageType: 'cloud', // Default to cloud
       estimatedDuration: null,
       totalDistance: 0,
+      performanceMethod: 'speed',
+      cruisingSpeed: DEFAULT_CRUISING_SPEED,
+      cruisingRPM: null,
+      boatProfileId: null,
+      fuelBurnRate: 2.5, // Default gallons per hour
+      estimatedFuel: 0,
     }, cruisingSpeedRef.current);
 
     setActiveRoute(newRoute);
@@ -356,6 +365,30 @@ export function RouteProvider({ children }: RouteProviderProps) {
     setActiveRoute(route);
     console.log(`[RouteContext] Loaded route for editing: ${route.id}`);
   }, []);
+
+  // Update active route metadata
+  const updateActiveRouteMetadata = useCallback((updates: Partial<Route>) => {
+    if (!activeRoute) return;
+    
+    const updatedRoute = {
+      ...activeRoute,
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
+    
+    // Recalculate if performance settings changed
+    if (updates.cruisingSpeed || updates.fuelBurnRate) {
+      const speed = updates.cruisingSpeed || activeRoute.cruisingSpeed;
+      const fuelRate = updates.fuelBurnRate || activeRoute.fuelBurnRate;
+      const duration = (activeRoute.totalDistance / speed) * 60; // hours to minutes
+      const fuel = (duration / 60) * fuelRate;
+      
+      updatedRoute.estimatedDuration = duration;
+      updatedRoute.estimatedFuel = fuel;
+    }
+    
+    setActiveRoute(updatedRoute);
+  }, [activeRoute]);
 
   // Add a point to the active route
   const addPointToActiveRoute = useCallback((
@@ -560,6 +593,7 @@ export function RouteProvider({ children }: RouteProviderProps) {
     activeRoute,
     startNewRoute,
     loadRoute,
+    updateActiveRouteMetadata,
     addPointToActiveRoute,
     removePointFromActiveRoute,
     updatePointInActiveRoute,

@@ -1,15 +1,8 @@
 /**
  * RouteEditor Component
  * 
- * Horizontal scrollable panel showing route points with edit capabilities.
- * Inspired by Foreflight's FPL Editor but adapted for nautical use.
- * 
- * Features:
- * - Horizontal scrollable list of route points (bubbles)
- * - Tap point for menu (Edit, Remove, Insert, Show on Map)
- * - Drag-and-drop to reorder points (future)
- * - Show leg distance and bearing between points
- * - Total route statistics at bottom
+ * Foreflight-style flight plan editor adapted for nautical use.
+ * Shows route name, performance settings, route points, and statistics.
  */
 
 import React, { useState, useCallback } from 'react';
@@ -25,8 +18,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRoutes } from '../contexts/RouteContext';
-import { formatDistance, formatBearing, formatDuration } from '../services/routeService';
-import type { RoutePoint } from '../types/route';
+import { formatDistance, formatBearing, formatDuration, formatETA, formatFuel, calculateFuelConsumption } from '../services/routeService';
+import { recalculateRoute } from '../utils/routeCalculations';
+import type { RoutePoint, PerformanceMethod } from '../types/route';
 
 interface RouteEditorProps {
   visible: boolean;
@@ -38,14 +32,20 @@ export default function RouteEditor({ visible, onClose }: RouteEditorProps) {
     activeRoute,
     removePointFromActiveRoute,
     updatePointInActiveRoute,
+    updateActiveRouteMetadata,
     saveActiveRoute,
     clearActiveRoute,
   } = useRoutes();
 
   const [selectedPoint, setSelectedPoint] = useState<RoutePoint | null>(null);
   const [showPointMenu, setShowPointMenu] = useState(false);
-  const [editingName, setEditingName] = useState(false);
-  const [nameInput, setNameInput] = useState('');
+  const [editingRouteName, setEditingRouteName] = useState(false);
+  const [routeNameInput, setRouteNameInput] = useState('');
+  const [editingPointName, setEditingPointName] = useState(false);
+  const [pointNameInput, setPointNameInput] = useState('');
+  const [editingCoordinate, setEditingCoordinate] = useState(false);
+  const [latInput, setLatInput] = useState('');
+  const [lonInput, setLonInput] = useState('');
 
   // Handle point tap - show menu
   const handlePointPress = useCallback((point: RoutePoint) => {
@@ -59,13 +59,27 @@ export default function RouteEditor({ visible, onClose }: RouteEditorProps) {
     setSelectedPoint(null);
   }, []);
 
+  // Edit route name
+  const handleEditRouteName = useCallback(() => {
+    if (!activeRoute) return;
+    setRouteNameInput(activeRoute.name);
+    setEditingRouteName(true);
+  }, [activeRoute]);
+
+  // Save route name
+  const handleSaveRouteName = useCallback(() => {
+    if (!activeRoute) return;
+    updateActiveRouteMetadata({ name: routeNameInput });
+    setEditingRouteName(false);
+  }, [activeRoute, routeNameInput, updateActiveRouteMetadata]);
+
   // Remove point
   const handleRemovePoint = useCallback(() => {
     if (!selectedPoint) return;
     
     Alert.alert(
       'Remove Point',
-      `Remove ${selectedPoint.name || 'this point'} from route?`,
+      `Remove ${selectedPoint.name} from route?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -81,20 +95,54 @@ export default function RouteEditor({ visible, onClose }: RouteEditorProps) {
   }, [selectedPoint, removePointFromActiveRoute, closePointMenu]);
 
   // Edit point name
-  const handleEditName = useCallback(() => {
+  const handleEditPointName = useCallback(() => {
     if (!selectedPoint) return;
-    setNameInput(selectedPoint.name || '');
-    setEditingName(true);
+    setPointNameInput(selectedPoint.name || '');
+    setEditingPointName(true);
     setShowPointMenu(false);
   }, [selectedPoint]);
 
   // Save point name
-  const handleSaveName = useCallback(() => {
+  const handleSavePointName = useCallback(() => {
     if (!selectedPoint) return;
-    updatePointInActiveRoute(selectedPoint.id, { name: nameInput });
-    setEditingName(false);
+    updatePointInActiveRoute(selectedPoint.id, { name: pointNameInput });
+    setEditingPointName(false);
     setSelectedPoint(null);
-  }, [selectedPoint, nameInput, updatePointInActiveRoute]);
+  }, [selectedPoint, pointNameInput, updatePointInActiveRoute]);
+
+  // Edit coordinate
+  const handleEditCoordinate = useCallback(() => {
+    if (!selectedPoint) return;
+    setLatInput(selectedPoint.position.latitude.toFixed(6));
+    setLonInput(selectedPoint.position.longitude.toFixed(6));
+    setEditingCoordinate(true);
+    setShowPointMenu(false);
+  }, [selectedPoint]);
+
+  // Save coordinate
+  const handleSaveCoordinate = useCallback(() => {
+    if (!selectedPoint) return;
+    
+    const lat = parseFloat(latInput);
+    const lon = parseFloat(lonInput);
+    
+    if (isNaN(lat) || lat < -90 || lat > 90) {
+      Alert.alert('Error', 'Invalid latitude. Must be between -90 and 90.');
+      return;
+    }
+    
+    if (isNaN(lon) || lon < -180 || lon > 180) {
+      Alert.alert('Error', 'Invalid longitude. Must be between -180 and 180.');
+      return;
+    }
+    
+    updatePointInActiveRoute(selectedPoint.id, {
+      position: { latitude: lat, longitude: lon }
+    });
+    
+    setEditingCoordinate(false);
+    setSelectedPoint(null);
+  }, [selectedPoint, latInput, lonInput, updatePointInActiveRoute]);
 
   // Save route
   const handleSaveRoute = useCallback(async () => {
@@ -132,14 +180,37 @@ export default function RouteEditor({ visible, onClose }: RouteEditorProps) {
 
   const hasPoints = activeRoute.routePoints.length > 0;
   const canSave = activeRoute.routePoints.length >= 2;
+  
+  // Calculate ETA
+  const now = new Date();
+  const eta = activeRoute.estimatedDuration 
+    ? new Date(now.getTime() + activeRoute.estimatedDuration * 60000)
+    : null;
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.title}>{activeRoute.name}</Text>
-        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-          <Ionicons name="close" size={24} color="#fff" />
+      {/* Header with Route Name */}
+      <TouchableOpacity style={styles.header} onPress={handleEditRouteName}>
+        <Text style={styles.routeNameLabel}>Route</Text>
+        <Text style={styles.routeName}>{activeRoute.name}</Text>
+        <Ionicons name="pencil" size={16} color="rgba(255,255,255,0.5)" />
+      </TouchableOpacity>
+
+      {/* Performance Settings Row */}
+      <View style={styles.performanceRow}>
+        <TouchableOpacity style={styles.perfBox}>
+          <Text style={styles.perfLabel}>Boat</Text>
+          <Text style={styles.perfValue}>Default</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity style={styles.perfBox}>
+          <Text style={styles.perfLabel}>RPM</Text>
+          <Text style={styles.perfValue}>--</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity style={styles.perfBox}>
+          <Text style={styles.perfLabel}>Speed</Text>
+          <Text style={styles.perfValue}>{activeRoute.cruisingSpeed} kts</Text>
         </TouchableOpacity>
       </View>
 
@@ -152,7 +223,7 @@ export default function RouteEditor({ visible, onClose }: RouteEditorProps) {
           showsHorizontalScrollIndicator={false}
         >
           {activeRoute.routePoints.map((point, index) => (
-            <View key={point.id} style={styles.pointContainer}>
+            <React.Fragment key={point.id}>
               {/* Route Point Bubble */}
               <TouchableOpacity
                 style={[
@@ -161,97 +232,93 @@ export default function RouteEditor({ visible, onClose }: RouteEditorProps) {
                 ]}
                 onPress={() => handlePointPress(point)}
               >
-                <View style={styles.pointNumber}>
-                  <Text style={styles.pointNumberText}>{index + 1}</Text>
-                </View>
-                <View style={styles.pointInfo}>
-                  <Text style={styles.pointName} numberOfLines={1}>
-                    {point.name || `Point ${index + 1}`}
-                  </Text>
-                  <Text style={styles.pointCoords} numberOfLines={1}>
-                    {point.position.latitude.toFixed(4)}°, {point.position.longitude.toFixed(4)}°
-                  </Text>
-                </View>
-                {point.waypointRef && (
-                  <Ionicons name="location" size={16} color="#4CAF50" style={styles.waypointIcon} />
-                )}
+                <Text style={styles.pointText}>{point.name}</Text>
               </TouchableOpacity>
-
-              {/* Leg Info (if not first point) */}
-              {index > 0 && point.legDistance !== null && point.legBearing !== null && (
-                <View style={styles.legInfo}>
-                  <Text style={styles.legDistance}>
-                    {formatDistance(point.legDistance, 1)}
-                  </Text>
-                  <Text style={styles.legBearing}>
-                    {formatBearing(point.legBearing)}
-                  </Text>
-                </View>
-              )}
 
               {/* Arrow to next point */}
               {index < activeRoute.routePoints.length - 1 && (
-                <Ionicons name="arrow-forward" size={20} color="rgba(255,255,255,0.5)" style={styles.arrow} />
+                <View style={styles.arrowContainer}>
+                  <View style={styles.arrowLine} />
+                  <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.3)" />
+                </View>
               )}
-            </View>
+            </React.Fragment>
           ))}
         </ScrollView>
       ) : (
         <View style={styles.emptyState}>
-          <Ionicons name="map-outline" size={48} color="rgba(255,255,255,0.3)" />
-          <Text style={styles.emptyText}>Long-press the map to add points</Text>
+          <Text style={styles.emptyText}>Long-press map to add waypoints</Text>
         </View>
       )}
 
-      {/* Route Statistics */}
-      {hasPoints && (
-        <View style={styles.stats}>
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Points</Text>
-            <Text style={styles.statValue}>{activeRoute.routePoints.length}</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Distance</Text>
-            <Text style={styles.statValue}>
-              {formatDistance(activeRoute.totalDistance, 1)}
-            </Text>
-          </View>
-          {activeRoute.estimatedDuration !== null && (
-            <>
-              <View style={styles.statDivider} />
-              <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Time</Text>
-                <Text style={styles.statValue}>
-                  {formatDuration(activeRoute.estimatedDuration)}
-                </Text>
-              </View>
-            </>
-          )}
-        </View>
-      )}
-
-      {/* Action Buttons */}
-      <View style={styles.actions}>
-        <TouchableOpacity
-          style={[styles.actionButton, styles.clearButton]}
-          onPress={handleClearRoute}
-          disabled={!hasPoints}
-        >
-          <Ionicons name="trash-outline" size={20} color={hasPoints ? '#FF5252' : '#666'} />
-          <Text style={[styles.actionButtonText, styles.clearButtonText, !hasPoints && styles.disabledText]}>
-            Clear
+      {/* Route Statistics - Foreflight style */}
+      <View style={styles.statsRow}>
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Dist</Text>
+          <Text style={styles.statValue}>
+            {formatDistance(activeRoute.totalDistance, 1).replace(' nm', '')}
           </Text>
-        </TouchableOpacity>
+        </View>
+        
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>ETE</Text>
+          <Text style={styles.statValue}>
+            {activeRoute.estimatedDuration 
+              ? formatDuration(activeRoute.estimatedDuration)
+              : '--'}
+          </Text>
+        </View>
+        
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>ETA(CDT)</Text>
+          <Text style={styles.statValue}>
+            {eta ? `${eta.getHours() % 12 || 12}:${eta.getMinutes().toString().padStart(2, '0')} ${eta.getHours() >= 12 ? 'PM' : 'AM'}` : '--'}
+          </Text>
+        </View>
+        
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Fuel</Text>
+          <Text style={styles.statValue}>
+            {activeRoute.estimatedFuel ? activeRoute.estimatedFuel.toFixed(1) : '--'}
+          </Text>
+        </View>
+      </View>
 
+      {/* Action Buttons Row */}
+      <View style={styles.actionsRow}>
+        <TouchableOpacity style={styles.iconButton}>
+          <Ionicons name="globe-outline" size={24} color="#fff" />
+        </TouchableOpacity>
+        
+        <TouchableOpacity style={styles.iconButton}>
+          <Ionicons name="home-outline" size={24} color="#fff" />
+        </TouchableOpacity>
+        
+        <TouchableOpacity style={styles.iconButton}>
+          <Ionicons name="star-outline" size={24} color="#fff" />
+        </TouchableOpacity>
+        
+        <TouchableOpacity style={styles.iconButton}>
+          <Ionicons name="share-outline" size={24} color="#fff" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Bottom Action Buttons */}
+      <View style={styles.bottomActions}>
         <TouchableOpacity
-          style={[styles.actionButton, styles.saveButton, !canSave && styles.disabledButton]}
+          style={[styles.bottomButton, styles.editButton]}
+          onPress={onClose}
+        >
+          <Text style={styles.bottomButtonText}>Edit</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity
+          style={[styles.bottomButton, styles.navLogButton]}
           onPress={handleSaveRoute}
           disabled={!canSave}
         >
-          <Ionicons name="checkmark" size={20} color="#fff" />
-          <Text style={[styles.actionButtonText, !canSave && styles.disabledText]}>
-            Save Route
+          <Text style={[styles.bottomButtonText, !canSave && styles.disabledText]}>
+            Save
           </Text>
         </TouchableOpacity>
       </View>
@@ -269,62 +336,162 @@ export default function RouteEditor({ visible, onClose }: RouteEditorProps) {
           onPress={closePointMenu}
         >
           <View style={styles.pointMenu}>
-            <Text style={styles.menuTitle}>
-              {selectedPoint?.name || `Point ${selectedPoint?.order ? selectedPoint.order + 1 : ''}`}
-            </Text>
+            {selectedPoint && (
+              <>
+                <Text style={styles.menuTitle}>{selectedPoint.name}</Text>
+                <Text style={styles.menuSubtitle}>
+                  {selectedPoint.position.latitude.toFixed(6)}°, {selectedPoint.position.longitude.toFixed(6)}°
+                </Text>
 
-            <TouchableOpacity style={styles.menuItem} onPress={handleEditName}>
-              <Ionicons name="pencil-outline" size={20} color="#fff" />
-              <Text style={styles.menuItemText}>Edit Name</Text>
-            </TouchableOpacity>
+                <TouchableOpacity style={styles.menuItem} onPress={handleEditPointName}>
+                  <Ionicons name="pencil-outline" size={20} color="#fff" />
+                  <Text style={styles.menuItemText}>Edit Name</Text>
+                </TouchableOpacity>
 
-            <TouchableOpacity style={styles.menuItem} onPress={handleRemovePoint}>
-              <Ionicons name="trash-outline" size={20} color="#FF5252" />
-              <Text style={[styles.menuItemText, styles.menuItemDanger]}>Remove</Text>
-            </TouchableOpacity>
+                <TouchableOpacity style={styles.menuItem} onPress={handleEditCoordinate}>
+                  <Ionicons name="location-outline" size={20} color="#fff" />
+                  <Text style={styles.menuItemText}>Edit GPS</Text>
+                </TouchableOpacity>
 
-            <TouchableOpacity style={styles.menuItem} onPress={closePointMenu}>
-              <Ionicons name="close" size={20} color="#999" />
-              <Text style={[styles.menuItemText, { color: '#999' }]}>Cancel</Text>
-            </TouchableOpacity>
+                <TouchableOpacity style={styles.menuItem} onPress={handleRemovePoint}>
+                  <Ionicons name="trash-outline" size={20} color="#FF5252" />
+                  <Text style={[styles.menuItemText, styles.menuItemDanger]}>Delete</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.menuItem} onPress={closePointMenu}>
+                  <Ionicons name="close" size={20} color="#999" />
+                  <Text style={[styles.menuItemText, { color: '#999' }]}>Cancel</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </TouchableOpacity>
       </Modal>
 
-      {/* Edit Name Modal */}
+      {/* Edit Route Name Modal */}
       <Modal
-        visible={editingName}
+        visible={editingRouteName}
         transparent
         animationType="fade"
-        onRequestClose={() => setEditingName(false)}
+        onRequestClose={() => setEditingRouteName(false)}
       >
         <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
-          onPress={() => setEditingName(false)}
+          onPress={() => setEditingRouteName(false)}
         >
-          <View style={styles.editNameModal}>
-            <Text style={styles.editNameTitle}>Edit Point Name</Text>
+          <View style={styles.editModal}>
+            <Text style={styles.editModalTitle}>Edit Route Name</Text>
             <TextInput
-              style={styles.nameInput}
-              value={nameInput}
-              onChangeText={setNameInput}
-              placeholder="Enter name..."
+              style={styles.input}
+              value={routeNameInput}
+              onChangeText={setRouteNameInput}
+              placeholder="Route name..."
               placeholderTextColor="#666"
               autoFocus
             />
-            <View style={styles.editNameActions}>
+            <View style={styles.modalActions}>
               <TouchableOpacity
-                style={[styles.editNameButton, styles.cancelButton]}
-                onPress={() => setEditingName(false)}
+                style={[styles.modalButton, styles.cancelButton]}
+                onPress={() => setEditingRouteName(false)}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.editNameButton, styles.saveNameButton]}
-                onPress={handleSaveName}
+                style={[styles.modalButton, styles.saveButton]}
+                onPress={handleSaveRouteName}
               >
-                <Text style={styles.saveNameButtonText}>Save</Text>
+                <Text style={styles.saveButtonText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Edit Point Name Modal */}
+      <Modal
+        visible={editingPointName}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditingPointName(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setEditingPointName(false)}
+        >
+          <View style={styles.editModal}>
+            <Text style={styles.editModalTitle}>Edit Point Name</Text>
+            <TextInput
+              style={styles.input}
+              value={pointNameInput}
+              onChangeText={setPointNameInput}
+              placeholder="Point name..."
+              placeholderTextColor="#666"
+              autoFocus
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.cancelButton]}
+                onPress={() => setEditingPointName(false)}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.saveButton]}
+                onPress={handleSavePointName}
+              >
+                <Text style={styles.saveButtonText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Edit Coordinate Modal */}
+      <Modal
+        visible={editingCoordinate}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditingCoordinate(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setEditingCoordinate(false)}
+        >
+          <View style={styles.editModal}>
+            <Text style={styles.editModalTitle}>Edit GPS Coordinates</Text>
+            <Text style={styles.inputLabel}>Latitude</Text>
+            <TextInput
+              style={styles.input}
+              value={latInput}
+              onChangeText={setLatInput}
+              placeholder="-90 to 90"
+              placeholderTextColor="#666"
+              keyboardType="numeric"
+            />
+            <Text style={styles.inputLabel}>Longitude</Text>
+            <TextInput
+              style={styles.input}
+              value={lonInput}
+              onChangeText={setLonInput}
+              placeholder="-180 to 180"
+              placeholderTextColor="#666"
+              keyboardType="numeric"
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.cancelButton]}
+                onPress={() => setEditingCoordinate(false)}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.saveButton]}
+                onPress={handleSaveCoordinate}
+              >
+                <Text style={styles.saveButtonText}>Save</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -340,9 +507,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: 'rgba(26, 31, 46, 0.95)',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: '#1c2738',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.3,
@@ -352,161 +517,154 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+    gap: 8,
   },
-  title: {
-    fontSize: 18,
+  routeNameLabel: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '600',
+  },
+  routeName: {
+    flex: 1,
+    fontSize: 16,
     fontWeight: '600',
     color: '#fff',
   },
-  closeButton: {
-    padding: 4,
+  performanceRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
-  pointsList: {
-    maxHeight: 140,
-  },
-  pointsListContent: {
-    padding: 16,
+  perfBox: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     alignItems: 'center',
   },
-  pointContainer: {
+  perfLabel: {
+    fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  perfValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  pointsList: {
+    maxHeight: 80,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  pointsListContent: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
     alignItems: 'center',
   },
   pointBubble: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 107, 53, 0.2)',
-    borderWidth: 2,
-    borderColor: '#FF6B35',
-    borderRadius: 24,
-    paddingHorizontal: 12,
+    backgroundColor: '#5b7fa8',
+    borderRadius: 16,
+    paddingHorizontal: 14,
     paddingVertical: 8,
-    marginRight: 8,
-    minWidth: 120,
+    minWidth: 50,
+    alignItems: 'center',
   },
   pointBubbleWaypoint: {
-    borderColor: '#4CAF50',
-    backgroundColor: 'rgba(76, 175, 80, 0.2)',
+    backgroundColor: '#4CAF50',
   },
-  pointNumber: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: '#FF6B35',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-  },
-  pointNumberText: {
+  pointText: {
     color: '#fff',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  pointInfo: {
-    flex: 1,
-  },
-  pointName: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  pointCoords: {
-    color: 'rgba(255, 255, 255, 0.6)',
-    fontSize: 11,
-  },
-  waypointIcon: {
-    marginLeft: 4,
-  },
-  legInfo: {
-    marginTop: 4,
-    alignItems: 'center',
-  },
-  legDistance: {
-    color: '#4FC3F7',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
   },
-  legBearing: {
-    color: 'rgba(255, 255, 255, 0.6)',
-    fontSize: 10,
+  arrowContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
   },
-  arrow: {
-    marginHorizontal: 8,
+  arrowLine: {
+    width: 12,
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
   },
   emptyState: {
-    paddingVertical: 40,
+    paddingVertical: 30,
     alignItems: 'center',
-    justifyContent: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
   emptyText: {
     color: 'rgba(255, 255, 255, 0.5)',
-    fontSize: 14,
-    marginTop: 12,
+    fontSize: 13,
   },
-  stats: {
+  statsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
     paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
-  statItem: {
+  statBox: {
+    flex: 1,
     alignItems: 'center',
   },
   statLabel: {
-    color: 'rgba(255, 255, 255, 0.6)',
     fontSize: 11,
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontWeight: '600',
     marginBottom: 4,
   },
   statValue: {
-    color: '#fff',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
+    color: '#fff',
   },
-  statDivider: {
-    width: 1,
-    height: 30,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  actions: {
+  actionsRow: {
     flexDirection: 'row',
-    padding: 16,
-    gap: 12,
+    justifyContent: 'space-around',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
-  actionButton: {
-    flex: 1,
-    flexDirection: 'row',
+  iconButton: {
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 12,
-    borderRadius: 8,
-    gap: 6,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
-  clearButton: {
-    backgroundColor: 'rgba(255, 82, 82, 0.1)',
-    borderWidth: 1,
-    borderColor: '#FF5252',
+  bottomActions: {
+    flexDirection: 'row',
+    gap: 1,
   },
-  saveButton: {
-    backgroundColor: '#FF6B35',
+  bottomButton: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  disabledButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderColor: 'rgba(255, 255, 255, 0.2)',
+  editButton: {
+    backgroundColor: '#2a3447',
   },
-  actionButtonText: {
+  navLogButton: {
+    backgroundColor: '#2a3447',
+  },
+  bottomButtonText: {
     color: '#fff',
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
-  },
-  clearButtonText: {
-    color: '#FF5252',
   },
   disabledText: {
     color: '#666',
@@ -520,7 +678,7 @@ const styles = StyleSheet.create({
   pointMenu: {
     backgroundColor: '#2a2f3f',
     borderRadius: 12,
-    minWidth: 200,
+    minWidth: 240,
     overflow: 'hidden',
   },
   menuTitle: {
@@ -528,6 +686,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     padding: 16,
+    paddingBottom: 4,
+  },
+  menuSubtitle: {
+    color: 'rgba(255, 255, 255, 0.5)',
+    fontSize: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
@@ -544,32 +709,40 @@ const styles = StyleSheet.create({
   menuItemDanger: {
     color: '#FF5252',
   },
-  editNameModal: {
+  editModal: {
     backgroundColor: '#2a2f3f',
     borderRadius: 12,
     padding: 20,
     width: '80%',
     maxWidth: 400,
   },
-  editNameTitle: {
+  editModalTitle: {
     color: '#fff',
     fontSize: 18,
     fontWeight: '600',
     marginBottom: 16,
   },
-  nameInput: {
+  inputLabel: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 6,
+    marginTop: 12,
+  },
+  input: {
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
     borderRadius: 8,
     padding: 12,
     color: '#fff',
     fontSize: 14,
-    marginBottom: 16,
+    marginBottom: 8,
   },
-  editNameActions: {
+  modalActions: {
     flexDirection: 'row',
     gap: 12,
+    marginTop: 16,
   },
-  editNameButton: {
+  modalButton: {
     flex: 1,
     paddingVertical: 12,
     borderRadius: 8,
@@ -578,7 +751,7 @@ const styles = StyleSheet.create({
   cancelButton: {
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
   },
-  saveNameButton: {
+  saveButton: {
     backgroundColor: '#FF6B35',
   },
   cancelButtonText: {
@@ -586,7 +759,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  saveNameButtonText: {
+  saveButtonText: {
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',

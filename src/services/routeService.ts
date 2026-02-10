@@ -12,6 +12,7 @@ import {
   Position,
   DEFAULT_ROUTE_COLOR,
   DEFAULT_CRUISING_SPEED,
+  DEFAULT_FUEL_BURN_RATE,
 } from '../types/route';
 import {
   calculateRouteLegs,
@@ -47,6 +48,10 @@ export function createRoute(
   const routePointsWithLegs = calculateRouteLegs(data.routePoints);
   const totalDistance = calculateTotalDistance(routePointsWithLegs);
   const estimatedDuration = calculateRouteDuration(totalDistance, cruisingSpeed);
+  
+  // Calculate fuel consumption
+  const fuelBurnRate = data.fuelBurnRate || DEFAULT_FUEL_BURN_RATE;
+  const estimatedFuel = (estimatedDuration / 60) * fuelBurnRate; // minutes to hours
 
   return {
     id,
@@ -57,6 +62,12 @@ export function createRoute(
     color: data.color || DEFAULT_ROUTE_COLOR,
     notes: data.notes || '',
     storageType: data.storageType || 'cloud',
+    performanceMethod: data.performanceMethod || 'speed',
+    cruisingSpeed: data.cruisingSpeed || cruisingSpeed,
+    cruisingRPM: data.cruisingRPM || null,
+    boatProfileId: data.boatProfileId || null,
+    fuelBurnRate,
+    estimatedFuel,
     createdAt: now,
     updatedAt: now,
   };
@@ -77,7 +88,7 @@ export function createRoutePoint(
   return {
     id: generateRoutePointId(),
     position,
-    name: options?.name,
+    name: options?.name || `P${order + 1}`, // Default to P1, P2, P3...
     waypointRef: options?.waypointRef || null,
     order,
     legDistance: null, // Will be calculated when added to route
@@ -423,6 +434,23 @@ export function formatETA(etaMinutes: number): string {
   const displayHours = hours % 12 || 12;
   
   return `${displayHours}:${minutes.toString().padStart(2, '0')} ${ampm}`;
+}
+
+/**
+ * Format fuel consumption for display
+ */
+export function formatFuel(gallons: number, decimals: number = 1): string {
+  return `${gallons.toFixed(decimals)} gal`;
+}
+
+/**
+ * Calculate fuel consumption for route
+ */
+export function calculateFuelConsumption(
+  durationMinutes: number,
+  fuelBurnRate: number
+): number {
+  return (durationMinutes / 60) * fuelBurnRate;
 }
 
 /**
