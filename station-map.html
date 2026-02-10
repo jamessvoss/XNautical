@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOAA Stations & Coast Guard Districts</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        #map { position: absolute; top: 0; left: 0; right: 0; bottom: 60px; }
+        #controls { 
+            position: absolute; 
+            bottom: 0; 
+            left: 0; 
+            right: 0; 
+            height: 60px; 
+            background: white; 
+            border-top: 1px solid #ccc; 
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            z-index: 1000;
+        }
+        .stat { display: flex; flex-direction: column; }
+        .stat-label { font-size: 11px; color: #666; }
+        .stat-value { font-size: 18px; font-weight: 600; }
+        .legend {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+            font-size: 13px;
+        }
+        .legend h4 { margin: 0 0 10px 0; font-size: 14px; }
+        .legend-item { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+        .legend-color { width: 16px; height: 16px; border-radius: 50%; }
+        .legend-box { width: 30px; height: 3px; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="legend">
+        <h4>Coast Guard Districts</h4>
+        <div class="legend-item"><div class="legend-box" style="background: #ef4444"></div> 01 - Northeast</div>
+        <div class="legend-item"><div class="legend-box" style="background: #8b5cf6"></div> 05 - East</div>
+        <div class="legend-item"><div class="legend-box" style="background: #ec4899"></div> 07 - Southeast</div>
+        <div class="legend-item"><div class="legend-box" style="background: #f97316"></div> 08 - Heartland</div>
+        <div class="legend-item"><div class="legend-box" style="background: #3b82f6"></div> 09 - Great Lakes</div>
+        <div class="legend-item"><div class="legend-box" style="background: #eab308"></div> 11 - Southwest</div>
+        <div class="legend-item"><div class="legend-box" style="background: #22c55e"></div> 13 - Northwest</div>
+        <div class="legend-item"><div class="legend-box" style="background: #a855f7"></div> 14 - Oceania</div>
+        <div class="legend-item"><div class="legend-box" style="background: #06b6d4"></div> 17 - Arctic</div>
+        <hr style="margin: 10px 0; border: none; border-top: 1px solid #ddd;">
+        <div class="legend-item"><div class="legend-color" style="background: #3b82f6"></div> Tide Stations</div>
+        <div class="legend-item"><div class="legend-color" style="background: #ef4444"></div> Current Stations</div>
+    </div>
+    <div id="controls">
+        <div class="stat">
+            <span class="stat-label">Total Tide Stations</span>
+            <span class="stat-value" id="tide-count">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Total Current Stations</span>
+            <span class="stat-value" id="current-count">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Districts</span>
+            <span class="stat-value">9</span>
+        </div>
+    </div>
+
+    <script>
+        // Initialize map
+        const map = L.map('map', {
+            center: [39, -98],
+            zoom: 4,
+            worldCopyJump: true
+        });
+
+        // Add base layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors',
+            maxZoom: 18
+        }).addTo(map);
+
+        // Region boundaries data
+        const regions = [
+            {
+                id: '17cgd', name: 'Arctic (Alaska)', color: '#06b6d4',
+                bounds: [
+                    { west: -180, south: 50, east: -129, north: 72 },
+                    { west: 170, south: 50, east: 180, north: 65 }
+                ]
+            },
+            {
+                id: '14cgd', name: 'Oceania (Hawaii)', color: '#a855f7',
+                bounds: [{ west: -162, south: 17, east: -153, north: 24 }]
+            },
+            {
+                id: '13cgd', name: 'Northwest', color: '#22c55e',
+                bounds: [{ west: -130, south: 38, east: -119, north: 50 }]
+            },
+            {
+                id: '11cgd', name: 'Southwest', color: '#eab308',
+                bounds: [{ west: -126, south: 30, east: -114, north: 38 }]
+            },
+            {
+                id: '08cgd', name: 'Heartland', color: '#f97316',
+                bounds: [{ west: -98, south: 25, east: -85, north: 31 }]
+            },
+            {
+                id: '09cgd', name: 'Great Lakes', color: '#3b82f6',
+                bounds: [{ west: -94, south: 40, east: -75, north: 50 }]
+            },
+            {
+                id: '01cgd', name: 'Northeast', color: '#ef4444',
+                bounds: [{ west: -76, south: 40, east: -65, north: 48 }]
+            },
+            {
+                id: '05cgd', name: 'East', color: '#8b5cf6',
+                bounds: [{ west: -80, south: 33.8, east: -72, north: 40 }]
+            },
+            {
+                id: '07cgd', name: 'Southeast', color: '#ec4899',
+                bounds: [
+                    { west: -85, south: 24, east: -79.5, north: 33.8 },
+                    { west: -67.5, south: 17, east: -64, north: 19 }
+                ]
+            }
+        ];
+
+        // Draw region boundaries
+        regions.forEach(region => {
+            region.bounds.forEach(box => {
+                const bounds = [
+                    [box.south, box.west],
+                    [box.north, box.east]
+                ];
+                L.rectangle(bounds, {
+                    color: region.color,
+                    weight: 2,
+                    fillOpacity: 0.05
+                }).bindPopup(`<b>${region.name}</b><br>${region.id}`)
+                  .addTo(map);
+            });
+        });
+
+        // Station data - this would come from Firestore in production
+        // For now, we'll load from the discover script output
+        const stationData = {
+            '01cgd': { tides: 472, currents: 724 },
+            '05cgd': { tides: 494, currents: 477 },
+            '07cgd': { tides: 849, currents: 416 },
+            '08cgd': { tides: 269, currents: 69 },
+            '09cgd': { tides: 0, currents: 0 },
+            '11cgd': { tides: 129, currents: 137 },
+            '13cgd': { tides: 304, currents: 288 },
+            '14cgd': { tides: 35, currents: 30 },
+            '17cgd': { tides: 586, currents: 630 }
+        };
+
+        // Calculate totals
+        let totalTides = 0;
+        let totalCurrents = 0;
+        Object.values(stationData).forEach(d => {
+            totalTides += d.tides;
+            totalCurrents += d.currents;
+        });
+
+        document.getElementById('tide-count').textContent = totalTides.toLocaleString();
+        document.getElementById('current-count').textContent = totalCurrents.toLocaleString();
+
+        // Add station count labels to regions
+        regions.forEach(region => {
+            const data = stationData[region.id];
+            if (data && (data.tides > 0 || data.currents > 0)) {
+                const centerBox = region.bounds[0];
+                const centerLat = (centerBox.north + centerBox.south) / 2;
+                const centerLng = (centerBox.east + centerBox.west) / 2;
+
+                const icon = L.divIcon({
+                    className: 'station-label',
+                    html: `<div style="background: rgba(255,255,255,0.9); padding: 5px 10px; border-radius: 4px; border: 1px solid ${region.color}; font-size: 11px; white-space: nowrap;">
+                        <b>${region.id}</b><br>
+                        <span style="color: #3b82f6;">●</span> ${data.tides} tides<br>
+                        <span style="color: #ef4444;">●</span> ${data.currents} currents
+                    </div>`,
+                    iconSize: [100, 60],
+                    iconAnchor: [50, 30]
+                });
+
+                L.marker([centerLat, centerLng], { icon }).addTo(map);
+            }
+        });
+
+        console.log('Map initialized with', totalTides, 'tide stations and', totalCurrents, 'current stations');
+    </script>
+</body>
+</html>

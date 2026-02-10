@@ -14,6 +14,7 @@ console.log('[App.tsx] Core imports complete');
 import { OverlayProvider, useOverlay } from './src/contexts/OverlayContext';
 import { NavigationProvider, useContextNav } from './src/contexts/NavigationContext';
 import { WaypointProvider } from './src/contexts/WaypointContext';
+import { RouteProvider } from './src/contexts/RouteContext';
 
 console.log('[App.tsx] Context imports complete');
 
@@ -361,10 +362,12 @@ function AppContent() {
       <NavigationProvider>
         <OverlayProvider>
           <WaypointProvider>
-            <AppNavigator />
-            {/* Overlays rendered OUTSIDE NavigationContainer to avoid MapLibre view conflicts */}
-            <OverlayRenderer />
-            <StatusBar style="light" />
+            <RouteProvider>
+              <AppNavigator />
+              {/* Overlays rendered OUTSIDE NavigationContainer to avoid MapLibre view conflicts */}
+              <OverlayRenderer />
+              <StatusBar style="light" />
+            </RouteProvider>
           </WaypointProvider>
         </OverlayProvider>
       </NavigationProvider>

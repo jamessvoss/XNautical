@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Southwest Region Test</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        #map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
+        #debug { 
+            position: absolute; 
+            top: 10px; 
+            left: 10px; 
+            background: white; 
+            padding: 15px; 
+            z-index: 1000;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="debug">
+        <h4>Debug Info</h4>
+        <div id="status">Loading...</div>
+    </div>
+
+    <script>
+        const debugEl = document.getElementById('status');
+        
+        // Initialize map
+        const map = L.map('map').setView([34, -120], 6);
+        
+        // Add base layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap',
+            maxZoom: 18
+        }).addTo(map);
+        
+        debugEl.innerHTML = 'Map loaded, adding bounds...';
+
+        // Southwest region bounds
+        const stationBounds = { west: -126, south: 30, east: -114, north: 38 };
+        
+        // Draw boundary
+        L.rectangle(
+            [[stationBounds.south, stationBounds.west], [stationBounds.north, stationBounds.east]], 
+            {
+                color: '#eab308',
+                weight: 3,
+                fillOpacity: 0.1
+            }
+        ).addTo(map);
+        
+        debugEl.innerHTML = 'Bounds drawn, adding test markers...';
+        
+        // Add some test markers manually
+        const testStations = [
+            { name: "San Diego", lat: 32.7157, lng: -117.1611 },
+            { name: "Los Angeles", lat: 33.72, lng: -118.272 },
+            { name: "San Francisco", lat: 37.8063, lng: -122.4659 },
+            { name: "Santa Barbara", lat: 34.4047, lng: -119.6924 }
+        ];
+        
+        testStations.forEach(station => {
+            L.circleMarker([station.lat, station.lng], {
+                radius: 10,
+                fillColor: '#3b82f6',
+                color: '#fff',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.9
+            })
+            .bindPopup(`<b>${station.name}</b><br>${station.lat}, ${station.lng}`)
+            .addTo(map);
+        });
+        
+        debugEl.innerHTML = `Test complete! Added 4 markers.<br>Bounds: ${stationBounds.west} to ${stationBounds.east}`;
+    </script>
+</body>
+</html>

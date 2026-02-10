@@ -61,6 +61,7 @@ import BuoyDetailModal from './BuoyDetailModal';
 import { Ionicons } from '@expo/vector-icons';
 import { useWaypoints } from '../contexts/WaypointContext';
 import { WaypointMapPin } from './WaypointIcons';
+import { useRoutes } from '../contexts/RouteContext';
 
 // MapLibre doesn't require an access token
 
@@ -472,6 +473,8 @@ function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityA
 export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}) {
   // Waypoint context
   const { waypoints: userWaypoints, openCreationModal: openWaypointCreation, openEditModal: openWaypointEdit } = useWaypoints();
+  // Route context
+  const { activeRoute, addPointToActiveRoute } = useRoutes();
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<any>(null);
@@ -3603,15 +3606,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       showMarineFarms, showSeabed, showBridges, showBuildings, showMoorings,
       showShorelineConstruction, showDepthAreas, showLand]);
 
-  // Handle map long press - create a waypoint at the pressed location
+  // Handle map long press - create a waypoint or add to route depending on mode
   const handleMapLongPress = useCallback((e: any) => {
     const { geometry } = e;
     if (!geometry?.coordinates) return;
     
     const [longitude, latitude] = geometry.coordinates;
     console.log(`[DynamicChartViewer] Long press at: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
-    openWaypointCreation(longitude, latitude);
-  }, [openWaypointCreation]);
+    
+    // If actively creating a route, add point to route
+    if (activeRoute) {
+      addPointToActiveRoute({ latitude, longitude });
+      console.log('[DynamicChartViewer] Added point to active route');
+    } else {
+      // Otherwise create waypoint
+      openWaypointCreation(longitude, latitude);
+    }
+  }, [openWaypointCreation, activeRoute, addPointToActiveRoute]);
 
   // Calculate initial center from loaded charts (prefer MBTiles if available)
   const initialCenter = useMemo(() => {
@@ -5888,6 +5899,47 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             >
               <WaypointMapPin category={wp.category} color={wp.color} size={32} />
             </TouchableOpacity>
+          </MapLibre.MarkerView>
+        ))}
+
+        {/* Active Route Line and Points */}
+        {activeRoute && activeRoute.routePoints.length > 1 && (
+          <MapLibre.ShapeSource
+            id="active-route-source"
+            shape={{
+              type: 'FeatureCollection',
+              features: [{
+                type: 'Feature',
+                geometry: {
+                  type: 'LineString',
+                  coordinates: activeRoute.routePoints.map(p => [p.position.longitude, p.position.latitude]),
+                },
+                properties: {},
+              }],
+            }}
+          >
+            <MapLibre.LineLayer
+              id="active-route-line"
+              style={{
+                lineColor: activeRoute.color,
+                lineWidth: 3,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
+          </MapLibre.ShapeSource>
+        )}
+
+        {/* Active Route Point Markers */}
+        {activeRoute && activeRoute.routePoints.map((point, index) => (
+          <MapLibre.MarkerView
+            key={point.id}
+            coordinate={[point.position.longitude, point.position.latitude]}
+            anchor={{ x: 0.5, y: 0.5 }}
+          >
+            <View style={styles.routePointMarker}>
+              <Text style={styles.routePointNumber}>{index + 1}</Text>
+            </View>
           </MapLibre.MarkerView>
         ))}
 
@@ -9516,5 +9568,26 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: 'rgba(255, 255, 255, 0.7)',
     marginTop: -2,
+  },
+  // Route point markers
+  routePointMarker: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#FF6B35',
+    borderWidth: 2,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  routePointNumber: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#fff',
   },
 });

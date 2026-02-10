@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Charts & Coverage - XNautical</title>
+  <meta name="description" content="XNautical provides official NOAA Electronic Navigational Charts covering the entire U.S. coastline across 9 NOAA districts. Download charts by region for offline use.">
+  <link rel="icon" type="image/png" href="images/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="nav nav--transparent" role="navigation" aria-label="Main navigation">
+    <div class="nav__inner">
+      <a href="index.html" class="nav__logo">
+        <img src="images/XNautical-Logo-Square.png" alt="XNautical" width="36" height="36">
+        XNautical
+      </a>
+      <div class="nav__links">
+        <a href="features.html" class="nav__link">Features</a>
+        <a href="charts.html" class="nav__link nav__link--active">Charts</a>
+        <a href="about.html" class="nav__link">About</a>
+        <a href="support.html" class="nav__link">Support</a>
+        <a href="index.html#download" class="btn btn--primary btn--sm nav__cta">Download</a>
+      </div>
+      <button class="nav__toggle" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Page Header -->
+  <section class="page-header">
+    <div class="page-header__bg-grid"></div>
+    <div class="container">
+      <h1>Charts & Coverage</h1>
+      <p>Official NOAA Electronic Navigational Charts covering the entire U.S. coastline, available for download by region.</p>
+    </div>
+  </section>
+
+  <!-- Chart Standard -->
+  <section class="section">
+    <div class="container">
+      <div class="section-header fade-in">
+        <span class="label">Chart Standard</span>
+        <h2>S-57 ENC with S-52 Symbology</h2>
+        <p>XNautical uses the same international chart data standard and display symbology found on professional ECDIS systems aboard commercial vessels worldwide.</p>
+      </div>
+
+      <div class="grid grid--3 stagger-children">
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          </div>
+          <h3 class="feature-card__title">Vector Charts</h3>
+          <p class="feature-card__desc">S-57 vector data means crisp rendering at any zoom level. No pixelation, no blurry raster images.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          </div>
+          <h3 class="feature-card__title">Standard Symbology</h3>
+          <p class="feature-card__desc">S-52 presentation library ensures chart symbols match what you'd see on any professional bridge system.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>
+          </div>
+          <h3 class="feature-card__title">Multi-Scale Quilting</h3>
+          <p class="feature-card__desc">Overlapping charts are stitched together seamlessly. Zoom in and out with automatic scale transitions.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Chart Layers -->
+  <section class="section section--dark">
+    <div class="container">
+      <div class="section-header fade-in">
+        <span class="label">Chart Layers</span>
+        <h2>Comprehensive nautical information</h2>
+        <p>Every chart layer you need for safe navigation, rendered with proper S-52 symbology.</p>
+      </div>
+
+      <div class="grid grid--4 stagger-children">
+        <div class="data-card">
+          <div class="data-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 22 16 8l-4-4L2 14v8z"/><path d="M15.5 4.5 20 9"/></svg>
+          </div>
+          <div class="data-card__title">Depth Data</div>
+          <div class="data-card__desc">Depth areas, contours, and individual soundings</div>
+        </div>
+        <div class="data-card">
+          <div class="data-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/><circle cx="12" cy="12" r="4"/></svg>
+          </div>
+          <div class="data-card__title">Navigation Aids</div>
+          <div class="data-card__desc">Lights, buoys, beacons, and daymarks</div>
+        </div>
+        <div class="data-card">
+          <div class="data-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </div>
+          <div class="data-card__title">Hazards</div>
+          <div class="data-card__desc">Wrecks, rocks, obstructions, and dangers</div>
+        </div>
+        <div class="data-card">
+          <div class="data-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </div>
+          <div class="data-card__title">Restricted Areas</div>
+          <div class="data-card__desc">Anchoring, fishing, and entry restrictions</div>
+        </div>
+        <div class="data-card">
+          <div class="data-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+          </div>
+          <div class="data-card__title">Landmarks</div>
+          <div class="data-card__desc">Shoreline structures and land features</div>
+        </div>
+        <div class="data-card">
+          <div class="data-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          </div>
+          <div class="data-card__title">Cables & Pipelines</div>
+          <div class="data-card__desc">Submarine cables and underwater pipelines</div>
+        </div>
+        <div class="data-card">
+          <div class="data-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          </div>
+          <div class="data-card__title">Fog Signals</div>
+          <div class="data-card__desc">Fog horns, bells, and whistles</div>
+        </div>
+        <div class="data-card">
+          <div class="data-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+          </div>
+          <div class="data-card__title">Anchorages</div>
+          <div class="data-card__desc">Anchorage areas and mooring facilities</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Regional Coverage -->
+  <section class="section">
+    <div class="container">
+      <div class="section-header fade-in">
+        <span class="label">Coverage</span>
+        <h2>Nine NOAA chart districts</h2>
+        <p>Download charts by NOAA district. Each region includes all available chart scales from overview to harbor-detail.</p>
+      </div>
+
+      <div class="region-grid stagger-children">
+        <div class="region-card">
+          <h3 class="region-card__name">District 1 - Northeast</h3>
+          <p class="region-card__desc">Maine through Connecticut. Major harbors include Portland, Boston, Newport, and New London.</p>
+          <div class="region-card__meta">
+            <span class="region-card__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+              Multiple scales
+            </span>
+          </div>
+        </div>
+
+        <div class="region-card">
+          <h3 class="region-card__name">District 2 - Mid-Atlantic</h3>
+          <p class="region-card__desc">New York through Virginia. Covers the Chesapeake Bay, Delaware Bay, and Long Island Sound.</p>
+          <div class="region-card__meta">
+            <span class="region-card__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+              Multiple scales
+            </span>
+          </div>
+        </div>
+
+        <div class="region-card">
+          <h3 class="region-card__name">District 3 - Southeast</h3>
+          <p class="region-card__desc">North Carolina through Florida East Coast. The Intracoastal Waterway, Outer Banks, and Florida Keys.</p>
+          <div class="region-card__meta">
+            <span class="region-card__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+              Multiple scales
+            </span>
+          </div>
+        </div>
+
+        <div class="region-card">
+          <h3 class="region-card__name">District 4 - Gulf Coast</h3>
+          <p class="region-card__desc">Florida West Coast through Texas. Tampa Bay, the Gulf of Mexico, Mississippi Sound, and Galveston.</p>
+          <div class="region-card__meta">
+            <span class="region-card__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+              Multiple scales
+            </span>
+          </div>
+        </div>
+
+        <div class="region-card">
+          <h3 class="region-card__name">District 5 - Great Lakes</h3>
+          <p class="region-card__desc">All five Great Lakes. Lake Superior, Michigan, Huron, Erie, and Ontario with connecting waterways.</p>
+          <div class="region-card__meta">
+            <span class="region-card__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+              Multiple scales
+            </span>
+          </div>
+        </div>
+
+        <div class="region-card">
+          <h3 class="region-card__name">District 6 - Pacific Northwest</h3>
+          <p class="region-card__desc">Washington and Oregon. Puget Sound, San Juan Islands, Columbia River, and the Oregon Coast.</p>
+          <div class="region-card__meta">
+            <span class="region-card__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+              Multiple scales
+            </span>
+          </div>
+        </div>
+
+        <div class="region-card">
+          <h3 class="region-card__name">District 7 - California</h3>
+          <p class="region-card__desc">San Francisco Bay, Channel Islands, San Diego, and the entire California coastline.</p>
+          <div class="region-card__meta">
+            <span class="region-card__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+              Multiple scales
+            </span>
+          </div>
+        </div>
+
+        <div class="region-card">
+          <h3 class="region-card__name">District 8 - Alaska</h3>
+          <p class="region-card__desc">Southeast Alaska through the Aleutian Islands. Inside Passage, Prince William Sound, and Kodiak.</p>
+          <div class="region-card__meta">
+            <span class="region-card__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+              Multiple scales
+            </span>
+          </div>
+        </div>
+
+        <div class="region-card">
+          <h3 class="region-card__name">District 9 - Pacific Islands</h3>
+          <p class="region-card__desc">Hawaii, Guam, and U.S. Pacific territories. Pearl Harbor, Honolulu, and island approaches.</p>
+          <div class="region-card__meta">
+            <span class="region-card__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg>
+              Multiple scales
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Data Sources -->
+  <section class="section section--dark">
+    <div class="container">
+      <div class="section-header fade-in">
+        <span class="label">Data Sources</span>
+        <h2>Authoritative government data</h2>
+        <p>XNautical sources all navigation data from official U.S. government agencies. No crowdsourced data, no approximations -- just authoritative, survey-grade information you can trust.</p>
+      </div>
+
+      <div class="grid grid--2 stagger-children" style="max-width: 800px; margin: 0 auto;">
+        <div class="data-card" style="text-align: left; padding: 32px;">
+          <div class="data-card__title" style="font-size: 1.125rem; margin-bottom: 8px;">NOAA Office of Coast Survey</div>
+          <div class="data-card__desc" style="font-size: 0.9375rem; line-height: 1.6;">
+            Official Electronic Navigational Charts (ENC) in S-57 format. The same data used by commercial vessels for ECDIS compliance. Updated regularly from NOAA's chart database.
+          </div>
+        </div>
+        <div class="data-card" style="text-align: left; padding: 32px;">
+          <div class="data-card__title" style="font-size: 1.125rem; margin-bottom: 8px;">NOAA CO-OPS</div>
+          <div class="data-card__desc" style="font-size: 0.9375rem; line-height: 1.6;">
+            Center for Operational Oceanographic Products and Services. Tide and current predictions from 1,515 stations. Harmonic constituent-based predictions.
+          </div>
+        </div>
+        <div class="data-card" style="text-align: left; padding: 32px;">
+          <div class="data-card__title" style="font-size: 1.125rem; margin-bottom: 8px;">NOAA National Weather Service</div>
+          <div class="data-card__desc" style="font-size: 0.9375rem; line-height: 1.6;">
+            Marine weather zone forecasts with detailed period forecasts, synopses, and hazard warnings. Coastal and offshore marine zones with polygon boundaries.
+          </div>
+        </div>
+        <div class="data-card" style="text-align: left; padding: 32px;">
+          <div class="data-card__title" style="font-size: 1.125rem; margin-bottom: 8px;">National Data Buoy Center</div>
+          <div class="data-card__desc" style="font-size: 0.9375rem; line-height: 1.6;">
+            Real-time observations from weather buoys: wind speed and direction, wave height and period, air and water temperature, barometric pressure.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Section -->
+  <section class="cta-section">
+    <div class="cta-section__bg"></div>
+    <div class="container cta-section__content fade-in">
+      <h2>Explore the charts yourself</h2>
+      <p>Download XNautical and browse official NOAA charts for your region, completely free.</p>
+      <div class="btn-group" style="justify-content: center;">
+        <a href="index.html#download" class="btn btn--primary btn--lg">Download XNautical</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__top">
+        <div class="footer__brand">
+          <a href="index.html" class="footer__logo">
+            <img src="images/XNautical-Logo-Square.png" alt="XNautical" width="32" height="32">
+            XNautical
+          </a>
+          <p>Professional marine navigation powered by official NOAA data. Navigate with confidence, online or offline.</p>
+        </div>
+        <div>
+          <h4 class="footer__col-title">Product</h4>
+          <div class="footer__links">
+            <a href="features.html" class="footer__link">Features</a>
+            <a href="charts.html" class="footer__link">Charts</a>
+            <a href="index.html#download" class="footer__link">Download</a>
+          </div>
+        </div>
+        <div>
+          <h4 class="footer__col-title">Company</h4>
+          <div class="footer__links">
+            <a href="about.html" class="footer__link">About</a>
+            <a href="support.html" class="footer__link">Support</a>
+          </div>
+        </div>
+        <div>
+          <h4 class="footer__col-title">Legal</h4>
+          <div class="footer__links">
+            <a href="#" class="footer__link">Privacy Policy</a>
+            <a href="#" class="footer__link">Terms of Service</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer__bottom">
+        <span>&copy; 2026 XNautical. All rights reserved.</span>
+        <span>Not for primary navigation. Always carry official paper charts.</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

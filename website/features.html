@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Features - XNautical</title>
+  <meta name="description" content="Explore XNautical's full feature set: NOAA charts, tide predictions, current data, marine weather, GPS navigation, waypoints, and offline operation.">
+  <link rel="icon" type="image/png" href="images/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="nav nav--transparent" role="navigation" aria-label="Main navigation">
+    <div class="nav__inner">
+      <a href="index.html" class="nav__logo">
+        <img src="images/XNautical-Logo-Square.png" alt="XNautical" width="36" height="36">
+        XNautical
+      </a>
+      <div class="nav__links">
+        <a href="features.html" class="nav__link nav__link--active">Features</a>
+        <a href="charts.html" class="nav__link">Charts</a>
+        <a href="about.html" class="nav__link">About</a>
+        <a href="support.html" class="nav__link">Support</a>
+        <a href="index.html#download" class="btn btn--primary btn--sm nav__cta">Download</a>
+      </div>
+      <button class="nav__toggle" aria-label="Toggle menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Page Header -->
+  <section class="page-header">
+    <div class="page-header__bg-grid"></div>
+    <div class="container">
+      <h1>Features</h1>
+      <p>Professional-grade marine navigation tools designed for every mariner, from weekend cruisers to commercial operators.</p>
+    </div>
+  </section>
+
+  <!-- Charts & Navigation -->
+  <section class="section">
+    <div class="container">
+      <div class="feature-row fade-in">
+        <div class="feature-row__content">
+          <span class="feature-row__label">Charts & Navigation</span>
+          <h2 class="feature-row__title">Official NOAA Electronic Navigational Charts</h2>
+          <p class="feature-row__desc">
+            XNautical renders S-57 ENC data with proper S-52 symbology, the international standard for electronic chart display used on commercial vessels worldwide.
+          </p>
+          <ul class="feature-row__list">
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Multi-scale chart quilting with seamless zoom transitions
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              SCAMIN filtering -- features appear at appropriate zoom levels
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Depth areas, contours, and individual depth soundings
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Lights, buoys, beacons, and all standard navigation aids
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Wrecks, rocks, obstructions, and hazard markings
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Cables, pipelines, restricted areas, and anchorages
+            </li>
+          </ul>
+        </div>
+        <div class="feature-row__visual">
+          <div class="feature-row__placeholder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            <span>Chart layers screenshot</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- GPS & Compass -->
+  <section class="section section--surface">
+    <div class="container">
+      <div class="feature-row feature-row--reverse fade-in">
+        <div class="feature-row__content">
+          <span class="feature-row__label">GPS & Sensors</span>
+          <h2 class="feature-row__title">Precision GPS and sensor-fused compass</h2>
+          <p class="feature-row__desc">
+            Real-time position tracking with detailed GPS data, plus a beautifully rendered compass with smooth heading updates using device sensor fusion.
+          </p>
+          <ul class="feature-row__list">
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Real-time position, speed, and course over ground
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Four compass modes: full, half-moon, ticker tape, minimal
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              GNSS satellite constellation viewer with signal strength
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              GPS accuracy and fix quality indicators
+            </li>
+          </ul>
+        </div>
+        <div class="feature-row__visual">
+          <div class="feature-row__placeholder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+            <span>GPS & compass screenshot</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tides & Currents -->
+  <section class="section">
+    <div class="container">
+      <div class="feature-row fade-in">
+        <div class="feature-row__content">
+          <span class="feature-row__label">Tides & Currents</span>
+          <h2 class="feature-row__title">1,500+ stations with detailed predictions</h2>
+          <p class="feature-row__desc">
+            Plan your day on the water with precision. View tide heights and current velocities with beautiful interactive charts spanning the next 36 hours.
+          </p>
+          <ul class="feature-row__list">
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              578 tide stations with high/low predictions and curves
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              937 current stations with velocity and direction data
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              36-hour interpolated tide and current charts
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Map markers with visual fill-level indicators
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              All predictions available offline once downloaded
+            </li>
+          </ul>
+        </div>
+        <div class="feature-row__visual">
+          <div class="feature-row__placeholder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h6l3-9 3 18 3-9h5"/></svg>
+            <span>Tide predictions screenshot</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Marine Weather -->
+  <section class="section section--surface">
+    <div class="container">
+      <div class="feature-row feature-row--reverse fade-in">
+        <div class="feature-row__content">
+          <span class="feature-row__label">Marine Weather</span>
+          <h2 class="feature-row__title">Comprehensive weather from every angle</h2>
+          <p class="feature-row__desc">
+            Multiple weather data sources give you a complete picture of marine conditions. Zone forecasts, live buoy data, wind maps, and even weather cameras.
+          </p>
+          <ul class="feature-row__list">
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              NOAA marine zone forecasts with polygon map overlays
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              NDBC buoy observations: wind speed, wave height, temperature
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Windy.com integration for wind and wave forecasts
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              FAA weather camera feeds for real-time visual conditions
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Synopsis, period forecasts, and marine advisories
+            </li>
+          </ul>
+        </div>
+        <div class="feature-row__visual">
+          <div class="feature-row__placeholder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+            <span>Weather view screenshot</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Waypoints & Tools -->
+  <section class="section">
+    <div class="container">
+      <div class="feature-row fade-in">
+        <div class="feature-row__content">
+          <span class="feature-row__label">Planning Tools</span>
+          <h2 class="feature-row__title">Waypoints, routes, and scratch pads</h2>
+          <p class="feature-row__desc">
+            Mark your favorite spots, plan routes, and take visual notes. XNautical gives you the tools to prepare for every voyage.
+          </p>
+          <ul class="feature-row__list">
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Create waypoints with photos, notes, and categories
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Measure distances and bearings between points
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Scratch pad for quick drawings and visual notes
+            </li>
+            <li class="feature-row__list-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              Bulk waypoint management and organization
+            </li>
+          </ul>
+        </div>
+        <div class="feature-row__visual">
+          <div class="feature-row__placeholder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span>Waypoints screenshot</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Offline & Downloads -->
+  <section class="section section--dark">
+    <div class="container">
+      <div class="section-header fade-in">
+        <span class="label">Offline Capability</span>
+        <h2>Navigate without cell service</h2>
+        <p>Download everything you need before you leave the dock. Charts, tide predictions, current data -- all stored locally on your device for complete offline operation.</p>
+      </div>
+
+      <div class="grid grid--3 stagger-children">
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </div>
+          <h3 class="feature-card__title">Regional Downloads</h3>
+          <p class="feature-card__desc">Download entire NOAA chart districts at once. Nine regions covering the complete U.S. coastline.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+          </div>
+          <h3 class="feature-card__title">Local Storage</h3>
+          <p class="feature-card__desc">Charts stored as efficient MBTiles vector tiles. Tide and current predictions cached in local databases.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <h3 class="feature-card__title">Full Functionality</h3>
+          <p class="feature-card__desc">GPS, charts, tides, currents, compass, and waypoints all work with zero internet connection.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Additional Features Grid -->
+  <section class="section">
+    <div class="container">
+      <div class="section-header fade-in">
+        <span class="label">And More</span>
+        <h2>Every detail considered</h2>
+        <p>XNautical is packed with thoughtful features designed by mariners, for mariners.</p>
+      </div>
+
+      <div class="grid grid--3 stagger-children">
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+          </div>
+          <h3 class="feature-card__title">Display Customization</h3>
+          <p class="feature-card__desc">Customize chart symbology, text sizes, halos, and opacity. Toggle individual chart layers on and off.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><rect x="4" y="8" width="4" height="6" rx="1"/><rect x="10" y="5" width="4" height="12" rx="1"/><rect x="16" y="10" width="4" height="4" rx="1"/></svg>
+          </div>
+          <h3 class="feature-card__title">Storage Dashboard</h3>
+          <p class="feature-card__desc">See exactly how much space charts and data use. Monitor download status and manage storage efficiently.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+          </div>
+          <h3 class="feature-card__title">Scratch Pads</h3>
+          <p class="feature-card__desc">Quick-draw notes and diagrams. Save visual notes with thumbnails for fast reference while underway.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </div>
+          <h3 class="feature-card__title">S-52 Display Modes</h3>
+          <p class="feature-card__desc">Standard-compliant chart display themes optimized for different lighting conditions and preferences.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          </div>
+          <h3 class="feature-card__title">Chart Feature Search</h3>
+          <p class="feature-card__desc">Find places by name, search chart features, and quickly navigate to points of interest.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-card__icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+          </div>
+          <h3 class="feature-card__title">Mobile Optimized</h3>
+          <p class="feature-card__desc">Designed for phones and tablets. Touch-optimized controls work great even with wet hands on a rolling deck.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Section -->
+  <section class="cta-section">
+    <div class="cta-section__bg"></div>
+    <div class="container cta-section__content fade-in">
+      <h2>Start navigating today</h2>
+      <p>Download XNautical and experience professional marine navigation on your mobile device.</p>
+      <div class="btn-group" style="justify-content: center;">
+        <a href="index.html#download" class="btn btn--primary btn--lg">Download XNautical</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer__top">
+        <div class="footer__brand">
+          <a href="index.html" class="footer__logo">
+            <img src="images/XNautical-Logo-Square.png" alt="XNautical" width="32" height="32">
+            XNautical
+          </a>
+          <p>Professional marine navigation powered by official NOAA data. Navigate with confidence, online or offline.</p>
+        </div>
+        <div>
+          <h4 class="footer__col-title">Product</h4>
+          <div class="footer__links">
+            <a href="features.html" class="footer__link">Features</a>
+            <a href="charts.html" class="footer__link">Charts</a>
+            <a href="index.html#download" class="footer__link">Download</a>
+          </div>
+        </div>
+        <div>
+          <h4 class="footer__col-title">Company</h4>
+          <div class="footer__links">
+            <a href="about.html" class="footer__link">About</a>
+            <a href="support.html" class="footer__link">Support</a>
+          </div>
+        </div>
+        <div>
+          <h4 class="footer__col-title">Legal</h4>
+          <div class="footer__links">
+            <a href="#" class="footer__link">Privacy Policy</a>
+            <a href="#" class="footer__link">Terms of Service</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer__bottom">
+        <span>&copy; 2026 XNautical. All rights reserved.</span>
+        <span>Not for primary navigation. Always carry official paper charts.</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Southwest Region (11cgd) - California Tide Stations</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        #map { position: absolute; top: 0; left: 0; right: 0; bottom: 80px; }
+        #controls { 
+            position: absolute; 
+            bottom: 0; 
+            left: 0; 
+            right: 0; 
+            height: 80px; 
+            background: white; 
+            border-top: 1px solid #ccc; 
+            padding: 15px 20px;
+            z-index: 1000;
+        }
+        .stats { display: flex; gap: 30px; margin-bottom: 10px; }
+        .stat { display: flex; flex-direction: column; }
+        .stat-label { font-size: 11px; color: #666; }
+        .stat-value { font-size: 20px; font-weight: 600; }
+        .legend {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1000;
+            font-size: 13px;
+        }
+        .legend h4 { margin: 0 0 5px 0; font-size: 14px; font-weight: 600; }
+        .legend-subtitle { font-size: 11px; color: #666; margin-bottom: 10px; }
+        .legend-item { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+        .legend-color { width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.3); }
+        .legend-box { width: 40px; height: 3px; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="legend">
+        <h4>11cgd - Southwest</h4>
+        <div class="legend-subtitle">Southern CA, AZ, NV</div>
+        <div class="legend-item"><div class="legend-box" style="background: #eab308;"></div> Station Bounds</div>
+        <div class="legend-item"><div class="legend-color" style="background: #3b82f6"></div> Inside Bounds</div>
+        <div class="legend-item"><div class="legend-color" style="background: #94a3b8"></div> Outside Bounds</div>
+    </div>
+    <div id="controls">
+        <div class="stats">
+            <div class="stat">
+                <span class="stat-label">CA Tide Stations</span>
+                <span class="stat-value" id="total-count">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Inside 11cgd</span>
+                <span class="stat-value" style="color: #3b82f6;" id="inside-count">0</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Outside 11cgd</span>
+                <span class="stat-value" style="color: #94a3b8;" id="outside-count">0</span>
+            </div>
+        </div>
+        <div style="font-size: 11px; color: #666;">
+            Click any station marker for details. Blue stations are processed by your app for region 11cgd.
+        </div>
+    </div>
+
+    <script src="tmp/stations.js"></script>
+    <script>
+        // Initialize map centered on Southern California
+        const map = L.map('map').setView([34.5, -119.5], 7);
+        
+        // Add base layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors',
+            maxZoom: 18
+        }).addTo(map);
+
+        // Southwest region (11cgd) station bounds
+        const stationBounds = { west: -126, south: 30, east: -114, north: 38 };
+
+        // Draw region boundary rectangle FIRST (so it's behind markers)
+        const boundaryRect = L.rectangle(
+            [[stationBounds.south, stationBounds.west], [stationBounds.north, stationBounds.east]], 
+            {
+                color: '#eab308',
+                weight: 3,
+                fillColor: '#eab308',
+                fillOpacity: 0.08
+            }
+        ).bindPopup('<b>11cgd Station Bounds</b><br>West: -126°, East: -114°<br>South: 30°, North: 38°')
+          .addTo(map);
+        
+        // Send boundary to back
+        boundaryRect.bringToBack();
+
+        // Function to check if station is within bounds
+        function isInBounds(lat, lng) {
+            return lat >= stationBounds.south && lat <= stationBounds.north &&
+                   lng >= stationBounds.west && lng <= stationBounds.east;
+        }
+
+        // Add all stations
+        let insideCount = 0;
+        let outsideCount = 0;
+
+        stations.forEach(station => {
+            const lat = station.lat;
+            const lng = station.lng;
+            const inBounds = isInBounds(lat, lng);
+
+            if (inBounds) insideCount++;
+            else outsideCount++;
+
+            // Create marker
+            const marker = L.circleMarker([lat, lng], {
+                radius: 6,
+                fillColor: inBounds ? '#3b82f6' : '#94a3b8',
+                color: '#fff',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: inBounds ? 0.85 : 0.4
+            });
+
+            // Add popup with station info
+            const typeLabel = station.type === 'R' ? 'Reference Station' : 'Subordinate Station';
+            marker.bindPopup(`
+                <div style="min-width: 200px;">
+                    <b>${station.name}</b><br>
+                    <span style="font-size: 11px; color: #666;">ID: ${station.id}</span><br>
+                    <span style="font-size: 11px; color: #666;">${typeLabel}</span><br>
+                    <span style="font-size: 11px; color: #666;">Lat: ${lat.toFixed(4)}°, Lng: ${lng.toFixed(4)}°</span><br>
+                    <div style="margin-top: 8px; padding: 4px 8px; border-radius: 4px; font-size: 11px; background: ${inBounds ? '#dbeafe' : '#f1f5f9'}; color: ${inBounds ? '#1e40af' : '#64748b'};">
+                        ${inBounds ? '✓ Inside 11cgd bounds' : '✗ Outside 11cgd bounds'}
+                    </div>
+                </div>
+            `);
+
+            marker.addTo(map);
+        });
+
+        // Update statistics
+        document.getElementById('total-count').textContent = stations.length;
+        document.getElementById('inside-count').textContent = insideCount;
+        document.getElementById('outside-count').textContent = outsideCount;
+
+        console.log(`Map loaded: ${stations.length} stations (${insideCount} inside 11cgd, ${outsideCount} outside)`);
+    </script>
+</body>
+</html>
