@@ -224,10 +224,12 @@ export const REGIONS: Region[] = [
     description: 'SE Coast & Caribbean',
     center: [27.0, -78.0],
     color: '#ec4899',
-    status: 'pending',
+    status: 'converted',
     mapBounds: [-84, 24, -64, 34],
     estimatedChartSizeMB: 180,
-    us1Charts: [],
+    us1Charts: [
+      { name: 'US1GC09M', west: -98.4375, south: 16.636192, east: -75.9375, north: 34.307144 },
+    ],
   },
 ];
 

@@ -31,6 +31,7 @@ import {
   getRegionBBox,
 } from '../config/regionData';
 import * as chartPackService from '../services/chartPackService';
+import { getInstalledDistricts, type InstalledDistrictRecord } from '../services/regionRegistryService';
 import DownloadPanel from './DownloadPanel';
 
 // ============================================
@@ -72,6 +73,16 @@ export default function RegionSelector({ visible, onClose }: Props) {
   const [selectedOptionalMaps, setSelectedOptionalMaps] = useState<Set<string>>(new Set(['gnis']));
   const cameraRef = useRef<any>(null);
 
+  // Track which districts are installed on device
+  const [installedDistricts, setInstalledDistricts] = useState<InstalledDistrictRecord[]>([]);
+  
+  // Load installed districts when modal opens
+  useEffect(() => {
+    if (visible) {
+      getInstalledDistricts().then(setInstalledDistricts).catch(() => {});
+    }
+  }, [visible, state]);
+
   const selectedRegion = useMemo(
     () => REGIONS.find(r => r.id === selectedRegionId) || null,
     [selectedRegionId]
@@ -81,6 +92,11 @@ export default function RegionSelector({ visible, onClose }: Props) {
     () => SATELLITE_OPTIONS.find(o => o.resolution === selectedResolution) || null,
     [selectedResolution]
   );
+
+  // Check if a region's district is installed
+  const isRegionInstalled = useCallback((region: Region) => {
+    return installedDistricts.some(d => d.districtId === region.firestoreId);
+  }, [installedDistricts]);
 
   // Can download when region is ready and resolution is chosen
   const canDownload = !!(selectedRegion && selectedRegion.status === 'converted' && selectedResolution);
@@ -424,17 +440,22 @@ export default function RegionSelector({ visible, onClose }: Props) {
         <View style={styles.chipGrid}>
           {REGIONS.map(region => {
             const isSelected = selectedRegionId === region.id;
+            const installed = isRegionInstalled(region);
 
             return (
               <TouchableOpacity
                 key={region.id}
                 style={[
                   styles.chip,
+                  installed && !isSelected && styles.chipInstalled,
                   isSelected && { backgroundColor: region.color, borderColor: region.color },
                 ]}
                 onPress={() => handleRegionSelect(region.id)}
                 activeOpacity={0.7}
               >
+                {installed && (
+                  <Ionicons name="checkmark-circle" size={14} color={isSelected ? '#ffffff' : '#4CAF50'} style={{ marginRight: 4 }} />
+                )}
                 <Text style={[styles.chipText, isSelected && styles.chipTextSelected]}>
                   {region.name}
                 </Text>
@@ -816,12 +837,18 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 16,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  chipInstalled: {
+    borderColor: 'rgba(76, 175, 80, 0.4)',
+    backgroundColor: 'rgba(76, 175, 80, 0.08)',
   },
   chipText: {
     fontSize: 13,

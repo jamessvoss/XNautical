@@ -1017,20 +1017,44 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * Get the satellite MBTiles filename for a given zoom level.
-     * Routes to per-zoom satellite files: satellite_z0-5, satellite_z6-7, satellite_z8, satellite_z9, etc.
+     * Get the satellite MBTiles filename(s) for a given zoom level.
+     * Returns a list of possible filenames to try (district-prefixed first, then legacy).
+     * Supports multi-region: alaska_satellite_z8, d07_satellite_z8, satellite_z8.
      */
-    private String getSatelliteFileForZoom(int z) {
+    private List<String> getSatelliteFilesForZoom(int z) {
+        String zoomSuffix;
         if (z <= 5) {
-            return "satellite_z0-5";
+            zoomSuffix = "z0-5";
         } else if (z <= 7) {
-            return "satellite_z6-7";
+            zoomSuffix = "z6-7";
         } else if (z == 8) {
-            return "satellite_z8";
+            zoomSuffix = "z8";
         } else {
-            // z9-14 have individual files
-            return "satellite_z" + z;
+            zoomSuffix = "z" + z;
         }
+        
+        List<String> candidates = new ArrayList<>();
+        
+        // Scan mbtiles directory for all district-prefixed satellite files matching this zoom
+        if (mbtilesDir != null) {
+            File dir = new File(mbtilesDir);
+            if (dir.exists()) {
+                String[] files = dir.list();
+                if (files != null) {
+                    String suffix = "_satellite_" + zoomSuffix + ".mbtiles";
+                    for (String file : files) {
+                        if (file.endsWith(suffix)) {
+                            candidates.add(file.replace(".mbtiles", ""));
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Fallback: try legacy unprefixed name
+        candidates.add("satellite_" + zoomSuffix);
+        
+        return candidates;
     }
 
     /**
@@ -1569,14 +1593,23 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 int x = Integer.parseInt(parts[parts.length - 2]);
                 int y = Integer.parseInt(parts[parts.length - 1]);
                 
-                // Handle satellite tile routing to per-zoom files
+                // Handle satellite tile routing to per-zoom files (multi-district)
+                byte[] tileData = null;
                 if (chartId.equals("satellite") || chartId.equals("satellite_alaska")) {
-                    chartId = getSatelliteFileForZoom(z);
-                    Log.d(TAG, "Satellite tile z" + z + " routed to: " + chartId);
+                    List<String> satelliteCandidates = getSatelliteFilesForZoom(z);
+                    Log.d(TAG, "Satellite tile z" + z + " trying " + satelliteCandidates.size() + " candidates");
+                    for (String candidate : satelliteCandidates) {
+                        tileData = getTile(candidate, z, x, y);
+                        if (tileData != null && tileData.length > 0) {
+                            Log.d(TAG, "Satellite tile z" + z + " served from: " + candidate);
+                            break;
+                        }
+                    }
+                } else {
+                    // Direct tile request (e.g., alaska_satellite_z8, d07_ocean_z0-5)
+                    tileData = getTile(chartId, z, x, y);
                 }
                 
-                // Get tile data
-                byte[] tileData = getTile(chartId, z, x, y);
                 long queryTime = System.currentTimeMillis() - startTime;
                 
                 if (tileData == null || tileData.length == 0) {

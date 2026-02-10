@@ -110,8 +110,8 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       const installed = await chartPackService.getInstalledPackIds(region.firestoreId);
       setInstalledPackIds(installed);
 
-      // Check predictions status
-      const predDownloaded = await arePredictionsDownloaded();
+      // Check predictions status (per-district)
+      const predDownloaded = await arePredictionsDownloaded(region.firestoreId);
       setPredictionsDownloaded(predDownloaded);
 
       // Check buoys status
@@ -388,10 +388,23 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       // Refresh installed state
       const installed = await chartPackService.getInstalledPackIds(firestoreId);
       setInstalledPackIds(installed);
-      const predDownloaded = await arePredictionsDownloaded();
+      const predDownloaded = await arePredictionsDownloaded(firestoreId);
       setPredictionsDownloaded(predDownloaded);
       const buoysDl = await areBuoysDownloaded(firestoreId);
       setBuoysDownloaded(buoysDl);
+
+      // Register this district in the region registry
+      const { registerDistrict } = await import('../services/regionRegistryService');
+      await registerDistrict(firestoreId, {
+        hasCharts: installed.some(id => id.startsWith('charts-')),
+        hasPredictions: predDownloaded,
+        hasBuoys: buoysDl,
+        hasSatellite: installed.some(id => id.startsWith('satellite-')),
+        hasBasemap: installed.includes('basemap'),
+        hasGnis: installed.includes('gnis'),
+        hasOcean: installed.some(id => id.startsWith('ocean-')),
+        hasTerrain: installed.some(id => id.startsWith('terrain-')),
+      });
 
       Alert.alert('Complete', 'All data downloaded successfully.');
     } catch (error: any) {
@@ -450,6 +463,16 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
             setCurrentDownloadItem('');
             const installed = await chartPackService.getInstalledPackIds(firestoreId);
             setInstalledPackIds(installed);
+            // Register/update district in region registry
+            const { registerDistrict } = await import('../services/regionRegistryService');
+            await registerDistrict(firestoreId, {
+              hasCharts: installed.some(id => id.startsWith('charts-')),
+              hasSatellite: installed.some(id => id.startsWith('satellite-')),
+              hasBasemap: installed.includes('basemap'),
+              hasGnis: installed.includes('gnis'),
+              hasOcean: installed.some(id => id.startsWith('ocean-')),
+              hasTerrain: installed.some(id => id.startsWith('terrain-')),
+            });
           },
         },
       ]
@@ -478,6 +501,8 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
                 }, firestoreId);
                 if (result.success) {
                   setPredictionsDownloaded(true);
+                  const { registerDistrict } = await import('../services/regionRegistryService');
+                  await registerDistrict(firestoreId, { hasPredictions: true });
                   Alert.alert('Complete', 'Predictions downloaded successfully.');
                 } else {
                   Alert.alert('Error', result.error || 'Download failed');
@@ -514,6 +539,8 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               });
               if (result.success) {
                 setBuoysDownloaded(true);
+                const { registerDistrict } = await import('../services/regionRegistryService');
+                await registerDistrict(firestoreId, { hasBuoys: true });
                 Alert.alert('Complete', `${result.stationCount} buoy stations cached.`);
               } else {
                 Alert.alert('Error', result.error || 'Download failed');
@@ -542,7 +569,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
             style: 'destructive',
             onPress: async () => {
               try {
-                await clearPredictions();
+                await clearPredictions(firestoreId);
                 setPredictionsDownloaded(false);
               } catch (error: any) {
                 Alert.alert('Error', error.message || 'Delete failed');
@@ -591,6 +618,56 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
             }
             const installed = await chartPackService.getInstalledPackIds(firestoreId);
             setInstalledPackIds(installed);
+          },
+        },
+      ]
+    );
+  };
+
+  // ============================================
+  // Delete Entire Region
+  // ============================================
+
+  const handleDeleteRegion = () => {
+    const regionName = region?.name || 'this region';
+    Alert.alert(
+      'Delete Region',
+      `Delete all downloaded data for ${regionName}?\n\nThis includes charts, predictions, buoys, satellite imagery, and all other data for this region.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { getInstalledDistrictIds, unregisterDistrict } = await import('../services/regionRegistryService');
+              
+              // Get other installed districts (for GNIS cleanup check)
+              const allDistrictIds = await getInstalledDistrictIds();
+              const otherDistrictIds = allDistrictIds.filter(id => id !== firestoreId);
+              
+              // Delete all region files
+              const result = await chartPackService.deleteRegion(firestoreId, otherDistrictIds);
+              
+              // Clear buoy data
+              await clearBuoys(firestoreId);
+              
+              // Unregister from the region registry
+              await unregisterDistrict(firestoreId);
+              
+              // Reset local state
+              setInstalledPackIds([]);
+              setPredictionsDownloaded(false);
+              setBuoysDownloaded(false);
+              
+              const freedMB = result.freedBytes / 1024 / 1024;
+              Alert.alert(
+                'Region Deleted',
+                `Deleted ${result.deletedFiles} files and freed ${freedMB >= 1024 ? `${(freedMB / 1024).toFixed(1)} GB` : `${freedMB.toFixed(0)} MB`} of storage.`
+              );
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Delete failed');
+            }
           },
         },
       ]
@@ -806,6 +883,20 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               },
             ]}
           />
+        </View>
+      )}
+
+      {/* Delete Entire Region button - shown when any data is installed */}
+      {categories.some(c => c.installed) && !isDownloading && (
+        <View style={styles.deleteRegionSection}>
+          <TouchableOpacity
+            style={styles.deleteRegionButton}
+            onPress={handleDeleteRegion}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="trash-outline" size={18} color="#ff6b6b" />
+            <Text style={styles.deleteRegionText}>Delete Entire Region</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -1076,5 +1167,30 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#4FC3F7',
     borderRadius: 2,
+  },
+
+  // Delete Entire Region
+  deleteRegionSection: {
+    marginTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    paddingTop: 16,
+    alignItems: 'center',
+  },
+  deleteRegionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 107, 0.3)',
+    backgroundColor: 'rgba(255, 107, 107, 0.08)',
+  },
+  deleteRegionText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ff6b6b',
   },
 });

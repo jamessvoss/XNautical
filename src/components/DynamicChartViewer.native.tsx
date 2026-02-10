@@ -2171,11 +2171,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
               if (dirInfo.exists) {
                 const files = await FileSystem.readDirectoryAsync(mbtilesDir);
-                const currentSatelliteCount = files.filter((f: string) => f.startsWith('satellite_z') && f.endsWith('.mbtiles')).length;
-                const currentBasemapCount = files.filter((f: string) => f.startsWith('basemap_z') && f.endsWith('.mbtiles')).length;
-                const currentOceanCount = files.filter((f: string) => f.startsWith('ocean_z') && f.endsWith('.mbtiles')).length;
-                const currentTerrainCount = files.filter((f: string) => f.startsWith('terrain_z') && f.endsWith('.mbtiles')).length;
-                const hasGnis = files.some((f: string) => f.startsWith('gnis_names'));
+                // Count tile files using patterns that match both legacy and multi-region naming
+                const currentSatelliteCount = files.filter((f: string) => f.includes('satellite_z') && f.endsWith('.mbtiles')).length;
+                const currentBasemapCount = files.filter((f: string) => f.includes('basemap_z') && f.endsWith('.mbtiles')).length;
+                const currentOceanCount = files.filter((f: string) => f.includes('ocean_z') && f.endsWith('.mbtiles')).length;
+                const currentTerrainCount = files.filter((f: string) => f.includes('terrain_z') && f.endsWith('.mbtiles')).length;
+                const hasGnis = files.some((f: string) => f === 'gnis_names.mbtiles');
                 const hasBasemap = currentBasemapCount > 0 || files.some((f: string) => f.startsWith('basemap') && f.endsWith('.mbtiles'));
                 
                 // Compare with current state
@@ -2636,6 +2637,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     try {
       setLoading(true);
       
+      // Run one-time migration for legacy prediction database filenames
+      try {
+        const { migrateLegacyPredictionDatabases } = require('../services/stationService');
+        await migrateLegacyPredictionDatabases();
+      } catch (migrationError) {
+        console.warn('[MAP] Legacy prediction migration failed (non-critical):', migrationError);
+      }
+      
       const FileSystem = require('expo-file-system/legacy');
       
       // === PHASE 1: mbtiles directory - use internal storage (always writable) ===
@@ -2687,17 +2696,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       
       // === PHASE 3: Check for special files (GNIS, satellite, basemap, ocean, terrain) ===
       performanceTracker.startPhase(StartupPhase.SPECIAL_FILES);
-      const gnisInfo = await FileSystem.getInfoAsync(`${mbtilesDir}/gnis_names_ak.mbtiles`);
+      const gnisInfo = await FileSystem.getInfoAsync(`${mbtilesDir}/gnis_names.mbtiles`);
       
       const gnisFound = gnisInfo.exists;
       
       setGnisAvailable(gnisFound);
       
-      // Helper: scan for per-zoom MBTiles files matching a prefix pattern
-      // Returns sorted TileSet[] parsed from filenames like prefix_z8.mbtiles or prefix_z0-5.mbtiles
-      const scanTileSets = (filesInDir: string[], prefix: string): TileSet[] => {
+      // Helper: scan for per-zoom MBTiles files matching a type pattern.
+      // Supports both legacy (type_z8.mbtiles) and multi-region (prefix_type_z8.mbtiles) naming.
+      // Returns sorted TileSet[] with unique zoom ranges (deduped across districts).
+      const scanTileSets = (filesInDir: string[], tileType: string): TileSet[] => {
         const sets: TileSet[] = [];
-        const pattern = new RegExp(`^${prefix}_z(\\d+)(?:-(\\d+))?\\.mbtiles$`);
+        // Match: {anything_}type_z{zoom}.mbtiles or type_z{zoom}.mbtiles
+        // Examples: alaska_satellite_z8.mbtiles, d07_satellite_z0-5.mbtiles, satellite_z8.mbtiles
+        const pattern = new RegExp(`(?:^|_)${tileType}_z(\\d+)(?:-(\\d+))?\\.mbtiles$`);
         for (const filename of filesInDir) {
           const match = filename.match(pattern);
           if (match) {
@@ -2709,7 +2721,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         return sets.sort((a, b) => a.minZoom - b.minZoom);
       };
       
-      // Scan directory for all tile set types
+      // Scan directory for all tile set types (across all installed districts)
       let foundSatelliteSets: TileSet[] = [];
       let foundBasemapSets: TileSet[] = [];
       let foundOceanSets: TileSet[] = [];
@@ -2827,7 +2839,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             // If we found chart packs but no manifest, generate one for the native tile server
             if (hasChartPacks) {
               logger.info(LogCategory.CHARTS, 'Found chart packs without manifest - generating manifest.json for tile server');
-              await chartPackService.generateManifest('17cgd');
+              await chartPackService.generateManifest();
               
               // Re-read the manifest so the JS side also knows about it
               const manifestPath = `${mbtilesDir}/manifest.json`;
@@ -5696,7 +5708,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {tileServerReady && gnisAvailable && showGNISNames && showPlaceNames && debugIsSourceVisible('gnis') && (
           <MapLibre.VectorSource
             id="gnis-names-source"
-            tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/gnis_names_ak/{z}/{x}/{y}.pbf`]}
+            tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/gnis_names/{z}/{x}/{y}.pbf`]}
             maxZoomLevel={14}
           >
             {/* Water features - Bays, channels, sounds */}

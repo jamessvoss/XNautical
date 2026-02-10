@@ -34,6 +34,7 @@ import Svg, {
   LinearGradient,
   Stop,
   ClipPath,
+  Circle,
 } from 'react-native-svg';
 import {
   Magnetometer,
@@ -60,15 +61,21 @@ const PFD_TAPE_W = 56;
 const PFD_GAP = 8;
 const PFD_SVG_H = PFD_ATT_H + PFD_GAP + PFD_HDG_H;
 
-// Satellite bar chart
+// Satellite bar chart - FIXED to 50 channels
 const SAT_MAX_SNR = 50;
-const SAT_BAR_H = 50;
+const SAT_BAR_H = 40; // Reduced from 50 for compactness
+const SAT_FIXED_COUNT = 50; // Always show 50 satellite channels
 
-// Full constellation pool (50 satellites across 4 GNSS systems)
-const ALL_GPS_PRNS = ['G02','G04','G05','G07','G09','G12','G13','G15','G16','G18','G20','G21','G24','G25','G26','G27','G29','G30','G31','G32'];
-const ALL_GLONASS_PRNS = ['R01','R02','R03','R07','R08','R09','R10','R12','R15','R17','R18','R19','R20','R21','R24'];
-const ALL_GALILEO_PRNS = ['E01','E02','E03','E04','E05','E07','E08','E09','E11','E12','E13','E19','E24','E25','E26','E30','E31','E33'];
-const ALL_BEIDOU_PRNS = ['C06','C07','C08','C10','C11','C12','C14','C16','C19','C20','C21','C23','C27','C29','C30'];
+// Sky plot dimensions
+const SKY_PLOT_SIZE = Math.min(PFD_W - 8, 320); // Maximized - minimal padding
+
+// Fixed 50-satellite constellation (deterministic order)
+const FIXED_50_PRNS = [
+  ...['G02','G04','G05','G07','G09','G12','G13','G15','G16','G18','G20','G21','G24','G25','G26','G27','G29','G30','G31','G32'], // 20 GPS
+  ...['R01','R02','R03','R07','R08','R09','R10','R12','R15','R17','R18','R19','R20','R21','R24'], // 15 GLONASS
+  ...['E01','E02','E03','E04','E05','E07','E08','E09','E11','E12'], // 10 Galileo
+  ...['C06','C07','C08','C10','C11'], // 5 BeiDou
+];
 
 // Deterministic per-channel seeds (50 values to support max satellites)
 const SAT_SEEDS = [
@@ -79,31 +86,9 @@ const SAT_SEEDS = [
   0.78, 0.47, 0.90, 0.34, 0.69, 0.56, 0.83, 0.25, 0.75, 0.49,
 ];
 
-/** Generate visible satellite list based on GPS accuracy (mimics real receiver behavior) */
-function generateVisibleSatellites(accuracy: number | null): string[] {
-  if (accuracy === null) return [];
-  
-  // Determine constellation sizes by accuracy bracket
-  let gpsCount: number, glonassCount: number, galileoCount: number, beidouCount: number;
-  if (accuracy <= 3) {
-    gpsCount = 16; glonassCount = 10; galileoCount = 9; beidouCount = 6; // 41 total
-  } else if (accuracy <= 8) {
-    gpsCount = 14; glonassCount = 9; galileoCount = 7; beidouCount = 5; // 35 total
-  } else if (accuracy <= 15) {
-    gpsCount = 12; glonassCount = 7; galileoCount = 6; beidouCount = 4; // 29 total
-  } else if (accuracy <= 30) {
-    gpsCount = 10; glonassCount = 6; galileoCount = 4; beidouCount = 3; // 23 total
-  } else {
-    gpsCount = 8; glonassCount = 4; galileoCount = 3; beidouCount = 2; // 17 total
-  }
-  
-  // Deterministically select satellites (same accuracy = same satellites)
-  return [
-    ...ALL_GPS_PRNS.slice(0, gpsCount),
-    ...ALL_GLONASS_PRNS.slice(0, glonassCount),
-    ...ALL_GALILEO_PRNS.slice(0, galileoCount),
-    ...ALL_BEIDOU_PRNS.slice(0, beidouCount),
-  ];
+/** Generate fixed 50 satellite channels - always returns same 50 PRNs */
+function generateVisibleSatellites(): string[] {
+  return FIXED_50_PRNS;
 }
 
 // Color palette
@@ -185,10 +170,11 @@ function getCardinal(heading: number | null): string {
 
 function getSignalQuality(accuracy: number | null, isTracking: boolean): { label: string; color: string; bars: number } {
   if (!isTracking || accuracy === null) return { label: 'NO FIX', color: C.red, bars: 0 };
-  if (accuracy <= 3) return { label: 'EXCELLENT', color: C.green, bars: 5 };
-  if (accuracy <= 8) return { label: 'GOOD', color: C.green, bars: 4 };
-  if (accuracy <= 15) return { label: 'FAIR', color: C.amber, bars: 3 };
-  if (accuracy <= 30) return { label: 'POOR', color: C.amber, bars: 2 };
+  // Adjusted to better match Android system behavior (Android shows bars based on ~5m, ~10m, ~20m, ~50m thresholds)
+  if (accuracy <= 5) return { label: 'EXCELLENT', color: C.green, bars: 5 };
+  if (accuracy <= 10) return { label: 'GOOD', color: C.green, bars: 4 };
+  if (accuracy <= 20) return { label: 'FAIR', color: C.amber, bars: 3 };
+  if (accuracy <= 50) return { label: 'POOR', color: C.amber, bars: 2 };
   return { label: 'WEAK', color: C.red, bars: 1 };
 }
 
@@ -291,7 +277,7 @@ function SignalBars({ bars, maxBars = 5, color, size = 'normal' }: {
   );
 }
 
-/** Satellite constellation bar chart + fix info line */
+/** Satellite azimuth chart (0-359°) + fix info line */
 function SatelliteStatus({ accuracy, isTracking, lastFixTime, signal, gnssData }: {
   accuracy: number | null;
   isTracking: boolean;
@@ -304,98 +290,124 @@ function SatelliteStatus({ accuracy, isTracking, lastFixTime, signal, gnssData }
   // Use real GNSS data if available (Android), otherwise estimate
   const useRealData = gnssData && gnssData.satellites && gnssData.satellites.length > 0;
   
-  // Generate satellite list (real or estimated)
-  const satellitesData = useMemo(() => {
+  // Map satellites to azimuth positions (0-359°)
+  const azimuthData = useMemo(() => {
+    const azMap: Array<{ azimuth: number; snr: number; active: boolean; constellation: string }> = [];
+    
     if (useRealData && gnssData!.satellites) {
-      // Android: Real GNSS data
-      const sats = gnssData!.satellites;
-      return {
-        prns: sats.map(s => {
-          const prefix = s.constellation === 'GPS' ? 'G'
-            : s.constellation === 'GLONASS' ? 'R'
-            : s.constellation === 'Galileo' ? 'E'
-            : s.constellation === 'BeiDou' ? 'C'
-            : s.constellation === 'QZSS' ? 'Q'
-            : 'S'; // SBAS
-          return `${prefix}${String(s.svid).padStart(2, '0')}`;
-        }),
-        satellites: sats.map(s => ({
-          snr: s.cn0DbHz, // Real C/N0 in dB-Hz
-          active: s.usedInFix,
-        })),
-      };
+      // Android: Real GNSS data with actual azimuth
+      gnssData!.satellites.forEach(s => {
+        if (s.cn0DbHz > 0) {
+          azMap.push({
+            azimuth: Math.round(s.azimuth),
+            snr: s.cn0DbHz,
+            active: s.usedInFix,
+            constellation: s.constellation,
+          });
+        }
+      });
     } else {
-      // iOS or no permission: Use estimation
-      const visiblePRNs = generateVisibleSatellites(accuracy);
-      return {
-        prns: visiblePRNs,
-        satellites: estimateSatellites(visiblePRNs, accuracy, isTracking),
-      };
+      // iOS or no permission: Generate estimated satellites with simulated azimuth
+      const estimatedSats = estimateSatellites(FIXED_50_PRNS, accuracy, isTracking);
+      estimatedSats.forEach((sat, i) => {
+        if (sat.snr > 0) {
+          const seed = SAT_SEEDS[i] || 0.5;
+          azMap.push({
+            azimuth: Math.round(seed * 360),
+            snr: sat.snr,
+            active: sat.active,
+            constellation: FIXED_50_PRNS[i].startsWith('G') ? 'GPS'
+              : FIXED_50_PRNS[i].startsWith('R') ? 'GLONASS'
+              : FIXED_50_PRNS[i].startsWith('E') ? 'Galileo'
+              : 'BeiDou',
+          });
+        }
+      });
     }
+    
+    return azMap;
   }, [useRealData, gnssData, accuracy, isTracking]);
   
-  const { prns: visiblePRNs, satellites } = satellitesData;
-  const satCount = visiblePRNs.length;
+  // Chart dimensions
+  const chartH = SAT_BAR_H;
+  const labelH = 20;
+  const svgH = chartH + labelH;
+  const padding = 8;
+  const chartW = w - padding * 2;
   
-  const barGap = 2;
-  const barW = satCount > 0 ? Math.floor((w - 12 - barGap * (satCount - 1)) / satCount) : 10;
-  const totalBarsW = barW * satCount + barGap * (satCount - 1);
-  const offsetX = Math.round((w - totalBarsW) / 2);
-  const labelH = 14;
-  const svgH = SAT_BAR_H + labelH;
-
-  const usedCount = satellites.filter(s => s.active).length;
-  const trackedCount = satellites.filter(s => s.snr > 0).length;
+  // Azimuth scale: 360 degrees maps to chart width
+  const degreeToX = (azimuth: number) => padding + (azimuth / 360) * chartW;
+  
+  const usedCount = azimuthData.filter(s => s.active).length;
+  const trackedCount = azimuthData.length;
   const accuracyFt = accuracy != null ? `${(accuracy * 3.28084).toFixed(1)} ft` : '--';
+  
+  // Constellation color
+  const getConstColor = (constellation: string) => {
+    if (constellation === 'GPS') return C.accent;
+    if (constellation === 'GLONASS') return C.amber;
+    if (constellation === 'Galileo') return C.green;
+    if (constellation === 'BeiDou') return C.red;
+    return C.textMuted;
+  };
 
   return (
     <View style={satStyles.wrapper}>
-      {/* ── Line 1: bar chart ── */}
+      {/* ── Header ── */}
       <View style={satStyles.chartHeader}>
-        <Ionicons name="radio-outline" size={12} color={C.textMuted} />
-        <Text style={satStyles.chartTitle}>
-          SATELLITES {useRealData ? '(Real C/N0)' : '(Estimated)'}
-        </Text>
         <Text style={satStyles.satCount}>
-          {usedCount} in use · {trackedCount} tracked
+          {usedCount} in use · {trackedCount} tracked · {useRealData ? 'Real' : 'Estimated'}
         </Text>
       </View>
+      
       <Svg width={w} height={svgH}>
-        {/* Reference line at 50 % SNR */}
-        <Line
-          x1={offsetX} y1={SAT_BAR_H * 0.5}
-          x2={offsetX + totalBarsW} y2={SAT_BAR_H * 0.5}
-          stroke="rgba(255,255,255,0.06)" strokeWidth={1} strokeDasharray="4,4"
-        />
-        {satellites.map((sat, i) => {
-          const x = offsetX + i * (barW + barGap);
-          const barH = sat.snr > 0 ? Math.max(3, (sat.snr / SAT_MAX_SNR) * SAT_BAR_H) : 0;
-          const y = SAT_BAR_H - barH;
-          const color = sat.snr > 30 ? C.green
-            : sat.snr > 20 ? C.amber
-            : sat.snr > 0 ? C.red
-            : 'transparent';
+        {/* Background */}
+        <Rect x={padding} y={0} width={chartW} height={chartH} fill="rgba(0,0,0,0.2)" rx={4} />
+        
+        {/* Azimuth grid lines every 45° */}
+        {[0, 45, 90, 135, 180, 225, 270, 315].map(deg => {
+          const x = degreeToX(deg);
           return (
-            <G key={i}>
-              {/* Ghost background bar */}
-              <Rect x={x} y={0} width={barW} height={SAT_BAR_H}
-                fill="rgba(255,255,255,0.04)" rx={1.5} />
-              {/* Signal bar */}
-              {sat.snr > 0 && (
-                <Rect x={x} y={y} width={barW} height={barH}
-                  fill={color} rx={1.5} opacity={sat.active ? 0.9 : 0.3} />
-              )}
-              {/* PRN label (e.g. G02, R03, E05) */}
-              <SvgText x={x + barW / 2} y={SAT_BAR_H + 10}
-                fill={sat.active ? C.textSecondary : C.textMuted}
-                fontSize={6} fontWeight={sat.active ? '600' : '400'}
-                textAnchor="middle">{visiblePRNs[i]}</SvgText>
-            </G>
+            <Line key={`grid${deg}`} x1={x} y1={0} x2={x} y2={chartH}
+              stroke="rgba(255,255,255,0.08)" strokeWidth={1} strokeDasharray="2,2" />
+          );
+        })}
+        
+        {/* Reference line at 50% SNR */}
+        <Line x1={padding} y1={chartH * 0.5} x2={w - padding} y2={chartH * 0.5}
+          stroke="rgba(255,255,255,0.06)" strokeWidth={1} strokeDasharray="4,4" />
+        
+        {/* Satellites as vertical bars at their azimuth position */}
+        {azimuthData.map((sat, i) => {
+          const x = degreeToX(sat.azimuth);
+          const barW = 3;
+          const barH = sat.snr > 0 ? Math.max(3, (sat.snr / SAT_MAX_SNR) * chartH) : 0;
+          const y = chartH - barH;
+          const color = getConstColor(sat.constellation);
+          
+          return (
+            <Rect key={i} x={x - barW / 2} y={y} width={barW} height={barH}
+              fill={color} rx={1} opacity={sat.active ? 0.9 : 0.4} />
+          );
+        })}
+        
+        {/* Azimuth labels every 45° */}
+        {[0, 45, 90, 135, 180, 225, 270, 315].map(deg => {
+          const x = degreeToX(deg);
+          const label = deg === 0 ? 'N' : deg === 90 ? 'E' : deg === 180 ? 'S' : deg === 270 ? 'W' : `${deg}°`;
+          const isCardinal = deg % 90 === 0;
+          return (
+            <SvgText key={`label${deg}`} x={x} y={chartH + 14}
+              fill={isCardinal ? C.amber : C.textMuted}
+              fontSize={9} fontWeight={isCardinal ? '700' : '600'} 
+              textAnchor="middle">
+              {label}
+            </SvgText>
           );
         })}
       </Svg>
 
-      {/* ── Line 2: fix info ── */}
+      {/* ── Fix info line ── */}
       <View style={satStyles.infoLine}>
         <Ionicons name="time-outline" size={12} color={C.textMuted} />
         <Text style={satStyles.infoText}>{lastFixTime}</Text>
@@ -405,6 +417,244 @@ function SatelliteStatus({ accuracy, isTracking, lastFixTime, signal, gnssData }
         <View style={satStyles.infoDivider} />
         <SignalBars bars={signal.bars} color={signal.color} size="small" />
         <Text style={[satStyles.qualityText, { color: signal.color }]}>{signal.label}</Text>
+      </View>
+    </View>
+  );
+}
+
+/** Satellite Sky Plot - Polar view showing satellite positions by azimuth/elevation */
+function SatelliteSkyPlot({ satellites, prns, gnssData }: {
+  satellites: SatInfo[];
+  prns: string[];
+  gnssData: ReturnType<typeof useGnssSatellites>['data'];
+}) {
+  const size = SKY_PLOT_SIZE;
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = size / 2 - 20;
+  
+  // Check if we have real azimuth/elevation data
+  const hasRealPositions = gnssData && gnssData.satellites && gnssData.satellites.length > 0;
+  
+  // Generate satellite positions (real or simulated)
+  const satPositions = useMemo(() => {
+    if (hasRealPositions && gnssData!.satellites) {
+      // Android: Use real azimuth and elevation from GNSS data
+      return gnssData!.satellites
+        .filter(s => s.cn0DbHz > 0) // Only show satellites with signal
+        .slice(0, SAT_FIXED_COUNT) // Limit to 50
+        .map(sat => {
+          // Convert to polar coordinates
+          // Elevation: 90° (zenith) → r=0 (center), 0° (horizon) → r=radius (edge)
+          const r = radius * (1 - sat.elevation / 90);
+          const angleRad = (sat.azimuth - 90) * (Math.PI / 180); // -90 to make 0° = North (top)
+          
+          const x = cx + r * Math.cos(angleRad);
+          const y = cy + r * Math.sin(angleRad);
+          
+          return { 
+            x, 
+            y, 
+            azimuth: sat.azimuth, 
+            elevation: sat.elevation, 
+            snr: sat.cn0DbHz, 
+            active: sat.usedInFix 
+          };
+        });
+    } else {
+      // iOS or no permission: Use simulated positions
+      return satellites.map((sat, i) => {
+        if (sat.snr === 0) return null; // Don't show satellites with no signal
+        
+        // Use SAT_SEEDS for deterministic positioning
+        const seed1 = SAT_SEEDS[i] || 0.5;
+        const seed2 = SAT_SEEDS[(i + 25) % SAT_SEEDS.length] || 0.5;
+        
+        // Azimuth: 0-360 degrees (compass bearing)
+        const azimuth = seed1 * 360;
+        
+        // Elevation: 0-90 degrees (0=horizon, 90=zenith)
+        // Bias toward mid-elevation for realism (most satellites 20-70°)
+        const elev = 15 + seed2 * 65; // 15-80 degrees
+        
+        // Convert to polar coordinates
+        const r = radius * (1 - elev / 90);
+        const angleRad = (azimuth - 90) * (Math.PI / 180);
+        
+        const x = cx + r * Math.cos(angleRad);
+        const y = cy + r * Math.sin(angleRad);
+        
+        return { x, y, azimuth, elevation: elev, ...sat };
+      }).filter(Boolean) as Array<{ x: number; y: number; azimuth: number; elevation: number; snr: number; active: boolean }>;
+    }
+  }, [hasRealPositions, gnssData, satellites]);
+  
+  // Constellation colors
+  const getConstColor = (prn: string) => {
+    if (prn.startsWith('G')) return C.accent; // GPS blue
+    if (prn.startsWith('R')) return C.amber;  // GLONASS amber
+    if (prn.startsWith('E')) return C.green;  // Galileo green
+    if (prn.startsWith('C')) return C.red;    // BeiDou red
+    return C.textMuted;
+  };
+  
+  // Generate PRN labels for display
+  const displayPrns = useMemo(() => {
+    if (hasRealPositions && gnssData!.satellites) {
+      // Android: Generate PRNs from real satellite data
+      return gnssData!.satellites
+        .filter(s => s.cn0DbHz > 0)
+        .slice(0, SAT_FIXED_COUNT)
+        .map(s => {
+          const prefix = s.constellation === 'GPS' ? 'G'
+            : s.constellation === 'GLONASS' ? 'R'
+            : s.constellation === 'Galileo' ? 'E'
+            : s.constellation === 'BeiDou' ? 'C'
+            : s.constellation === 'QZSS' ? 'Q'
+            : 'S'; // SBAS
+          return `${prefix}${String(s.svid).padStart(2, '0')}`;
+        });
+    } else {
+      // iOS or no permission: Use fixed PRN list
+      return prns;
+    }
+  }, [hasRealPositions, gnssData, prns]);
+  
+  return (
+    <View style={skyStyles.wrapper}>
+      <View style={skyStyles.titleContainer}>
+        <Text style={skyStyles.title}>SKY PLOT</Text>
+      </View>
+      <Svg width={size} height={size}>
+        {/* Background circle */}
+        <G transform={`translate(${cx}, ${cy})`}>
+          {/* Azimuth lines (radial lines from center) - every 15° in orange */}
+          {Array.from({ length: 24 }, (_, i) => i * 15).map(angle => {
+            const angleRad = (angle - 90) * (Math.PI / 180);
+            const isMajor = angle % 90 === 0;
+            const isIntermediate = angle % 30 === 0 && angle % 90 !== 0;
+            const x = radius * Math.cos(angleRad);
+            const y = radius * Math.sin(angleRad);
+            // Position for degree label (outside the perimeter)
+            const labelR = radius + 18;
+            const labelX = labelR * Math.cos(angleRad);
+            const labelY = labelR * Math.cos(angleRad);
+            return (
+              <G key={`azline${angle}`}>
+                <Line x1={0} y1={0} x2={x} y2={y}
+                  stroke={isMajor ? 'rgba(255,183,77,0.5)' : 'rgba(255,183,77,0.25)'}
+                  strokeWidth={isMajor ? 1.5 : 1}
+                  strokeDasharray={isMajor ? undefined : '3,3'} />
+                {/* Degree label - show for all except cardinals (0,90,180,270) */}
+                {!isMajor && isIntermediate && (
+                  <SvgText x={labelX} y={labelY + 3} fill={C.amber} 
+                    fontSize={9} fontWeight="600" textAnchor="middle">
+                    {angle}°
+                  </SvgText>
+                )}
+              </G>
+            );
+          })}
+          
+          {/* Elevation rings (every 15°: 75°, 60°, 45°, 30°, 15°, horizon) - in blue */}
+          {[
+            { angle: 75, ratio: 1 - 75/90 },
+            { angle: 60, ratio: 1 - 60/90 },
+            { angle: 45, ratio: 1 - 45/90 },
+            { angle: 30, ratio: 1 - 30/90 },
+            { angle: 15, ratio: 1 - 15/90 },
+            { angle: 0, ratio: 1.0 },
+          ].map(({ angle, ratio }) => (
+            <G key={`ring${angle}`}>
+              <Circle r={radius * ratio} fill="none" 
+                stroke={angle === 0 || angle === 30 || angle === 60 ? 'rgba(79,195,247,0.25)' : 'rgba(79,195,247,0.15)'} 
+                strokeWidth={1} />
+              {angle > 0 && (
+                <SvgText y={-radius * ratio + 8} fill={C.accent} fontSize={9} fontWeight="600" textAnchor="middle">{angle}°</SvgText>
+              )}
+            </G>
+          ))}
+          {/* Center dot (zenith) */}
+          <Circle r={2} fill="rgba(255,255,255,0.2)" />
+          <SvgText y={-6} fill={C.accent} fontSize={9} textAnchor="middle" fontWeight="700">90°</SvgText>
+          
+          {/* Cardinal and intermediate directions */}
+          {[
+            { angle: 0, label: 'N', color: C.north, major: true },
+            { angle: 45, label: 'NE', color: C.amber, major: false },
+            { angle: 90, label: 'E', color: C.green, major: true },
+            { angle: 135, label: 'SE', color: C.amber, major: false },
+            { angle: 180, label: 'S', color: C.accent, major: true },
+            { angle: 225, label: 'SW', color: C.amber, major: false },
+            { angle: 270, label: 'W', color: C.green, major: true },
+            { angle: 315, label: 'NW', color: C.amber, major: false },
+          ].map(({ angle, label, color, major }) => {
+            const angleRad = (angle - 90) * (Math.PI / 180);
+            const x = (radius + 12) * Math.cos(angleRad);
+            const y = (radius + 12) * Math.sin(angleRad);
+            return (
+              <SvgText key={label} x={x} y={y + 3} fill={color} 
+                fontSize={major ? 13 : 10} fontWeight={major ? '800' : '700'} 
+                textAnchor="middle">
+                {label}
+              </SvgText>
+            );
+          })}
+          
+          {/* Azimuth tick marks every 30° */}
+          {Array.from({ length: 12 }, (_, i) => i * 30).map(angle => {
+            const angleRad = (angle - 90) * (Math.PI / 180);
+            const isMajor = angle % 90 === 0;
+            const r1 = radius;
+            const r2 = radius - (isMajor ? 8 : 4);
+            const x1 = r1 * Math.cos(angleRad);
+            const y1 = r1 * Math.sin(angleRad);
+            const x2 = r2 * Math.cos(angleRad);
+            const y2 = r2 * Math.sin(angleRad);
+            return (
+              <Line key={`tick${angle}`} x1={x1} y1={y1} x2={x2} y2={y2}
+                stroke={isMajor ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.15)'}
+                strokeWidth={isMajor ? 1.5 : 1} />
+            );
+          })}
+          
+          {/* Satellites */}
+          {satPositions.map((pos, i) => {
+            const prn = displayPrns[i];
+            const constColor = getConstColor(prn);
+            const dotSize = pos.active ? 6 : 4;
+            const opacity = pos.active ? 1.0 : 0.5;
+            
+            return (
+              <G key={i} transform={`translate(${pos.x - cx}, ${pos.y - cy})`}>
+                <Circle r={dotSize} fill={constColor} opacity={opacity} />
+                {pos.active && (
+                  <Circle r={dotSize + 2} fill="none" stroke={constColor} strokeWidth={1} opacity={0.4} />
+                )}
+              </G>
+            );
+          })}
+        </G>
+      </Svg>
+      
+      {/* Legend */}
+      <View style={skyStyles.legend}>
+        <View style={skyStyles.legendItem}>
+          <View style={[skyStyles.legendDot, { backgroundColor: C.accent }]} />
+          <Text style={skyStyles.legendText}>GPS</Text>
+        </View>
+        <View style={skyStyles.legendItem}>
+          <View style={[skyStyles.legendDot, { backgroundColor: C.amber }]} />
+          <Text style={skyStyles.legendText}>GLONASS</Text>
+        </View>
+        <View style={skyStyles.legendItem}>
+          <View style={[skyStyles.legendDot, { backgroundColor: C.green }]} />
+          <Text style={skyStyles.legendText}>Galileo</Text>
+        </View>
+        <View style={skyStyles.legendItem}>
+          <View style={[skyStyles.legendDot, { backgroundColor: C.red }]} />
+          <Text style={skyStyles.legendText}>BeiDou</Text>
+        </View>
       </View>
     </View>
   );
@@ -930,6 +1180,9 @@ export default function GPSSensorsView() {
     ? new Date(gpsData.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : '--';
 
+  // Check if we have real GNSS data (for sky plot)
+  const useRealData = gnssData && gnssData.satellites && gnssData.satellites.length > 0;
+
   const pressureTrend = useMemo(() => {
     if (pressureHistory.length < 10) return null;
     const recent = pressureHistory.slice(-10);
@@ -956,6 +1209,38 @@ export default function GPSSensorsView() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer} showsVerticalScrollIndicator={false}>
 
+      {/* ═══ GPS COORDINATES (centered at top, below page title) ═══ */}
+      <TouchableOpacity style={styles.coordsLine} onPress={cycleCoordFormat} activeOpacity={0.7}>
+        <Text style={styles.coordsText}>
+          {formatCoord(gpsData?.latitude ?? null, true, coordFormat)} · {formatCoord(gpsData?.longitude ?? null, false, coordFormat)}
+        </Text>
+      </TouchableOpacity>
+
+      {/* ═══ COMPACT SENSOR BAR (G-force, Mag, Pressure, Baro Alt) ═══ */}
+      <View style={styles.compactSensorBar}>
+        <View style={styles.compactSensorItem}>
+          <Text style={styles.compactLabel}>G</Text>
+          <Text style={[styles.compactValue, sensors.accelG > 1.5 ? { color: C.red } : null]}>
+            {sensors.accelG.toFixed(2)}
+          </Text>
+        </View>
+        <View style={styles.compactDivider} />
+        <View style={styles.compactSensorItem}>
+          <Text style={styles.compactLabel}>MAG</Text>
+          <Text style={styles.compactValue}>{sensors.magTotal.toFixed(0)}<Text style={styles.compactUnit}>µT</Text></Text>
+        </View>
+        <View style={styles.compactDivider} />
+        <View style={styles.compactSensorItem}>
+          <Text style={styles.compactLabel}>PRES</Text>
+          <Text style={styles.compactValue}>{sensors.pressure != null ? sensors.pressure.toFixed(1) : '--'}<Text style={styles.compactUnit}>hPa</Text></Text>
+        </View>
+        <View style={styles.compactDivider} />
+        <View style={styles.compactSensorItem}>
+          <Text style={styles.compactLabel}>BARO</Text>
+          <Text style={styles.compactValue}>{sensors.relAltitude != null ? `${(sensors.relAltitude * 3.28084).toFixed(0)}` : '--'}<Text style={styles.compactUnit}>ft</Text></Text>
+        </View>
+      </View>
+
       {/* ═══ SATELLITE STATUS (bar chart + fix info) ═══ */}
       <SatelliteStatus
         accuracy={gpsData?.accuracy ?? null}
@@ -964,14 +1249,6 @@ export default function GPSSensorsView() {
         signal={signal}
         gnssData={gnssData}
       />
-
-      {/* ═══ LAT / LON (clean centered, above PFD) ═══ */}
-      <TouchableOpacity style={styles.posLine} onPress={cycleCoordFormat} activeOpacity={0.7}>
-        <Text style={styles.posCoord}>{formatCoord(gpsData?.latitude ?? null, true, coordFormat)}</Text>
-        <Text style={styles.posSep}>·</Text>
-        <Text style={styles.posCoord}>{formatCoord(gpsData?.longitude ?? null, false, coordFormat)}</Text>
-        <Text style={styles.posFormat}>{coordFormat.toUpperCase()}</Text>
-      </TouchableOpacity>
 
       {/* ═══ PRIMARY FLIGHT DISPLAY ═══ */}
       <PrimaryFlightDisplay
@@ -983,49 +1260,17 @@ export default function GPSSensorsView() {
         altitudeFt={altitudeFt}
       />
 
-      {/* ═══ G-FORCE BAR ═══ */}
-      <View style={styles.attitudeBar}>
-        <View style={styles.attBarItem}>
-          <Text style={styles.attBarLabel}>G-FORCE</Text>
-          <Text style={[styles.attBarValue, sensors.accelG > 1.5 ? { color: C.red } : null]}>
-            {sensors.accelG.toFixed(2)} g
-          </Text>
-        </View>
-      </View>
+      {/* ═══ SATELLITE SKY PLOT ═══ */}
+      <SatelliteSkyPlot 
+        satellites={
+          (useRealData && gnssData && gnssData.satellites)
+            ? gnssData.satellites.slice(0, SAT_FIXED_COUNT).map(s => ({ snr: s.cn0DbHz, active: s.usedInFix }))
+            : estimateSatellites(FIXED_50_PRNS, gpsData?.accuracy ?? null, gpsData?.isTracking ?? false)
+        }
+        prns={FIXED_50_PRNS}
+        gnssData={gnssData}
+      />
 
-      {/* ═══ SENSORS ═══ */}
-      <View style={styles.sensorBar}>
-        <View style={styles.sensorItem}>
-          <Text style={styles.sensorLabel}>MAG FIELD</Text>
-          <Text style={styles.sensorValue}>{sensors.magTotal.toFixed(0)}</Text>
-          <Text style={styles.sensorUnit}>µT</Text>
-        </View>
-        <View style={styles.sensorDivider} />
-        <View style={styles.sensorItem}>
-          <Text style={styles.sensorLabel}>PRESSURE</Text>
-          <Text style={styles.sensorValue}>{sensors.pressure != null ? sensors.pressure.toFixed(1) : '--'}</Text>
-          <Text style={styles.sensorUnit}>hPa</Text>
-          {pressureTrend && (
-            <View style={styles.trendRow}>
-              <Ionicons name={pressureTrend.icon} size={10} color={pressureTrend.color} />
-              <Text style={[styles.trendText, { color: pressureTrend.color }]}>{pressureTrend.label}</Text>
-            </View>
-          )}
-        </View>
-        <View style={styles.sensorDivider} />
-        <View style={styles.sensorItem}>
-          <Text style={styles.sensorLabel}>BARO ALT</Text>
-          <Text style={styles.sensorValue}>{sensors.relAltitude != null ? sensors.relAltitude.toFixed(1) : '--'}</Text>
-          <Text style={styles.sensorUnit}>m rel</Text>
-          {pressureHistory.length > 5 && (
-            <View style={{ marginTop: 2 }}>
-              <Sparkline data={pressureHistory} width={50} height={14} color={C.green} fillColor={C.greenDim} />
-            </View>
-          )}
-        </View>
-      </View>
-
-      <View style={{ height: 40 }} />
     </ScrollView>
   );
 }
@@ -1047,18 +1292,18 @@ const pfdStyles = StyleSheet.create({
 const satStyles = StyleSheet.create({
   wrapper: {
     backgroundColor: C.cardBg,
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: C.cardBorder,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    marginBottom: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    marginBottom: 6,
   },
   chartHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
+    justifyContent: 'center',
+    marginBottom: 4,
     paddingHorizontal: 4,
   },
   chartTitle: {
@@ -1068,16 +1313,16 @@ const satStyles = StyleSheet.create({
     letterSpacing: 1.5,
   },
   satCount: {
-    fontSize: 10,
+    fontSize: 9,
     color: C.textMuted,
-    marginLeft: 'auto',
+    fontWeight: '600',
   },
   infoLine: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingTop: 8,
+    paddingTop: 6,
     borderTopWidth: 1,
     borderTopColor: C.divider,
   },
@@ -1117,6 +1362,94 @@ const styles = StyleSheet.create({
   contentContainer: {
     paddingHorizontal: 16,
     paddingTop: 8,
+    paddingBottom: 24,
+  },
+
+  // ── Header (title + lat/lon on same line) ──
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    marginBottom: 4,
+    paddingVertical: 2,
+  },
+  headerTitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  headerText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: C.accent,
+    letterSpacing: 1,
+  },
+  headerCoords: {
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+  },
+  headerCoordText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: C.textSecondary,
+    fontFamily: 'monospace',
+    letterSpacing: 0.3,
+  },
+
+  // ── GPS Coordinates (centered above satellite chart) ──
+  coordsLine: {
+    alignItems: 'center',
+    paddingVertical: 6,
+    marginBottom: 6,
+  },
+  coordsText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: C.textSecondary,
+    fontFamily: 'monospace',
+    letterSpacing: 0.3,
+  },
+
+  // ── Compact sensor bar (single line, minimal vertical padding) ──
+  compactSensorBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: C.cardBg,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+    marginBottom: 6,
+  },
+  compactSensorItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  compactDivider: {
+    width: 1,
+    height: 18,
+    backgroundColor: C.divider,
+  },
+  compactLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: C.textMuted,
+    letterSpacing: 0.5,
+  },
+  compactValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: C.textPrimary,
+    fontFamily: 'monospace',
+  },
+  compactUnit: {
+    fontSize: 8,
+    color: C.textMuted,
+    fontWeight: '400',
   },
 
   // ── Position line (clean centered lat/lon) ──
@@ -1234,4 +1567,51 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+});
+
+// ── Sky Plot Styles ──
+const skyStyles = StyleSheet.create({
+  wrapper: {
+    backgroundColor: C.cardBg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: C.cardBorder,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+    marginBottom: 12,
+    alignItems: 'center',
+    position: 'relative',
+  },
+  titleContainer: {
+    position: 'absolute',
+    top: 8,
+    left: 12,
+    zIndex: 10,
+  },
+  title: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: C.accent,
+    letterSpacing: 1.5,
+  },
+  legend: {
+    flexDirection: 'row',
+    gap: 16,
+    marginTop: 4,
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  legendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  legendText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: C.textPrimary,
+  },
 });

@@ -32,11 +32,11 @@ export interface GNISDataset {
 
 export const GNIS_DATASETS: GNISDataset[] = [
   {
-    id: 'gnis_names_ak',
-    name: 'Alaska Place Names',
-    region: 'Alaska',
-    filename: 'gnis_names_ak.mbtiles',
-    description: 'USGS Geographic Names for Alaska - bays, capes, islands, mountains, etc.',
+    id: 'gnis_names',
+    name: 'GNIS Place Names',
+    region: 'Nationwide',
+    filename: 'gnis_names.mbtiles',
+    description: 'USGS Geographic Names - bays, capes, islands, mountains, etc.',
     featureCount: 29790,
     sizeMB: 27.4,
   },
@@ -48,7 +48,7 @@ export const GNIS_DATASETS: GNISDataset[] = [
 /**
  * Check if GNIS data is installed
  */
-export async function isGNISInstalled(datasetId: string = 'gnis_names_ak'): Promise<boolean> {
+export async function isGNISInstalled(datasetId: string = 'gnis_names'): Promise<boolean> {
   try {
     const dataset = GNIS_DATASETS.find(d => d.id === datasetId);
     if (!dataset) return false;
@@ -80,7 +80,7 @@ export async function getInstalledGNISDatasets(): Promise<GNISDataset[]> {
 /**
  * Get GNIS file path
  */
-export function getGNISPath(datasetId: string = 'gnis_names_ak'): string | null {
+export function getGNISPath(datasetId: string = 'gnis_names'): string | null {
   const dataset = GNIS_DATASETS.find(d => d.id === datasetId);
   if (!dataset) return null;
   return `${MBTILES_DIR}${dataset.filename}`;
@@ -89,7 +89,7 @@ export function getGNISPath(datasetId: string = 'gnis_names_ak'): string | null 
 /**
  * Get size of installed GNIS data in bytes
  */
-export async function getGNISSize(datasetId: string = 'gnis_names_ak'): Promise<number> {
+export async function getGNISSize(datasetId: string = 'gnis_names'): Promise<number> {
   try {
     const filePath = getGNISPath(datasetId);
     if (!filePath) return 0;
@@ -108,7 +108,7 @@ export async function getGNISSize(datasetId: string = 'gnis_names_ak'): Promise<
 /**
  * Delete GNIS data
  */
-export async function deleteGNISData(datasetId: string = 'gnis_names_ak'): Promise<void> {
+export async function deleteGNISData(datasetId: string = 'gnis_names'): Promise<void> {
   try {
     const filePath = getGNISPath(datasetId);
     if (!filePath) return;

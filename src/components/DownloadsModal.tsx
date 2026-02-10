@@ -1,5 +1,9 @@
 /**
- * DownloadsModal
+ * DownloadsModal (LEGACY)
+ * 
+ * This modal is superseded by RegionSelector + DownloadPanel which support
+ * multi-region downloads. This modal is kept for backward compatibility
+ * and is hardcoded to the Alaska (17cgd) district.
  * 
  * Full-screen modal for managing all downloads:
  * - Chart packs (MBTiles)

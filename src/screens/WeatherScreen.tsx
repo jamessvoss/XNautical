@@ -93,8 +93,9 @@ export default function WeatherScreen() {
     return () => unsubscribe();
   }, []);
   
-  // TODO: Integrate with region selector to allow users to choose district
-  // For now, default to Alaska (17cgd) where marine zone data exists
+  // TODO: Determine current district from map viewport or installed districts
+  // For now, default to Alaska (17cgd) where marine zone data exists.
+  // Multi-region support: this should eventually iterate or auto-detect.
   const [currentDistrict] = useState<string>('17cgd');
   
   // Marine zones state

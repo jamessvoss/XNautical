@@ -25,6 +25,8 @@ class MainApplication : Application(), ReactApplication {
             PackageList(this).packages.apply {
               // LocalTileServer native module (injected by withLocalTileServer plugin)
               add(LocalTileServerPackage())
+              // GnssSatellite native module (injected by withGnssSatellite plugin)
+              add(GnssSatellitePackage())
               // Packages that cannot be autolinked yet can be added manually here, for example:
               // add(MyReactNativePackage())
             }

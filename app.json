@@ -14,7 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "deploymentTarget": "15.5",
+      "deploymentTarget": "16.0",
       "bundleIdentifier": "com.xnautical.app",
       "googleServicesFile": "./GoogleService-Info.plist",
       "config": {
@@ -40,6 +40,7 @@
       "favicon": "./assets/Logos/XNautical-Logo-Square.png"
     },
     "plugins": [
+      "expo-system-ui",
       [
         "expo-location",
         {

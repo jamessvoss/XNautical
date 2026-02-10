@@ -336,9 +336,9 @@ function getLocalFilename(pack: DistrictDownloadPack, districtId: string): strin
     return `${prefix}_${pack.band}.mbtiles`;
   }
   
-  // GNIS files - use district-specific filenames
+  // GNIS files - use canonical filename (content is identical nationwide)
   if (pack.type === 'gnis') {
-    return GNIS_FILENAMES[districtId] || baseFilename;
+    return 'gnis_names.mbtiles';
   }
   
   // Basemap files - use district-specific filenames
@@ -346,13 +346,19 @@ function getLocalFilename(pack: DistrictDownloadPack, districtId: string): strin
     return BASEMAP_FILENAMES[districtId] || baseFilename;
   }
   
-  // Ocean and terrain files - use the base filename directly (per-zoom pattern)
-  // e.g., ocean_z0-5.mbtiles, terrain_z8.mbtiles
+  // Ocean and terrain files - prefix with district for multi-region coexistence
+  // e.g., alaska_ocean_z0-5.mbtiles, d07_terrain_z8.mbtiles
   if (pack.type === 'ocean' || pack.type === 'terrain') {
-    return baseFilename;
+    return `${prefix}_${baseFilename}`;
   }
   
-  // For other types (satellite, etc.), use the base filename
+  // Satellite files - prefix with district for multi-region coexistence
+  // e.g., alaska_satellite_z0-5.mbtiles, d07_satellite_z8.mbtiles
+  if (pack.type === 'satellite') {
+    return `${prefix}_${baseFilename}`;
+  }
+  
+  // For other types, use the base filename
   return baseFilename;
 }
 
@@ -472,7 +478,7 @@ export async function downloadPack(
     
     // Regenerate manifest.json so the native tile server can find the chart packs
     if (pack.type === 'charts') {
-      await generateManifest(districtId);
+      await generateManifest();
     }
     
     return true;
@@ -530,27 +536,23 @@ export async function getInstalledPackIds(districtId: string): Promise<string[]>
           installedPackIds.push('basemap');
         }
       }
-      // Check for GNIS (any district gnis file)
-      else if (file.startsWith('gnis_names') && file.endsWith('.mbtiles')) {
-        // Check if this GNIS belongs to the requested district
-        const expectedGnis = GNIS_FILENAMES[districtId];
-        if (file === expectedGnis || file === 'gnis_names.mbtiles') {
-          installedPackIds.push('gnis');
-        }
+      // Check for GNIS (canonical filename, shared across all districts)
+      else if (file === 'gnis_names.mbtiles') {
+        installedPackIds.push('gnis');
       }
-      // Check for satellite files (e.g., satellite_z0-5.mbtiles -> satellite-z0-5)
-      else if (file.startsWith('satellite_z')) {
-        const zoomPart = file.replace('satellite_', '').replace('.mbtiles', '');
+      // Check for satellite files: {prefix}_satellite_z*.mbtiles -> satellite-z*
+      else if (file.startsWith(`${prefix}_satellite_z`) && file.endsWith('.mbtiles')) {
+        const zoomPart = file.replace(`${prefix}_satellite_`, '').replace('.mbtiles', '');
         installedPackIds.push(`satellite-${zoomPart}`);
       }
-      // Check for ocean files (e.g., ocean_z0-5.mbtiles -> ocean-z0-5)
-      else if (file.startsWith('ocean_z') && file.endsWith('.mbtiles')) {
-        const zoomPart = file.replace('ocean_', '').replace('.mbtiles', '');
+      // Check for ocean files: {prefix}_ocean_z*.mbtiles -> ocean-z*
+      else if (file.startsWith(`${prefix}_ocean_z`) && file.endsWith('.mbtiles')) {
+        const zoomPart = file.replace(`${prefix}_ocean_`, '').replace('.mbtiles', '');
         installedPackIds.push(`ocean-${zoomPart}`);
       }
-      // Check for terrain files (e.g., terrain_z0-5.mbtiles -> terrain-z0-5)
-      else if (file.startsWith('terrain_z') && file.endsWith('.mbtiles')) {
-        const zoomPart = file.replace('terrain_', '').replace('.mbtiles', '');
+      // Check for terrain files: {prefix}_terrain_z*.mbtiles -> terrain-z*
+      else if (file.startsWith(`${prefix}_terrain_z`) && file.endsWith('.mbtiles')) {
+        const zoomPart = file.replace(`${prefix}_terrain_`, '').replace('.mbtiles', '');
         installedPackIds.push(`terrain-${zoomPart}`);
       }
     }
@@ -583,7 +585,7 @@ export async function deletePack(
       
       // Regenerate manifest.json after deleting a chart pack
       if (pack.type === 'charts') {
-        await generateManifest(districtId);
+        await generateManifest();
       }
       
       return true;
@@ -603,10 +605,12 @@ export async function deletePack(
  * to know which chart packs are available and their metadata (bounds, zoom ranges).
  * Without this file, composite tile requests (/tiles/{z}/{x}/{y}.pbf) return nothing.
  * 
- * This function scans the mbtiles directory for alaska_US*.mbtiles files
- * and generates the manifest with the metadata the native server needs.
+ * This function scans the mbtiles directory for ALL installed districts' chart packs
+ * (e.g., alaska_US1.mbtiles, d07_US1.mbtiles) and includes them all in the manifest
+ * with per-district bounds. This enables multi-region support where the tile server
+ * serves tiles from whichever region covers the current viewport.
  */
-export async function generateManifest(districtId: string): Promise<void> {
+export async function generateManifest(): Promise<void> {
   try {
     const mbtilesDir = await getMBTilesDir();
     const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
@@ -617,10 +621,6 @@ export async function generateManifest(districtId: string): Promise<void> {
     }
     
     const files = await FileSystem.readDirectoryAsync(mbtilesDir);
-    
-    // Use generalized prefix and bounds mappings
-    const prefix = getDistrictPrefix(districtId);
-    const bounds = DISTRICT_BOUNDS[districtId] || { south: -90, west: -180, north: 90, east: 180 };
     
     // Zoom ranges for each chart scale
     const scaleZoomRanges: Record<string, { minZoom: number; maxZoom: number }> = {
@@ -634,45 +634,50 @@ export async function generateManifest(districtId: string): Promise<void> {
     
     const packs: Array<{
       id: string;
-      bounds: typeof bounds;
+      bounds: { south: number; west: number; north: number; east: number };
       minZoom: number;
       maxZoom: number;
       fileSize: number;
     }> = [];
     
-    for (const file of files) {
-      // Match chart pack files: alaska_US1.mbtiles, alaska_US2.mbtiles, etc.
-      if (file.startsWith(`${prefix}_US`) && file.endsWith('.mbtiles')) {
-        const band = file.replace(`${prefix}_`, '').replace('.mbtiles', ''); // e.g., "US1"
-        const packId = `${prefix}_${band}`; // e.g., "alaska_US1"
-        
-        // Get file size
-        const filePath = `${mbtilesDir}${file}`;
-        const fileInfo = await FileSystem.getInfoAsync(filePath, { size: true });
-        const fileSize = fileInfo.exists && fileInfo.size ? fileInfo.size : 0;
-        
-        const zoomRange = scaleZoomRanges[band] || { minZoom: 0, maxZoom: 22 };
-        
-        packs.push({
-          id: packId,
-          bounds,
-          minZoom: zoomRange.minZoom,
-          maxZoom: zoomRange.maxZoom,
-          fileSize,
-        });
-        
-        console.log(`[ChartPackService] Manifest pack: ${packId} (${band}) z${zoomRange.minZoom}-${zoomRange.maxZoom}, ${(fileSize / 1024 / 1024).toFixed(1)} MB`);
+    // Scan for chart packs from ALL known districts
+    for (const [districtId, prefix] of Object.entries(DISTRICT_PREFIXES)) {
+      const bounds = DISTRICT_BOUNDS[districtId] || { south: -90, west: -180, north: 90, east: 180 };
+      
+      for (const file of files) {
+        // Match chart pack files: {prefix}_US1.mbtiles, {prefix}_US2.mbtiles, etc.
+        if (file.startsWith(`${prefix}_US`) && file.endsWith('.mbtiles')) {
+          const band = file.replace(`${prefix}_`, '').replace('.mbtiles', ''); // e.g., "US1"
+          const packId = `${prefix}_${band}`; // e.g., "alaska_US1" or "d07_US1"
+          
+          // Get file size
+          const filePath = `${mbtilesDir}${file}`;
+          const fileInfo = await FileSystem.getInfoAsync(filePath, { size: true });
+          const fileSize = fileInfo.exists && fileInfo.size ? fileInfo.size : 0;
+          
+          const zoomRange = scaleZoomRanges[band] || { minZoom: 0, maxZoom: 22 };
+          
+          packs.push({
+            id: packId,
+            bounds,
+            minZoom: zoomRange.minZoom,
+            maxZoom: zoomRange.maxZoom,
+            fileSize,
+          });
+          
+          console.log(`[ChartPackService] Manifest pack: ${packId} (${districtId}/${band}) z${zoomRange.minZoom}-${zoomRange.maxZoom}, ${(fileSize / 1024 / 1024).toFixed(1)} MB`);
+        }
       }
     }
     
-    // Sort packs by scale level (US1 first, US6 last)
+    // Sort packs by ID for consistency
     packs.sort((a, b) => a.id.localeCompare(b.id));
     
     const manifest = { packs };
     const manifestPath = `${mbtilesDir}manifest.json`;
     
     await FileSystem.writeAsStringAsync(manifestPath, JSON.stringify(manifest, null, 2));
-    console.log(`[ChartPackService] Generated manifest.json with ${packs.length} chart packs at ${manifestPath}`);
+    console.log(`[ChartPackService] Generated manifest.json with ${packs.length} chart packs from ${new Set(packs.map(p => p.id.split('_')[0])).size} district(s) at ${manifestPath}`);
     
   } catch (error) {
     console.error('[ChartPackService] Error generating manifest:', error);
@@ -707,5 +712,125 @@ export async function getInstalledDataSize(): Promise<number> {
   } catch (error) {
     console.error('[ChartPackService] Error calculating installed size:', error);
     return 0;
+  }
+}
+
+/**
+ * Get a list of mbtiles files that belong to a specific district.
+ * Includes charts (prefix_US*.mbtiles), basemap, satellite, ocean, terrain.
+ * GNIS is excluded since it's a shared canonical file.
+ */
+export function getDistrictFilePatterns(districtId: string): {
+  prefix: string;
+  patterns: ((filename: string) => boolean)[];
+} {
+  const prefix = getDistrictPrefix(districtId);
+  const expectedBasemap = BASEMAP_FILENAMES[districtId];
+  
+  return {
+    prefix,
+    patterns: [
+      // Chart packs: alaska_US1.mbtiles, d07_US1.mbtiles, etc.
+      (f: string) => f.startsWith(`${prefix}_US`) && f.endsWith('.mbtiles'),
+      // Basemap: basemap_alaska.mbtiles, basemap_se.mbtiles, etc.
+      (f: string) => expectedBasemap ? f === expectedBasemap : false,
+      // Satellite: alaska_satellite_z0-5.mbtiles, d07_satellite_z8.mbtiles, etc.
+      (f: string) => f.startsWith(`${prefix}_satellite_`) && f.endsWith('.mbtiles'),
+      // Ocean: alaska_ocean_z0-5.mbtiles, etc.
+      (f: string) => f.startsWith(`${prefix}_ocean_`) && f.endsWith('.mbtiles'),
+      // Terrain: alaska_terrain_z8.mbtiles, etc.
+      (f: string) => f.startsWith(`${prefix}_terrain_`) && f.endsWith('.mbtiles'),
+    ],
+  };
+}
+
+/**
+ * Delete all data for a specific region/district.
+ * Removes:
+ *   - All mbtiles files for this district (charts, basemap, satellite, ocean, terrain)
+ *   - GNIS file only if no other districts remain installed
+ *   - Per-district prediction databases (tides_{districtId}.db, currents_{districtId}.db)
+ *   - Buoy data from AsyncStorage
+ *   - District from the region registry
+ *   - Regenerates manifest.json for remaining districts
+ * 
+ * @param districtId The district to delete (e.g., '17cgd')
+ * @param otherInstalledDistrictIds IDs of other districts that are still installed (for GNIS check)
+ */
+export async function deleteRegion(
+  districtId: string,
+  otherInstalledDistrictIds: string[] = []
+): Promise<{ deletedFiles: number; freedBytes: number }> {
+  console.log(`[ChartPackService] Deleting all data for district ${districtId}...`);
+  
+  let deletedFiles = 0;
+  let freedBytes = 0;
+  
+  try {
+    const mbtilesDir = await getMBTilesDir();
+    const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
+    
+    if (dirInfo.exists) {
+      const files = await FileSystem.readDirectoryAsync(mbtilesDir);
+      const { patterns } = getDistrictFilePatterns(districtId);
+      
+      for (const file of files) {
+        // Check if file belongs to this district
+        const belongsToDistrict = patterns.some(pattern => pattern(file));
+        
+        if (belongsToDistrict) {
+          const filePath = `${mbtilesDir}${file}`;
+          const fileInfo = await FileSystem.getInfoAsync(filePath, { size: true });
+          if (fileInfo.exists) {
+            freedBytes += fileInfo.size || 0;
+            await FileSystem.deleteAsync(filePath, { idempotent: true });
+            deletedFiles++;
+            console.log(`[ChartPackService] Deleted ${file}`);
+          }
+        }
+      }
+      
+      // Delete GNIS only if no other districts remain
+      if (otherInstalledDistrictIds.length === 0) {
+        const gnisPath = `${mbtilesDir}gnis_names.mbtiles`;
+        const gnisInfo = await FileSystem.getInfoAsync(gnisPath, { size: true });
+        if (gnisInfo.exists) {
+          freedBytes += gnisInfo.size || 0;
+          await FileSystem.deleteAsync(gnisPath, { idempotent: true });
+          deletedFiles++;
+          console.log('[ChartPackService] Deleted gnis_names.mbtiles (no other districts installed)');
+        }
+      }
+    }
+    
+    // Delete per-district prediction databases
+    const docDir = FileSystem.documentDirectory;
+    if (docDir) {
+      const predDbFiles = [
+        `tides_${districtId}.db`,
+        `currents_${districtId}.db`,
+      ];
+      
+      for (const dbFile of predDbFiles) {
+        const dbPath = `${docDir}${dbFile}`;
+        const dbInfo = await FileSystem.getInfoAsync(dbPath, { size: true });
+        if (dbInfo.exists) {
+          freedBytes += dbInfo.size || 0;
+          await FileSystem.deleteAsync(dbPath, { idempotent: true });
+          deletedFiles++;
+          console.log(`[ChartPackService] Deleted ${dbFile}`);
+        }
+      }
+    }
+    
+    // Regenerate manifest.json for remaining districts
+    await generateManifest();
+    
+    console.log(`[ChartPackService] Region ${districtId} deleted: ${deletedFiles} files, ${(freedBytes / 1024 / 1024).toFixed(1)} MB freed`);
+    
+    return { deletedFiles, freedBytes };
+  } catch (error) {
+    console.error(`[ChartPackService] Error deleting region ${districtId}:`, error);
+    return { deletedFiles, freedBytes };
   }
 }

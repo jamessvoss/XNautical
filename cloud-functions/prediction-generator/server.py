@@ -3,8 +3,10 @@
 Prediction Generator - Cloud Run Service
 
 Fetches NOAA tide and current predictions for all stations in a region,
-writes raw data to Firestore subcollections, builds SQLite databases,
-and uploads compressed databases to Firebase Storage.
+builds SQLite databases from in-memory data, and uploads compressed
+databases plus readable JSON inspection files to Firebase Storage.
+Lightweight station metadata is written to Firestore for the
+getStationLocations cloud function.
 
 Processes stations sequentially but fetches each station's date chunks
 concurrently (3 at a time) for ~3x speedup while respecting NOAA rate limits.
@@ -19,22 +21,36 @@ Endpoints:
 Request body for /generate:
   {
     "regionId": "11cgd",
-    "yearsBack": 1,       // optional, default 1
-    "yearsForward": 2     // optional, default 2
+    "type": "all",         // required: "tides", "currents", or "all"
+    "yearsBack": 1,        // optional, default 1
+    "yearsForward": 2,     // optional, default 2
+    "maxStations": 10      // optional: limit stations for testing (omit for full generation)
   }
 
-Firestore writes:
-  districts/{regionId}/tidal-stations/{stationId}           - station metadata + predictions
-  districts/{regionId}/current-stations/{stationId}         - station metadata
-  districts/{regionId}/current-stations/{stationId}/predictions/{month} - packed daily strings
+Pipeline:
+  1. Fetch predictions from NOAA → collect in memory
+  2. Write lightweight station metadata to Firestore (for getStationLocations)
+  3. Write raw JSON + station summary JSON to Firebase Storage (for inspection)
+  4. Build SQLite databases from in-memory data
+  5. Compress SQLite + upload .db.zip to Firebase Storage (for app download)
+  6. Update district document metadata in Firestore
+
+Firestore writes (metadata only, no raw predictions):
+  districts/{regionId}/tidal-stations/{stationId}    - id, name, lat, lng, type, predictionRange
+  districts/{regionId}/current-stations/{stationId}  - id, name, lat, lng, bin, noaaType, etc.
 
 Firebase Storage uploads:
-  {regionId}/predictions/tides.db.zip
-  {regionId}/predictions/currents.db.zip
+  {regionId}/predictions/tides_{regionId}.db.zip       - SQLite database (app download)
+  {regionId}/predictions/currents_{regionId}.db.zip    - SQLite database (app download)
+  {regionId}/predictions/tide_stations.json            - Station metadata summary (inspection)
+  {regionId}/predictions/current_stations.json         - Station metadata summary (inspection)
+  {regionId}/predictions/tides_raw.json                - Raw tide predictions (inspection)
+  {regionId}/predictions/currents_raw.json             - Raw current predictions (inspection)
 """
 
 import os
 import sys
+import gc
 import time
 import json
 import math
@@ -45,7 +61,7 @@ import tempfile
 import asyncio
 import traceback
 from pathlib import Path
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from dateutil.relativedelta import relativedelta
 
 import aiohttp
@@ -65,7 +81,7 @@ BUCKET_NAME = os.environ.get('STORAGE_BUCKET', 'xnautical-8a296.firebasestorage.
 # NOAA API
 NOAA_API_BASE = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter'
 NOAA_REQUEST_TIMEOUT = 30  # seconds per request
-NOAA_MAX_DAYS_PER_REQUEST = 31  # NOAA's per-request limit
+NOAA_MAX_DAYS_PER_REQUEST = 365  # H/L and MAX_SLACK support up to 1 year per request
 NOAA_CONCURRENT_CHUNKS = 3  # concurrent date-chunk fetches per station
 NOAA_INTER_REQUEST_DELAY = 0.2  # seconds between concurrent requests
 
@@ -280,17 +296,6 @@ def organize_currents_by_month(predictions):
     return by_month
 
 
-def pack_predictions(predictions):
-    """Pack current predictions into compact string: "HH:MM,f|e|s,velocity,direction|..." """
-    if not predictions:
-        return ''
-    parts = []
-    for p in predictions:
-        type_char = 'f' if p['type'] == 'flood' else ('e' if p['type'] == 'ebb' else 's')
-        parts.append(f"{p['time']},{type_char},{p['velocity']},{p['direction']}")
-    return '|'.join(parts)
-
-
 # ============================================================================
 # Date range chunking
 # ============================================================================
@@ -326,8 +331,10 @@ def month_range_list(start_date, end_date):
 # ============================================================================
 
 def update_status(db_client, region_id, status_dict):
-    """Write prediction generation status to Firestore."""
+    """Write prediction generation status to Firestore with automatic lastUpdated timestamp."""
     try:
+        # Always include lastUpdated to detect crashed instances
+        status_dict['lastUpdated'] = datetime.now(timezone.utc)
         doc_ref = db_client.collection('districts').document(region_id)
         doc_ref.set({'predictionStatus': status_dict}, merge=True)
     except Exception as e:
@@ -335,13 +342,196 @@ def update_status(db_client, region_id, status_dict):
 
 
 # ============================================================================
-# Tide processing: sequential stations, concurrent chunks
+# SQLite Database Initialization - Create Empty Databases Early
 # ============================================================================
 
-async def process_all_tide_stations(db_client, region_id, stations, start_date, end_date):
+def init_tide_database(region_id, work_dir):
+    """Create and initialize empty tide SQLite database."""
+    db_path = os.path.join(work_dir, f'tides_{region_id}.db')
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    cursor.executescript('''
+        CREATE TABLE stations (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            lat REAL NOT NULL,
+            lng REAL NOT NULL
+        );
+        CREATE INDEX idx_stations_location ON stations(lat, lng);
+
+        CREATE TABLE tide_predictions (
+            station_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            type TEXT NOT NULL,
+            height REAL NOT NULL,
+            PRIMARY KEY (station_id, date, time)
+        );
+        CREATE INDEX idx_tide_date ON tide_predictions(station_id, date);
+
+        CREATE TABLE metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    ''')
+    
+    # Pre-populate metadata
+    cursor.execute("INSERT INTO metadata (key, value) VALUES ('version', '1.0')")
+    cursor.execute("INSERT INTO metadata (key, value) VALUES ('type', 'tides')")
+    cursor.execute("INSERT INTO metadata (key, value) VALUES ('regionId', ?)", (region_id,))
+    conn.commit()
+    conn.close()
+    
+    logger.info(f'  Initialized tide database: {db_path}')
+    return db_path
+
+
+def init_current_database(region_id, work_dir):
+    """Create and initialize empty current SQLite database."""
+    db_path = os.path.join(work_dir, f'currents_{region_id}.db')
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    cursor.executescript('''
+        CREATE TABLE stations (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            lat REAL NOT NULL,
+            lng REAL NOT NULL,
+            noaa_type TEXT DEFAULT 'S',
+            weak_and_variable INTEGER DEFAULT 0
+        );
+        CREATE INDEX idx_stations_location ON stations(lat, lng);
+
+        CREATE TABLE current_predictions (
+            station_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            type TEXT NOT NULL,
+            velocity REAL NOT NULL,
+            direction REAL,
+            PRIMARY KEY (station_id, date, time)
+        );
+        CREATE INDEX idx_current_date ON current_predictions(station_id, date);
+
+        CREATE TABLE metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    ''')
+    
+    # Pre-populate metadata
+    cursor.execute("INSERT INTO metadata (key, value) VALUES ('version', '1.0')")
+    cursor.execute("INSERT INTO metadata (key, value) VALUES ('type', 'currents')")
+    cursor.execute("INSERT INTO metadata (key, value) VALUES ('regionId', ?)", (region_id,))
+    conn.commit()
+    conn.close()
+    
+    logger.info(f'  Initialized current database: {db_path}')
+    return db_path
+
+
+def write_station_to_tide_db(db_path, station_id, station_name, lat, lng, predictions):
+    """Write a single station's tide predictions directly to SQLite."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Insert station metadata
+    cursor.execute(
+        'INSERT OR IGNORE INTO stations (id, name, lat, lng) VALUES (?, ?, ?, ?)',
+        (station_id, station_name, lat, lng)
+    )
+    
+    # Insert all predictions for this station
+    event_count = 0
+    for date_key, events in predictions.items():
+        for event in events:
+            cursor.execute(
+                'INSERT OR IGNORE INTO tide_predictions (station_id, date, time, type, height) VALUES (?, ?, ?, ?, ?)',
+                (station_id, date_key, event['time'], event['type'], event['height'])
+            )
+            event_count += 1
+    
+    conn.commit()
+    conn.close()
+    return event_count
+
+
+def write_station_to_current_db(db_path, station_id, station_name, lat, lng, noaa_type, monthly_predictions):
+    """Write a single station's current predictions directly to SQLite."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Insert station metadata
+    weak_and_variable = 1 if noaa_type == 'W' else 0
+    cursor.execute(
+        'INSERT OR IGNORE INTO stations (id, name, lat, lng, noaa_type, weak_and_variable) VALUES (?, ?, ?, ?, ?, ?)',
+        (station_id, station_name, lat, lng, noaa_type, weak_and_variable)
+    )
+    
+    # Insert all predictions for this station
+    event_count = 0
+    for month_key, daily_preds in monthly_predictions.items():
+        for date_str, predictions in daily_preds.items():
+            for pred in predictions:
+                cursor.execute(
+                    'INSERT OR IGNORE INTO current_predictions '
+                    '(station_id, date, time, type, velocity, direction) '
+                    'VALUES (?, ?, ?, ?, ?, ?)',
+                    (station_id, date_str, pred['time'], pred['type'],
+                     pred['velocity'], pred.get('direction'))
+                )
+                event_count += 1
+    
+    conn.commit()
+    conn.close()
+    return event_count
+
+
+def finalize_tide_database(db_path, station_count, event_count):
+    """Finalize tide database with metadata and optimization."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('generated', ?)", (datetime.utcnow().isoformat(),))
+    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('stations', ?)", (str(station_count),))
+    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('events', ?)", (str(event_count),))
+    
+    conn.commit()
+    cursor.execute('VACUUM')
+    cursor.execute('ANALYZE')
+    conn.close()
+    logger.info(f'  Finalized tide database: {station_count} stations, {event_count} events')
+
+
+def finalize_current_database(db_path, station_count, weak_count, event_count):
+    """Finalize current database with metadata and optimization."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('generated', ?)", (datetime.utcnow().isoformat(),))
+    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('stations', ?)", (str(station_count),))
+    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('stations_weak', ?)", (str(weak_count),))
+    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('events', ?)", (str(event_count),))
+    
+    conn.commit()
+    cursor.execute('VACUUM')
+    cursor.execute('ANALYZE')
+    conn.close()
+    logger.info(f'  Finalized current database: {station_count} stations ({weak_count} weak & variable), {event_count} events')
+
+
+# ============================================================================
+# Tide processing: sequential stations, concurrent chunks, stream to SQLite
+# ============================================================================
+
+async def process_all_tide_stations(db_client, region_id, stations, start_date, end_date, db_path):
     """
-    Process all tide stations sequentially, but fetch each station's
-    date chunks concurrently (NOAA_CONCURRENT_CHUNKS at a time).
+    Process all tide stations sequentially, fetching chunks concurrently
+    and streaming directly to SQLite (no in-memory collection).
+
+    Writes only lightweight metadata to Firestore (no prediction data).
 
     Returns (stations_processed, total_events, stations_failed).
     """
@@ -380,8 +570,18 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
 
             event_count = sum(len(events) for events in all_predictions.values())
             total_events += event_count
+            day_count = len(all_predictions)
 
-            # Write to Firestore
+            # STREAM: Write directly to SQLite, then discard from memory
+            write_station_to_tide_db(
+                db_path, station_id, station_name,
+                station.get('lat', 0), station.get('lng', 0),
+                all_predictions
+            )
+            all_predictions.clear()  # Free memory immediately
+            all_predictions = None
+
+            # Write lightweight metadata to Firestore (for getStationLocations)
             doc_ref = (db_client.collection('districts').document(region_id)
                        .collection('tidal-stations').document(station_id))
 
@@ -390,18 +590,20 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
                 'name': station_name,
                 'lat': station.get('lat', 0),
                 'lng': station.get('lng', 0),
+                'type': station.get('type', 'S'),
                 'predictionRange': {
                     'begin': format_date_key(start_date),
                     'end': format_date_key(end_date),
                 },
-                'predictions': all_predictions,
                 'eventCount': event_count,
-                'dayCount': len(all_predictions),
+                'dayCount': day_count,
                 'updatedAt': firestore.SERVER_TIMESTAMP,
             })
 
             stations_processed += 1
-            logger.info(f'  [{i+1}/{len(stations)}] {station_name}: {event_count} events, {len(all_predictions)} days')
+            instance_id = os.environ.get('K_REVISION', 'unknown')
+            logger.info(f'  [TIDES {region_id}] [{i+1}/{len(stations)}] {station_name}: {event_count} events, {day_count} days (revision: {instance_id})')
+
 
     return stations_processed, total_events, stations_failed
 
@@ -410,14 +612,16 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
 # Current processing: sequential stations, concurrent month chunks
 # ============================================================================
 
-async def process_all_current_stations(db_client, region_id, stations, start_date, end_date):
+async def process_all_current_stations(db_client, region_id, stations, start_date, end_date, db_path):
     """
-    Process all current stations sequentially, but fetch each station's
-    month chunks concurrently (NOAA_CONCURRENT_CHUNKS at a time).
+    Process all current stations sequentially, fetching 365-day chunks concurrently
+    and streaming directly to SQLite (no in-memory collection).
 
     Stations with noaaType='W' (weak and variable) are written to Firestore
     with metadata only -- no predictions are fetched since NOAA doesn't
     produce them for these stations.
+
+    Writes only lightweight metadata to Firestore (no prediction data).
 
     Returns (stations_processed, total_months, stations_failed, stations_weak).
     """
@@ -430,7 +634,7 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
     stations_weak = 0
     total_months = 0
 
-    months = month_range_list(start_date, end_date)
+    chunks = date_range_chunks(start_date, end_date)
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         for i, station in enumerate(stations):
@@ -441,6 +645,14 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
 
             # Handle weak and variable stations: write metadata, skip predictions
             if noaa_type == 'W':
+                # Write to SQLite (no predictions)
+                write_station_to_current_db(
+                    db_path, station_id, station_name,
+                    station.get('lat', 0), station.get('lng', 0),
+                    'W', {}
+                )
+
+                # Write lightweight metadata to Firestore
                 station_doc_ref = (db_client.collection('districts').document(region_id)
                                   .collection('current-stations').document(station_id))
 
@@ -466,11 +678,11 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
                 logger.info(f'  [{i+1}/{len(stations)}] {station_name}: weak & variable (no predictions)')
                 continue
 
-            # Fetch all months concurrently for this station
+            # Fetch all chunks concurrently for this station (365-day chunks)
             debug = (i == 0)
             tasks = [
-                fetch_current_chunk(session, station_id, bin_num, ms, me, semaphore, debug_first=debug)
-                for ms, me in months
+                fetch_current_chunk(session, station_id, bin_num, cs, ce, semaphore, debug_first=debug)
+                for cs, ce in chunks
             ]
             results = await asyncio.gather(*tasks)
 
@@ -493,20 +705,18 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
                 stations_failed += 1
                 continue
 
-            # Calculate flood/ebb directions
-            sample_days = []
-            for month_data in all_monthly.values():
-                for day_preds in month_data.values():
-                    sample_days.extend(day_preds)
-                if len(sample_days) > 100:
-                    break
+            # STREAM: Write directly to SQLite, then discard from memory
+            event_count = write_station_to_current_db(
+                db_path, station_id, station_name,
+                station.get('lat', 0), station.get('lng', 0),
+                noaa_type, all_monthly
+            )
+            months_count = len(all_monthly)
+            month_keys = sorted(all_monthly.keys())
+            all_monthly.clear()  # Free memory immediately
+            all_monthly = None
 
-            floods = [p for p in sample_days if p['type'] == 'flood']
-            ebbs = [p for p in sample_days if p['type'] == 'ebb']
-            flood_dir = round(sum(p['direction'] for p in floods) / len(floods)) if floods else 0
-            ebb_dir = round(sum(p['direction'] for p in ebbs) / len(ebbs)) if ebbs else 180
-
-            # Write station metadata
+            # Write lightweight metadata to Firestore (no predictions, no flood/ebb dirs)
             station_doc_ref = (db_client.collection('districts').document(region_id)
                               .collection('current-stations').document(station_id))
 
@@ -520,236 +730,226 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
                 'depthType': station.get('depthType', 'surface'),
                 'noaaType': noaa_type,
                 'weakAndVariable': False,
-                'floodDirection': flood_dir,
-                'ebbDirection': ebb_dir,
                 'predictionRange': {
                     'begin': format_date_key(start_date),
                     'end': format_date_key(end_date),
                 },
-                'monthsAvailable': sorted(all_monthly.keys()),
+                'monthsAvailable': month_keys,
                 'updatedAt': firestore.SERVER_TIMESTAMP,
             })
 
-            # Write packed monthly predictions
-            months_saved = 0
-            for month_key, days_data in sorted(all_monthly.items()):
-                packed_days = {}
-                for date_str, preds in days_data.items():
-                    day_num = int(date_str.split('-')[2])
-                    packed_days[str(day_num)] = pack_predictions(preds)
-
-                pred_doc_ref = station_doc_ref.collection('predictions').document(month_key)
-                pred_doc_ref.set({
-                    'month': month_key,
-                    'd': packed_days,
-                    'dayCount': len(packed_days),
-                    'updatedAt': firestore.SERVER_TIMESTAMP,
-                })
-                months_saved += 1
-
-            total_months += months_saved
+            total_months += months_count
             stations_processed += 1
-            logger.info(f'  [{i+1}/{len(stations)}] {station_name}: {months_saved} months')
+            instance_id = os.environ.get('K_REVISION', 'unknown')
+            logger.info(f'  [CURRENTS {region_id}] [{i+1}/{len(stations)}] {station_name}: {months_count} months (revision: {instance_id})')
+
 
     return stations_processed, total_months, stations_failed, stations_weak
 
 
 # ============================================================================
-# SQLite database builders
+# JSON file helpers: write locally + upload to Storage
 # ============================================================================
 
-def build_tide_database(db_client, region_id, stations, work_dir):
-    """Build SQLite tide database from Firestore data."""
-    db_path = os.path.join(work_dir, 'tides.db')
+def upload_json_to_storage(data, storage_path, storage_client):
+    """Upload a JSON-serializable object to Firebase Storage as a readable JSON file."""
+    json_bytes = json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8')
+    bucket = storage_client.bucket(BUCKET_NAME)
+    blob = bucket.blob(storage_path)
+    blob.upload_from_string(json_bytes, content_type='application/json')
+    size_kb = len(json_bytes) / 1024
+    logger.info(f'  Uploaded JSON: {storage_path} ({size_kb:.1f} KB)')
+    return len(json_bytes)
+
+
+def write_tide_json_files(db_path, region_id, work_dir, storage_client):
+    """
+    Write tide prediction data as JSON files (reading from SQLite database).
+
+    Produces two files:
+      - tide_stations.json: station metadata summary for quick inspection
+      - tides_raw.json: full raw tide predictions (station_id -> date -> events)
+
+    Args:
+        db_path: path to tide SQLite database
+        region_id: district ID
+        work_dir: temp directory for local files
+        storage_client: GCS client
+
+    Returns:
+        dict with file sizes
+    """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    cursor.executescript('''
-        CREATE TABLE stations (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            lat REAL NOT NULL,
-            lng REAL NOT NULL
-        );
-        CREATE INDEX idx_stations_location ON stations(lat, lng);
+    # Build station metadata summary from SQLite
+    station_summaries = []
+    cursor.execute('SELECT id, name, lat, lng FROM stations')
+    stations = cursor.fetchall()
 
-        CREATE TABLE tide_predictions (
-            station_id TEXT NOT NULL,
-            date TEXT NOT NULL,
-            time TEXT NOT NULL,
-            type TEXT NOT NULL,
-            height REAL NOT NULL,
-            PRIMARY KEY (station_id, date, time)
-        );
-        CREATE INDEX idx_tide_date ON tide_predictions(station_id, date);
-
-        CREATE TABLE metadata (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-    ''')
-
-    station_count = 0
-    event_count = 0
-
-    for station in stations:
-        station_id = station['id']
-        doc = (db_client.collection('districts').document(region_id)
-               .collection('tidal-stations').document(station_id)).get()
-
-        if not doc.exists:
-            continue
-
-        data = doc.to_dict()
-        predictions = data.get('predictions', {})
-        if not predictions:
-            continue
-
+    for station_id, name, lat, lng in stations:
+        # Get date range and event count for this station
         cursor.execute(
-            'INSERT OR IGNORE INTO stations (id, name, lat, lng) VALUES (?, ?, ?, ?)',
-            (station_id, data.get('name', ''), data.get('lat', 0), data.get('lng', 0))
+            'SELECT MIN(date), MAX(date), COUNT(*) FROM tide_predictions WHERE station_id = ?',
+            (station_id,)
         )
-        station_count += 1
+        min_date, max_date, event_count = cursor.fetchone()
 
-        for date_key, events in predictions.items():
-            for event in events:
-                cursor.execute(
-                    'INSERT OR IGNORE INTO tide_predictions (station_id, date, time, type, height) VALUES (?, ?, ?, ?, ?)',
-                    (station_id, date_key, event['time'], event['type'], event['height'])
-                )
-                event_count += 1
+        station_summaries.append({
+            'id': station_id,
+            'name': name,
+            'lat': lat,
+            'lng': lng,
+            'type': 'S',
+            'eventCount': event_count,
+            'dateRange': {
+                'begin': min_date if min_date else None,
+                'end': max_date if max_date else None,
+            },
+        })
 
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('version', '1.0')")
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('generated', ?)", (datetime.utcnow().isoformat(),))
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('type', 'tides')")
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('stations', ?)", (str(station_count),))
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('events', ?)", (str(event_count),))
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('regionId', ?)", (region_id,))
+    # Build raw predictions dict from SQLite
+    raw_predictions = {}
+    for station_id, _, _, _ in stations:
+        cursor.execute(
+            'SELECT date, time, type, height FROM tide_predictions WHERE station_id = ? ORDER BY date, time',
+            (station_id,)
+        )
+        predictions_by_date = {}
+        for date_key, time, event_type, height in cursor.fetchall():
+            if date_key not in predictions_by_date:
+                predictions_by_date[date_key] = []
+            predictions_by_date[date_key].append({
+                'time': time,
+                'type': event_type,
+                'height': height,
+            })
+        raw_predictions[station_id] = predictions_by_date
 
-    conn.commit()
-    cursor.execute('VACUUM')
-    cursor.execute('ANALYZE')
     conn.close()
 
-    stats = {'stationCount': station_count, 'eventCount': event_count}
-    logger.info(f'  Tide DB: {station_count} stations, {event_count} events')
-    return db_path, stats
+    # Write locally
+    stations_path = os.path.join(work_dir, 'tide_stations.json')
+    raw_path = os.path.join(work_dir, 'tides_raw.json')
+
+    with open(stations_path, 'w') as f:
+        json.dump(station_summaries, f, indent=2)
+    with open(raw_path, 'w') as f:
+        json.dump(raw_predictions, f, indent=2)
+
+    # Upload to Storage
+    storage_prefix = f'{region_id}/predictions'
+    stations_size = upload_json_to_storage(
+        station_summaries, f'{storage_prefix}/tide_stations.json', storage_client
+    )
+    raw_size = upload_json_to_storage(
+        raw_predictions, f'{storage_prefix}/tides_raw.json', storage_client
+    )
+
+    logger.info(f'  Tide JSON: stations={len(station_summaries)}, raw={len(raw_predictions)} stations')
+    return {'stationsJsonBytes': stations_size, 'rawJsonBytes': raw_size}
 
 
-def build_current_database(db_client, region_id, stations, work_dir):
-    """Build SQLite current database from Firestore data."""
-    db_path = os.path.join(work_dir, 'currents.db')
+def write_current_json_files(db_path, region_id, work_dir, storage_client):
+    """
+    Write current prediction data as JSON files (reading from SQLite database).
+
+    Produces two files:
+      - current_stations.json: station metadata summary for quick inspection
+      - currents_raw.json: full raw current predictions (station_id -> month -> date -> events)
+
+    Args:
+        db_path: path to currents SQLite database
+        region_id: district ID
+        work_dir: temp directory for local files
+        storage_client: GCS client
+
+    Returns:
+        dict with file sizes
+    """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    cursor.executescript('''
-        CREATE TABLE stations (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            lat REAL NOT NULL,
-            lng REAL NOT NULL,
-            noaa_type TEXT DEFAULT 'S',
-            weak_and_variable INTEGER DEFAULT 0
-        );
-        CREATE INDEX idx_stations_location ON stations(lat, lng);
+    # Build station metadata summary from SQLite
+    station_summaries = []
+    cursor.execute('SELECT id, name, lat, lng, noaa_type, weak_and_variable FROM stations')
+    stations = cursor.fetchall()
 
-        CREATE TABLE current_predictions (
-            station_id TEXT NOT NULL,
-            date TEXT NOT NULL,
-            time TEXT NOT NULL,
-            type TEXT NOT NULL,
-            velocity REAL NOT NULL,
-            direction REAL,
-            PRIMARY KEY (station_id, date, time)
-        );
-        CREATE INDEX idx_current_date ON current_predictions(station_id, date);
+    for station_id, name, lat, lng, noaa_type, weak_and_variable in stations:
+        # Count months for this station (get distinct month keys from predictions)
+        cursor.execute(
+            'SELECT DISTINCT substr(date, 1, 7) FROM current_predictions WHERE station_id = ?',
+            (station_id,)
+        )
+        months = cursor.fetchall()
+        month_count = len(months)
 
-        CREATE TABLE metadata (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-    ''')
+        station_summaries.append({
+            'id': station_id,
+            'name': name,
+            'lat': lat,
+            'lng': lng,
+            'bin': 1,  # Default, not stored in new schema
+            'noaaType': noaa_type,
+            'weakAndVariable': bool(weak_and_variable),
+            'depth': None,  # Not stored in new schema
+            'depthType': 'surface',  # Default
+            'monthCount': month_count,
+        })
 
-    station_count = 0
-    weak_count = 0
-    event_count = 0
-
-    for station in stations:
-        station_id = station['id']
-        station_doc = (db_client.collection('districts').document(region_id)
-                      .collection('current-stations').document(station_id)).get()
-
-        if not station_doc.exists:
+    # Build raw predictions dict from SQLite (organized by month)
+    raw_predictions = {}
+    for station_id, _, _, _, noaa_type, weak_and_variable in stations:
+        # Skip weak & variable stations (no predictions)
+        if weak_and_variable:
             continue
-
-        station_data = station_doc.to_dict()
-        is_weak = station_data.get('weakAndVariable', False)
-        noaa_type = station_data.get('noaaType', station.get('noaaType', 'S'))
 
         cursor.execute(
-            'INSERT OR IGNORE INTO stations (id, name, lat, lng, noaa_type, weak_and_variable) VALUES (?, ?, ?, ?, ?, ?)',
-            (station_id, station_data.get('name', ''), station_data.get('lat', 0),
-             station_data.get('lng', 0), noaa_type, 1 if is_weak else 0)
+            'SELECT date, time, type, velocity, direction FROM current_predictions WHERE station_id = ? ORDER BY date, time',
+            (station_id,)
         )
-        station_count += 1
-        if is_weak:
-            weak_count += 1
 
-        # Skip prediction fetching for weak & variable stations
-        if is_weak:
-            continue
+        monthly_predictions = {}
+        for date_str, time, event_type, velocity, direction in cursor.fetchall():
+            # Extract month key (YYYY-MM format)
+            month_key = date_str[:7]
+            if month_key not in monthly_predictions:
+                monthly_predictions[month_key] = {}
+            if date_str not in monthly_predictions[month_key]:
+                monthly_predictions[month_key][date_str] = []
 
-        pred_docs = (db_client.collection('districts').document(region_id)
-                    .collection('current-stations').document(station_id)
-                    .collection('predictions').stream())
+            monthly_predictions[month_key][date_str].append({
+                'time': time,
+                'type': event_type,
+                'velocity': velocity,
+                'direction': direction,
+            })
 
-        for pred_doc in pred_docs:
-            month_data = pred_doc.to_dict()
-            month_key = month_data.get('month', pred_doc.id)
-            packed_days = month_data.get('d', {})
+        if monthly_predictions:
+            raw_predictions[station_id] = monthly_predictions
 
-            for day_num_str, packed_string in packed_days.items():
-                if not isinstance(packed_string, str) or not packed_string:
-                    continue
-
-                date_str = f"{month_key}-{str(day_num_str).zfill(2)}"
-                events = packed_string.split('|')
-
-                for event_str in events:
-                    parts = event_str.split(',')
-                    if len(parts) >= 4:
-                        event_time = parts[0]
-                        event_type_char = parts[1]
-                        velocity = float(parts[2])
-                        direction = float(parts[3]) if parts[3] else None
-
-                        event_type = 'flood' if event_type_char == 'f' else (
-                            'ebb' if event_type_char == 'e' else 'slack')
-
-                        cursor.execute(
-                            'INSERT OR IGNORE INTO current_predictions '
-                            '(station_id, date, time, type, velocity, direction) '
-                            'VALUES (?, ?, ?, ?, ?, ?)',
-                            (station_id, date_str, event_time, event_type, velocity, direction)
-                        )
-                        event_count += 1
-
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('version', '1.0')")
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('generated', ?)", (datetime.utcnow().isoformat(),))
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('type', 'currents')")
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('stations', ?)", (str(station_count),))
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('stations_weak', ?)", (str(weak_count),))
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('events', ?)", (str(event_count),))
-    cursor.execute("INSERT INTO metadata (key, value) VALUES ('regionId', ?)", (region_id,))
-
-    conn.commit()
-    cursor.execute('VACUUM')
-    cursor.execute('ANALYZE')
     conn.close()
 
-    stats = {'stationCount': station_count, 'weakCount': weak_count, 'eventCount': event_count}
-    logger.info(f'  Current DB: {station_count} stations ({weak_count} weak & variable), {event_count} events')
-    return db_path, stats
+    # Write locally
+    stations_path = os.path.join(work_dir, 'current_stations.json')
+    raw_path = os.path.join(work_dir, 'currents_raw.json')
+
+    with open(stations_path, 'w') as f:
+        json.dump(station_summaries, f, indent=2)
+    with open(raw_path, 'w') as f:
+        json.dump(raw_predictions, f, indent=2)
+
+    # Upload to Storage
+    storage_prefix = f'{region_id}/predictions'
+    stations_size = upload_json_to_storage(
+        station_summaries, f'{storage_prefix}/current_stations.json', storage_client
+    )
+    raw_size = upload_json_to_storage(
+        raw_predictions, f'{storage_prefix}/currents_raw.json', storage_client
+    )
+
+    logger.info(f'  Current JSON: stations={len(station_summaries)}, raw={len(raw_predictions)} stations')
+    return {'stationsJsonBytes': stations_size, 'rawJsonBytes': raw_size}
 
 
 def compress_and_upload(db_path, storage_path, storage_client):
@@ -775,29 +975,20 @@ def compress_and_upload(db_path, storage_path, storage_client):
 # Main generation endpoint
 # ============================================================================
 
-@app.route('/generate', methods=['POST'])
-def generate_predictions():
+def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2, max_stations=None):
     """
-    Generate predictions for a region.
-
-    Pipeline:
-      1. Read station list from predictionConfig
-      2. Fetch tide predictions from NOAA → write to Firestore
-      3. Fetch current predictions from NOAA → write to Firestore
-      4. Build SQLite databases from Firestore data
-      5. Compress + upload to Firebase Storage
-      6. Update region document with metadata
+    Core prediction generation logic (can be called from Flask endpoint or Job).
+    
+    Runs EITHER tides OR currents (not both). Each type is a completely independent
+    operation that fetches data, exports metadata, compresses, and uploads.
+    
+    Returns: dict with results or raises exception on error
     """
-    data = request.get_json(silent=True) or {}
-    region_id = data.get('regionId', '').strip()
-    years_back = int(data.get('yearsBack', 1))
-    years_forward = int(data.get('yearsForward', 2))
+    if gen_type not in ('tides', 'currents'):
+        raise ValueError(f'gen_type must be "tides" or "currents", not "{gen_type}"')
 
-    if region_id not in VALID_REGIONS:
-        return jsonify({
-            'error': f'Invalid regionId: {region_id}',
-            'valid': VALID_REGIONS,
-        }), 400
+    do_tides = (gen_type == 'tides')
+    do_currents = (gen_type == 'currents')
 
     today = date.today()
     start_date = today - relativedelta(years=years_back)
@@ -805,7 +996,13 @@ def generate_predictions():
 
     start_time = time.time()
 
-    logger.info(f'=== Starting prediction generation for {region_id} ===')
+    # Log execution context
+    instance_id = os.environ.get('K_REVISION', 'unknown')
+    service_name = os.environ.get('K_SERVICE', 'unknown')
+    execution_id = os.environ.get('CLOUD_RUN_EXECUTION', 'service-request')
+    
+    logger.info(f'=== Starting prediction generation for {region_id} (type={gen_type}) ===')
+    logger.info(f'  Service: {service_name}, Revision: {instance_id}, Execution: {execution_id}')
     logger.info(f'  Date range: {start_date} to {end_date} ({years_back}y back, {years_forward}y forward)')
     logger.info(f'  Chunk concurrency: {NOAA_CONCURRENT_CHUNKS}, delay: {NOAA_INTER_REQUEST_DELAY}s')
 
@@ -814,33 +1011,110 @@ def generate_predictions():
     work_dir = tempfile.mkdtemp(prefix=f'predictions_{region_id}_')
 
     try:
-        # 1. Read station list
-        logger.info('Reading predictionConfig from Firestore...')
-        region_doc = db_client.collection('districts').document(region_id).get()
-
-        if not region_doc.exists:
-            return jsonify({'error': f'Region {region_id} not found in Firestore'}), 404
-
-        region_data = region_doc.to_dict()
+        # 1. ATOMIC lock acquisition using Firestore transaction
+        logger.info('Acquiring lock...')
+        doc_ref = db_client.collection('districts').document(region_id)
+        
+        @firestore.transactional
+        def acquire_lock(transaction, doc_ref):
+            """Atomically check and acquire the lock."""
+            snapshot = doc_ref.get(transaction=transaction)
+            
+            if not snapshot.exists:
+                raise ValueError(f'Region {region_id} not found in Firestore')
+            
+            region_data = snapshot.to_dict()
+            status = region_data.get('predictionStatus', {})
+            
+            # Check if already running
+            if status.get('state') in ('generating', 'fetching_tides', 'fetching_currents', 'building_databases', 'uploading', 'cooldown'):
+                started_at = status.get('startedAt')
+                completed_at = status.get('completedAt')
+                last_updated = status.get('lastUpdated')
+                
+                # If job has completedAt but state isn't 'complete', it's a stale lock
+                if completed_at:
+                    logger.warning(f'Found stale lock with completedAt set but state={status.get("state")}. Clearing...')
+                # Check if lastUpdated is stale (>10 minutes with no update = crashed)
+                elif last_updated and isinstance(last_updated, datetime):
+                    idle_seconds = (datetime.now(timezone.utc) - last_updated).total_seconds()
+                    if idle_seconds > 600:  # 10 minutes
+                        logger.warning(f'Found stale lock with no updates for {round(idle_seconds/60, 1)} minutes. Assuming crashed. Clearing...')
+                # If started_at is too recent, reject
+                elif started_at and isinstance(started_at, datetime):
+                    elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+                    if elapsed < 4500:  # 75 minutes
+                        raise RuntimeError(json.dumps({
+                            'error': 'Generation already in progress',
+                            'currentState': status.get('state'),
+                            'startedAt': started_at.isoformat(),
+                            'elapsedSeconds': round(elapsed, 1),
+                            'message': f'A {status.get("state")} job is already running for {region_id}. Started {round(elapsed/60, 1)} minutes ago.',
+                        }))
+            
+            # Acquire lock by setting initial state
+            transaction.update(doc_ref, {
+                'predictionStatus': {
+                    'state': 'generating',
+                    'message': f'Starting {gen_type} generation...',
+                    'startedAt': datetime.now(timezone.utc),
+                    'lastUpdated': datetime.now(timezone.utc),
+                }
+            })
+            
+            return region_data
+        
+        # Execute atomic transaction
+        transaction = db_client.transaction()
+        try:
+            region_data = acquire_lock(transaction, doc_ref)
+            logger.info(f'Lock acquired for {region_id}')
+        except RuntimeError as e:
+            # Lock conflict - another job is running
+            error_data = json.loads(str(e))
+            return jsonify(error_data), 409
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 404
+        
+        # 2. Read station list
         pred_config = region_data.get('predictionConfig', {})
 
-        tide_stations = pred_config.get('tideStations', [])
-        current_stations = pred_config.get('currentStations', [])
+        tide_stations = pred_config.get('tideStations', []) if do_tides else []
+        current_stations = pred_config.get('currentStations', []) if do_currents else []
 
         if not tide_stations and not current_stations:
             return jsonify({
-                'error': f'No stations in predictionConfig for {region_id}. Run discover-noaa-stations.js first.',
+                'error': f'No stations in predictionConfig for {region_id} (type={gen_type}). Run discover-noaa-stations.js first.',
             }), 400
 
-        logger.info(f'  Found {len(tide_stations)} tide stations, {len(current_stations)} current stations')
+        # Limit stations if maxStations specified (for testing)
+        if max_stations is not None:
+            original_tide_count = len(tide_stations)
+            original_current_count = len(current_stations)
+            tide_stations = tide_stations[:max_stations]
+            current_stations = current_stations[:max_stations]
+            logger.warning(f'TEST MODE: Limited to {max_stations} stations per type')
+            logger.warning(f'  Tides: {original_tide_count} → {len(tide_stations)}')
+            logger.warning(f'  Currents: {original_current_count} → {len(current_stations)}')
+
+        logger.info(f'  Found {len(tide_stations)} tide stations, {len(current_stations)} current stations (type={gen_type})')
 
         update_status(db_client, region_id, {
             'state': 'generating',
             'startedAt': firestore.SERVER_TIMESTAMP,
-            'message': f'Generating predictions: {len(tide_stations)} tide + {len(current_stations)} current stations...',
+            'message': f'Generating {gen_type} predictions: {len(tide_stations)} tide + {len(current_stations)} current stations...',
         })
 
-        # 2. Fetch tide predictions
+        # 2. Initialize SQLite databases early (streaming architecture)
+        tide_db_path = None
+        current_db_path = None
+        
+        if tide_stations:
+            tide_db_path = init_tide_database(region_id, work_dir)
+        if current_stations:
+            current_db_path = init_current_database(region_id, work_dir)
+
+        # 3. Fetch tide predictions from NOAA (stream directly to SQLite)
         tide_stats = {'stationsProcessed': 0, 'totalEvents': 0, 'stationsFailed': 0}
         if tide_stations:
             logger.info(f'\n--- Processing {len(tide_stations)} tide stations ---')
@@ -852,7 +1126,7 @@ def generate_predictions():
             loop = asyncio.new_event_loop()
             try:
                 processed, events, failed = loop.run_until_complete(
-                    process_all_tide_stations(db_client, region_id, tide_stations, start_date, end_date)
+                    process_all_tide_stations(db_client, region_id, tide_stations, start_date, end_date, tide_db_path)
                 )
             finally:
                 loop.close()
@@ -865,19 +1139,9 @@ def generate_predictions():
             elapsed = time.time() - start_time
             logger.info(f'  Tides complete: {processed} stations, {events} events, {failed} failed ({elapsed:.0f}s)')
 
-        # 3. Fetch current predictions
+        # 4. Fetch current predictions from NOAA (stream directly to SQLite)
         current_stats = {'stationsProcessed': 0, 'totalMonths': 0, 'stationsFailed': 0, 'stationsWeakAndVariable': 0}
         if current_stations:
-            # Cooldown pause between tide and current phases to avoid NOAA rate limiting
-            if tide_stations:
-                cooldown = 60
-                logger.info(f'\n--- Cooldown: waiting {cooldown}s before current processing (NOAA rate limit) ---')
-                update_status(db_client, region_id, {
-                    'state': 'cooldown',
-                    'message': f'Waiting {cooldown}s cooldown before current predictions...',
-                })
-                time.sleep(cooldown)
-
             weak_station_count = sum(1 for s in current_stations if s.get('noaaType') == 'W')
             predictable_count = len(current_stations) - weak_station_count
             logger.info(f'\n--- Processing {len(current_stations)} current stations ({predictable_count} predictable, {weak_station_count} weak & variable) ---')
@@ -889,7 +1153,7 @@ def generate_predictions():
             loop = asyncio.new_event_loop()
             try:
                 processed, months, failed, weak = loop.run_until_complete(
-                    process_all_current_stations(db_client, region_id, current_stations, start_date, end_date)
+                    process_all_current_stations(db_client, region_id, current_stations, start_date, end_date, current_db_path)
                 )
             finally:
                 loop.close()
@@ -903,50 +1167,53 @@ def generate_predictions():
             elapsed = time.time() - start_time
             logger.info(f'  Currents complete: {processed} stations, {months} months, {failed} failed, {weak} weak & variable ({elapsed:.0f}s)')
 
-        # 4. Build SQLite databases
-        logger.info('\n--- Building SQLite databases ---')
+        # 5. Finalize databases and write JSON files (read from SQLite)
+        logger.info('\n--- Finalizing databases and writing JSON files ---')
         update_status(db_client, region_id, {
             'state': 'building_databases',
-            'message': 'Building SQLite databases...',
+            'message': 'Finalizing SQLite databases and writing JSON inspection files...',
         })
 
-        tide_db_stats = None
-        current_db_stats = None
         tide_zip_size = 0
         current_zip_size = 0
 
-        if tide_stations:
-            tide_db_path, tide_db_stats = build_tide_database(
-                db_client, region_id, tide_stations, work_dir
-            )
+        if tide_db_path and tide_stats['stationsProcessed'] > 0:
+            finalize_tide_database(tide_db_path, tide_stats['stationsProcessed'], tide_stats['totalEvents'])
+            write_tide_json_files(tide_db_path, region_id, work_dir, storage_client)
+            gc.collect()
 
-        if current_stations:
-            current_db_path, current_db_stats = build_current_database(
-                db_client, region_id, current_stations, work_dir
+        if current_db_path and current_stats['stationsProcessed'] > 0:
+            finalize_current_database(
+                current_db_path,
+                current_stats['stationsProcessed'],
+                current_stats['stationsWeakAndVariable'],
+                current_stats.get('totalMonths', 0) * 30  # Approximate event count
             )
+            write_current_json_files(current_db_path, region_id, work_dir, storage_client)
+            gc.collect()
 
-        # 5. Compress and upload
-        logger.info('\n--- Compressing and uploading ---')
+        # 6. Compress and upload .db.zip files
+        logger.info('\n--- Compressing and uploading databases ---')
         update_status(db_client, region_id, {
             'state': 'uploading',
             'message': 'Uploading prediction databases...',
         })
 
-        if tide_stations and tide_db_stats and tide_db_stats['stationCount'] > 0:
+        if tide_db_path and tide_stats['stationsProcessed'] > 0:
             tide_zip_size = compress_and_upload(
                 tide_db_path,
-                f'{region_id}/predictions/tides.db.zip',
+                f'{region_id}/predictions/tides_{region_id}.db.zip',
                 storage_client
             )
 
-        if current_stations and current_db_stats and current_db_stats['stationCount'] > 0:
+        if current_db_path and current_stats['stationsProcessed'] > 0:
             current_zip_size = compress_and_upload(
                 current_db_path,
-                f'{region_id}/predictions/currents.db.zip',
+                f'{region_id}/predictions/currents_{region_id}.db.zip',
                 storage_client
             )
 
-        # 6. Update region document
+        # 7. Update region document (merge so split runs don't overwrite each other)
         total_duration = time.time() - start_time
 
         prediction_data = {
@@ -957,32 +1224,37 @@ def generate_predictions():
                 'yearsBack': years_back,
                 'yearsForward': years_forward,
             },
-            'tides': {
+            'generationDurationSeconds': round(total_duration, 1),
+        }
+
+        # Only update the type(s) that were actually generated
+        if do_tides:
+            prediction_data['tides'] = {
                 'stationCount': tide_stats['stationsProcessed'],
                 'stationsFailed': tide_stats['stationsFailed'],
                 'totalEvents': tide_stats['totalEvents'],
                 'dbSizeBytes': tide_zip_size,
                 'dbSizeMB': round(tide_zip_size / 1024 / 1024, 1),
-                'storagePath': f'{region_id}/predictions/tides.db.zip',
-            },
-            'currents': {
+                'storagePath': f'{region_id}/predictions/tides_{region_id}.db.zip',
+            }
+
+        if do_currents:
+            prediction_data['currents'] = {
                 'stationCount': current_stats['stationsProcessed'],
                 'stationsFailed': current_stats['stationsFailed'],
                 'stationsWeakAndVariable': current_stats.get('stationsWeakAndVariable', 0),
                 'totalMonths': current_stats.get('totalMonths', 0),
                 'dbSizeBytes': current_zip_size,
                 'dbSizeMB': round(current_zip_size / 1024 / 1024, 1),
-                'storagePath': f'{region_id}/predictions/currents.db.zip',
-            },
-            'generationDurationSeconds': round(total_duration, 1),
-        }
+                'storagePath': f'{region_id}/predictions/currents_{region_id}.db.zip',
+            }
 
         region_doc_ref = db_client.collection('districts').document(region_id)
         region_doc_ref.set({
             'predictionData': prediction_data,
             'predictionStatus': {
                 'state': 'complete',
-                'message': f'Prediction generation complete for {region_id}',
+                'message': f'Prediction generation ({gen_type}) complete for {region_id}',
                 'completedAt': firestore.SERVER_TIMESTAMP,
             },
         }, merge=True)
@@ -990,6 +1262,7 @@ def generate_predictions():
         summary = {
             'status': 'success',
             'regionId': region_id,
+            'type': gen_type,
             'dateRange': {
                 'begin': format_date_key(start_date),
                 'end': format_date_key(end_date),
@@ -1001,13 +1274,13 @@ def generate_predictions():
             'durationSeconds': round(total_duration, 1),
         }
 
-        logger.info(f'\n=== Prediction generation complete for {region_id}: {total_duration:.1f}s ===')
+        logger.info(f'\n=== Prediction generation ({gen_type}) complete for {region_id}: {total_duration:.1f}s ===')
         return jsonify(summary), 200
 
     except Exception as e:
         logger.error(f'Error generating predictions for {region_id}: {e}', exc_info=True)
         update_status(db_client, region_id, {
-            'state': 'error',
+            'state': 'failed',
             'message': str(e)[:500],
             'failedAt': firestore.SERVER_TIMESTAMP,
         })
@@ -1022,6 +1295,52 @@ def generate_predictions():
         if os.path.exists(work_dir):
             logger.info(f'Cleaning up: {work_dir}')
             shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ============================================================================
+# Flask endpoints
+# ============================================================================
+
+@app.route('/generate', methods=['POST'])
+def generate():
+    """
+    HTTP endpoint to trigger prediction generation.
+    
+    POST body: {
+        "regionId": "07cgd",
+        "type": "tides"|"currents" (NOT "all" - run separately),
+        "yearsBack": 1 (optional),
+        "yearsForward": 2 (optional),
+        "maxStations": null (optional, for testing)
+    }
+    
+    NOTE: Tides and currents must be run as SEPARATE jobs to avoid timeout.
+    """
+    try:
+        body = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({'error': 'Invalid JSON body'}), 400
+    
+    region_id = body.get('regionId', '').strip()
+    gen_type = body.get('type', '').strip().lower()
+    years_back = int(body.get('yearsBack', 1))
+    years_forward = int(body.get('yearsForward', 2))
+    max_stations = body.get('maxStations')
+    
+    if region_id not in VALID_REGIONS:
+        return jsonify({
+            'error': f'Invalid regionId: {region_id}',
+            'valid': VALID_REGIONS,
+        }), 400
+    
+    if gen_type not in ('tides', 'currents'):
+        return jsonify({
+            'error': f'Invalid type: {gen_type}. Must be "tides" or "currents" (run separately, not "all")',
+            'valid': ['tides', 'currents'],
+        }), 400
+    
+    # Call the core generation function
+    return run_prediction_generation(region_id, gen_type, years_back, years_forward, max_stations)
 
 
 # ============================================================================
@@ -1061,6 +1380,66 @@ def get_status():
             },
         })
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/clear-lock', methods=['POST'])
+def clear_lock():
+    """Manually clear a stale lock for a region.
+    
+    Use this when a generation has crashed/hung and you want to force-clear
+    the lock without waiting for the 75-minute timeout.
+    
+    POST body: {"regionId": "07cgd"}
+    """
+    try:
+        body = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({'error': 'Invalid JSON body'}), 400
+    
+    region_id = body.get('regionId', '').strip()
+    
+    if region_id not in VALID_REGIONS:
+        return jsonify({
+            'error': f'Invalid regionId: {region_id}',
+            'valid': VALID_REGIONS,
+        }), 400
+    
+    try:
+        db_client = firestore.Client()
+        doc_ref = db_client.collection('districts').document(region_id)
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            return jsonify({'error': f'Region {region_id} not found in Firestore'}), 404
+        
+        data = doc.to_dict()
+        old_status = data.get('predictionStatus', {})
+        old_state = old_status.get('state')
+        
+        # Update to failed state to clear the lock
+        doc_ref.set({
+            'predictionStatus': {
+                'state': 'failed',
+                'message': 'Manually cleared via /clear-lock endpoint',
+                'lastUpdated': datetime.now(timezone.utc),
+                'clearedAt': datetime.now(timezone.utc),
+                'previousState': old_state,
+            }
+        }, merge=True)
+        
+        logger.info(f'Manually cleared lock for {region_id} (was: {old_state})')
+        
+        return jsonify({
+            'success': True,
+            'regionId': region_id,
+            'message': f'Lock cleared for {region_id}',
+            'previousState': old_state,
+            'newState': 'failed',
+        })
+        
+    except Exception as e:
+        logger.error(f'Error clearing lock: {e}')
         return jsonify({'error': str(e)}), 500
 
 
