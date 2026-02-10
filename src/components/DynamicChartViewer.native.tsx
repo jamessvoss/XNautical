@@ -64,6 +64,7 @@ import { WaypointMapPin } from './WaypointIcons';
 import { useRoutes } from '../contexts/RouteContext';
 import RouteEditor from './RouteEditor';
 import RoutesModal from './RoutesModal';
+import ActiveNavigation from './ActiveNavigation';
 
 // MapLibre doesn't require an access token
 
@@ -476,8 +477,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Waypoint context
   const { waypoints: userWaypoints, openCreationModal: openWaypointCreation, openEditModal: openWaypointEdit } = useWaypoints();
   // Route context
-  const { activeRoute, addPointToActiveRoute, startNewRoute, showRoutesModal, openRoutesModal, closeRoutesModal } = useRoutes();
-  const navigation = useNavigation<any>();
+  const { activeRoute, addPointToActiveRoute, startNewRoute, showRoutesModal, openRoutesModal, closeRoutesModal, navigation } = useRoutes();
+  const navigation_router = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
@@ -7571,6 +7572,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         <RouteEditor
           visible={showRouteEditor}
           onClose={() => setShowRouteEditor(false)}
+        />
+      )}
+
+      {/* Active Navigation Overlay */}
+      {navigation && navigation.isActive && (
+        <ActiveNavigation
+          visible={true}
+          position="top"
         />
       )}
 
