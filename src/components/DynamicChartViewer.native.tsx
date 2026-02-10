@@ -53,6 +53,7 @@ import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
 import { fetchTideStations, fetchCurrentStations, getCachedTideStations, getCachedCurrentStations, loadFromStorage, TideStation, CurrentStation } from '../services/stationService';
 import { calculateAllStationStates, TideStationState, CurrentStationState, createIconNameMap } from '../services/stationStateService';
+import { tideCorrectionService } from '../services/tideCorrectionService';
 import { getBuoysCatalog, getBuoy, BuoySummary, Buoy } from '../services/buoyService';
 import StationInfoModal from './StationInfoModal';
 import TideDetailChart from './TideDetailChart';
@@ -572,6 +573,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [tideStations, setTideStations] = useState<TideStation[]>([]);
   const [currentStations, setCurrentStations] = useState<CurrentStation[]>([]);
   
+  // Tide correction for depth soundings
+  const [currentTideCorrection, setCurrentTideCorrection] = useState<number>(0);
+  const [tideCorrectionStation, setTideCorrectionStation] = useState<TideStation | null>(null);
+  
   // Live Buoy data
   const [liveBuoys, setLiveBuoys] = useState<BuoySummary[]>([]);
   const [selectedBuoy, setSelectedBuoy] = useState<Buoy | null>(null);
@@ -759,21 +764,33 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     dayNightMode: 'day',
     orientationMode: 'north-up',
     depthUnits: 'meters',
+    tideCorrectedSoundings: false,
   });
 
   // Memoized depth text field expression based on unit setting
   const depthTextFieldExpression = useMemo(() => {
     const unit = displaySettings.depthUnits;
+    
+    // Start with the depth value, optionally corrected for tide
+    // IMPORTANT: The correction value must be a literal number in the expression, not a variable reference
+    const depthValue = displaySettings.tideCorrectedSoundings && currentTideCorrection !== 0
+      ? ['+', ['get', 'DEPTH'], currentTideCorrection]  // Embed the actual number
+      : ['get', 'DEPTH'];
+    
+    console.log('[DepthExpression] tideCorrectedSoundings:', displaySettings.tideCorrectedSoundings, 
+                'currentTideCorrection:', currentTideCorrection, 
+                'depthValue:', JSON.stringify(depthValue));
+    
     if (unit === 'feet') {
       // Convert meters to feet: depth * 3.28084
-      return ['to-string', ['round', ['*', ['get', 'DEPTH'], 3.28084]]];
+      return ['to-string', ['round', ['*', depthValue, 3.28084]]];
     } else if (unit === 'fathoms') {
       // Convert meters to fathoms: depth * 0.546807
-      return ['to-string', ['round', ['*', ['get', 'DEPTH'], 0.546807]]];
+      return ['to-string', ['round', ['*', depthValue, 0.546807]]];
     }
     // Default: meters
-    return ['to-string', ['round', ['get', 'DEPTH']]];
-  }, [displaySettings.depthUnits]);
+    return ['to-string', ['round', depthValue]];
+  }, [displaySettings.depthUnits, displaySettings.tideCorrectedSoundings, currentTideCorrection]);
 
   // Memoized scaled font sizes for performance
   const scaledSoundingsFontSize = useMemo(() => [
@@ -1971,6 +1988,41 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   useEffect(() => {
     setContextCurrentDetails(showCurrentDetails);
   }, [showCurrentDetails, setContextCurrentDetails]);
+  
+  // Tide correction management - use map viewport center, not GPS position
+  useEffect(() => {
+    if (!displaySettings.tideCorrectedSoundings) {
+      // Setting is off - reset correction and stop updates
+      setCurrentTideCorrection(0);
+      setTideCorrectionStation(null);
+      tideCorrectionService.stopAutoUpdate();
+      return;
+    }
+    
+    // Setting is on - start auto-updating tide correction based on map center
+    // Pass the tideStations array so the service has access to them
+    tideCorrectionService.startAutoUpdate(() => {
+      if (centerCoord && centerCoord.length === 2) {
+        const [lng, lat] = centerCoord;
+        console.log('[TideCorrection] Using map center:', lat, lng, 'with', tideStations.length, 'stations');
+        return { lat, lng };
+      }
+      console.log('[TideCorrection] No map center available');
+      return null;
+    });
+    
+    // Subscribe to tide correction updates
+    const unsubscribe = tideCorrectionService.subscribe((correction, station) => {
+      console.log('[TideCorrection] Updated - correction:', correction, 'meters, station:', station?.name);
+      setCurrentTideCorrection(correction);
+      setTideCorrectionStation(station);
+    });
+    
+    return () => {
+      unsubscribe();
+      tideCorrectionService.stopAutoUpdate();
+    };
+  }, [displaySettings.tideCorrectedSoundings, centerCoord, tideStations]);
   
   // Zoom limiting - constrain zoom to available chart detail
   const [limitZoomToCharts, setLimitZoomToCharts] = useState(true);
@@ -4580,9 +4632,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{
                 textField: depthTextFieldExpression,
                 textSize: scaledSoundingsFontSize,
-                textColor: '#000080',
-                textHaloColor: '#FFFFFF',
-                textHaloWidth: scaledSoundingsHalo,
+                textColor: displaySettings.tideCorrectedSoundings ? '#00FF00' : '#000080',
+                textHaloColor: displaySettings.tideCorrectedSoundings ? '#000000' : '#FFFFFF',
+                textHaloWidth: displaySettings.tideCorrectedSoundings ? scaledSoundingsHalo * 1.5 : scaledSoundingsHalo,
                 textOpacity: scaledSoundingsOpacity,
                 textAllowOverlap: false,
                 textPadding: [
@@ -7088,6 +7140,27 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.depthUnits === 'fathoms' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Fathoms</Text>
                   </TouchableOpacity>
                 </View>
+                
+                <View style={[styles.panelDivider, themedStyles.panelDivider]} />
+                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Tide Corrections</Text>
+                <FFToggle
+                  label="Tide-Corrected Soundings"
+                  value={displaySettings.tideCorrectedSoundings}
+                  onToggle={async (value) => {
+                    const newSettings = { ...displaySettings, tideCorrectedSoundings: value };
+                    setDisplaySettings(newSettings);
+                    await displaySettingsService.saveSettings(newSettings);
+                  }}
+                />
+                <Text style={[styles.settingNote, themedStyles.settingNote]}>
+                  Adjust depth soundings for current tide height using nearest NOAA station. Corrected depths shown in neon green with black outline.
+                  {tideCorrectionStation && displaySettings.tideCorrectedSoundings && (
+                    <Text style={[styles.settingNote, themedStyles.settingNote]}>
+                      {'\n'}Currently using: {tideCorrectionStation.name}
+                      {'\n'}Tide correction: {currentTideCorrection >= 0 ? '+' : ''}{(currentTideCorrection * (displaySettings.depthUnits === 'feet' ? 3.28084 : displaySettings.depthUnits === 'fathoms' ? 0.546807 : 1)).toFixed(1)}{getDepthUnitSuffix(displaySettings.depthUnits)}
+                    </Text>
+                  )}
+                </Text>
                 
                 <View style={[styles.panelDivider, themedStyles.panelDivider]} />
                 <TouchableOpacity 

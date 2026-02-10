@@ -143,6 +143,7 @@ export interface DisplaySettings {
   dayNightMode: 'day' | 'dusk' | 'night' | 'auto';
   orientationMode: 'north-up' | 'head-up' | 'course-up';
   depthUnits: 'meters' | 'feet' | 'fathoms';
+  tideCorrectedSoundings: boolean;
 }
 
 const DEFAULT_SETTINGS: DisplaySettings = {
@@ -266,6 +267,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   dayNightMode: 'dusk',  // S-52 default - dark background suitable for day and twilight
   orientationMode: 'north-up',
   depthUnits: 'meters',
+  tideCorrectedSoundings: false,
 };
 
 // In-memory cache

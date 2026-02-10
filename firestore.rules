@@ -46,6 +46,11 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
     
+    // User's routes - navigation routes
+    match /users/{userId}/routes/{routeId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
     // Tidal stations - read-only for all users (authenticated or not)
     match /tidal-stations/{stationId} {
       allow read: if true; // Public read access

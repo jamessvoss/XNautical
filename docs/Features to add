@@ -2,13 +2,17 @@ High Priority - Core Navigation Features
 
 In the downloads sections have it show how much space Xnautical is currently using
 and how much free space is available
-Add a button for real-time tide values on the depth soundings adjusted for local tide values
+✅ DONE - Tide-corrected depth soundings (toggle in settings, uses nearest NOAA station)
 Get routing, save waypoint, all that stuff Done 
 Get live buoys on main map page
 Create checks for internet connection for everything requiring internet
 Add live weather feeds when internet available (radar etc.)
 I really like the feature that when you rotate the compass it puts up
 a full screen direction line that moves as you rotate
+Anchor Alarm
+Measure Distances
+AIS Live - $349.
+Chart subscriptions - $9.99 - $199 an
 
 
 
