@@ -62,6 +62,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useWaypoints } from '../contexts/WaypointContext';
 import { WaypointMapPin } from './WaypointIcons';
 import { useRoutes } from '../contexts/RouteContext';
+import RouteEditor from './RouteEditor';
+import RoutesModal from './RoutesModal';
 
 // MapLibre doesn't require an access token
 
@@ -474,11 +476,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Waypoint context
   const { waypoints: userWaypoints, openCreationModal: openWaypointCreation, openEditModal: openWaypointEdit } = useWaypoints();
   // Route context
-  const { activeRoute, addPointToActiveRoute } = useRoutes();
+  const { activeRoute, addPointToActiveRoute, startNewRoute, showRoutesModal, openRoutesModal, closeRoutesModal } = useRoutes();
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
+  
+  // Route UI state
+  const [showRouteEditor, setShowRouteEditor] = useState(false);
   
   // Throttle refs for camera change handler (100ms throttle)
   const lastCameraUpdateRef = useRef<number>(0);
@@ -3618,11 +3623,24 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     if (activeRoute) {
       addPointToActiveRoute({ latitude, longitude });
       console.log('[DynamicChartViewer] Added point to active route');
+      // Show route editor after adding first point
+      if (!showRouteEditor) {
+        setShowRouteEditor(true);
+      }
     } else {
       // Otherwise create waypoint
       openWaypointCreation(longitude, latitude);
     }
-  }, [openWaypointCreation, activeRoute, addPointToActiveRoute]);
+  }, [openWaypointCreation, activeRoute, addPointToActiveRoute, showRouteEditor]);
+
+  // Show route editor when active route has points
+  useEffect(() => {
+    if (activeRoute && activeRoute.routePoints.length > 0 && !showRouteEditor) {
+      setShowRouteEditor(true);
+    } else if (!activeRoute && showRouteEditor) {
+      setShowRouteEditor(false);
+    }
+  }, [activeRoute, showRouteEditor]);
 
   // Calculate initial center from loaded charts (prefer MBTiles if available)
   const initialCenter = useMemo(() => {
@@ -6045,6 +6063,42 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             color="#fff" 
           />
         </TouchableOpacity>
+        <View style={styles.topMenuDivider} />
+        
+        {/* Routes button - opens routes modal */}
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, showRoutesModal && styles.topMenuBtnActive]}
+          onPress={openRoutesModal}
+        >
+          <Ionicons 
+            name="map" 
+            size={24} 
+            color="#fff" 
+          />
+        </TouchableOpacity>
+        <View style={styles.topMenuDivider} />
+        
+        {/* New Route button */}
+        <TouchableOpacity 
+          style={[styles.topMenuBtn, activeRoute && styles.topMenuBtnActive]}
+          onPress={() => {
+            if (activeRoute) {
+              // Already have active route, toggle editor
+              setShowRouteEditor(!showRouteEditor);
+            } else {
+              // Start new route
+              const routeName = `Route ${new Date().toLocaleString()}`;
+              startNewRoute(routeName);
+              setShowRouteEditor(true);
+            }
+          }}
+        >
+          <Ionicons 
+            name={activeRoute ? "create" : "add-circle-outline"} 
+            size={24} 
+            color={activeRoute ? "#FF6B35" : "#fff"} 
+          />
+        </TouchableOpacity>
       </View>
 
       {/* Scale Bar - centered below top menu bar */}
@@ -7511,6 +7565,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </ScrollView>
         </View>
       </Modal>
+
+      {/* Route Editor Panel */}
+      {showRouteEditor && activeRoute && (
+        <RouteEditor
+          visible={showRouteEditor}
+          onClose={() => setShowRouteEditor(false)}
+        />
+      )}
+
+      {/* Routes Modal */}
+      <RoutesModal
+        visible={showRoutesModal}
+        onClose={closeRoutesModal}
+        onRouteLoad={(route) => {
+          setShowRouteEditor(true);
+        }}
+      />
 
     </View>
   );
