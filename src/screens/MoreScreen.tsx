@@ -79,6 +79,7 @@ export default function MoreScreen() {
   };
 
   return (
+    // @ts-ignore - react-native-safe-area-context type resolution issue
     <SafeAreaView style={[styles.container, themedStyles.container]} edges={['top']}>
       <View style={[styles.header, themedStyles.header]}>
         <Text style={[styles.headerTitle, themedStyles.headerTitle]}>More</Text>

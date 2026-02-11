@@ -330,9 +330,10 @@ function getLocalFilename(pack: DistrictDownloadPack, districtId: string): strin
   const zipFilename = pathParts[pathParts.length - 1]; // e.g., 'US4.mbtiles.zip'
   const baseFilename = zipFilename.replace('.zip', ''); // e.g., 'US4.mbtiles'
   
+  const prefix = getDistrictPrefix(districtId);
+
   // Prefix with district name for charts
   if (pack.type === 'charts' && pack.band) {
-    const prefix = getDistrictPrefix(districtId);
     return `${prefix}_${pack.band}.mbtiles`;
   }
   
@@ -652,7 +653,7 @@ export async function generateManifest(): Promise<void> {
           
           // Get file size
           const filePath = `${mbtilesDir}${file}`;
-          const fileInfo = await FileSystem.getInfoAsync(filePath, { size: true });
+          const fileInfo = await FileSystem.getInfoAsync(filePath);
           const fileSize = fileInfo.exists && fileInfo.size ? fileInfo.size : 0;
           
           const zoomRange = scaleZoomRanges[band] || { minZoom: 0, maxZoom: 22 };
@@ -780,7 +781,7 @@ export async function deleteRegion(
         
         if (belongsToDistrict) {
           const filePath = `${mbtilesDir}${file}`;
-          const fileInfo = await FileSystem.getInfoAsync(filePath, { size: true });
+          const fileInfo = await FileSystem.getInfoAsync(filePath);
           if (fileInfo.exists) {
             freedBytes += fileInfo.size || 0;
             await FileSystem.deleteAsync(filePath, { idempotent: true });
@@ -793,7 +794,7 @@ export async function deleteRegion(
       // Delete GNIS only if no other districts remain
       if (otherInstalledDistrictIds.length === 0) {
         const gnisPath = `${mbtilesDir}gnis_names.mbtiles`;
-        const gnisInfo = await FileSystem.getInfoAsync(gnisPath, { size: true });
+        const gnisInfo = await FileSystem.getInfoAsync(gnisPath);
         if (gnisInfo.exists) {
           freedBytes += gnisInfo.size || 0;
           await FileSystem.deleteAsync(gnisPath, { idempotent: true });
@@ -813,7 +814,7 @@ export async function deleteRegion(
       
       for (const dbFile of predDbFiles) {
         const dbPath = `${docDir}${dbFile}`;
-        const dbInfo = await FileSystem.getInfoAsync(dbPath, { size: true });
+        const dbInfo = await FileSystem.getInfoAsync(dbPath);
         if (dbInfo.exists) {
           freedBytes += dbInfo.size || 0;
           await FileSystem.deleteAsync(dbPath, { idempotent: true });

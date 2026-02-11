@@ -3,7 +3,7 @@
 Convert a single S-57 ENC file to MBTiles vector tiles.
 
 Uses:
-- GDAL ogr2ogr to convert S-57 to GeoJSON
+- GDAL Python bindings (osgeo.ogr) to read S-57 layers directly in-process
 - Mapbox tippecanoe to convert GeoJSON to MBTiles
 """
 
@@ -14,6 +14,12 @@ import json
 import shutil
 import math
 from pathlib import Path
+
+from osgeo import ogr, gdal
+
+# Suppress GDAL warnings/errors to stdout (we handle errors ourselves)
+gdal.UseExceptions()
+gdal.SetConfigOption('CPL_LOG', '/dev/null')
 
 
 def generate_arc_geometry(center_lon: float, center_lat: float, 
@@ -104,66 +110,107 @@ def generate_arc_geometry(center_lon: float, center_lat: float,
     }
 
 
-def get_s57_layers(s57_path: str) -> list:
-    """Get list of layers in an S-57 file."""
-    cmd = ["ogrinfo", "-so", "-q", s57_path]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    
-    layers = []
-    for line in result.stdout.split('\n'):
-        # Lines look like: "1: DEPARE (Polygon)" or "1: DEPARE" (without geometry type)
-        if ':' in line:
-            # Extract layer name - handle both formats
-            parts = line.split(':')
-            if len(parts) >= 2:
-                layer_part = parts[1].strip()
-                # Remove geometry type if present (e.g., "(Polygon)")
-                if '(' in layer_part:
-                    layer_name = layer_part.split('(')[0].strip()
-                else:
-                    layer_name = layer_part.strip()
-                
-                if layer_name and not layer_name.startswith('DS'):  # Skip DS* metadata layers
-                    # Skip M_* meta layers (coverage, quality, accuracy metadata - not for display)
-                    if layer_name.startswith('M_'):
-                        continue
-                    layers.append(layer_name)
-    
-    return layers
+def _ogr_feature_to_geojson(feature, layer_name: str) -> dict:
+    """Convert an OGR feature to a GeoJSON dict with coordinates rounded to 6 decimals.
+
+    Args:
+        feature: ogr.Feature object
+        layer_name: S-57 layer name (used for property enrichment upstream)
+
+    Returns:
+        GeoJSON feature dict, or None if no geometry
+    """
+    geom = feature.GetGeometryRef()
+    if geom is None:
+        return None
+
+    # Export geometry to GeoJSON dict
+    geom_json = json.loads(geom.ExportToJson())
+
+    # Round coordinates to 6 decimal places (matching -lco COORDINATE_PRECISION=6)
+    def round_coords(obj):
+        if isinstance(obj, list):
+            if obj and isinstance(obj[0], (int, float)):
+                return [round(v, 6) for v in obj]
+            return [round_coords(item) for item in obj]
+        return obj
+
+    geom_json['coordinates'] = round_coords(geom_json['coordinates'])
+
+    # Build properties from feature fields
+    props = {}
+    defn = feature.GetDefnRef()
+    for i in range(defn.GetFieldCount()):
+        field_defn = defn.GetFieldDefn(i)
+        name = field_defn.GetName()
+        if feature.IsFieldSetAndNotNull(i):
+            field_type = field_defn.GetType()
+            if field_type == ogr.OFTInteger:
+                props[name] = feature.GetFieldAsInteger(i)
+            elif field_type == ogr.OFTReal:
+                props[name] = feature.GetFieldAsDouble(i)
+            elif field_type in (ogr.OFTIntegerList, ogr.OFTRealList, ogr.OFTStringList):
+                props[name] = feature.GetFieldAsString(i)
+            else:
+                props[name] = feature.GetFieldAsString(i)
+
+    return {
+        'type': 'Feature',
+        'geometry': geom_json,
+        'properties': props,
+    }
 
 
-def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
-    """Convert S-57 file to GeoJSON using GDAL, extracting all geometry layers.
-    
+def convert_s57_to_geojson(s57_path: str, output_dir: str):
+    """Convert S-57 file to GeoJSON using GDAL Python bindings directly.
+
+    Reads all layers in-process via osgeo.ogr, avoiding per-layer ogr2ogr
+    subprocess forks and intermediate file I/O.
+
     Each feature will include a CHART_ID property with the source chart identifier,
     which helps with debugging and identifying which chart a feature came from.
+
+    Returns:
+        (geojson_path, has_safety_areas) tuple
     """
-    
+
     s57_path = Path(s57_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Extract chart_id from filename (e.g., US4AK4PH.000 -> US4AK4PH)
     chart_id = s57_path.stem
     print(f"Chart ID: {chart_id}")
-    
-    # Get all layers in the S-57 file
-    layers = get_s57_layers(str(s57_path))
+
+    # Open the S-57 data source
+    ds = ogr.Open(str(s57_path))
+    if ds is None:
+        raise Exception(f"Could not open S-57 file: {s57_path}")
+
+    # Get all layers, filtering out DS* metadata and M_* meta layers
+    layers = []
+    for i in range(ds.GetLayerCount()):
+        layer = ds.GetLayerByIndex(i)
+        name = layer.GetName()
+        if not name.startswith('DS') and not name.startswith('M_'):
+            layers.append(name)
+
     print(f"Found {len(layers)} layers in {s57_path.name}: {', '.join(layers[:10])}{'...' if len(layers) > 10 else ''}")
-    
+
     if not layers:
+        ds = None
         raise Exception("No geometry layers found in S-57 file")
-    
-    # Convert each layer to GeoJSON and merge
+
+    # Convert each layer and merge
     all_features = []
-    
+
     # Navigation aids that should be visible at all zoom levels
     NAVIGATION_AIDS = {
         'LIGHTS', 'BOYLAT', 'BOYCAR', 'BOYSAW', 'BOYSPP', 'BOYISD',
         'BCNLAT', 'BCNSPP', 'BCNCAR', 'BCNISD', 'BCNSAW',
         'WRECKS', 'UWTROC', 'OBSTRN',  # Hazards also important
     }
-    
+
     # Safety areas that should be visible at all zoom levels for route planning
     SAFETY_AREAS = {
         'RESARE',  # Restricted areas (no-go zones, nature reserves)
@@ -173,277 +220,179 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str) -> str:
         'ACHBRT',  # Anchor berths
         'MARCUL',  # Marine farms/aquaculture
     }
-    
+
     # S-57 Object Class codes - layer name to OBJL mapping
-    # Source: GDAL s57objectclasses.csv (IHO S-57 Edition 3.1 Object Catalogue)
-    # GDAL extracts the correct layer name from S-57 file structure, but OBJL attribute
-    # may be incorrect. Use layer name (authoritative) to set correct OBJL.
     S57_OBJL = {
-        # Anchorages (3-4)
         'ACHBRT': 3, 'ACHARE': 4,
-        # Beacons (5-9)
         'BCNCAR': 5, 'BCNISD': 6, 'BCNLAT': 7, 'BCNSAW': 8, 'BCNSPP': 9,
-        # Bridge/Buildings (11-12)
         'BRIDGE': 11, 'BUISGL': 12,
-        # Buoys (14-19)
         'BOYCAR': 14, 'BOYINB': 15, 'BOYISD': 16, 'BOYLAT': 17, 'BOYSAW': 18, 'BOYSPP': 19,
-        # Cables (20-22)
         'CBLARE': 20, 'CBLOHD': 21, 'CBLSUB': 22,
-        # Canals/Causeway (23, 26)
         'CANALS': 23, 'CAUSWY': 26,
-        # Caution area (27)
-        'CTNARE': 27,
-        # Coastline (30)
-        'COALNE': 30,
-        # Daymark (39)
-        'DAYMAR': 39,
-        # Depth (42-43, 46)
+        'CTNARE': 27, 'COALNE': 30, 'DAYMAR': 39,
         'DEPARE': 42, 'DEPCNT': 43, 'DRGARE': 46,
-        # Fairway (51)
-        'FAIRWY': 51,
-        # Fog signal (58)
-        'FOGSIG': 58,
-        # Hulk (65)
-        'HULKES': 65,
-        # Lake (69)
-        'LAKARE': 69,
-        # Land (71-74)
+        'FAIRWY': 51, 'FOGSIG': 58, 'HULKES': 65, 'LAKARE': 69,
         'LNDARE': 71, 'LNDELV': 72, 'LNDRGN': 73, 'LNDMRK': 74,
-        # Lights (75)
         'LIGHTS': 75,
-        # Marine/Military/Mooring (82-84)
         'MARCUL': 82, 'MIPARE': 83, 'MORFAC': 84,
-        # Navigation (85)
-        'NAVLNE': 85,
-        # Obstruction (86)
-        'OBSTRN': 86,
-        # Pile/Pipeline (90, 92, 94)
-        'PILPNT': 90, 'PIPARE': 92, 'PIPSOL': 94,
-        # Pontoon (95)
-        'PONTON': 95,
-        # Recommended track (109)
-        'RECTRC': 109,
-        # Restricted/Rescue (111-112)
-        'RSCSTA': 111, 'RESARE': 112,
-        # River (114)
-        'RIVERS': 114,
-        # Sea/Seabed (119, 121)
-        'SEAARE': 119, 'SBDARE': 121,
-        # Shoreline (122)
-        'SLCONS': 122,
-        # Sounding (129)
-        'SOUNDG': 129,
-        # Topmark (144)
-        'TOPMAR': 144,
-        # Traffic separation (145, 148)
-        'TSELNE': 145, 'TSSLPT': 148,
-        # Underwater rock (153)
-        'UWTROC': 153,
-        # Water turbulence (156)
-        'WATTUR': 156,
-        # Wreck (159)
-        'WRECKS': 159,
+        'NAVLNE': 85, 'OBSTRN': 86,
+        'PILPNT': 90, 'PIPARE': 92, 'PIPSOL': 94, 'PONTON': 95,
+        'RECTRC': 109, 'RSCSTA': 111, 'RESARE': 112, 'RIVERS': 114,
+        'SEAARE': 119, 'SBDARE': 121, 'SLCONS': 122, 'SOUNDG': 129,
+        'TOPMAR': 144, 'TSELNE': 145, 'TSSLPT': 148,
+        'UWTROC': 153, 'WATTUR': 156, 'WRECKS': 159,
     }
-    
-    for layer in layers:
-        layer_output = output_dir / f"{layer}.geojson"
-        
-        cmd = [
-            "ogr2ogr",
-            "-f", "GeoJSON",
-            str(layer_output),
-            str(s57_path),
-            layer,  # Specify the layer to extract
-            "-skipfailures",
-            "-lco", "COORDINATE_PRECISION=6",
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if layer_output.exists() and layer_output.stat().st_size > 100:
-            try:
-                with open(layer_output, 'r') as f:
-                    data = json.load(f)
-                    features = data.get('features', [])
-                    # Add metadata to each feature and set correct OBJL from layer name
-                    for feature in features:
-                        if feature.get('geometry') is not None:
-                            # Add chart ID for debugging and quilting - both formats for compatibility
-                            feature['properties']['CHART_ID'] = chart_id  # Visible in feature inspector
-                            feature['properties']['_chartId'] = chart_id  # Track source chart for compositing
-                            
-                            # Set OBJL from layer name (authoritative S-57 object class)
-                            # GDAL's OBJL attribute extraction can be incorrect
-                            if layer in S57_OBJL:
-                                feature['properties']['OBJL'] = S57_OBJL[layer]
-                            
-                            # Force navigation aids and safety areas to appear at all zoom levels
-                            if layer in NAVIGATION_AIDS or layer in SAFETY_AREAS:
-                                feature['tippecanoe'] = {'minzoom': 0, 'maxzoom': 17}
-                            
-                            # For LIGHTS, calculate orientation and generate sector arcs
-                            if layer == 'LIGHTS':
-                                props = feature['properties']
-                                sectr1 = props.get('SECTR1')
-                                sectr2 = props.get('SECTR2')
-                                orient = props.get('ORIENT')  # S-57 ORIENT attribute
-                                
-                                # Calculate symbol orientation for the light
-                                # S-52: Light flare symbol points toward where the light is visible from
-                                if sectr1 is not None and sectr2 is not None:
-                                    # For sector lights: calculate midpoint of visible sector
-                                    # SECTR1/SECTR2 are bearings "toward the light" from seaward
-                                    # Symbol should point toward the center of the visible sector
-                                    s1 = float(sectr1)
-                                    s2 = float(sectr2)
-                                    # Calculate clockwise span from SECTR1 to SECTR2
-                                    span = (s2 - s1) % 360
-                                    # Midpoint bearing (toward the light from seaward)
-                                    mid_bearing = (s1 + span / 2) % 360
-                                    # Convert to direction FROM the light (add 180°)
-                                    light_orient = (mid_bearing + 180) % 360
-                                    props['_ORIENT'] = light_orient
-                                elif orient is not None:
-                                    # Use explicit ORIENT attribute if present
-                                    props['_ORIENT'] = float(orient)
-                                else:
-                                    # No orientation data - use S-52 convention of ~135° (SE)
-                                    # This matches NOAA's display standard for non-sector lights
-                                    props['_ORIENT'] = 135
-                                
-                                if sectr1 is not None and sectr2 is not None:
-                                    # This light has sector information - generate arc
-                                    geom = feature['geometry']
-                                    if geom['type'] == 'Point':
-                                        coords = geom['coordinates']
-                                        
-                                        # Get color for the sector
-                                        # S-57 COLOUR can be: list [3], string "[3]", int 3, etc.
-                                        colour = props.get('COLOUR', [])
-                                        if isinstance(colour, list) and len(colour) > 0:
-                                            colour_code = str(colour[0])  # Ensure string
-                                        elif isinstance(colour, str):
-                                            # Handle string like "[3]" or "3"
-                                            colour_code = colour.strip('[]').strip()
-                                            if not colour_code:
-                                                colour_code = '1'
-                                        elif colour is not None:
-                                            colour_code = str(colour)
-                                        else:
-                                            colour_code = '1'  # Default white
-                                        
-                                        print(f"    Sector light: SECTR1={sectr1}, SECTR2={sectr2}, "
-                                              f"COLOUR={colour} → {colour_code}, ORIENT={props.get('_ORIENT'):.1f}°")
-                                        
-                                        # Create sector arc feature
-                                        # Radius needs to be large enough to be visible at low zooms
-                                        # 0.15nm (~280m) is visible at z10, reasonable at z15
-                                        arc_geom = generate_arc_geometry(
-                                            coords[0], coords[1],
-                                            float(sectr1), float(sectr2),
-                                            radius_nm=0.15  # 0.15 nautical miles (~280m)
-                                        )
-                                        
-                                        sector_feature = {
-                                            'type': 'Feature',
-                                            'geometry': arc_geom,
-                                            'properties': {
-                                                'OBJL': 75,  # LIGHTS - sector identified by LineString geometry
-                                                'COLOUR': colour_code,
-                                                'SECTR1': sectr1,
-                                                'SECTR2': sectr2,
-                                                'OBJNAM': props.get('OBJNAM'),
-                                                'CHART_ID': chart_id,  # Preserve chart ID
-                                                '_chartId': chart_id,
-                                            },
-                                            'tippecanoe': {'minzoom': 0, 'maxzoom': 17}
-                                        }
-                                        all_features.append(sector_feature)
-                                
-                                # Still add the light point itself
-                                all_features.append(feature)
-                            
-                            # For soundings, extract depth from Z coordinate
-                            elif layer == 'SOUNDG':
-                                geom = feature['geometry']
-                                coords = geom.get('coordinates', [])
-                                props = feature.get('properties', {})
-                                # Preserve SCAMIN from original feature for zoom filtering
-                                scamin = props.get('SCAMIN')
-                                
-                                # Soundings are often MultiPoint with [lon, lat, depth]
-                                if geom['type'] == 'MultiPoint':
-                                    for coord in coords:
-                                        if len(coord) >= 3:
-                                            point_props = {
-                                                'OBJL': 129,  # SOUNDG
-                                                'DEPTH': coord[2],
-                                                'CHART_ID': chart_id,  # Preserve chart ID for debugging
-                                                '_chartId': chart_id,
-                                            }
-                                            # Include SCAMIN if present for zoom-based filtering
-                                            if scamin is not None:
-                                                point_props['SCAMIN'] = scamin
-                                            point_feature = {
-                                                'type': 'Feature',
-                                                'geometry': {
-                                                    'type': 'Point',
-                                                    'coordinates': [coord[0], coord[1]]
-                                                },
-                                                'properties': point_props
-                                            }
-                                            all_features.append(point_feature)
-                                elif geom['type'] == 'Point' and len(coords) >= 3:
-                                    feature['properties']['DEPTH'] = coords[2]
-                                    feature['geometry']['coordinates'] = [coords[0], coords[1]]
-                                    all_features.append(feature)
-                                else:
-                                    all_features.append(feature)
-                            else:
-                                all_features.append(feature)
-            except Exception as e:
-                print(f"  Warning: Could not read {layer}: {e}")
-            
-            # Clean up individual layer file
-            layer_output.unlink()
+
+    has_safety_areas = False
+
+    for layer_name in layers:
+        ogr_layer = ds.GetLayerByName(layer_name)
+        if ogr_layer is None:
+            continue
+
+        ogr_layer.ResetReading()
+        ogr_feature = ogr_layer.GetNextFeature()
+
+        while ogr_feature is not None:
+            feature = _ogr_feature_to_geojson(ogr_feature, layer_name)
+            ogr_feature = ogr_layer.GetNextFeature()
+
+            if feature is None:
+                continue
+
+            # Add chart ID for debugging and quilting
+            feature['properties']['CHART_ID'] = chart_id
+            feature['properties']['_chartId'] = chart_id
+
+            # Set OBJL from layer name (authoritative S-57 object class)
+            if layer_name in S57_OBJL:
+                feature['properties']['OBJL'] = S57_OBJL[layer_name]
+
+            # Force navigation aids and safety areas to appear at all zoom levels
+            if layer_name in NAVIGATION_AIDS or layer_name in SAFETY_AREAS:
+                feature['tippecanoe'] = {'minzoom': 0, 'maxzoom': 17}
+            if layer_name in SAFETY_AREAS:
+                has_safety_areas = True
+
+            # For LIGHTS, calculate orientation and generate sector arcs
+            if layer_name == 'LIGHTS':
+                props = feature['properties']
+                sectr1 = props.get('SECTR1')
+                sectr2 = props.get('SECTR2')
+                orient = props.get('ORIENT')
+
+                if sectr1 is not None and sectr2 is not None:
+                    s1 = float(sectr1)
+                    s2 = float(sectr2)
+                    span = (s2 - s1) % 360
+                    mid_bearing = (s1 + span / 2) % 360
+                    light_orient = (mid_bearing + 180) % 360
+                    props['_ORIENT'] = light_orient
+                elif orient is not None:
+                    props['_ORIENT'] = float(orient)
+                else:
+                    props['_ORIENT'] = 135
+
+                if sectr1 is not None and sectr2 is not None:
+                    geom = feature['geometry']
+                    if geom['type'] == 'Point':
+                        coords = geom['coordinates']
+
+                        colour = props.get('COLOUR', [])
+                        if isinstance(colour, list) and len(colour) > 0:
+                            colour_code = str(colour[0])
+                        elif isinstance(colour, str):
+                            colour_code = colour.strip('[]').strip()
+                            if not colour_code:
+                                colour_code = '1'
+                        elif colour is not None:
+                            colour_code = str(colour)
+                        else:
+                            colour_code = '1'
+
+                        print(f"    Sector light: SECTR1={sectr1}, SECTR2={sectr2}, "
+                              f"COLOUR={colour} -> {colour_code}, ORIENT={props.get('_ORIENT'):.1f}")
+
+                        arc_geom = generate_arc_geometry(
+                            coords[0], coords[1],
+                            float(sectr1), float(sectr2),
+                            radius_nm=0.15
+                        )
+
+                        sector_feature = {
+                            'type': 'Feature',
+                            'geometry': arc_geom,
+                            'properties': {
+                                'OBJL': 75,
+                                'COLOUR': colour_code,
+                                'SECTR1': sectr1,
+                                'SECTR2': sectr2,
+                                'OBJNAM': props.get('OBJNAM'),
+                                'CHART_ID': chart_id,
+                                '_chartId': chart_id,
+                            },
+                            'tippecanoe': {'minzoom': 0, 'maxzoom': 17}
+                        }
+                        all_features.append(sector_feature)
+
+                all_features.append(feature)
+
+            # For soundings, extract depth from Z coordinate
+            elif layer_name == 'SOUNDG':
+                geom = feature['geometry']
+                coords = geom.get('coordinates', [])
+                props = feature.get('properties', {})
+                scamin = props.get('SCAMIN')
+
+                if geom['type'] == 'MultiPoint':
+                    for coord in coords:
+                        if len(coord) >= 3:
+                            point_props = {
+                                'OBJL': 129,
+                                'DEPTH': coord[2],
+                                'CHART_ID': chart_id,
+                                '_chartId': chart_id,
+                            }
+                            if scamin is not None:
+                                point_props['SCAMIN'] = scamin
+                            point_feature = {
+                                'type': 'Feature',
+                                'geometry': {
+                                    'type': 'Point',
+                                    'coordinates': [coord[0], coord[1]]
+                                },
+                                'properties': point_props
+                            }
+                            all_features.append(point_feature)
+                elif geom['type'] == 'Point' and len(coords) >= 3:
+                    feature['properties']['DEPTH'] = coords[2]
+                    feature['geometry']['coordinates'] = [coords[0], coords[1]]
+                    all_features.append(feature)
+                else:
+                    all_features.append(feature)
+            else:
+                all_features.append(feature)
+
+    # Close the data source
+    ds = None
     
     print(f"Extracted {len(all_features)} features from {len(layers)} layers")
-    
+
     if not all_features:
         raise Exception("No features with geometry extracted from S-57 file")
-    
+
     # Write combined GeoJSON
     combined_output = output_dir / f"{s57_path.stem}.geojson"
     combined_geojson = {
         "type": "FeatureCollection",
         "features": all_features
     }
-    
+
     with open(combined_output, 'w') as f:
         json.dump(combined_geojson, f)
-    
+
     print(f"Created GeoJSON: {combined_output} ({combined_output.stat().st_size / 1024:.1f} KB)")
-    return str(combined_output)
-
-
-def check_geojson_has_features(geojson_path: str) -> bool:
-    """Check if GeoJSON file has valid features with geometry."""
-    try:
-        with open(geojson_path, 'r') as f:
-            data = json.load(f)
-        
-        if 'features' not in data:
-            return False
-        
-        # Check for at least one feature with valid geometry
-        for feature in data.get('features', []):
-            if feature.get('geometry') is not None:
-                return True
-        
-        return False
-    except Exception as e:
-        print(f"Error checking GeoJSON: {e}")
-        return False
+    return str(combined_output), has_safety_areas
 
 
 def get_tippecanoe_settings(chart_id: str) -> tuple:
@@ -544,35 +493,15 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
         ])
 
 
-def check_geojson_has_safety_areas(geojson_path: str) -> bool:
-    """Check if GeoJSON contains any safety area features (RESARE, MIPARE, etc.)."""
-    # OBJL codes: RESARE=112, CTNARE=33, MIPARE=83, ACHARE=2, ACHBRT=3, MARCUL=79
-    SAFETY_AREA_OBJL = {112, 33, 83, 2, 3, 79}
-    try:
-        with open(geojson_path, 'r') as f:
-            data = json.load(f)
-        for feature in data.get('features', []):
-            objl = feature.get('properties', {}).get('OBJL')
-            if objl in SAFETY_AREA_OBJL:
-                return True
-        return False
-    except Exception:
-        return False
-
-
-def convert_geojson_to_mbtiles(geojson_path: str, output_path: str, chart_id: str) -> str:
+def convert_geojson_to_mbtiles(geojson_path: str, output_path: str, chart_id: str,
+                               has_safety_areas: bool = False) -> str:
     """Convert GeoJSON to MBTiles using tippecanoe with scale-appropriate settings."""
-    
-    # First check if the GeoJSON has valid features
-    if not check_geojson_has_features(geojson_path):
-        raise Exception(f"GeoJSON has no valid features with geometry - skipping")
-    
+
     # Get scale-appropriate settings
     max_zoom, min_zoom, additional_flags = get_tippecanoe_settings(chart_id)
-    
+
     # If the chart has safety areas (MIPARE, RESARE, etc.), we need to generate tiles
     # at lower zoom levels so these large areas are visible when zoomed out
-    has_safety_areas = check_geojson_has_safety_areas(geojson_path)
     if has_safety_areas and min_zoom > 0:
         print(f"  Chart has safety areas - extending min zoom from {min_zoom} to 0")
         min_zoom = 0
@@ -629,14 +558,17 @@ def convert_chart(s57_path: str, output_dir: str = None, temp_dir: str = "/tmp")
     
     try:
         # Step 1: Convert S-57 to GeoJSON
-        geojson_path = convert_s57_to_geojson(str(s57_path), str(temp_path))
-        
+        geojson_path, has_safety_areas = convert_s57_to_geojson(str(s57_path), str(temp_path))
+
         # Step 2: Convert GeoJSON to MBTiles
         output_path = Path(output_dir) / f"{chart_id}.mbtiles"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        mbtiles_path = convert_geojson_to_mbtiles(geojson_path, str(output_path), chart_id)
-        
+
+        mbtiles_path = convert_geojson_to_mbtiles(
+            geojson_path, str(output_path), chart_id,
+            has_safety_areas=has_safety_areas
+        )
+
         return mbtiles_path
         
     finally:

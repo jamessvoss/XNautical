@@ -1,0 +1,15 @@
+# Build the base image (only needed when dependencies change)
+# Run: gcloud builds submit --config=cloudbuild-base.yaml
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'Dockerfile.base', '-t', 'gcr.io/$PROJECT_ID/enc-converter-base:latest', '.']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/enc-converter-base:latest']
+
+images:
+  - 'gcr.io/$PROJECT_ID/enc-converter-base:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

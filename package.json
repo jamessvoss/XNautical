@@ -6,7 +6,9 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "lint": "expo lint",
+    "postinstall": "sed -i '' 's/export type Expression = readonly \\[ExpressionName, \\.\\.\\.ExpressionField\\[\\]\\];/export type Expression = readonly [ExpressionName, ...ExpressionField[]] | any[];/g' node_modules/@maplibre/maplibre-react-native/lib/typescript/module/src/types/MapLibreRNStyles.d.ts node_modules/@maplibre/maplibre-react-native/lib/typescript/commonjs/src/types/MapLibreRNStyles.d.ts 2>/dev/null || true"
   },
   "dependencies": {
     "@dr.pogodin/react-native-static-server": "^0.25.4",
@@ -61,6 +63,8 @@
     "@types/sharp": "^0.31.1",
     "adm-zip": "^0.5.16",
     "canvas": "^3.2.1",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~10.0.0",
     "firebase-admin": "^13.6.0",
     "shapefile": "^0.6.6",
     "sharp": "^0.34.5",

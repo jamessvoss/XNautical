@@ -47,7 +47,7 @@ interface Props {
 
 export default function ScratchPadEditor({ padId, onClose }: Props) {
   const insets = useSafeAreaInsets();
-  const canvasRef = useRef<View>(null);
+  const canvasRef = useRef<any>(null);
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
   // Drawing state
@@ -107,7 +107,7 @@ export default function ScratchPadEditor({ padId, onClose }: Props) {
       onMoveShouldSetPanResponder: () => true,
       onPanResponderTerminationRequest: () => false,
 
-      onPanResponderGrant: (evt) => {
+      onPanResponderGrant: (evt: any) => {
         if (toolRef.current === 'text') return;
         const { locationX: x, locationY: y } = evt.nativeEvent;
         const path = `M ${x.toFixed(1)} ${y.toFixed(1)}`;
@@ -116,7 +116,7 @@ export default function ScratchPadEditor({ padId, onClose }: Props) {
         setCurrentPath(path);
       },
 
-      onPanResponderMove: (evt) => {
+      onPanResponderMove: (evt: any) => {
         if (toolRef.current === 'text') return;
         const { locationX: x, locationY: y } = evt.nativeEvent;
         const prev = prevPointRef.current;
@@ -335,7 +335,7 @@ export default function ScratchPadEditor({ padId, onClose }: Props) {
                 <TextInput
                   style={[styles.textInput, { color: tb.color, fontSize: tb.fontSize }]}
                   value={tb.text}
-                  onChangeText={(t) => handleTextChange(tb.id, t)}
+                  onChangeText={(t: string) => handleTextChange(tb.id, t)}
                   onBlur={() => handleTextBlur(tb.id)}
                   autoFocus
                   multiline

@@ -22,8 +22,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Boat, BoatPhoto, StorageType } from '../types/boat';
-import { useAuth } from '../contexts/AuthContext';
+import { Boat, BoatPhoto } from '../types/boat';
 import { saveBoat } from '../services/boatStorageService';
 import {
   pickPhoto,
@@ -31,6 +30,17 @@ import {
   getPhotoDisplayUri,
   deletePhoto,
 } from '../services/boatPhotoService';
+
+// Auth helpers
+let getCurrentUser: (() => any) | null = null;
+if (Platform.OS !== 'web') {
+  try {
+    const firebase = require('../config/firebase');
+    getCurrentUser = firebase.getCurrentUser;
+  } catch (e) {
+    console.log('[BoatDetailsModal] Firebase config not available');
+  }
+}
 
 interface Props {
   visible: boolean;
@@ -41,7 +51,7 @@ interface Props {
 
 export default function BoatDetailsModal({ visible, boat, onClose, onSave }: Props) {
   const insets = useSafeAreaInsets();
-  const { currentUser } = useAuth();
+  const currentUser = getCurrentUser ? getCurrentUser() : null;
 
   // Form state
   const [name, setName] = useState('');
@@ -56,7 +66,6 @@ export default function BoatDetailsModal({ visible, boat, onClose, onSave }: Pro
   const [displacement, setDisplacement] = useState('');
   const [homeport, setHomeport] = useState('');
   const [photos, setPhotos] = useState<BoatPhoto[]>([]);
-  const [storageType, setStorageType] = useState<StorageType>('both');
   const [saving, setSaving] = useState(false);
   const [fullScreenPhoto, setFullScreenPhoto] = useState<string | null>(null);
 
@@ -75,7 +84,6 @@ export default function BoatDetailsModal({ visible, boat, onClose, onSave }: Pro
       setDisplacement(boat.displacement?.toString() || '');
       setHomeport(boat.homeport || '');
       setPhotos(boat.photos);
-      setStorageType(boat.storageType);
     }
   }, [visible, boat]);
 
@@ -165,7 +173,7 @@ export default function BoatDetailsModal({ visible, boat, onClose, onSave }: Pro
         displacement: displacement ? parseFloat(displacement) : undefined,
         homeport: homeport.trim() || undefined,
         photos,
-        storageType,
+        storageType: 'both', // Always use both storage types
         updatedAt: new Date().toISOString(),
       };
 
@@ -193,7 +201,6 @@ export default function BoatDetailsModal({ visible, boat, onClose, onSave }: Pro
     displacement,
     homeport,
     photos,
-    storageType,
     onSave,
     onClose,
   ]);
@@ -367,114 +374,41 @@ export default function BoatDetailsModal({ visible, boat, onClose, onSave }: Pro
               </View>
             </View>
 
-            {/* Photos */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>PHOTOS</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.photosContainer}
-              >
-                {photos.map((photo) => (
-                  <View key={photo.id} style={styles.photoItem}>
-                    <TouchableOpacity
-                      onPress={() => setFullScreenPhoto(getPhotoDisplayUri(photo))}
-                    >
-                      <Image
-                        source={{ uri: getPhotoDisplayUri(photo) }}
-                        style={styles.photoThumbnail}
-                      />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.deletePhotoButton}
-                      onPress={() => handleRemovePhoto(photo.id)}
-                    >
-                      <Ionicons name="close-circle" size={24} color="#FF6B6B" />
-                    </TouchableOpacity>
-                  </View>
-                ))}
-                <TouchableOpacity style={styles.addPhotoButton} onPress={handleAddPhoto}>
-                  <Ionicons name="camera" size={32} color="rgba(255,255,255,0.5)" />
-                  <Text style={styles.addPhotoText}>Add Photo</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            </View>
-
-            {/* Storage Type */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>STORAGE</Text>
-              <Text style={styles.fieldLabel}>Where to store this boat's data</Text>
-              <View style={styles.storageButtons}>
-                <TouchableOpacity
-                  style={[
-                    styles.storageButton,
-                    storageType === 'local' && styles.storageButtonActive,
-                  ]}
-                  onPress={() => setStorageType('local')}
-                >
-                  <Ionicons
-                    name="phone-portrait"
-                    size={24}
-                    color={storageType === 'local' ? '#4FC3F7' : 'rgba(255,255,255,0.5)'}
-                  />
-                  <Text
-                    style={[
-                      styles.storageButtonText,
-                      storageType === 'local' && styles.storageButtonTextActive,
-                    ]}
+          {/* Photos */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>PHOTOS</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.photosContainer}
+            >
+              {photos.map((photo) => (
+                <View key={photo.id} style={styles.photoItem}>
+                  <TouchableOpacity
+                    onPress={() => setFullScreenPhoto(getPhotoDisplayUri(photo))}
                   >
-                    Local Only
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.storageButton,
-                    storageType === 'cloud' && styles.storageButtonActive,
-                  ]}
-                  onPress={() => setStorageType('cloud')}
-                >
-                  <Ionicons
-                    name="cloud"
-                    size={24}
-                    color={storageType === 'cloud' ? '#4FC3F7' : 'rgba(255,255,255,0.5)'}
-                  />
-                  <Text
-                    style={[
-                      styles.storageButtonText,
-                      storageType === 'cloud' && styles.storageButtonTextActive,
-                    ]}
+                    <Image
+                      source={{ uri: getPhotoDisplayUri(photo) }}
+                      style={styles.photoThumbnail}
+                    />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.deletePhotoButton}
+                    onPress={() => handleRemovePhoto(photo.id)}
                   >
-                    Cloud Only
-                  </Text>
-                </TouchableOpacity>
+                    <Ionicons name="close-circle" size={24} color="#FF6B6B" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <TouchableOpacity style={styles.addPhotoButton} onPress={handleAddPhoto}>
+                <Ionicons name="camera" size={32} color="rgba(255,255,255,0.5)" />
+                <Text style={styles.addPhotoText}>Add Photo</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
 
-                <TouchableOpacity
-                  style={[
-                    styles.storageButton,
-                    storageType === 'both' && styles.storageButtonActive,
-                  ]}
-                  onPress={() => setStorageType('both')}
-                >
-                  <Ionicons
-                    name="sync"
-                    size={24}
-                    color={storageType === 'both' ? '#4FC3F7' : 'rgba(255,255,255,0.5)'}
-                  />
-                  <Text
-                    style={[
-                      styles.storageButtonText,
-                      storageType === 'both' && styles.storageButtonTextActive,
-                    ]}
-                  >
-                    Both
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            <View style={{ height: 40 }} />
-          </ScrollView>
+          <View style={{ height: 40 }} />
+        </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
 
@@ -616,33 +550,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: 'rgba(255, 255, 255, 0.5)',
     marginTop: 4,
-  },
-  storageButtons: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 8,
-  },
-  storageButton: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-  },
-  storageButtonActive: {
-    backgroundColor: 'rgba(79, 195, 247, 0.15)',
-    borderColor: '#4FC3F7',
-  },
-  storageButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginTop: 4,
-  },
-  storageButtonTextActive: {
-    color: '#4FC3F7',
   },
   fullScreenPhotoContainer: {
     flex: 1,

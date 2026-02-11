@@ -33,6 +33,7 @@ export enum LogCategory {
   SETTINGS = 'SETTINGS',
   AUTH = 'AUTH',
   CACHE = 'CACHE',
+  TIDE = 'TIDE',
 }
 
 // ANSI color codes for terminal output

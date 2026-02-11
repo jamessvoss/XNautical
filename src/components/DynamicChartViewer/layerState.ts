@@ -21,7 +21,7 @@ export const initialLayerVisibility: LayerVisibility = {
   pipelines: true,
   bathymetry: true,
   restrictedAreas: true,
-  cautionAreas: true,
+  cautionAreas: false,
   militaryAreas: true,
   anchorages: true,
   anchorBerths: true,
@@ -31,14 +31,15 @@ export const initialLayerVisibility: LayerVisibility = {
   buildings: true,
   moorings: true,
   shorelineConstruction: true,
-  seaAreaNames: false,
-  landRegions: false,
-  gnisNames: false,
-  tideStations: true,
-  currentStations: true,
-  liveBuoys: true,
-  tideDetails: false,
-  currentDetails: false,
+  seaAreaNames: true,
+  landRegions: true,
+  gnisNames: true,  // Master toggle for all GNIS place names
+  tideStations: true,  // Show tide stations by default
+  currentStations: true,  // Show current stations by default
+  liveBuoys: true,  // Show live buoys by default
+  tideDetails: false,  // Tide detail chart hidden by default
+  currentDetails: false,  // Current detail chart hidden by default
+  waypoints: true,  // Show user waypoints by default
 };
 
 export function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityAction): LayerVisibility {

@@ -343,7 +343,7 @@ export function RouteProvider({ children }: RouteProviderProps) {
     const newRoute = routeService.createRoute({
       name,
       routePoints: [],
-      color: undefined,
+      color: undefined as any,
       notes: '',
       storageType: 'cloud', // Default to cloud
       estimatedDuration: null,

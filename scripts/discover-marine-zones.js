@@ -218,7 +218,7 @@ async function uploadZonesToFirestore(zones, targetDistricts) {
   
   for (const zone of zones) {
     for (const districtId of zone.districts) {
-      const docRef = db.collection('marine-forecast-districts').doc(districtId)
+      const docRef = db.collection('districts').doc(districtId)
         .collection('marine-zones').doc(zone.id);
       
       const data = {

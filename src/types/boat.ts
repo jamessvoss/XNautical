@@ -146,6 +146,9 @@ export interface Boat {
   // Maintenance history
   maintenanceLog: MaintenanceRecord[];
   
+  // Performance data (boat-level, not per-engine)
+  performanceData: PerformancePoint[];
+  
   // Photos
   photos: BoatPhoto[];
   
@@ -166,6 +169,7 @@ export const createDefaultBoat = (name: string = 'My Boat'): Boat => ({
   registration: '',
   hullIdNumber: '',
   engines: [],
+  performanceData: [],
   fuelSystem: {
     totalCapacity: 0,
     capacityUnit: 'gallons',
@@ -176,7 +180,7 @@ export const createDefaultBoat = (name: string = 'My Boat'): Boat => ({
   insurance: {},
   maintenanceLog: [],
   photos: [],
-  storageType: 'both',
+  storageType: 'both', // Always store both locally and in cloud
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 });

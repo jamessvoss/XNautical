@@ -532,6 +532,8 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
     and streaming directly to SQLite (no in-memory collection).
 
     Writes only lightweight metadata to Firestore (no prediction data).
+    
+    Checks for termination flag every 10 stations to allow graceful stopping.
 
     Returns (stations_processed, total_events, stations_failed).
     """
@@ -547,6 +549,16 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         for i, station in enumerate(stations):
+            # Check for termination flag every 10 stations
+            if i > 0 and i % 10 == 0:
+                district_ref = db_client.collection('districts').document(region_id)
+                district_doc = district_ref.get()
+                if district_doc.exists:
+                    pred_status = district_doc.to_dict().get('predictionStatus', {})
+                    if pred_status.get('terminate', False):
+                        logger.warning(f'  [TIDES {region_id}] Termination requested at station {i}/{len(stations)}')
+                        raise Exception(f'Generation terminated by user request at station {i}/{len(stations)}')
+            
             station_id = station['id']
             station_name = station.get('name', station_id)
 
@@ -622,6 +634,8 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
     produce them for these stations.
 
     Writes only lightweight metadata to Firestore (no prediction data).
+    
+    Checks for termination flag every 10 stations to allow graceful stopping.
 
     Returns (stations_processed, total_months, stations_failed, stations_weak).
     """
@@ -638,6 +652,16 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         for i, station in enumerate(stations):
+            # Check for termination flag every 10 stations
+            if i > 0 and i % 10 == 0:
+                district_ref = db_client.collection('districts').document(region_id)
+                district_doc = district_ref.get()
+                if district_doc.exists:
+                    pred_status = district_doc.to_dict().get('predictionStatus', {})
+                    if pred_status.get('terminate', False):
+                        logger.warning(f'  [CURRENTS {region_id}] Termination requested at station {i}/{len(stations)}')
+                        raise Exception(f'Generation terminated by user request at station {i}/{len(stations)}')
+            
             station_id = station['id']
             station_name = station.get('name', station_id)
             bin_num = station.get('bin', 1)
@@ -808,45 +832,59 @@ def write_tide_json_files(db_path, region_id, work_dir, storage_client):
             },
         })
 
-    # Build raw predictions dict from SQLite
-    raw_predictions = {}
-    for station_id, _, _, _ in stations:
-        cursor.execute(
-            'SELECT date, time, type, height FROM tide_predictions WHERE station_id = ? ORDER BY date, time',
-            (station_id,)
-        )
-        predictions_by_date = {}
-        for date_key, time, event_type, height in cursor.fetchall():
-            if date_key not in predictions_by_date:
-                predictions_by_date[date_key] = []
-            predictions_by_date[date_key].append({
-                'time': time,
-                'type': event_type,
-                'height': height,
-            })
-        raw_predictions[station_id] = predictions_by_date
-
-    conn.close()
-
-    # Write locally
+    # Write station summaries locally
     stations_path = os.path.join(work_dir, 'tide_stations.json')
     raw_path = os.path.join(work_dir, 'tides_raw.json')
 
     with open(stations_path, 'w') as f:
         json.dump(station_summaries, f, indent=2)
+
+    # STREAM: Write raw predictions JSON incrementally to avoid memory issues
     with open(raw_path, 'w') as f:
-        json.dump(raw_predictions, f, indent=2)
+        f.write('{\n')
+        first_station = True
+        
+        for station_id, _, _, _ in stations:
+            cursor.execute(
+                'SELECT date, time, type, height FROM tide_predictions WHERE station_id = ? ORDER BY date, time',
+                (station_id,)
+            )
+            predictions_by_date = {}
+            for date_key, time, event_type, height in cursor.fetchall():
+                if date_key not in predictions_by_date:
+                    predictions_by_date[date_key] = []
+                predictions_by_date[date_key].append({
+                    'time': time,
+                    'type': event_type,
+                    'height': height,
+                })
+            
+            if predictions_by_date:
+                if not first_station:
+                    f.write(',\n')
+                first_station = False
+                
+                # Write station entry manually (indent=2 equivalent)
+                f.write(f'  "{station_id}": ')
+                json.dump(predictions_by_date, f, indent=2)
+        
+        f.write('\n}\n')
+
+    conn.close()
 
     # Upload to Storage
     storage_prefix = f'{region_id}/predictions'
     stations_size = upload_json_to_storage(
         station_summaries, f'{storage_prefix}/tide_stations.json', storage_client
     )
-    raw_size = upload_json_to_storage(
-        raw_predictions, f'{storage_prefix}/tides_raw.json', storage_client
-    )
+    
+    # Upload raw JSON file directly from disk (it was streamed, not built in memory)
+    bucket = storage_client.bucket(BUCKET_NAME)
+    blob = bucket.blob(f'{storage_prefix}/tides_raw.json')
+    blob.upload_from_filename(raw_path)
+    raw_size = os.path.getsize(raw_path)
 
-    logger.info(f'  Tide JSON: stations={len(station_summaries)}, raw={len(raw_predictions)} stations')
+    logger.info(f'  Tide JSON: stations={len(station_summaries)} (streamed to disk)')
     return {'stationsJsonBytes': stations_size, 'rawJsonBytes': raw_size}
 
 
@@ -897,58 +935,74 @@ def write_current_json_files(db_path, region_id, work_dir, storage_client):
             'monthCount': month_count,
         })
 
-    # Build raw predictions dict from SQLite (organized by month)
-    raw_predictions = {}
-    for station_id, _, _, _, noaa_type, weak_and_variable in stations:
-        # Skip weak & variable stations (no predictions)
-        if weak_and_variable:
-            continue
-
-        cursor.execute(
-            'SELECT date, time, type, velocity, direction FROM current_predictions WHERE station_id = ? ORDER BY date, time',
-            (station_id,)
-        )
-
-        monthly_predictions = {}
-        for date_str, time, event_type, velocity, direction in cursor.fetchall():
-            # Extract month key (YYYY-MM format)
-            month_key = date_str[:7]
-            if month_key not in monthly_predictions:
-                monthly_predictions[month_key] = {}
-            if date_str not in monthly_predictions[month_key]:
-                monthly_predictions[month_key][date_str] = []
-
-            monthly_predictions[month_key][date_str].append({
-                'time': time,
-                'type': event_type,
-                'velocity': velocity,
-                'direction': direction,
-            })
-
-        if monthly_predictions:
-            raw_predictions[station_id] = monthly_predictions
-
-    conn.close()
-
-    # Write locally
+    # Write station summaries locally
     stations_path = os.path.join(work_dir, 'current_stations.json')
     raw_path = os.path.join(work_dir, 'currents_raw.json')
 
     with open(stations_path, 'w') as f:
         json.dump(station_summaries, f, indent=2)
+
+    # STREAM: Write raw predictions JSON incrementally to avoid memory issues
+    # For large regions (01cgd: 724 stations × 37 months), loading all into memory
+    # exceeds 4-8 GiB. Write JSON manually, one station at a time.
+    raw_station_count = 0
     with open(raw_path, 'w') as f:
-        json.dump(raw_predictions, f, indent=2)
+        f.write('{\n')
+        first_station = True
+        
+        for station_id, _, _, _, noaa_type, weak_and_variable in stations:
+            # Skip weak & variable stations (no predictions)
+            if weak_and_variable:
+                continue
+
+            cursor.execute(
+                'SELECT date, time, type, velocity, direction FROM current_predictions WHERE station_id = ? ORDER BY date, time',
+                (station_id,)
+            )
+
+            monthly_predictions = {}
+            for date_str, time, event_type, velocity, direction in cursor.fetchall():
+                # Extract month key (YYYY-MM format)
+                month_key = date_str[:7]
+                if month_key not in monthly_predictions:
+                    monthly_predictions[month_key] = {}
+                if date_str not in monthly_predictions[month_key]:
+                    monthly_predictions[month_key][date_str] = []
+
+                monthly_predictions[month_key][date_str].append({
+                    'time': time,
+                    'type': event_type,
+                    'velocity': velocity,
+                    'direction': direction,
+                })
+
+            if monthly_predictions:
+                if not first_station:
+                    f.write(',\n')
+                first_station = False
+                
+                # Write station entry manually (indent=2 equivalent)
+                f.write(f'  "{station_id}": ')
+                json.dump(monthly_predictions, f, indent=2)
+                raw_station_count += 1
+        
+        f.write('\n}\n')
+    
+    conn.close()
 
     # Upload to Storage
     storage_prefix = f'{region_id}/predictions'
     stations_size = upload_json_to_storage(
         station_summaries, f'{storage_prefix}/current_stations.json', storage_client
     )
-    raw_size = upload_json_to_storage(
-        raw_predictions, f'{storage_prefix}/currents_raw.json', storage_client
-    )
+    
+    # Upload raw JSON file directly from disk (it was streamed, not built in memory)
+    bucket = storage_client.bucket(BUCKET_NAME)
+    blob = bucket.blob(f'{storage_prefix}/currents_raw.json')
+    blob.upload_from_filename(raw_path)
+    raw_size = os.path.getsize(raw_path)
 
-    logger.info(f'  Current JSON: stations={len(station_summaries)}, raw={len(raw_predictions)} stations')
+    logger.info(f'  Current JSON: stations={len(station_summaries)}, raw={raw_station_count} stations')
     return {'stationsJsonBytes': stations_size, 'rawJsonBytes': raw_size}
 
 

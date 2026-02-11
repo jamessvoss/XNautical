@@ -2,9 +2,7 @@ High Priority - Core Navigation Features
 
 In the downloads sections have it show how much space Xnautical is currently using
 and how much free space is available
-✅ DONE - Tide-corrected depth soundings (toggle in settings, uses nearest NOAA station)
 Get routing, save waypoint, all that stuff Done 
-Get live buoys on main map page
 Create checks for internet connection for everything requiring internet
 Add live weather feeds when internet available (radar etc.)
 I really like the feature that when you rotate the compass it puts up
@@ -33,6 +31,7 @@ Priority	Feature	Description
 11	Night Mode	Red-tinted display for night bridge use
 12	Bookmarks/Favorites	Save locations for quick access
 13	iOS Build & Testing	Test and deploy on iOS
+14	Parallel ENC Conversion	Implement batch-based parallel chart conversion: /convert-batch endpoint with 5-10 charts per container, coordinator to fire 76+ parallel batches. Would reduce conversion time from 30-40min to 10-15min per district. Cost: ~$2-3 per district vs current ~$0.50. Set max-instances=100, container-concurrency=1, NUM_WORKERS=8.
 
 
  Data Layers to Add

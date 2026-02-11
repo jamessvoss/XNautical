@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getStorage } from 'firebase/storage';
 import { getFirestore } from 'firebase/firestore';
+// @ts-ignore getReactNativePersistence exists at runtime but may be missing from types
 import { initializeAuth, getReactNativePersistence, getAuth as getExistingAuth } from 'firebase/auth';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -56,7 +57,7 @@ if (Platform.OS !== 'web') {
     onAuthStateChangedFn = rnfbAuth.onAuthStateChanged;
     
     // Sync native auth state to JS SDK auth for Firestore
-    onAuthStateChangedFn(nativeAuthInstance, async (user: any) => {
+    onAuthStateChangedFn!(nativeAuthInstance, async (user: any) => {
       if (user) {
         console.log('Native auth user detected, syncing to JS SDK...');
         try {

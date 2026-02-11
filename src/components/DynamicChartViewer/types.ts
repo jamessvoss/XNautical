@@ -2,7 +2,8 @@
  * Type definitions for DynamicChartViewer
  */
 
-import { FeatureType, GeoJSONFeatureCollection } from '../../types/chart';
+import type { FeatureType, GeoJSONFeatureCollection } from '../../types/chart';
+import type { DisplaySettings } from '../../services/displaySettingsService';
 
 export interface Props {
   onNavigateToDownloads?: () => void;
@@ -28,6 +29,33 @@ export interface LoadedRasterChart {
   path: string;
 }
 
+// Display feature configuration for the Display Settings tab
+export interface DisplayFeatureConfig {
+  id: string;
+  label: string;
+  type: 'text' | 'line' | 'area';
+  fontSizeKey?: keyof DisplaySettings;
+  haloKey?: keyof DisplaySettings;  // For text halo/stroke
+  strokeKey?: keyof DisplaySettings;  // For line width or area border
+  opacityKey?: keyof DisplaySettings;
+}
+
+// Symbol feature configuration for the Symbols tab
+export interface SymbolFeatureConfig {
+  id: string;
+  label: string;
+  sizeKey: keyof DisplaySettings;
+  haloKey: keyof DisplaySettings;
+  opacityKey: keyof DisplaySettings;
+  color: string;  // S-52 compliant color for visual identification
+  hasHalo: boolean;  // Whether this symbol type supports halos
+  // Optional text settings for symbols that have associated labels
+  hasText?: boolean;
+  textSizeKey?: keyof DisplaySettings;
+  textHaloKey?: keyof DisplaySettings;
+  textOpacityKey?: keyof DisplaySettings;
+}
+
 // Layer visibility state - consolidated for performance
 export interface LayerVisibility {
   depthAreas: boolean;
@@ -51,24 +79,25 @@ export interface LayerVisibility {
   anchorages: boolean;
   anchorBerths: boolean;
   marineFarms: boolean;
-  // Additional layers
+  // Infrastructure layers
   bridges: boolean;
   buildings: boolean;
   moorings: boolean;
   shorelineConstruction: boolean;
   seaAreaNames: boolean;
   landRegions: boolean;
-  gnisNames: boolean;
-  tideStations: boolean;
-  currentStations: boolean;
-  liveBuoys: boolean;
-  tideDetails: boolean;
-  currentDetails: boolean;
+  gnisNames: boolean;  // Master toggle for all GNIS place names
+  tideStations: boolean;  // Tide station markers
+  currentStations: boolean;  // Current station markers
+  liveBuoys: boolean;  // Live weather buoy markers
+  tideDetails: boolean;  // Tide detail chart at bottom
+  currentDetails: boolean;  // Current detail chart at bottom
+  waypoints: boolean;  // User waypoint markers
 }
 
-export type LayerVisibilityAction = 
+export type LayerVisibilityAction =
   | { type: 'TOGGLE'; layer: keyof LayerVisibility }
   | { type: 'SET'; layer: keyof LayerVisibility; value: boolean }
   | { type: 'SET_ALL'; value: boolean };
 
-export type MapStyleOption = 'light' | 'dark' | 'satellite' | 'outdoors' | 'local';
+export type MapStyleOption = 'satellite' | 'light' | 'dark' | 'nautical' | 'street' | 'ocean' | 'terrain';

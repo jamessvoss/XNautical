@@ -465,7 +465,7 @@ export default function CompassOverlay({
             marginBottom: chartsHeight, // Shift compass up to account for charts at bottom
           }
         ]}
-        onLayout={(event) => {
+        onLayout={(event: any) => {
           const { x, y, width, height } = event.nativeEvent.layout;
           console.log(`[CompassOverlay] ACTUAL POSITION: x=${x}, y=${y}, width=${width}, height=${height}`);
           console.log(`[CompassOverlay] Center of compass: y=${y + height/2} (screen center would be ${screenHeight/2})`);

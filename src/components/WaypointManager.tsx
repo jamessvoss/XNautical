@@ -256,7 +256,7 @@ export default function WaypointManager() {
       {/* Waypoint List */}
       <FlatList
         data={waypoints}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item: any) => item.id}
         renderItem={renderWaypoint}
         ListEmptyComponent={loading ? null : renderEmpty}
         contentContainerStyle={waypoints.length === 0 ? styles.emptyList : undefined}

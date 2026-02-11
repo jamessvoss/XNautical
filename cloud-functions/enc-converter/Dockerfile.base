@@ -1,0 +1,41 @@
+# Base image for ENC converter with all heavy dependencies pre-built.
+# Rebuild only when system deps, tippecanoe, or Python packages change:
+#   gcloud builds submit --config=cloudbuild-base.yaml
+
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    gdal-bin \
+    libgdal-dev \
+    git \
+    curl \
+    make \
+    g++ \
+    libsqlite3-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install tippecanoe (Mapbox tool for creating vector tiles)
+RUN git clone https://github.com/mapbox/tippecanoe.git /tmp/tippecanoe \
+    && cd /tmp/tippecanoe \
+    && make -j$(nproc) \
+    && make install \
+    && rm -rf /tmp/tippecanoe
+
+# Install Google Cloud SDK
+RUN curl -sSL https://sdk.cloud.google.com | bash
+ENV PATH="/root/google-cloud-sdk/bin:${PATH}"
+
+# Create working directories
+WORKDIR /app
+RUN mkdir -p /app/input /app/output /app/temp
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt

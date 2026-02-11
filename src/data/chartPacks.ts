@@ -3,9 +3,19 @@
  * These define geographic regions - charts are matched by bounds intersection
  */
 
-import { ChartPack } from '../types/chartPack';
+/** Pre-defined chart pack region for UI browsing */
+export interface ChartPackRegion {
+  id: string;
+  name: string;
+  description: string;
+  bounds: [number, number, number, number]; // [west, south, east, north]
+  center: [number, number]; // [lng, lat]
+  zoom: number;
+  color: string;
+  estimatedSizeMB: number;
+}
 
-export const CHART_PACKS: ChartPack[] = [
+export const CHART_PACKS: ChartPackRegion[] = [
   {
     id: 'homer-kachemak',
     name: 'Homer & Kachemak Bay',
@@ -152,6 +162,6 @@ export function chartIntersectsPack(
 /**
  * Get pack by ID
  */
-export function getPackById(packId: string): ChartPack | undefined {
+export function getPackById(packId: string): ChartPackRegion | undefined {
   return CHART_PACKS.find(p => p.id === packId);
 }

@@ -38,6 +38,8 @@ interface Props {
   visible: boolean;
   engine: Engine | null;
   position: number;
+  /** Optional engine to copy manufacturer/model/HP from when creating a new engine */
+  templateEngine?: Engine;
   onClose: () => void;
   onSave: (engine: Engine) => void;
 }
@@ -46,6 +48,7 @@ export default function EngineDetailsModal({
   visible,
   engine,
   position,
+  templateEngine,
   onClose,
   onSave,
 }: Props) {
@@ -72,6 +75,14 @@ export default function EngineDetailsModal({
         setHorsepower(engine.horsepower.toString());
         setSerialNumber(engine.serialNumber);
         setHours(engine.hours.toString());
+      } else if (templateEngine) {
+        // New engine: copy manufacturer, model, HP from existing engine
+        setManufacturer(templateEngine.manufacturer);
+        setCustomManufacturer(templateEngine.customManufacturer || '');
+        setModel(templateEngine.model);
+        setHorsepower(templateEngine.horsepower.toString());
+        setSerialNumber('');
+        setHours('0');
       } else {
         // New engine defaults
         setManufacturer('Yamaha');
@@ -82,7 +93,7 @@ export default function EngineDetailsModal({
         setHours('0');
       }
     }
-  }, [visible, engine]);
+  }, [visible, engine, templateEngine]);
 
   const handleSave = useCallback(() => {
     if (!model.trim()) {

@@ -764,7 +764,7 @@ export default function LoginScreen({ onLoginSuccess }: Props) {
                     placeholder="000000"
                     placeholderTextColor={colors.slate300}
                     value={verificationCode}
-                    onChangeText={(text) =>
+                    onChangeText={(text: string) =>
                       setVerificationCode(text.replace(/\D/g, '').slice(0, 6))
                     }
                     keyboardType="number-pad"

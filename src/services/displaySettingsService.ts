@@ -299,11 +299,11 @@ export async function loadSettings(): Promise<DisplaySettings> {
     }
     
     // Sync theme service with loaded dayNightMode (if not 'auto')
-    if (cachedSettings.dayNightMode !== 'auto') {
-      await themeService.setDisplayMode(cachedSettings.dayNightMode as S52DisplayMode);
+    if (cachedSettings!.dayNightMode !== 'auto') {
+      await themeService.setDisplayMode(cachedSettings!.dayNightMode as S52DisplayMode);
     }
-    
-    return cachedSettings;
+
+    return cachedSettings!;
   } catch (error) {
     logger.error(LogCategory.SETTINGS, 'Error loading display settings', error as Error);
     cachedSettings = { ...DEFAULT_SETTINGS };
@@ -413,13 +413,13 @@ export function applyFontScaleToInterpolation(
  * Output: same structure with scaled sizes (no rounding for icon sizes which are fractional)
  */
 export function applyIconSizeScale(
-  interpolation: any[],
+  interpolation: any,
   scale: number
-): any[] {
+): any {
   if (!Array.isArray(interpolation) || interpolation[0] !== 'interpolate') {
     // If it's just a number, scale it directly
     if (typeof interpolation === 'number') {
-      return (interpolation as unknown as number) * scale;
+      return interpolation * scale;
     }
     return interpolation;
   }

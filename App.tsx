@@ -29,7 +29,7 @@ let HalfMoonCompass: React.ComponentType<{ heading: number | null; course: numbe
 let TickerTapeCompass: React.ComponentType<{ heading: number | null; course: number | null; showTideChart?: boolean; showCurrentChart?: boolean }> | null = null;
 let MinimalCompass: React.ComponentType<{ heading: number | null; course: number | null; showTideChart?: boolean; showCurrentChart?: boolean }> | null = null;
 let GPSInfoModal: React.ComponentType<{ visible: boolean; gpsData: any }> | null = null;
-let MorePanel: React.ComponentType<{ visible: boolean; onClose: () => void }> | null = null;
+let MorePanel: React.ComponentType<{ visible: boolean; onClose: () => void; onCloseComplete?: () => void }> | null = null;
 let RegionSelector: React.ComponentType<{ visible: boolean; onClose: () => void }> | null = null;
 let WaypointCreationModal: React.ComponentType | null = null;
 

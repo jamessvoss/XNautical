@@ -261,7 +261,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
           id: 'terrain',
           label: 'Terrain Map',
           description: 'OpenTopoMap terrain',
-          icon: 'mountain',
+          icon: 'layers-outline',
           sizeBytes: totalSize,
           required: false,
           installed: allInstalled,

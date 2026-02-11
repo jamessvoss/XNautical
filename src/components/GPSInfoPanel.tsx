@@ -78,7 +78,7 @@ export default function GPSInfoPanel({
         danger: '#F44336',
         warning: '#FF9800',
         success: '#4CAF50',
-      };
+      } as unknown as UITheme;
     }
   });
   

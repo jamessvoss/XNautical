@@ -18,16 +18,17 @@ import {
   ActivityIndicator,
   FlatList,
 } from 'react-native';
+import { Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   Boat,
   Engine,
+  PerformancePoint,
   MaintenanceRecord,
   createDefaultBoat,
   createDefaultEngine,
   createMaintenanceRecord,
 } from '../types/boat';
-import { useAuth } from '../contexts/AuthContext';
 import {
   subscribeToCloudBoats,
   getLocalBoats,
@@ -36,9 +37,23 @@ import {
   saveEngine,
   deleteEngine as deleteEngineFromBoat,
   addMaintenanceRecord,
+  updatePerformanceData,
 } from '../services/boatStorageService';
 import BoatDetailsModal from '../components/BoatDetailsModal';
 import EngineDetailsModal from '../components/EngineDetailsModal';
+import BoatNameModal from '../components/BoatNameModal';
+import PerformanceDataModal from '../components/PerformanceDataModal';
+
+// Auth helpers
+let getCurrentUser: (() => any) | null = null;
+if (Platform.OS !== 'web') {
+  try {
+    const firebase = require('../config/firebase');
+    getCurrentUser = firebase.getCurrentUser;
+  } catch (e) {
+    console.log('[BoatPerformanceScreen] Firebase config not available');
+  }
+}
 
 type TabId = 'details' | 'engines' | 'performance' | 'fuel' | 'insurance' | 'maintenance';
 
@@ -58,15 +73,36 @@ const TABS: Tab[] = [
 ];
 
 export default function BoatPerformanceScreen() {
-  const { currentUser } = useAuth();
   const [boats, setBoats] = useState<Boat[]>([]);
   const [selectedBoatId, setSelectedBoatId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>('details');
   const [loading, setLoading] = useState(true);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [showEngineModal, setShowEngineModal] = useState(false);
+  const [showBoatNameModal, setShowBoatNameModal] = useState(false);
+  const [showPerformanceModal, setShowPerformanceModal] = useState(false);
   const [editingEngine, setEditingEngine] = useState<Engine | null>(null);
   const [newEnginePosition, setNewEnginePosition] = useState(1);
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  // Get current user
+  useEffect(() => {
+    console.log('[BoatPerformanceScreen] Getting current user...');
+    if (Platform.OS === 'web' || !getCurrentUser) {
+      console.log('[BoatPerformanceScreen] Web or no getCurrentUser');
+      setLoading(false);
+      return;
+    }
+    
+    const user = getCurrentUser();
+    console.log('[BoatPerformanceScreen] Got user:', user?.uid || 'null');
+    setCurrentUser(user);
+    
+    if (!user) {
+      console.log('[BoatPerformanceScreen] No user found');
+      setLoading(false);
+    }
+  }, []);
 
   // Load boats on mount
   useEffect(() => {
@@ -77,9 +113,15 @@ export default function BoatPerformanceScreen() {
 
     // Load local boats immediately
     getLocalBoats().then((localBoats) => {
-      setBoats(localBoats);
-      if (localBoats.length > 0 && !selectedBoatId) {
-        setSelectedBoatId(localBoats[0].id);
+      // Ensure all boats have storageType and performanceData
+      const migratedBoats = localBoats.map(boat => ({
+        ...boat,
+        storageType: 'both' as const,
+        performanceData: boat.performanceData || [],
+      }));
+      setBoats(migratedBoats);
+      if (migratedBoats.length > 0 && !selectedBoatId) {
+        setSelectedBoatId(migratedBoats[0].id);
       }
       setLoading(false);
     });
@@ -96,9 +138,15 @@ export default function BoatPerformanceScreen() {
               allBoats.push(localBoat);
             }
           });
-          setBoats(allBoats);
-          if (allBoats.length > 0 && !selectedBoatId) {
-            setSelectedBoatId(allBoats[0].id);
+          // Ensure all boats have storageType and performanceData
+          const migratedBoats = allBoats.map(boat => ({
+            ...boat,
+            storageType: 'both' as const,
+            performanceData: boat.performanceData || [],
+          }));
+          setBoats(migratedBoats);
+          if (migratedBoats.length > 0 && !selectedBoatId) {
+            setSelectedBoatId(migratedBoats[0].id);
           }
         });
       },
@@ -113,38 +161,34 @@ export default function BoatPerformanceScreen() {
   const selectedBoat = boats.find(b => b.id === selectedBoatId);
 
   const handleAddBoat = useCallback(() => {
+    console.log('[BoatPerformanceScreen] handleAddBoat called');
+    console.log('[BoatPerformanceScreen] currentUser:', currentUser);
+    
     if (!currentUser) {
+      console.log('[BoatPerformanceScreen] No user, showing alert');
       Alert.alert('Not Logged In', 'Please log in to add a boat.');
       return;
     }
 
-    Alert.prompt(
-      'New Boat',
-      'Enter boat name:',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Create',
-          onPress: async (name) => {
-            if (!name || name.trim().length === 0) {
-              Alert.alert('Invalid Name', 'Please enter a boat name.');
-              return;
-            }
+    console.log('[BoatPerformanceScreen] Setting showBoatNameModal to true');
+    setShowBoatNameModal(true);
+  }, [currentUser]);
 
-            const newBoat = createDefaultBoat(name.trim());
-            try {
-              await saveBoat(currentUser.uid, newBoat);
-              setSelectedBoatId(newBoat.id);
-              Alert.alert('Success', `${name} has been created!`);
-            } catch (error) {
-              console.error('[BoatPerformanceScreen] Error creating boat:', error);
-              Alert.alert('Error', 'Failed to create boat. Please try again.');
-            }
-          },
-        },
-      ],
-      'plain-text'
-    );
+  const handleCreateBoat = useCallback(async (name: string) => {
+    console.log('[BoatPerformanceScreen] handleCreateBoat called with name:', name);
+    if (!currentUser) {
+      return;
+    }
+
+    const newBoat = createDefaultBoat(name);
+    try {
+      await saveBoat(currentUser.uid, newBoat);
+      setSelectedBoatId(newBoat.id);
+      Alert.alert('Success', `${name} has been created!`);
+    } catch (error) {
+      console.error('[BoatPerformanceScreen] Error creating boat:', error);
+      Alert.alert('Error', 'Failed to create boat. Please try again.');
+    }
   }, [currentUser]);
 
   const handleDeleteBoat = useCallback(() => {
@@ -321,7 +365,7 @@ export default function BoatPerformanceScreen() {
           <TextInput
             style={styles.textInput}
             value={fuelSystem.totalCapacity.toString()}
-            onChangeText={(value) => {
+            onChangeText={(value: string) => {
               const capacity = parseFloat(value) || 0;
               const updatedBoat = {
                 ...selectedBoat,
@@ -371,7 +415,7 @@ export default function BoatPerformanceScreen() {
           <TextInput
             style={styles.textInput}
             value={fuelSystem.reserveLevel.toString()}
-            onChangeText={(value) => {
+            onChangeText={(value: string) => {
               const level = parseFloat(value) || 25;
               const updatedBoat = {
                 ...selectedBoat,
@@ -404,7 +448,7 @@ export default function BoatPerformanceScreen() {
           <TextInput
             style={styles.textInput}
             value={insurance.provider || ''}
-            onChangeText={(value) => {
+            onChangeText={(value: string) => {
               const updatedBoat = {
                 ...selectedBoat,
                 insurance: { ...insurance, provider: value },
@@ -421,7 +465,7 @@ export default function BoatPerformanceScreen() {
           <TextInput
             style={styles.textInput}
             value={insurance.policyNumber || ''}
-            onChangeText={(value) => {
+            onChangeText={(value: string) => {
               const updatedBoat = {
                 ...selectedBoat,
                 insurance: { ...insurance, policyNumber: value },
@@ -438,7 +482,7 @@ export default function BoatPerformanceScreen() {
           <TextInput
             style={styles.textInput}
             value={insurance.coverageAmount?.toString() || ''}
-            onChangeText={(value) => {
+            onChangeText={(value: string) => {
               const amount = parseFloat(value) || undefined;
               const updatedBoat = {
                 ...selectedBoat,
@@ -457,7 +501,7 @@ export default function BoatPerformanceScreen() {
           <TextInput
             style={[styles.textInput, styles.textInputMultiline]}
             value={insurance.notes || ''}
-            onChangeText={(value) => {
+            onChangeText={(value: string) => {
               const updatedBoat = {
                 ...selectedBoat,
                 insurance: { ...insurance, notes: value },
@@ -515,17 +559,80 @@ export default function BoatPerformanceScreen() {
     );
   };
 
+  const handleSavePerformanceData = useCallback(async (perfData: PerformancePoint[]) => {
+    if (!currentUser || !selectedBoat) return;
+
+    try {
+      await updatePerformanceData(currentUser.uid, selectedBoat, perfData);
+      const updatedBoats = await getLocalBoats();
+      setBoats(updatedBoats.map(b => ({ ...b, storageType: b.storageType || 'both' as const, performanceData: b.performanceData || [] })));
+    } catch (error) {
+      console.error('[BoatPerformanceScreen] Error saving performance data:', error);
+      Alert.alert('Error', 'Failed to save performance data.');
+    }
+  }, [currentUser, selectedBoat]);
+
   const renderPerformanceTab = () => {
     if (!selectedBoat) return null;
 
+    const perfData = selectedBoat.performanceData || [];
+    const filledCount = perfData.filter(p => p.speed > 0 || p.fuelConsumption > 0).length;
+
     return (
       <View style={styles.tabContainer}>
-        <View style={styles.emptyState}>
-          <Ionicons name="speedometer-outline" size={64} color="rgba(255, 255, 255, 0.3)" />
-          <Text style={styles.emptyStateText}>Performance Data</Text>
-          <Text style={styles.emptyStateSubtext}>
-            RPM, Speed, and Fuel Consumption tracking coming soon
-          </Text>
+        <View style={styles.detailsCard}>
+          <View style={styles.perfSummaryHeader}>
+            <Ionicons name="speedometer-outline" size={28} color="#4FC3F7" />
+            <Text style={styles.cardTitle}>Performance Data</Text>
+          </View>
+
+          {filledCount > 0 ? (
+            <>
+              <Text style={styles.perfSummaryText}>
+                {filledCount} of {perfData.length} RPM points recorded
+              </Text>
+              {/* Mini preview of filled data */}
+              <View style={styles.perfPreviewTable}>
+                <View style={styles.perfPreviewHeader}>
+                  <Text style={[styles.perfPreviewHeaderCell, { width: 60 }]}>RPM</Text>
+                  <Text style={[styles.perfPreviewHeaderCell, { flex: 1, textAlign: 'center' }]}>Speed</Text>
+                  <Text style={[styles.perfPreviewHeaderCell, { flex: 1, textAlign: 'center' }]}>GPH</Text>
+                </View>
+                {perfData.filter(p => p.speed > 0 || p.fuelConsumption > 0).slice(0, 5).map((point, i) => (
+                  <View key={i} style={styles.perfPreviewRow}>
+                    <Text style={[styles.perfPreviewCell, { width: 60, fontWeight: '600' }]}>
+                      {point.rpm === 0 ? 'Idle' : point.rpm.toLocaleString()}
+                    </Text>
+                    <Text style={[styles.perfPreviewCell, { flex: 1, textAlign: 'center' }]}>
+                      {point.speed > 0 ? `${point.speed} kts` : '—'}
+                    </Text>
+                    <Text style={[styles.perfPreviewCell, { flex: 1, textAlign: 'center' }]}>
+                      {point.fuelConsumption > 0 ? point.fuelConsumption.toString() : '—'}
+                    </Text>
+                  </View>
+                ))}
+                {filledCount > 5 && (
+                  <Text style={styles.perfPreviewMore}>
+                    + {filledCount - 5} more entries
+                  </Text>
+                )}
+              </View>
+            </>
+          ) : (
+            <Text style={styles.perfSummaryText}>
+              No performance data recorded yet. Tap below to enter RPM, speed, and fuel consumption values.
+            </Text>
+          )}
+
+          <TouchableOpacity
+            style={styles.editButton}
+            onPress={() => setShowPerformanceModal(true)}
+          >
+            <Ionicons name="create-outline" size={20} color="#fff" />
+            <Text style={styles.editButtonText}>
+              {filledCount > 0 ? 'Edit Performance Data' : 'Enter Performance Data'}
+            </Text>
+          </TouchableOpacity>
         </View>
       </View>
     );
@@ -624,6 +731,13 @@ export default function BoatPerformanceScreen() {
             <Text style={styles.addButtonText}>Add Your First Boat</Text>
           </TouchableOpacity>
         </View>
+        
+        {/* Modal for empty state */}
+        <BoatNameModal
+          visible={showBoatNameModal}
+          onClose={() => setShowBoatNameModal(false)}
+          onSubmit={handleCreateBoat}
+        />
       </View>
     );
   }
@@ -675,13 +789,8 @@ export default function BoatPerformanceScreen() {
         </View>
       </View>
 
-      {/* Tab navigation */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.tabBar}
-        contentContainerStyle={styles.tabBarContent}
-      >
+      {/* Tab navigation - Vertical list instead of horizontal scroll */}
+      <View style={styles.tabBar}>
         {TABS.map((tab) => {
           const isActive = activeTab === tab.id;
           return (
@@ -701,7 +810,7 @@ export default function BoatPerformanceScreen() {
             </TouchableOpacity>
           );
         })}
-      </ScrollView>
+      </View>
 
       {/* Tab content */}
       <ScrollView style={styles.contentContainer}>
@@ -713,7 +822,7 @@ export default function BoatPerformanceScreen() {
         <>
           <BoatDetailsModal
             visible={showDetailsModal}
-            boat={selectedBoat}
+            boat={{ ...selectedBoat, storageType: selectedBoat.storageType || 'both' }}
             onClose={() => setShowDetailsModal(false)}
             onSave={(updatedBoat) => {
               setBoats(prevBoats =>
@@ -725,6 +834,7 @@ export default function BoatPerformanceScreen() {
             visible={showEngineModal}
             engine={editingEngine}
             position={newEnginePosition}
+            templateEngine={!editingEngine && selectedBoat.engines.length > 0 ? selectedBoat.engines[0] : undefined}
             onClose={() => {
               setShowEngineModal(false);
               setEditingEngine(null);
@@ -732,6 +842,22 @@ export default function BoatPerformanceScreen() {
             onSave={handleSaveEngine}
           />
         </>
+      )}
+      
+      <BoatNameModal
+        visible={showBoatNameModal}
+        onClose={() => setShowBoatNameModal(false)}
+        onSubmit={handleCreateBoat}
+      />
+
+      {selectedBoat && (
+        <PerformanceDataModal
+          visible={showPerformanceModal}
+          performanceData={selectedBoat.performanceData || []}
+          boatName={selectedBoat.name}
+          onClose={() => setShowPerformanceModal(false)}
+          onSave={handleSavePerformanceData}
+        />
       )}
     </View>
   );
@@ -828,22 +954,20 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.12)',
   },
   tabBar: {
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  tabBarContent: {
     paddingHorizontal: 16,
     paddingVertical: 8,
-    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
   tab: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderRadius: 8,
-    gap: 8,
+    gap: 12,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    marginBottom: 6,
   },
   tabActive: {
     backgroundColor: 'rgba(79, 195, 247, 0.15)',
@@ -851,7 +975,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(79, 195, 247, 0.3)',
   },
   tabText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
     color: 'rgba(255, 255, 255, 0.5)',
   },
@@ -1039,5 +1163,55 @@ const styles = StyleSheet.create({
   },
   optionButtonTextActive: {
     color: '#4FC3F7',
+  },
+  perfSummaryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+  perfSummaryText: {
+    fontSize: 14,
+    color: 'rgba(255, 255, 255, 0.6)',
+    lineHeight: 20,
+    marginBottom: 12,
+  },
+  perfPreviewTable: {
+    marginBottom: 12,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  perfPreviewHeader: {
+    flexDirection: 'row',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  perfPreviewHeaderCell: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.5)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  perfPreviewRow: {
+    flexDirection: 'row',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.04)',
+  },
+  perfPreviewCell: {
+    fontSize: 13,
+    color: 'rgba(255, 255, 255, 0.8)',
+  },
+  perfPreviewMore: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.4)',
+    textAlign: 'center',
+    paddingVertical: 6,
+    fontStyle: 'italic',
   },
 });

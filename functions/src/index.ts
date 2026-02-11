@@ -3613,7 +3613,7 @@ async function fetchBuoyObservations(stationId: string): Promise<any | null> {
  */
 export const updateBuoyData = functions
   .runWith({ 
-    timeoutSeconds: 300,
+    timeoutSeconds: 540, // 9 minutes (manual run took ~7 minutes for 690 stations)
     memory: '256MB',
   })
   .pubsub.schedule('15 * * * *') // Every hour at :15
@@ -3749,47 +3749,53 @@ export const dailyBuoySummary = functions
       
       const yesterdayIssues = issueData[yesterdayKey] || [];
       
-      if (yesterdayIssues.length === 0) {
-        console.log('No buoy issues yesterday, no email needed');
-      } else {
-        let totalSkipped = 0;
-        let totalSuccess = 0;
-        let totalFailures = 0;
-        const allSkippedBuoys = new Set<string>();
-        
-        for (const issue of yesterdayIssues) {
-          if (issue.type === 'failure') {
-            totalFailures++;
-          } else {
-            totalSkipped += issue.skipCount || 0;
-            totalSuccess += issue.successCount || 0;
-            (issue.skippedBuoys || []).forEach((b: string) => allSkippedBuoys.add(b));
-          }
-        }
-        
-        if (totalFailures > 0 || totalSkipped > 0) {
-          const startTime = new Date();
-          await sendJobNotification({
-            functionName: 'Daily Buoy Summary',
-            status: totalFailures > 0 ? 'failed' : 'partial',
-            startTime,
-            endTime: new Date(),
-            details: {
-              'Date': yesterdayKey,
-              'Hourly Runs with Issues': yesterdayIssues.length,
-              'Total Updates Successful': totalSuccess,
-              'Total Updates Skipped': totalSkipped,
-              'Complete Failures': totalFailures,
-              'Buoys with Issues': allSkippedBuoys.size > 0 
-                ? Array.from(allSkippedBuoys).slice(0, 10).join(', ') + (allSkippedBuoys.size > 10 ? '...' : '')
-                : 'None',
-            }
-          });
-          console.log(`Sent daily buoy summary: ${totalSkipped} skipped, ${totalFailures} failures`);
+      // Calculate summary stats
+      let totalSkipped = 0;
+      let totalSuccess = 0;
+      let totalFailures = 0;
+      const allSkippedBuoys = new Set<string>();
+      
+      for (const issue of yesterdayIssues) {
+        if (issue.type === 'failure') {
+          totalFailures++;
         } else {
-          console.log('All buoy updates were successful yesterday, no email needed');
+          totalSkipped += issue.skipCount || 0;
+          totalSuccess += issue.successCount || 0;
+          (issue.skippedBuoys || []).forEach((b: string) => allSkippedBuoys.add(b));
         }
       }
+      
+      // Always send daily summary email
+      const startTime = new Date();
+      const status = totalFailures > 0 ? 'failed' : (totalSkipped > 0 ? 'partial' : 'success');
+      const details: Record<string, any> = {
+        'Date': yesterdayKey,
+        'Status': status === 'success' ? '✅ All systems operational' : '⚠️ Issues detected',
+        'Hourly Update Runs': yesterdayIssues.length > 0 ? yesterdayIssues.length : '24 (expected)',
+        'Total Updates Successful': totalSuccess,
+      };
+      
+      if (totalSkipped > 0) {
+        details['Total Updates Skipped'] = totalSkipped;
+      }
+      
+      if (totalFailures > 0) {
+        details['Complete Failures'] = totalFailures;
+      }
+      
+      if (allSkippedBuoys.size > 0) {
+        details['Buoys with Issues'] = Array.from(allSkippedBuoys).slice(0, 10).join(', ') + (allSkippedBuoys.size > 10 ? ` ...and ${allSkippedBuoys.size - 10} more` : '');
+      }
+      
+      await sendJobNotification({
+        functionName: 'Daily Buoy Summary',
+        status,
+        startTime,
+        endTime: new Date(),
+        details,
+      });
+      
+      console.log(`Sent daily buoy summary: ${totalSuccess} successful, ${totalSkipped} skipped, ${totalFailures} failures`);
       
       // Clean up old issue logs (older than 7 days)
       const sevenDaysAgo = new Date();
@@ -4171,8 +4177,8 @@ export const fetchMarineForecasts = functions
   .schedule('every 15 minutes')
   .timeZone('UTC')  // Use UTC as base timezone
   .onRun(async (context) => {
-    // Active districts with marine zones
-    const activeDistricts = ['17cgd', '07cgd'];  // Alaska and Southeast
+    // Active districts with marine zones - all 9 districts now have zones
+    const activeDistricts = ['01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd'];
     
     console.log('Checking marine forecast update windows for all districts...');
     
@@ -4305,15 +4311,122 @@ export const dailyMarineForecastSummary = functions
       
       const yesterdayIssues = issueData[yesterdayKey] || [];
       
-      if (yesterdayIssues.length === 0) {
-        console.log('No marine forecast issues yesterday, no email needed');
-      } else {
-        let failures = 0;
-        for (const issue of yesterdayIssues) {
-          if (issue.type === 'failure') failures++;
+      // District names and expected zone counts
+      const DISTRICT_INFO: Record<string, { name: string; zones: number }> = {
+        '01cgd': { name: 'Northeast', zones: 59 },
+        '05cgd': { name: 'East', zones: 94 },
+        '07cgd': { name: 'Southeast', zones: 87 },
+        '08cgd': { name: 'Heartland', zones: 118 },
+        '09cgd': { name: 'Great Lakes', zones: 134 },
+        '11cgd': { name: 'Southwest', zones: 27 },
+        '13cgd': { name: 'Northwest', zones: 62 },
+        '14cgd': { name: 'Oceania', zones: 16 },
+        '17cgd': { name: 'Arctic', zones: 122 },
+      };
+      
+      // Calculate stats per district
+      const districtStats: Record<string, { 
+        failures: number; 
+        partial: number; 
+        success: number;
+        zonesUpdated?: number;
+        totalZones?: number;
+      }> = {};
+      
+      // Initialize all districts
+      Object.keys(DISTRICT_INFO).forEach(d => {
+        districtStats[d] = { failures: 0, partial: 0, success: 0 };
+      });
+      
+      let totalFailures = 0;
+      let totalPartial = 0;
+      let totalSuccess = 0;
+      
+      for (const issue of yesterdayIssues) {
+        const district = issue.districtId || 'unknown';
+        if (!districtStats[district]) {
+          districtStats[district] = { failures: 0, partial: 0, success: 0 };
         }
-        console.log(`Marine forecast issues yesterday: ${failures} failures, ${yesterdayIssues.length} total issues`);
+        
+        if (issue.type === 'failure') {
+          totalFailures++;
+          districtStats[district].failures++;
+        } else if (issue.type === 'partial') {
+          totalPartial++;
+          districtStats[district].partial++;
+          // Track zones for partial updates
+          if (issue.zonesUpdated !== undefined) {
+            districtStats[district].zonesUpdated = issue.zonesUpdated;
+            districtStats[district].totalZones = issue.totalZones;
+          }
+        } else {
+          totalSuccess++;
+          districtStats[district].success++;
+        }
       }
+      
+      // Build district-by-district breakdown
+      const districtLines: string[] = [];
+      for (const [districtId, info] of Object.entries(DISTRICT_INFO)) {
+        const stats = districtStats[districtId];
+        const zoneCount = info.zones;
+        const hasIssues = stats.failures > 0 || stats.partial > 0;
+        const statusIcon = hasIssues ? '⚠️' : '✅';
+        
+        let statusText = '';
+        if (stats.failures > 0) {
+          statusText = `${stats.failures} failures`;
+        } else if (stats.partial > 0) {
+          statusText = `${stats.partial} partial`;
+          if (stats.zonesUpdated !== undefined && stats.totalZones !== undefined) {
+            statusText += ` (${stats.zonesUpdated}/${stats.totalZones} zones)`;
+          }
+        } else {
+          statusText = `${stats.success || 0} successful`;
+        }
+        
+        districtLines.push(`${statusIcon} ${districtId} (${info.name}): ${statusText} [${zoneCount} zones]`);
+      }
+      
+      // Always send email with daily summary
+      const startTime = new Date();
+      const status = totalFailures > 0 ? 'failed' : (totalPartial > 0 ? 'partial' : 'success');
+      const details: Record<string, any> = {
+        'Date': yesterdayKey,
+        'Status': status === 'success' ? '✅ All systems operational' : '⚠️ Issues detected',
+        'Update Windows': '2 per district (3:30-4:30 AM/PM local time)',
+        'Total Marine Zones': '719 across 9 districts',
+        'Update Cycles Yesterday': yesterdayIssues.length > 0 ? yesterdayIssues.length : '0 (no data)',
+      };
+      
+      if (totalSuccess > 0) {
+        details['Successful Updates'] = totalSuccess;
+      }
+      
+      if (totalPartial > 0) {
+        details['Partial Updates'] = totalPartial;
+      }
+      
+      if (totalFailures > 0) {
+        details['Complete Failures'] = totalFailures;
+      }
+      
+      // Add district breakdown - one per line for readability
+      details['__SEPARATOR__'] = '---';
+      details['District Breakdown'] = '__DISTRICT_LIST__';
+      districtLines.forEach((line, i) => {
+        details[`District_${i}`] = line;
+      });
+      
+      await sendJobNotification({
+        functionName: 'Daily Marine Forecast Summary',
+        status,
+        startTime,
+        endTime: new Date(),
+        details,
+      });
+      
+      console.log(`Sent daily marine forecast summary: ${totalSuccess} success, ${totalPartial} partial, ${totalFailures} failures`);
       
       // Clean up old issue logs (older than 7 days)
       const sevenDaysAgo = new Date();
@@ -4380,7 +4493,7 @@ export const refreshMarineForecasts = functions
       } else {
         console.log('Manual marine forecast refresh triggered for all districts');
         
-        const activeDistricts = ['17cgd', '07cgd'];  // Alaska and Southeast
+        const activeDistricts = ['01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd'];
         const results = [];
         
         for (const district of activeDistricts) {

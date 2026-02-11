@@ -214,7 +214,7 @@ export default function ScratchPadListView() {
       <FlatList
         data={data}
         renderItem={renderItem}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item: any) => item.id}
         numColumns={NUM_COLUMNS}
         contentContainerStyle={styles.grid}
         columnWrapperStyle={styles.row}

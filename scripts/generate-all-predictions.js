@@ -263,7 +263,7 @@ async function processRegion(regionId, state, token) {
   }
 
   // Process tides
-  if (tideCount > 0 && !state.regions[regionId].tides) {
+  if (tideCount > 0 && (!state.regions[regionId].tides || state.regions[regionId].tides.status === 'error')) {
     console.log(`\n--- Tides (${tideCount} stations) ---`);
     try {
       await triggerGeneration(regionId, 'tides', token);
@@ -275,7 +275,7 @@ async function processRegion(regionId, state, token) {
       saveState(state);
       throw e; // Stop processing this region
     }
-  } else if (state.regions[regionId].tides) {
+  } else if (state.regions[regionId].tides && state.regions[regionId].tides.status === 'complete') {
     console.log(`\n--- Tides: Already completed ---`);
   } else {
     console.log(`\n--- Tides: Skipped (0 stations) ---`);
@@ -289,7 +289,7 @@ async function processRegion(regionId, state, token) {
   }
 
   // Process currents
-  if (currentCount > 0 && !state.regions[regionId].currents) {
+  if (currentCount > 0 && (!state.regions[regionId].currents || state.regions[regionId].currents.status === 'error')) {
     console.log(`\n--- Currents (${currentCount} stations) ---`);
     try {
       await triggerGeneration(regionId, 'currents', token);
@@ -301,7 +301,7 @@ async function processRegion(regionId, state, token) {
       saveState(state);
       throw e;
     }
-  } else if (state.regions[regionId].currents) {
+  } else if (state.regions[regionId].currents && state.regions[regionId].currents.status === 'complete') {
     console.log(`\n--- Currents: Already completed ---`);
   } else {
     console.log(`\n--- Currents: Skipped (0 stations) ---`);

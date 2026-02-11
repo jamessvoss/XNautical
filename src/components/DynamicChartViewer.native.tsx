@@ -18,29 +18,31 @@ import {
   Modal,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapLibre from '@maplibre/maplibre-react-native';
 import {
   FeatureType,
   GeoJSONFeatureCollection,
-  ALL_FEATURE_TYPES,
 } from '../types/chart';
 import * as chartCacheService from '../services/chartCacheService';
 import * as chartPackService from '../services/chartPackService';
 import * as tileServer from '../services/tileServer';
 import {
-  DEPTH_COLORS,
-  SECTOR_COLOURS,
-  extractSectorFeatures,
   formatLightInfo,
   formatBuoyInfo,
   formatBeaconInfo,
   formatLandmarkInfo,
   formatSeabedInfo,
   formatCableInfo,
-  formatDepthInfo,
 } from '../utils/chartRendering';
+// Extracted modules (Phase 1 refactor)
+import { NAV_SYMBOLS, DISPLAY_FEATURES, SYMBOL_FEATURES, OBJL_NAMES, OBJL_PRIORITIES, LAYER_DISPLAY_NAMES, getDepthUnitSuffix, getLayerName } from './DynamicChartViewer/constants';
+import type { Props, FeatureInfo, LoadedChartData, LoadedMBTilesChart, LoadedRasterChart, LayerVisibility, LayerVisibilityAction, DisplayFeatureConfig, SymbolFeatureConfig } from './DynamicChartViewer/types';
+import { initialLayerVisibility, layerVisibilityReducer } from './DynamicChartViewer/layerState';
+import { getFeatureId, formatFeatureProperties } from './DynamicChartViewer/utils/featureFormatting';
+import { styles } from './DynamicChartViewer/styles/chartViewerStyles';
+import { debugStyles, diagStyles } from './DynamicChartViewer/styles/debugStyles';
 import { useGPS } from '../hooks/useGPS';
 import { useOverlay } from '../contexts/OverlayContext';
 import { getCompassModeLabel } from '../utils/compassUtils';
@@ -48,11 +50,10 @@ import * as displaySettingsService from '../services/displaySettingsService';
 import type { DisplaySettings } from '../services/displaySettingsService';
 import { logger, LogCategory } from '../services/loggingService';
 import { performanceTracker, StartupPhase, RuntimeMetric } from '../services/performanceTracker';
-import { stateReporter } from '../services/stateReporter';
 import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
-import { fetchTideStations, fetchCurrentStations, getCachedTideStations, getCachedCurrentStations, loadFromStorage, TideStation, CurrentStation } from '../services/stationService';
-import { calculateAllStationStates, TideStationState, CurrentStationState, createIconNameMap } from '../services/stationStateService';
+import { getCachedTideStations, getCachedCurrentStations, loadFromStorage, migrateLegacyPredictionDatabases, TideStation, CurrentStation } from '../services/stationService';
+import { calculateAllStationStates, createIconNameMap } from '../services/stationStateService';
 import { tideCorrectionService } from '../services/tideCorrectionService';
 import { getBuoysCatalog, getBuoy, BuoySummary, Buoy } from '../services/buoyService';
 import StationInfoModal from './StationInfoModal';
@@ -67,419 +68,12 @@ import RouteEditor from './RouteEditor';
 import RoutesModal from './RoutesModal';
 import ActiveNavigation from './ActiveNavigation';
 
-// MapLibre doesn't require an access token
-
-// Symbol images for navigation features
-const NAV_SYMBOLS: Record<string, any> = {
-  // Lights - use flare style for major visibility
-  'light-major': require('../../assets/symbols/png/light-flare-magenta.png'),
-  'light-minor': require('../../assets/symbols/png/light-point-magenta.png'),
-  'light-white': require('../../assets/symbols/png/light-flare-white.png'),
-  'light-red': require('../../assets/symbols/png/light-flare-red.png'),
-  'light-green': require('../../assets/symbols/png/light-flare-green.png'),
-  'lighted-beacon': require('../../assets/symbols/png/lighted-beacon.png'),
-  // Buoys
-  'buoy-can': require('../../assets/symbols/png/buoy-can.png'),
-  'buoy-conical': require('../../assets/symbols/png/buoy-conical.png'),
-  'buoy-spherical': require('../../assets/symbols/png/buoy-spherical.png'),
-  'buoy-pillar': require('../../assets/symbols/png/buoy-pillar.png'),
-  'buoy-spar': require('../../assets/symbols/png/buoy-spar.png'),
-  'buoy-barrel': require('../../assets/symbols/png/buoy-barrel.png'),
-  'buoy-super': require('../../assets/symbols/png/buoy-super.png'),
-  // Beacons
-  'beacon-stake': require('../../assets/symbols/png/beacon-stake.png'),
-  'beacon-tower': require('../../assets/symbols/png/beacon-tower.png'),
-  'beacon-generic': require('../../assets/symbols/png/beacon-generic.png'),
-  'beacon-lattice': require('../../assets/symbols/png/beacon-lattice.png'),
-  'beacon-withy': require('../../assets/symbols/png/beacon-withy.png'),
-  'beacon-cairn': require('../../assets/symbols/png/beacon-cairn.png'),
-  // Beacon halos (white versions for visibility)
-  'beacon-tower-halo': require('../../assets/symbols/png/beacon-tower-halo.png'),
-  'beacon-generic-halo': require('../../assets/symbols/png/beacon-generic-halo.png'),
-  'beacon-stake-halo': require('../../assets/symbols/png/beacon-stake-halo.png'),
-  'beacon-lattice-halo': require('../../assets/symbols/png/beacon-lattice-halo.png'),
-  'beacon-withy-halo': require('../../assets/symbols/png/beacon-withy-halo.png'),
-  'beacon-cairn-halo': require('../../assets/symbols/png/beacon-cairn-halo.png'),
-  // Landmark halos (white versions for visibility)
-  'landmark-tower-halo': require('../../assets/symbols/png/landmark-tower-halo.png'),
-  'landmark-chimney-halo': require('../../assets/symbols/png/landmark-chimney-halo.png'),
-  'landmark-church-halo': require('../../assets/symbols/png/landmark-church-halo.png'),
-  'landmark-flagpole-halo': require('../../assets/symbols/png/landmark-flagpole-halo.png'),
-  'landmark-mast-halo': require('../../assets/symbols/png/landmark-mast-halo.png'),
-  'landmark-monument-halo': require('../../assets/symbols/png/landmark-monument-halo.png'),
-  'landmark-radio-tower-halo': require('../../assets/symbols/png/landmark-radio-tower-halo.png'),
-  'landmark-windmill-halo': require('../../assets/symbols/png/landmark-windmill-halo.png'),
-  // Buoy halos (white versions for visibility)
-  'buoy-pillar-halo': require('../../assets/symbols/png/buoy-pillar-halo.png'),
-  'buoy-spherical-halo': require('../../assets/symbols/png/buoy-spherical-halo.png'),
-  'buoy-super-halo': require('../../assets/symbols/png/buoy-super-halo.png'),
-  'buoy-conical-halo': require('../../assets/symbols/png/buoy-conical-halo.png'),
-  'buoy-can-halo': require('../../assets/symbols/png/buoy-can-halo.png'),
-  'buoy-spar-halo': require('../../assets/symbols/png/buoy-spar-halo.png'),
-  'buoy-barrel-halo': require('../../assets/symbols/png/buoy-barrel-halo.png'),
-  // Hazard halos (white versions for visibility)
-  'tide-rips-halo': require('../../assets/symbols/png/riptide-halo.png'),
-  'foul-ground-halo': require('../../assets/symbols/png/foul-ground-halo.png'),
-  // Wrecks
-  'wreck-danger': require('../../assets/symbols/png/wreck-danger.png'),
-  'wreck-submerged': require('../../assets/symbols/png/wreck-submerged.png'),
-  'wreck-hull': require('../../assets/symbols/png/wreck-hull.png'),
-  'wreck-safe': require('../../assets/symbols/png/wreck-safe.png'),
-  'wreck-uncovers': require('../../assets/symbols/png/wreck-uncovers.png'),
-  // Rocks
-  'rock-submerged': require('../../assets/symbols/png/rock-submerged.png'),
-  'rock-awash': require('../../assets/symbols/png/rock-awash.png'),
-  'rock-above-water': require('../../assets/symbols/png/rock-above-water.png'),
-  'rock-uncovers': require('../../assets/symbols/png/rock-uncovers.png'),
-  // Other hazards
-  'obstruction': require('../../assets/symbols/png/obstruction.png'),
-  'foul-ground': require('../../assets/symbols/png/foul-ground.png'),
-  'tide-rips': require('../../assets/symbols/png/riptide.png'),
-  // Landmarks
-  'landmark-tower': require('../../assets/symbols/png/landmark-tower.png'),
-  'landmark-chimney': require('../../assets/symbols/png/landmark-chimney.png'),
-  'landmark-monument': require('../../assets/symbols/png/landmark-monument.png'),
-  'landmark-flagpole': require('../../assets/symbols/png/landmark-flagpole.png'),
-  'landmark-mast': require('../../assets/symbols/png/landmark-mast.png'),
-  'landmark-radio-tower': require('../../assets/symbols/png/landmark-radio-tower.png'),
-  'landmark-windmill': require('../../assets/symbols/png/landmark-windmill.png'),
-  'landmark-church': require('../../assets/symbols/png/landmark-church.png'),
-  // Tide station icons (6 fill levels, rotation handled by MapLibre)
-  'tide-0': require('../../assets/symbols/png/tide-0.png'),
-  'tide-20': require('../../assets/symbols/png/tide-20.png'),
-  'tide-40': require('../../assets/symbols/png/tide-40.png'),
-  'tide-60': require('../../assets/symbols/png/tide-60.png'),
-  'tide-80': require('../../assets/symbols/png/tide-80.png'),
-  'tide-100': require('../../assets/symbols/png/tide-100.png'),
-  // Current station icons (6 fill levels, rotation handled by MapLibre)
-  'current-0': require('../../assets/symbols/png/current-0.png'),
-  'current-20': require('../../assets/symbols/png/current-20.png'),
-  'current-40': require('../../assets/symbols/png/current-40.png'),
-  'current-60': require('../../assets/symbols/png/current-60.png'),
-  'current-80': require('../../assets/symbols/png/current-80.png'),
-  'current-100': require('../../assets/symbols/png/current-100.png'),
-  // Shared halo for tide and current icons
-  'arrow-halo': require('../../assets/symbols/png/arrow-halo.png'),
-  // Live Buoys
-  'livebuoy': require('../../assets/symbols/Custom Symbols/LiveBuoy.png'),
-  'livebuoy-halo': require('../../assets/symbols/Custom Symbols/LiveBuoy-halo.png'),
-};
-
-// Display feature configuration for the Display Settings tab
-interface DisplayFeatureConfig {
-  id: string;
-  label: string;
-  type: 'text' | 'line' | 'area';
-  fontSizeKey?: keyof DisplaySettings;
-  haloKey?: keyof DisplaySettings;  // For text halo/stroke
-  strokeKey?: keyof DisplaySettings;  // For line width or area border
-  opacityKey?: keyof DisplaySettings;
-}
-
-// Symbol feature configuration for the Symbols tab
-interface SymbolFeatureConfig {
-  id: string;
-  label: string;
-  sizeKey: keyof DisplaySettings;
-  haloKey: keyof DisplaySettings;
-  opacityKey: keyof DisplaySettings;
-  color: string;  // S-52 compliant color for visual identification
-  hasHalo: boolean;  // Whether this symbol type supports halos (complex shapes like beacons don't)
-  // Optional text settings for symbols that have associated labels
-  hasText?: boolean;
-  textSizeKey?: keyof DisplaySettings;
-  textHaloKey?: keyof DisplaySettings;
-  textOpacityKey?: keyof DisplaySettings;
-}
-
-// Depth unit conversion helpers
-const METERS_TO_FEET = 3.28084;
-const METERS_TO_FATHOMS = 0.546807;
-
-const convertDepth = (meters: number, unit: 'meters' | 'feet' | 'fathoms'): number => {
-  switch (unit) {
-    case 'feet': return meters * METERS_TO_FEET;
-    case 'fathoms': return meters * METERS_TO_FATHOMS;
-    default: return meters;
-  }
-};
-
-const getDepthUnitSuffix = (unit: 'meters' | 'feet' | 'fathoms'): string => {
-  switch (unit) {
-    case 'feet': return 'ft';
-    case 'fathoms': return 'fm';
-    default: return 'm';
-  }
-};
-
-const DISPLAY_FEATURES: DisplayFeatureConfig[] = [
-  // Text features (font size + halo + opacity)
-  { id: 'soundings', label: 'Soundings', type: 'text', fontSizeKey: 'soundingsFontScale', haloKey: 'soundingsHaloScale', opacityKey: 'soundingsOpacityScale' },
-  { id: 'gnis', label: 'Place Names (GNIS)', type: 'text', fontSizeKey: 'gnisFontScale', haloKey: 'gnisHaloScale', opacityKey: 'gnisOpacityScale' },
-  { id: 'depthContourLabels', label: 'Depth Contour Labels', type: 'text', fontSizeKey: 'depthContourFontScale', haloKey: 'depthContourLabelHaloScale', opacityKey: 'depthContourLabelOpacityScale' },
-  { id: 'chartLabels', label: 'Chart Labels', type: 'text', fontSizeKey: 'chartLabelsFontScale', haloKey: 'chartLabelsHaloScale', opacityKey: 'chartLabelsOpacityScale' },
-  // Line features (thickness + halo + opacity)
-  { id: 'depthContourLines', label: 'Depth Contour Lines', type: 'line', strokeKey: 'depthContourLineScale', haloKey: 'depthContourLineHaloScale', opacityKey: 'depthContourLineOpacityScale' },
-  { id: 'coastline', label: 'Coastline', type: 'line', strokeKey: 'coastlineLineScale', haloKey: 'coastlineHaloScale', opacityKey: 'coastlineOpacityScale' },
-  { id: 'cables', label: 'Cables', type: 'line', strokeKey: 'cableLineScale', haloKey: 'cableLineHaloScale', opacityKey: 'cableLineOpacityScale' },
-  { id: 'pipelines', label: 'Pipelines', type: 'line', strokeKey: 'pipelineLineScale', haloKey: 'pipelineLineHaloScale', opacityKey: 'pipelineLineOpacityScale' },
-  { id: 'bridges', label: 'Bridges', type: 'line', strokeKey: 'bridgeLineScale', haloKey: 'bridgeLineHaloScale', opacityKey: 'bridgeOpacityScale' },
-  { id: 'moorings', label: 'Moorings', type: 'line', strokeKey: 'mooringLineScale', haloKey: 'mooringLineHaloScale', opacityKey: 'mooringOpacityScale' },
-  { id: 'shorelineConstruction', label: 'Shoreline Construction', type: 'line', strokeKey: 'shorelineConstructionLineScale', haloKey: 'shorelineConstructionHaloScale', opacityKey: 'shorelineConstructionOpacityScale' },
-  // Area features (fill opacity + stroke width)
-  { id: 'depthAreas', label: 'Depth Areas', type: 'area', opacityKey: 'depthAreaOpacityScale', strokeKey: 'depthAreaStrokeScale' },
-  { id: 'restrictedAreas', label: 'Restricted Areas', type: 'area', opacityKey: 'restrictedAreaOpacityScale', strokeKey: 'restrictedAreaStrokeScale' },
-  { id: 'cautionAreas', label: 'Caution Areas', type: 'area', opacityKey: 'cautionAreaOpacityScale', strokeKey: 'cautionAreaStrokeScale' },
-  { id: 'militaryAreas', label: 'Military Areas', type: 'area', opacityKey: 'militaryAreaOpacityScale', strokeKey: 'militaryAreaStrokeScale' },
-  { id: 'anchorages', label: 'Anchorages', type: 'area', opacityKey: 'anchorageOpacityScale', strokeKey: 'anchorageStrokeScale' },
-  { id: 'marineFarms', label: 'Marine Farms', type: 'area', opacityKey: 'marineFarmOpacityScale', strokeKey: 'marineFarmStrokeScale' },
-  { id: 'cableAreas', label: 'Cable Areas', type: 'area', opacityKey: 'cableAreaOpacityScale', strokeKey: 'cableAreaStrokeScale' },
-  { id: 'pipelineAreas', label: 'Pipeline Areas', type: 'area', opacityKey: 'pipelineAreaOpacityScale', strokeKey: 'pipelineAreaStrokeScale' },
-  { id: 'fairways', label: 'Fairways', type: 'area', opacityKey: 'fairwayOpacityScale', strokeKey: 'fairwayStrokeScale' },
-  { id: 'dredgedAreas', label: 'Dredged Areas', type: 'area', opacityKey: 'dredgedAreaOpacityScale', strokeKey: 'dredgedAreaStrokeScale' },
-];
-
-// Symbol features configuration for the Symbols tab
-// Colors based on S-52 standard presentation library
-// Note: Halos disabled for all symbols - will implement with white symbol versions later
-const SYMBOL_FEATURES: SymbolFeatureConfig[] = [
-  { id: 'lights', label: 'Lights', sizeKey: 'lightSymbolSizeScale', haloKey: 'lightSymbolHaloScale', opacityKey: 'lightSymbolOpacityScale', color: '#FF00FF', hasHalo: false },
-  { id: 'buoys', label: 'Buoys', sizeKey: 'buoySymbolSizeScale', haloKey: 'buoySymbolHaloScale', opacityKey: 'buoySymbolOpacityScale', color: '#FF0000', hasHalo: true },
-  { id: 'beacons', label: 'Beacons', sizeKey: 'beaconSymbolSizeScale', haloKey: 'beaconSymbolHaloScale', opacityKey: 'beaconSymbolOpacityScale', color: '#00AA00', hasHalo: true },
-  { id: 'wrecks', label: 'Wrecks', sizeKey: 'wreckSymbolSizeScale', haloKey: 'wreckSymbolHaloScale', opacityKey: 'wreckSymbolOpacityScale', color: '#000000', hasHalo: false },
-  { id: 'rocks', label: 'Rocks', sizeKey: 'rockSymbolSizeScale', haloKey: 'rockSymbolHaloScale', opacityKey: 'rockSymbolOpacityScale', color: '#000000', hasHalo: false },
-  { id: 'hazards', label: 'Hazards', sizeKey: 'hazardSymbolSizeScale', haloKey: 'hazardSymbolHaloScale', opacityKey: 'hazardSymbolOpacityScale', color: '#000000', hasHalo: true },
-  { id: 'landmarks', label: 'Landmarks', sizeKey: 'landmarkSymbolSizeScale', haloKey: 'landmarkSymbolHaloScale', opacityKey: 'landmarkSymbolOpacityScale', color: '#8B4513', hasHalo: true },
-  { id: 'moorings', label: 'Moorings', sizeKey: 'mooringSymbolSizeScale', haloKey: 'mooringSymbolHaloScale', opacityKey: 'mooringSymbolOpacityScale', color: '#800080', hasHalo: false },
-  { id: 'anchors', label: 'Anchors', sizeKey: 'anchorSymbolSizeScale', haloKey: 'anchorSymbolHaloScale', opacityKey: 'anchorSymbolOpacityScale', color: '#800080', hasHalo: false },
-  { id: 'tideRips', label: 'Tide Rips', sizeKey: 'tideRipsSymbolSizeScale', haloKey: 'tideRipsSymbolHaloScale', opacityKey: 'tideRipsSymbolOpacityScale', color: '#00CED1', hasHalo: true },
-  { id: 'tideStations', label: 'Tide Stations', sizeKey: 'tideStationSymbolSizeScale', haloKey: 'tideStationSymbolHaloScale', opacityKey: 'tideStationSymbolOpacityScale', color: '#0066CC', hasHalo: true, hasText: true, textSizeKey: 'tideStationTextSizeScale', textHaloKey: 'tideStationTextHaloScale', textOpacityKey: 'tideStationTextOpacityScale' },
-  { id: 'currentStations', label: 'Current Stations', sizeKey: 'currentStationSymbolSizeScale', haloKey: 'currentStationSymbolHaloScale', opacityKey: 'currentStationSymbolOpacityScale', color: '#CC0066', hasHalo: true, hasText: true, textSizeKey: 'currentStationTextSizeScale', textHaloKey: 'currentStationTextHaloScale', textOpacityKey: 'currentStationTextOpacityScale' },
-  { id: 'liveBuoys', label: 'Live Buoys', sizeKey: 'liveBuoySymbolSizeScale', haloKey: 'liveBuoySymbolHaloScale', opacityKey: 'liveBuoySymbolOpacityScale', color: '#FF8C00', hasHalo: true, hasText: true, textSizeKey: 'liveBuoyTextSizeScale', textHaloKey: 'liveBuoyTextHaloScale', textOpacityKey: 'liveBuoyTextOpacityScale' },
-];
-
-// Feature lookup optimization constants (moved outside component for performance)
-// OBJL code to layer name mapping (S-57 standard)
-// Source: GDAL s57objectclasses.csv (IHO S-57 Edition 3.1)
-const OBJL_NAMES: Record<number, string> = {
-  3: 'ACHBRT', 4: 'ACHARE',
-  5: 'BCNCAR', 6: 'BCNISD', 7: 'BCNLAT', 8: 'BCNSAW', 9: 'BCNSPP',
-  11: 'BRIDGE', 12: 'BUISGL',
-  14: 'BOYCAR', 15: 'BOYINB', 16: 'BOYISD', 17: 'BOYLAT', 18: 'BOYSAW', 19: 'BOYSPP',
-  20: 'CBLARE', 21: 'CBLOHD', 22: 'CBLSUB',
-  27: 'CTNARE', 30: 'COALNE',
-  39: 'DAYMAR', 42: 'DEPARE', 43: 'DEPCNT', 46: 'DRGARE',
-  51: 'FAIRWY', 58: 'FOGSIG', 65: 'HULKES', 69: 'LAKARE',
-  71: 'LNDARE', 72: 'LNDELV', 73: 'LNDRGN', 74: 'LNDMRK', 75: 'LIGHTS',
-  82: 'MARCUL', 83: 'MIPARE', 84: 'MORFAC', 85: 'NAVLNE', 86: 'OBSTRN',
-  90: 'PILPNT', 92: 'PIPARE', 94: 'PIPSOL', 95: 'PONTON',
-  109: 'RECTRC', 112: 'RESARE', 114: 'RIVERS',
-  119: 'SEAARE', 121: 'SBDARE', 122: 'SLCONS',
-  129: 'SOUNDG', 144: 'TOPMAR', 145: 'TSELNE', 148: 'TSSLPT',
-  153: 'UWTROC', 156: 'WATTUR', 159: 'WRECKS',
-};
-
-// Helper to get layer name from OBJL code
-const getLayerName = (props: any): string => {
-  const objl = props?.OBJL;
-  return objl ? (OBJL_NAMES[objl] || `OBJL_${objl}`) : 'Unknown';
-};
-
-// Priority map for O(1) lookup - using OBJL codes for reliability
-// OBJL codes per IHO S-57 Edition 3.1
-const OBJL_PRIORITIES: Map<number, number> = new Map([
-  [75, 100],   // LIGHTS
-  [17, 98], [14, 97], [18, 96], [19, 95], [16, 94], [15, 93],  // Buoys (BOYLAT=17, BOYCAR=14, BOYSAW=18, BOYSPP=19, BOYISD=16, BOYINB=15)
-  [7, 92], [9, 91], [5, 90], [6, 89], [8, 88],  // Beacons (BCNLAT=7, BCNSPP=9, BCNCAR=5, BCNISD=6, BCNSAW=8)
-  [159, 87], [153, 86], [86, 85],  // WRECKS, UWTROC, OBSTRN
-  [112, 84], [27, 83], [83, 82],   // RESARE, CTNARE=27, MIPARE
-  [4, 81], [3, 80], [82, 79],      // ACHARE=4, ACHBRT=3, MARCUL=82
-  [74, 78],  // LNDMRK
-  [84, 77],  // MORFAC (Mooring Facility)
-  [22, 76], [20, 75], [94, 74], [92, 73],  // Cables and pipes (CBLSUB=22, CBLARE=20, PIPSOL=94, PIPARE=92)
-  [12, 72],  // BRIDGE
-  [129, 71], [42, 70], [43, 69], [114, 68], [121, 68],  // SOUNDG, DEPARE, DEPCNT, SBDARE
-  [46, 67], [57, 66],  // DRGARE, FAIRWY
-  [122, 65], // SLCONS (Shoreline Construction)
-  [20, 64],  // BUISGL (Building)
-  [73, 63],  // LNDRGN (Land Region)
-  [119, 62], // SEAARE (Sea Area names)
-]);
-
-// Layer name to friendly display name mapping
-const LAYER_DISPLAY_NAMES: Record<string, string> = {
-  'LIGHTS': 'Light',
-  'LIGHTS_SECTOR': 'Light Sector',
-  'BOYLAT': 'Lateral Buoy',
-  'BOYCAR': 'Cardinal Buoy',
-  'BOYSAW': 'Safe Water Buoy',
-  'BOYSPP': 'Special Purpose Buoy',
-  'BOYISD': 'Isolated Danger Buoy',
-  'BCNLAT': 'Lateral Beacon',
-  'BCNSPP': 'Special Purpose Beacon',
-  'BCNCAR': 'Cardinal Beacon',
-  'BCNISD': 'Isolated Danger Beacon',
-  'BCNSAW': 'Safe Water Beacon',
-  'WRECKS': 'Wreck',
-  'UWTROC': 'Underwater Rock',
-  'OBSTRN': 'Obstruction',
-  'WATTUR': 'Water Turbulence',
-  'LNDMRK': 'Landmark',
-  'CBLSUB': 'Submarine Cable',
-  'CBLARE': 'Cable Area',
-  'PIPSOL': 'Pipeline',
-  'PIPARE': 'Pipeline Area',
-  'SOUNDG': 'Sounding',
-  'DEPARE': 'Depth Area',
-  'DEPCNT': 'Depth Contour',
-  'SBDARE': 'Seabed Area',
-  'DRGARE': 'Dredged Area',
-  'FAIRWY': 'Fairway',
-  'COALNE': 'Coastline',
-  'LNDARE': 'Land Area',
-  'RESARE': 'Restricted Area',
-  'CTNARE': 'Caution Area',
-  'MIPARE': 'Military Practice Area',
-  'ACHARE': 'Anchorage Area',
-  'ACHBRT': 'Anchor Berth',
-  'MARCUL': 'Marine Farm/Aquaculture',
-  'BRIDGE': 'Bridge',
-  'BUISGL': 'Building',
-  'MORFAC': 'Mooring Facility',
-  'SLCONS': 'Shoreline Construction',
-  'SEAARE': 'Sea Area',
-  'LNDRGN': 'Land Region',
-};
-
-interface Props {
-  onNavigateToDownloads?: () => void;
-}
-
-interface FeatureInfo {
-  type: string;
-  properties: Record<string, unknown>;
-}
-
-interface LoadedChartData {
-  chartId: string;
-  features: Partial<Record<FeatureType, GeoJSONFeatureCollection>>;
-}
-
-interface LoadedMBTilesChart {
-  chartId: string;
-  path: string;
-}
-
-interface LoadedRasterChart {
-  chartId: string;
-  path: string;
-}
-
-// Layer visibility state - consolidated for performance
-interface LayerVisibility {
-  depthAreas: boolean;
-  depthContours: boolean;
-  soundings: boolean;
-  land: boolean;
-  coastline: boolean;
-  lights: boolean;
-  buoys: boolean;
-  beacons: boolean;
-  landmarks: boolean;
-  hazards: boolean;
-  sectors: boolean;
-  cables: boolean;
-  seabed: boolean;
-  pipelines: boolean;
-  bathymetry: boolean;
-  restrictedAreas: boolean;
-  cautionAreas: boolean;
-  militaryAreas: boolean;
-  anchorages: boolean;
-  anchorBerths: boolean;
-  marineFarms: boolean;
-  // New infrastructure layers
-  bridges: boolean;
-  buildings: boolean;
-  moorings: boolean;
-  shorelineConstruction: boolean;
-  seaAreaNames: boolean;
-  landRegions: boolean;
-  gnisNames: boolean;  // Master toggle for all GNIS place names
-  tideStations: boolean;  // Tide station markers
-  currentStations: boolean;  // Current station markers
-  liveBuoys: boolean;  // Live weather buoy markers
-  tideDetails: boolean;  // Tide detail chart at bottom
-  currentDetails: boolean;  // Current detail chart at bottom
-  waypoints: boolean;  // User waypoint markers
-}
-
-type LayerVisibilityAction = 
-  | { type: 'TOGGLE'; layer: keyof LayerVisibility }
-  | { type: 'SET'; layer: keyof LayerVisibility; value: boolean }
-  | { type: 'SET_ALL'; value: boolean };
-
-const initialLayerVisibility: LayerVisibility = {
-  depthAreas: true,
-  depthContours: true,
-  soundings: true,
-  land: false,
-  coastline: true,
-  lights: true,
-  buoys: true,
-  beacons: true,
-  landmarks: true,
-  hazards: true,
-  sectors: true,
-  cables: true,
-  seabed: true,
-  pipelines: true,
-  bathymetry: true,
-  restrictedAreas: true,
-  cautionAreas: false,
-  militaryAreas: true,
-  anchorages: true,
-  anchorBerths: true,
-  marineFarms: true,
-  // New infrastructure layers
-  bridges: true,
-  buildings: true,
-  moorings: true,
-  shorelineConstruction: true,
-  seaAreaNames: true,
-  landRegions: true,
-  gnisNames: true,  // Master toggle for all GNIS place names
-  tideStations: true,  // Show tide stations by default
-  currentStations: true,  // Show current stations by default
-  liveBuoys: true,  // Show live buoys by default
-  tideDetails: false,  // Tide detail chart hidden by default
-  currentDetails: false,  // Current detail chart hidden by default
-  waypoints: true,  // Show user waypoints by default
-};
-
-function layerVisibilityReducer(state: LayerVisibility, action: LayerVisibilityAction): LayerVisibility {
-  switch (action.type) {
-    case 'TOGGLE':
-      return { ...state, [action.layer]: !state[action.layer] };
-    case 'SET':
-      return { ...state, [action.layer]: action.value };
-    case 'SET_ALL':
-      const newState: LayerVisibility = {} as LayerVisibility;
-      for (const key of Object.keys(state) as (keyof LayerVisibility)[]) {
-        newState[key] = action.value;
-      }
-      return newState;
-    default:
-      return state;
-  }
-}
 
 export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}) {
   // Waypoint context
   const { waypoints: userWaypoints, openCreationModal: openWaypointCreation, openEditModal: openWaypointEdit } = useWaypoints();
   // Route context
   const { activeRoute, addPointToActiveRoute, startNewRoute, showRoutesModal, openRoutesModal, closeRoutesModal, navigation } = useRoutes();
-  const navigation_router = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
@@ -564,10 +158,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   
   // GNIS Place Names layer toggles
   const [gnisAvailable, setGnisAvailable] = useState(false);
-  const [showPlaceNames, setShowPlaceNames] = useState(true);
-  const [showWaterNames, setShowWaterNames] = useState(true);      // Bays, channels, sounds
-  const [showCoastalNames, setShowCoastalNames] = useState(true);  // Capes, islands, beaches
-  const [showLandmarkNames, setShowLandmarkNames] = useState(true); // Summits, glaciers
+  const [showPlaceNames] = useState(true);
+  const [showWaterNames] = useState(true);      // Bays, channels, sounds
+  const [showCoastalNames] = useState(true);  // Capes, islands, beaches
+  const [showLandmarkNames] = useState(true); // Summits, glaciers
   
   // Tide and Current station data
   const [tideStations, setTideStations] = useState<TideStation[]>([]);
@@ -616,7 +210,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Handler for selecting a special feature (tide/current station, live buoy) from the picker
   const handleSpecialFeatureSelect = (feature: FeatureInfo) => {
     const specialType = feature.properties?._specialType;
-    const id = feature.properties?.id;
+    const id = feature.properties?.id as string | undefined;
     if (!id) return;
     
     switch (specialType) {
@@ -637,10 +231,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }
   };
   
-  const [showPopulatedNames, setShowPopulatedNames] = useState(true); // Towns, ports
-  const [showStreamNames, setShowStreamNames] = useState(false);    // Rivers, creeks (off by default - too many)
-  const [showLakeNames, setShowLakeNames] = useState(false);        // Lakes (off by default)
-  const [showTerrainNames, setShowTerrainNames] = useState(false);  // Valleys, basins (off by default)
+  const [showPopulatedNames] = useState(true); // Towns, ports
+  const [showStreamNames] = useState(false);    // Rivers, creeks (off by default - too many)
+  const [showLakeNames] = useState(false);        // Lakes (off by default)
+  const [showTerrainNames] = useState(false);  // Valleys, basins (off by default)
   
   // Display settings (font scales, line widths, area opacities)
   const [displaySettings, setDisplaySettings] = useState<DisplaySettings>({
@@ -874,11 +468,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     [displaySettings.depthContourLabelHaloScale]
   );
 
-  const scaledChartLabelsHalo = useMemo(() => 
-    1.5 * displaySettings.chartLabelsHaloScale,
-    [displaySettings.chartLabelsHaloScale]
-  );
-
   // Memoized scaled text opacities (clamped to 0-1 range)
   const scaledSoundingsOpacity = useMemo(() => 
     Math.min(1, Math.max(0, displaySettings.soundingsOpacityScale)),
@@ -893,11 +482,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const scaledDepthContourLabelOpacity = useMemo(() => 
     Math.min(1, Math.max(0, displaySettings.depthContourLabelOpacityScale)),
     [displaySettings.depthContourLabelOpacityScale]
-  );
-
-  const scaledChartLabelsOpacity = useMemo(() => 
-    Math.min(1, Math.max(0, displaySettings.chartLabelsOpacityScale)),
-    [displaySettings.chartLabelsOpacityScale]
   );
 
   // Memoized scaled line widths
@@ -1170,13 +754,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     16, 0.6 * displaySettings.hazardSymbolSizeScale,
   ], [displaySettings.hazardSymbolSizeScale]);
 
-  const scaledHazardHaloSize = useMemo(() => [
-    'interpolate', ['linear'], ['zoom'],
-    8, 0.25 * displaySettings.hazardSymbolSizeScale * (1.0 + displaySettings.hazardSymbolHaloScale),
-    12, 0.4 * displaySettings.hazardSymbolSizeScale * (1.0 + displaySettings.hazardSymbolHaloScale),
-    16, 0.6 * displaySettings.hazardSymbolSizeScale * (1.0 + displaySettings.hazardSymbolHaloScale),
-  ], [displaySettings.hazardSymbolSizeScale, displaySettings.hazardSymbolHaloScale]);
-
   const scaledLandmarkIconSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
     8, 0.2 * displaySettings.landmarkSymbolSizeScale,
@@ -1310,16 +887,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     [displaySettings.currentStationSymbolOpacityScale]
   );
 
-  // Tide station text scaling - scales with zoom so em-based offsets scale proportionally
-  const scaledTideStationTextSize = useMemo(() => {
-    const baseSize = 14 * (displaySettings.tideStationTextSizeScale ?? 1.0);
-    return [
-      'interpolate', ['linear'], ['zoom'],
-      10, baseSize * 0.5,  // 50% at z10
-      13, baseSize         // 100% at z13
-    ];
-  }, [displaySettings.tideStationTextSizeScale]);
-
   // Slightly larger version for station name labels
   const scaledTideStationLabelSize = useMemo(() => {
     const baseSize = 15 * (displaySettings.tideStationTextSizeScale ?? 1.0);
@@ -1339,16 +906,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     Math.min(1, Math.max(0, displaySettings.tideStationTextOpacityScale ?? 1.0)),
     [displaySettings.tideStationTextOpacityScale]
   );
-
-  // Current station text scaling - scales with zoom so em-based offsets scale proportionally
-  const scaledCurrentStationTextSize = useMemo(() => {
-    const baseSize = 14 * (displaySettings.currentStationTextSizeScale ?? 1.0);
-    return [
-      'interpolate', ['linear'], ['zoom'],
-      10, baseSize * 0.5,  // 50% at z10
-      13, baseSize         // 100% at z13
-    ];
-  }, [displaySettings.currentStationTextSizeScale]);
 
   // Slightly larger version for station name labels (1.1x)
   const scaledCurrentStationLabelSize = useMemo(() => {
@@ -1418,7 +975,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [centerCoord, setCenterCoord] = useState<[number, number]>([-151.55, 59.64]);
   const [selectedFeature, setSelectedFeature] = useState<FeatureInfo | null>(null);
   const [featureChoices, setFeatureChoices] = useState<FeatureInfo[] | null>(null); // Multiple features to choose from
-  const [showControls, setShowControls] = useState(false);
   const [showLayerSelector, setShowLayerSelector] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
   
@@ -1428,13 +984,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [selectedDisplayFeature, setSelectedDisplayFeature] = useState<string>('soundings');
   const [selectedSymbolFeature, setSelectedSymbolFeature] = useState<string>('lights');
   const [symbolEditMode, setSymbolEditMode] = useState<'symbol' | 'text'>('symbol');
-  
-  // Layers sub-tabs
-  type LayersSubTab = 'chart' | 'names' | 'sources';
-  const [layersSubTab, setLayersSubTab] = useState<LayersSubTab>('chart');
-  
-  // Debug: Force VectorSource reload
-  const [sourceReloadKey, setSourceReloadKey] = useState(0);
   
   // Track tap start time for end-to-end performance measurement
   const tapStartTimeRef = useRef<number>(0);
@@ -1701,8 +1250,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     settingNote: {
       color: uiTheme.textMuted,
     },
-  }), [uiTheme, s52Mode]);
-  
+  }), [uiTheme]);
+
   // Satellite tile sets - each file covers specific zoom levels
   // Format: satellite_z8.mbtiles, satellite_z0-5.mbtiles, etc.
   const [satelliteTileSets, setSatelliteTileSets] = useState<TileSet[]>([]);
@@ -1963,16 +1512,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [mapStyle, s52Mode, tileServerReady, hasLocalBasemap, hasLocalOcean, hasLocalTerrain, isVectorStyle, gnisAvailable, useMBTiles, useCompositeTiles, satelliteTileSets, oceanTileSets, terrainTileSets, showGNISNames, showPlaceNames, mapStyleUrls]);
   
   // GPS and Navigation state - overlay visibility from context (rendered in App.tsx)
-  const { showGPSPanel, setShowGPSPanel, showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails, showDebugMap, setShowDebugMap, showNavData, setShowNavData } = useOverlay();
+  const { showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails, showDebugMap, setShowDebugMap, showNavData, setShowNavData } = useOverlay();
   const [followGPS, setFollowGPS] = useState(false); // Follow mode - center map on position
   const followGPSRef = useRef(false); // Ref for immediate follow mode check (avoids race condition)
-  const pendingCameraMoveTimeout = useRef<NodeJS.Timeout | null>(null); // Track pending camera moves
   const isProgrammaticCameraMove = useRef(false); // Flag to distinguish programmatic vs user camera moves
-  const { gpsData, startTracking, stopTracking, toggleTracking } = useGPS();
+  const { gpsData, startTracking } = useGPS();
   
   // Memoize composite tile URL to prevent constant VectorSource re-renders
   const compositeTileUrl = useMemo(() => {
     return `${tileServer.getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf`;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tileServerReady]); // Only recalculate if server restarts
   
   // Update overlay context with GPS data
@@ -2025,8 +1574,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [displaySettings.tideCorrectedSoundings, centerCoord, tideStations]);
   
   // Zoom limiting - constrain zoom to available chart detail
-  const [limitZoomToCharts, setLimitZoomToCharts] = useState(true);
-  const [isAtMaxZoom, setIsAtMaxZoom] = useState(false);
+  const [limitZoomToCharts] = useState(true);
+  const [, setIsAtMaxZoom] = useState(false);
   
   
   // Calculate max zoom based on most detailed chart available
@@ -2065,142 +1614,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Cache buster to force Mapbox to re-fetch tiles
   const [cacheBuster, setCacheBuster] = useState(0);
 
-  // ============================================================
-  // DEBUG BUTTON HANDLERS - For diagnosing tile loading issues
-  // ============================================================
-  
-  // Convert lon/lat/zoom to tile coordinates
-  const lonLatToTile = useCallback((lon: number, lat: number, zoom: number) => {
-    const z = Math.floor(zoom);
-    const x = Math.floor((lon + 180) / 360 * Math.pow(2, z));
-    const latRad = lat * Math.PI / 180;
-    const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * Math.pow(2, z));
-    return { z, x, y };
-  }, []);
-
-  // Button 1: Fetch a tile directly from the server
-  const debugFetchTile = useCallback(async () => {
-    const tile = lonLatToTile(centerCoord[0], centerCoord[1], currentZoom);
-    const url = `http://127.0.0.1:8765/tiles/${tile.z}/${tile.x}/${tile.y}.pbf`;
-    
-    logger.info(LogCategory.TILES, `Fetching tile z${tile.z}/${tile.x}/${tile.y}`);
-    
-    try {
-      const start = Date.now();
-      const response = await fetch(url);
-      const elapsed = Date.now() - start;
-      
-      if (response.ok) {
-        const blob = await response.blob();
-        logger.info(LogCategory.TILES, `Tile fetched: ${blob.size} bytes in ${elapsed}ms`, {
-          chartSource: response.headers.get('X-Chart-Source'),
-          chartsTried: response.headers.get('X-Charts-Tried'),
-        });
-      } else {
-        logger.warn(LogCategory.TILES, `Tile fetch failed: ${response.status}`);
-      }
-    } catch (error) {
-      logger.error(LogCategory.TILES, 'Tile fetch error', error as Error);
-    }
-  }, [centerCoord, currentZoom, lonLatToTile]);
-
-  // Button 2: Fetch the TileJSON metadata
-  const debugFetchTileJSON = useCallback(async () => {
-    const url = 'http://127.0.0.1:8765/tiles.json';
-    logger.info(LogCategory.TILES, 'Fetching TileJSON...');
-    
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        const json = await response.json();
-        logger.info(LogCategory.TILES, 'TileJSON contents', {
-          name: json.name,
-          minzoom: json.minzoom,
-          maxzoom: json.maxzoom,
-          bounds: json.bounds,
-          tiles: json.tiles,
-        });
-      } else {
-        logger.warn(LogCategory.TILES, `Failed to fetch TileJSON: ${response.status}`);
-      }
-    } catch (error) {
-      logger.error(LogCategory.TILES, 'TileJSON fetch error', error as Error);
-    }
-  }, []);
-
-  // Button 3: Log current map state - uses stateReporter.dumpState()
-  const debugLogMapState = useCallback(async () => {
-    // Use the state reporter for comprehensive state dump
-    await stateReporter.dumpState();
-  }, []);
-
-  // Button 4: Force reload the VectorSource
-  const debugForceReload = useCallback(() => {
-    logger.info(LogCategory.CHARTS, `Force reload: key ${sourceReloadKey} → ${sourceReloadKey + 1}`);
-    setSourceReloadKey(sourceReloadKey + 1);
-  }, [sourceReloadKey]);
-
-  // Button 5: Scan files on device - list all files with sizes
-  const debugScanFiles = useCallback(async () => {
-    const FileSystem = require('expo-file-system/legacy');
-    const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
-    
-    logger.info(LogCategory.CHARTS, `Scanning files in ${mbtilesDir}`);
-    
-    try {
-      const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
-      if (!dirInfo.exists) {
-        logger.warn(LogCategory.CHARTS, 'Directory does not exist');
-        return;
-      }
-      
-      const files = await FileSystem.readDirectoryAsync(mbtilesDir);
-      let totalSize = 0;
-      const fileList: { name: string; sizeMB: string }[] = [];
-      
-      for (const filename of files) {
-        const filePath = `${mbtilesDir}/${filename}`;
-        try {
-          const fileInfo = await FileSystem.getInfoAsync(filePath, { size: true });
-          const size = fileInfo.size || 0;
-          totalSize += size;
-          fileList.push({ name: filename, sizeMB: (size / 1024 / 1024).toFixed(2) });
-        } catch (e) {
-          fileList.push({ name: filename, sizeMB: 'error' });
-        }
-      }
-      
-      logger.info(LogCategory.CHARTS, `Scan complete: ${files.length} files, ${(totalSize / 1024 / 1024 / 1024).toFixed(2)} GB total`);
-      
-      // Check for manifest.json
-      const manifestPath = `${mbtilesDir}/manifest.json`;
-      const manifestInfo = await FileSystem.getInfoAsync(manifestPath);
-      if (manifestInfo.exists) {
-        const content = await FileSystem.readAsStringAsync(manifestPath);
-        const manifest = JSON.parse(content);
-        logger.info(LogCategory.CHARTS, 'Manifest found', {
-          packs: manifest.packs?.length || 0,
-          basePacks: manifest.basePacks?.length || 0,
-        });
-      }
-      
-    } catch (error) {
-      logger.error(LogCategory.CHARTS, 'Scan error', error as Error);
-    }
-  }, []);
-
   // Track last manifest modification time to detect downloads
   const lastManifestTimeRef = useRef<number>(0);
   const lastStationsTimeRef = useRef<number>(0);
   
-  // Load cached charts
+  // Load cached charts on mount
   useEffect(() => {
     loadCharts();
-    
+
     // Cleanup on unmount
     return () => {
       tileServer.stopTileServer();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
   // Check if any data was downloaded and reload when returning to map screen
@@ -2208,6 +1634,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     useCallback(() => {
       const checkChangesAndReload = async () => {
         try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
           const FileSystem = require('expo-file-system/legacy');
           const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
           const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
@@ -2266,11 +1693,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   needsFullReload = true;
                 }
               }
-            } catch (e) {
+            } catch {
               // Ignore scan errors
             }
           }
-          
+
           // Full reload: stop tile server and reload everything
           if (needsFullReload) {
             logger.info(LogCategory.CHARTS, 'Data changed - reloading charts and restarting tile server');
@@ -2334,6 +1761,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       };
       
       checkChangesAndReload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [satelliteTileSets.length, basemapTileSets.length, oceanTileSets.length, terrainTileSets.length, hasLocalBasemap, gnisAvailable])
   );
 
@@ -2393,7 +1821,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         })();
         
         if (tides.length > 0 || filteredCurrents.length > 0) {
-          logger.info(LogCategory.DATA, `Loaded ${tides.length} tide stations and ${filteredCurrents.length} current stations (highest bin only) from storage`);
+          logger.info(LogCategory.CHARTS, `Loaded ${tides.length} tide stations and ${filteredCurrents.length} current stations (highest bin only) from storage`);
           
           // Log sample coordinates to verify
           if (tides.length > 0) {
@@ -2421,7 +1849,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           console.log('[MAP] No stations in storage - user needs to press "Refresh Tide Data" in Settings');
         }
       } catch (error) {
-        logger.error(LogCategory.DATA, 'Error loading stations', error as Error);
+        logger.error(LogCategory.CHARTS, 'Error loading stations', error as Error);
         console.error('[MAP] Error loading stations:', error);
       }
     };
@@ -2662,6 +2090,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   useEffect(() => {
     startTracking();
     // Don't stop tracking on unmount - let the hook handle cleanup
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
   // NOTE: This effect is now REDUNDANT - the button handler already centers the map.
@@ -2700,14 +2129,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       
       // Run one-time migration for legacy prediction database filenames
       try {
-        const { migrateLegacyPredictionDatabases } = require('../services/stationService');
         await migrateLegacyPredictionDatabases();
       } catch (migrationError) {
         console.warn('[MAP] Legacy prediction migration failed (non-critical):', migrationError);
       }
       
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const FileSystem = require('expo-file-system/legacy');
-      
+
       // === PHASE 1: mbtiles directory - use internal storage (always writable) ===
       performanceTracker.startPhase(StartupPhase.DIRECTORY_SETUP);
       const mbtilesDir = `${FileSystem.documentDirectory}mbtiles`;
@@ -2750,10 +2179,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       }
       performanceTracker.endPhase(StartupPhase.MANIFEST_LOAD, { packsCount: chartPacks.length });
       
-      // Legacy variables kept for compatibility
-      let tier1ChartIds: string[] = [];
-      let tier2ChartIds: string[] = [];
-      let totalChartCount = chartPacks.length;
       
       // === PHASE 3: Check for special files (GNIS, satellite, basemap, ocean, terrain) ===
       performanceTracker.startPhase(StartupPhase.SPECIAL_FILES);
@@ -2799,7 +2224,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         
         // Also check for legacy monolithic basemap file
         if (foundBasemapSets.length === 0) {
-          basemapFound = filesInDir.some(f => f.startsWith('basemap') && f.endsWith('.mbtiles'));
+          basemapFound = filesInDir.some((f: string) => f.startsWith('basemap') && f.endsWith('.mbtiles'));
         } else {
           basemapFound = true;
         }
@@ -2862,7 +2287,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 loadedRasters.push({ chartId, path: `${mbtilesDir}/${filename}` });
               }
             }
-          } catch (e) {
+          } catch {
             // Ignore scan errors for raster files
           }
         }
@@ -3043,7 +2468,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       setCharts(loadedCharts);
       
       // === FINAL SUMMARY ===
-      const totalTime = performanceTracker.completeStartup();
+      performanceTracker.completeStartup();
       logger.info(LogCategory.STARTUP, `Tile mode: COMPOSITE (server-side quilting, ~20 layers)`);
       logger.info(LogCategory.STARTUP, `Special files: GNIS=${gnisFound}, Basemap=${foundBasemapSets.length} sets, Ocean=${foundOceanSets.length} sets, Terrain=${foundTerrainSets.length} sets`);
       
@@ -3054,68 +2479,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       setLoading(false);
     }
   };
-
-  // Combine features from all charts
-  const combinedFeatures = useMemo(() => {
-    if (charts.length > 0) {
-      logger.debug(LogCategory.CHARTS, `Combining features from ${charts.length} charts`);
-    }
-    const combined: Partial<Record<FeatureType, GeoJSONFeatureCollection>> = {};
-    
-    for (const featureType of ALL_FEATURE_TYPES) {
-      const allFeatures: any[] = [];
-      
-      for (const chart of charts) {
-        const data = chart.features[featureType];
-        if (data?.features) {
-          // Tag features with chart ID
-          const tagged = data.features.map(f => ({
-            ...f,
-            properties: { ...f.properties, _chartId: chart.chartId },
-          }));
-          allFeatures.push(...tagged);
-        }
-      }
-      
-      if (allFeatures.length > 0) {
-        combined[featureType] = {
-          type: 'FeatureCollection',
-          features: allFeatures,
-        } as GeoJSONFeatureCollection;
-      }
-    }
-    
-    if (Object.keys(combined).length > 0) {
-      logger.debug(LogCategory.CHARTS, `Combined feature types: ${Object.keys(combined).join(', ')}`);
-    }
-    
-    return combined;
-  }, [charts]);
-
-  // Extract sector features from lights
-  const sectorFeatures = useMemo(() => {
-    if (!combinedFeatures.lights) {
-      return { type: 'FeatureCollection', features: [] } as GeoJSONFeatureCollection;
-    }
-    return extractSectorFeatures(combinedFeatures.lights);
-  }, [combinedFeatures.lights]);
-
-  // Filter polygon vs point/line features for proper rendering
-  const deparePolygons = useMemo(() => {
-    if (!combinedFeatures.depare) return null;
-    const polygons = combinedFeatures.depare.features.filter(
-      f => f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'
-    );
-    return polygons.length > 0 ? { type: 'FeatureCollection' as const, features: polygons } : null;
-  }, [combinedFeatures.depare]);
-
-  const lndarePolygons = useMemo(() => {
-    if (!combinedFeatures.lndare) return null;
-    const polygons = combinedFeatures.lndare.features.filter(
-      f => f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'
-    );
-    return polygons.length > 0 ? { type: 'FeatureCollection' as const, features: polygons } : null;
-  }, [combinedFeatures.lndare]);
 
   // Track if we've done the query warm-up
   const queryWarmupDoneRef = useRef(false);
@@ -3230,16 +2593,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
   }, []);
   
-
-  const handleFeaturePress = useCallback((layerType: string) => (e: any) => {
-    const feature = e.features?.[0];
-    if (feature) {
-      setSelectedFeature({
-        type: layerType,
-        properties: feature.properties || {},
-      });
-    }
-  }, []);
 
   // All charts to render (from progressive loading)
   const allChartsToRender = useMemo(() => {
@@ -3379,7 +2732,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       }
     }
     return ids;
-  }, [allChartsToRender, chartsAtZoom, currentZoom,
+  }, [chartsAtZoom,
       showLights, showBuoys, showBeacons, showHazards, showLandmarks, showSoundings,
       showCables, showPipelines, showDepthContours, showCoastline,
       showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
@@ -3500,8 +2853,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       }
       
       // Filter to nautical features from ACTIVE/VISIBLE layers only
-      const filterStart = Date.now();
-      
       // Map OBJL codes to their visibility state
       const objlVisibility: Record<number, boolean> = {
         // Lights
@@ -3566,7 +2917,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           return objlVisibility[objl] !== false;
         })
       };
-      const filterEnd = Date.now();
       
       if (features?.features?.length > 0) {
         // Group features by layer type (OBJL) and deduplicate
@@ -3596,7 +2946,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         
         // Convert to array of FeatureInfo objects
         const uniqueFeatures: FeatureInfo[] = [];
-        for (const [objl, feature] of featuresByType) {
+        for (const [, feature] of featuresByType) {
           const props = feature.properties || {};
           const layer = getLayerName(props);
           uniqueFeatures.push({
@@ -3610,10 +2960,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         
         // Sort by priority (highest first)
         uniqueFeatures.sort((a, b) => {
-          const objlA = a.properties?.OBJL || 0;
-          const objlB = b.properties?.OBJL || 0;
-          const prioA = OBJL_PRIORITIES.get(objlA) || 0;
-          const prioB = OBJL_PRIORITIES.get(objlB) || 0;
+          const objlA = Number(a.properties?.OBJL) || 0;
+          const objlB = Number(b.properties?.OBJL) || 0;
+          const prioA = OBJL_PRIORITIES.get(objlA) ?? 0;
+          const prioB = OBJL_PRIORITIES.get(objlB) ?? 0;
           return prioB - prioA;
         });
         
@@ -3657,8 +3007,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       logger.error(LogCategory.UI, 'Error querying features', error as Error);
     }
     
-    const totalTime = endTapMetric();
-  }, [queryableLayerIds, showLights, showBuoys, showBeacons, showHazards, showLandmarks, 
+    endTapMetric();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryableLayerIds, showLights, showBuoys, showBeacons, showHazards, showLandmarks,
       showSoundings, showCables, showPipelines, showDepthContours, showCoastline,
       showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
       showMarineFarms, showSeabed, showBridges, showBuildings, showMoorings,
@@ -3695,63 +3046,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }
   }, [activeRoute, showRouteEditor]);
 
-  // Calculate initial center from loaded charts (prefer MBTiles if available)
-  const initialCenter = useMemo(() => {
-    // If we have MBTiles charts, use appropriate center
-    if (mbtilesCharts.length > 0) {
-      // Check for US4AK4PH (Homer/Kachemak Bay)
-      const hasUS4AK4PH = mbtilesCharts.some(c => c.chartId === 'US4AK4PH');
-      if (hasUS4AK4PH) {
-        // Homer, Alaska - center of US4AK4PH chart
-        return [-151.55, 59.64] as [number, number];
-      }
-      // Check for US3AK12M (Cook Inlet Southern Part)
-      const hasUS3AK12M = mbtilesCharts.some(c => c.chartId === 'US3AK12M');
-      if (hasUS3AK12M) {
-        return [-153.32, 59.34] as [number, number];
-      }
-      // Default MBTiles center (Kachemak Bay area)
-      return [-151.5, 59.55] as [number, number];
-    }
-    
-    if (charts.length === 0) {
-      return [-152, 61] as [number, number];
-    }
-    
-    // Try to find center from first GeoJSON chart's features
-    const firstChart = charts[0];
-    
-    // Try depare first, then other polygon features
-    const polygonFeatures = firstChart.features.depare || firstChart.features.lndare;
-    
-    if (polygonFeatures?.features?.[0]?.geometry) {
-      const geom = polygonFeatures.features[0].geometry as any;
-      if (geom.type === 'Polygon' && geom.coordinates?.[0]) {
-        const coords = geom.coordinates[0];
-        const lons = coords.map((c: number[]) => c[0]);
-        const lats = coords.map((c: number[]) => c[1]);
-        const center = [
-          (Math.min(...lons) + Math.max(...lons)) / 2,
-          (Math.min(...lats) + Math.max(...lats)) / 2,
-        ] as [number, number];
-        return center;
-      }
-    }
-    
-    // Fallback: try to use any Point feature
-    for (const [type, data] of Object.entries(firstChart.features)) {
-      if (data?.features?.[0]?.geometry) {
-        const geom = data.features[0].geometry as any;
-        if (geom.type === 'Point' && geom.coordinates) {
-          return geom.coordinates as [number, number];
-        }
-      }
-    }
-    
-    logger.debug(LogCategory.CHARTS, 'Could not calculate center, using default');
-    return [-152, 61] as [number, number];
-  }, [charts, mbtilesCharts]);
-
   // Memoize formatted feature properties to avoid recalculation on every render
   // NOTE: Must be before early returns to comply with Rules of Hooks
   const formattedFeatureProps = useMemo(() => {
@@ -3759,7 +3053,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const result = formatFeatureProperties(selectedFeature, displaySettings.depthUnits);
     const entries = Object.entries(result);
     return entries;
-  }, [selectedFeature]);
+  }, [selectedFeature, displaySettings.depthUnits]);
   
   // Log when info box actually renders (after React commit phase)
   useEffect(() => {
@@ -3800,7 +3094,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     } catch (error) {
       logger.error(LogCategory.UI, 'Error in handleDidFinishLoadingStyle callback', error as Error);
     }
-  }, [displaySettings, scaledCableLineWidth, scaledCableLineHalo, scaledDepthContourLineHalo, scaledCoastlineHalo]);
+  }, []);
   
   // Track first render frame after style switch
   const styleRenderFrameCountRef = useRef<number>(0);
@@ -3848,7 +3142,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               if (onNavigateToDownloads) {
                 onNavigateToDownloads();
               } else {
-                navigation.navigate('Charts');
+                (navigation as any)?.navigate('Charts');
               }
             }}
           >
@@ -6559,7 +5853,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     };
                     
                     const resetFeature = async () => {
-                      const updates: Partial<DisplaySettings> = {};
+                      const updates: Record<string, number> = {};
                       if (feature.fontSizeKey) updates[feature.fontSizeKey] = 1.5;  // 1.5 is nominal 100%
                       if (feature.haloKey) updates[feature.haloKey] = 1.0;
                       if (feature.strokeKey) updates[feature.strokeKey] = 1.0;
@@ -6773,7 +6067,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     };
                     
                     const resetSymbol = async () => {
-                      const updates: Partial<DisplaySettings> = {};
+                      const updates: Record<string, number> = {};
                       updates[symbol.sizeKey] = getNominalSize(symbol.id);
                       if (symbol.hasHalo) {
                         updates[symbol.haloKey] = 0.1;
@@ -6786,7 +6080,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     
                     const resetText = async () => {
                       if (!symbol.hasText || !symbol.textSizeKey || !symbol.textHaloKey || !symbol.textOpacityKey) return;
-                      const updates: Partial<DisplaySettings> = {};
+                      const updates: Record<string, number> = {};
                       updates[symbol.textSizeKey] = 1.0;
                       updates[symbol.textHaloKey] = 0.1;  // 10% default
                       updates[symbol.textOpacityKey] = 1.0;
@@ -7701,650 +6995,6 @@ function DebugToggle({ label, value, onToggle, radio, disabled, subtitle }: {
   );
 }
 
-const debugStyles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#1c1c1e',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    paddingTop: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.1)',
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  closeBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: 'rgba(79,195,247,0.15)',
-  },
-  closeBtnText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#4FC3F7',
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-  },
-  quickActions: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 16,
-  },
-  quickActionBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-    alignItems: 'center',
-  },
-  quickActionText: {
-    color: '#4FC3F7',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.45)',
-    letterSpacing: 0.8,
-    marginBottom: 6,
-    marginTop: 12,
-    marginLeft: 4,
-  },
-  card: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    overflow: 'hidden',
-  },
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
-  },
-  toggleLabel: {
-    fontSize: 15,
-    color: '#fff',
-    flex: 1,
-  },
-  toggleLabelDisabled: {
-    color: 'rgba(255,255,255,0.4)',
-  },
-  toggleSubtitle: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.35)',
-    marginTop: 2,
-  },
-  debugBanner: {
-    backgroundColor: 'rgba(255, 149, 0, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 149, 0, 0.3)',
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginBottom: 12,
-  },
-  debugBannerText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FF9500',
-    textAlign: 'center',
-  },
-  radioOuter: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.3)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  radioOuterActive: {
-    borderColor: '#4FC3F7',
-  },
-  radioInner: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#4FC3F7',
-  },
-});
-
-const diagStyles = StyleSheet.create({
-  row: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
-  },
-  label: {
-    fontSize: 13,
-    color: '#fff',
-    marginBottom: 2,
-  },
-  value: {
-    fontSize: 13,
-    color: '#4FC3F7',
-    fontWeight: '500',
-  },
-  mono: {
-    fontSize: 11,
-    color: 'rgba(255,255,255,0.5)',
-    fontFamily: 'monospace',
-  },
-  sectionHeader: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
-  },
-  sectionHeaderText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: 'rgba(255,255,255,0.5)',
-    letterSpacing: 0.6,
-  },
-  codeBlock: {
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    padding: 10,
-    margin: 8,
-    borderRadius: 6,
-  },
-  codeText: {
-    fontSize: 10,
-    color: 'rgba(255,255,255,0.6)',
-    fontFamily: 'monospace',
-  },
-  errorBlock: {
-    backgroundColor: 'rgba(255,59,48,0.15)',
-    padding: 10,
-    margin: 8,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255,59,48,0.3)',
-  },
-  errorText: {
-    fontSize: 12,
-    color: '#FF3B30',
-    fontFamily: 'monospace',
-  },
-  layerItem: {
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
-  },
-  layerIndex: {
-    fontSize: 10,
-    color: 'rgba(255,255,255,0.3)',
-    fontFamily: 'monospace',
-    width: 20,
-  },
-  layerId: {
-    fontSize: 12,
-    color: '#fff',
-    fontWeight: '600',
-    flex: 1,
-  },
-  layerMeta: {
-    fontSize: 10,
-    color: 'rgba(255,255,255,0.4)',
-    marginTop: 2,
-    fontFamily: 'monospace',
-  },
-  layerBadge: {
-    fontSize: 9,
-    color: '#4FC3F7',
-    backgroundColor: 'rgba(79,195,247,0.15)',
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 3,
-    overflow: 'hidden',
-    fontWeight: '600',
-  },
-  layerBadgeHidden: {
-    color: '#FF9500',
-    backgroundColor: 'rgba(255,149,0,0.15)',
-  },
-});
-
-// Helper to get feature identifier for title
-function getFeatureId(feature: FeatureInfo): string {
-  const props = feature.properties;
-  // Try LNAM first (lights), then OBJNAM (buoys, beacons)
-  const lnam = props.LNAM as string | undefined;
-  const objnam = props.OBJNAM as string | undefined;
-  
-  if (lnam) return `ID(LNAM): ${lnam}`;
-  if (objnam) return `Name: ${objnam}`;
-  return '';
-}
-
-// Helper to format properties based on feature type
-function formatFeatureProperties(feature: FeatureInfo, depthUnit: 'meters' | 'feet' | 'fathoms' = 'meters'): Record<string, string> {
-  // Depth unit conversion helpers
-  const convertDepthValue = (meters: number): string => {
-    switch (depthUnit) {
-      case 'feet': return `${(meters * 3.28084).toFixed(1)}ft`;
-      case 'fathoms': return `${(meters * 0.546807).toFixed(1)}fm`;
-      default: return `${meters}m`;
-    }
-  };
-  const props = feature.properties;
-  const formatted: Record<string, string> = {};
-  
-  // Add tap coordinates if available
-  if (props._tapCoordinates) {
-    formatted['Location'] = String(props._tapCoordinates);
-  }
-  
-  // Add object name if available
-  if (props.OBJNAM) {
-    formatted['Name'] = String(props.OBJNAM);
-  }
-  
-  switch (feature.type) {
-    case 'Light':
-    case 'Light Sector':
-      return { ...formatted, ...formatLightInfo(props) };
-    
-    case 'Lateral Buoy':
-    case 'Cardinal Buoy':
-    case 'Safe Water Buoy':
-    case 'Special Purpose Buoy':
-    case 'Isolated Danger Buoy':
-      return { ...formatted, ...formatBuoyInfo(props) };
-    
-    case 'Lateral Beacon':
-    case 'Special Purpose Beacon':
-    case 'Cardinal Beacon':
-    case 'Isolated Danger Beacon':
-    case 'Safe Water Beacon':
-      return { ...formatted, ...formatBeaconInfo(props) };
-    
-    case 'Landmark':
-      return { ...formatted, ...formatLandmarkInfo(props) };
-    
-    case 'Seabed Area':
-      return { ...formatted, ...formatSeabedInfo(props) };
-    
-    case 'Cable Area':
-    case 'Submarine Cable':
-      return { ...formatted, ...formatCableInfo(props) };
-    
-    case 'Wreck':
-      return { ...formatted, ...formatWreckInfo(props) };
-    
-    case 'Underwater Rock':
-      return { ...formatted, ...formatRockInfo(props) };
-    
-    case 'Obstruction':
-      return { ...formatted, ...formatObstructionInfo(props) };
-    
-    case 'Sounding':
-      if (props.DEPTH !== undefined) {
-        formatted['Depth'] = convertDepthValue(Number(props.DEPTH));
-      }
-      return formatted;
-    
-    case 'Depth Area':
-      if (props.DRVAL1 !== undefined) {
-        formatted['Shallow depth'] = convertDepthValue(Number(props.DRVAL1));
-      }
-      if (props.DRVAL2 !== undefined) {
-        formatted['Deep depth'] = convertDepthValue(Number(props.DRVAL2));
-      }
-      return formatted;
-    
-    case 'Depth Contour':
-      if (props.VALDCO !== undefined) {
-        formatted['Depth'] = convertDepthValue(Number(props.VALDCO));
-      }
-      return formatted;
-    
-    case 'Pipeline':
-    case 'Pipeline Area':
-      return { ...formatted, ...formatPipelineInfo(props) };
-    
-    case 'Dredged Area':
-      if (props.DRVAL1 !== undefined) {
-        formatted['Maintained depth'] = `${props.DRVAL1}m`;
-      }
-      return formatted;
-    
-    case 'Restricted Area':
-      return { ...formatted, ...formatRestrictedAreaInfo(props) };
-    
-    case 'Caution Area':
-      return { ...formatted, ...formatCautionAreaInfo(props) };
-    
-    case 'Military Practice Area':
-      return { ...formatted, ...formatMilitaryAreaInfo(props) };
-    
-    case 'Anchorage Area':
-    case 'Anchor Berth':
-      return { ...formatted, ...formatAnchorageInfo(props) };
-    
-    case 'Marine Farm/Aquaculture':
-      return { ...formatted, ...formatMarineFarmInfo(props) };
-    
-    default:
-      // Show raw properties for other types
-      for (const [key, value] of Object.entries(props)) {
-        if (key.startsWith('_')) continue; // Skip internal props
-        if (key === 'OBJNAM') continue; // Already added above
-        formatted[key] = String(value);
-      }
-      return formatted;
-  }
-}
-
-// Format wreck info
-function formatWreckInfo(props: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {};
-  
-  // CATWRK - Category of wreck
-  const catwrk = props.CATWRK as number | undefined;
-  if (catwrk !== undefined) {
-    const categories: Record<number, string> = {
-      1: 'Non-dangerous',
-      2: 'Dangerous',
-      3: 'Distributed remains',
-      4: 'Mast showing',
-      5: 'Hull showing',
-    };
-    result['Category'] = categories[catwrk] || `Code ${catwrk}`;
-  }
-  
-  // WATLEV - Water level effect
-  const watlev = props.WATLEV as number | undefined;
-  if (watlev !== undefined) {
-    const levels: Record<number, string> = {
-      1: 'Partly submerged',
-      2: 'Always dry',
-      3: 'Always underwater',
-      4: 'Covers and uncovers',
-      5: 'Awash',
-    };
-    result['Water level'] = levels[watlev] || `Code ${watlev}`;
-  }
-  
-  // VALSOU - Depth over wreck
-  if (props.VALSOU !== undefined) {
-    result['Depth over'] = `${props.VALSOU}m`;
-  }
-  
-  return result;
-}
-
-// Format rock info
-function formatRockInfo(props: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {};
-  
-  // WATLEV - Water level effect
-  const watlev = props.WATLEV as number | undefined;
-  if (watlev !== undefined) {
-    const levels: Record<number, string> = {
-      3: 'Always underwater',
-      4: 'Covers and uncovers',
-      5: 'Awash',
-    };
-    result['Water level'] = levels[watlev] || `Code ${watlev}`;
-  }
-  
-  // VALSOU - Depth
-  if (props.VALSOU !== undefined) {
-    result['Depth'] = `${props.VALSOU}m`;
-  }
-  
-  return result;
-}
-
-// Format obstruction info
-function formatObstructionInfo(props: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {};
-  
-  // CATOBS - Category of obstruction
-  const catobs = props.CATOBS as number | undefined;
-  if (catobs !== undefined) {
-    const categories: Record<number, string> = {
-      1: 'Snag/stump',
-      2: 'Wellhead',
-      3: 'Diffuser',
-      4: 'Crib',
-      5: 'Fish haven',
-      6: 'Foul area',
-      7: 'Foul ground',
-      8: 'Ice boom',
-      9: 'Ground tackle',
-      10: 'Boom',
-    };
-    result['Category'] = categories[catobs] || `Code ${catobs}`;
-  }
-  
-  // VALSOU - Depth
-  if (props.VALSOU !== undefined) {
-    result['Depth'] = `${props.VALSOU}m`;
-  }
-  
-  return result;
-}
-
-// Format pipeline info
-function formatPipelineInfo(props: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {};
-  
-  // CATPIP - Category of pipeline
-  const catpip = props.CATPIP as number | undefined;
-  if (catpip !== undefined) {
-    const categories: Record<number, string> = {
-      1: 'Oil pipeline',
-      2: 'Gas pipeline',
-      3: 'Water pipeline',
-      4: 'Sewage pipeline',
-      5: 'Bubbler system',
-      6: 'Supply pipeline',
-    };
-    result['Type'] = categories[catpip] || `Code ${catpip}`;
-  }
-  
-  // BURDEP - Buried depth
-  if (props.BURDEP !== undefined) {
-    result['Buried depth'] = `${props.BURDEP}m`;
-  }
-  
-  return result;
-}
-
-// Format restricted area info
-function formatRestrictedAreaInfo(props: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {};
-  
-  // CATREA - Category of restricted area
-  const catrea = props.CATREA as number | undefined;
-  if (catrea !== undefined) {
-    const categories: Record<number, string> = {
-      1: 'Offshore safety zone',
-      4: 'Nature reserve',
-      5: 'Bird sanctuary',
-      6: 'Game reserve',
-      7: 'Seal sanctuary',
-      8: 'Degaussing range',
-      9: 'Military area',
-      12: 'Historic wreck area',
-      14: 'Research area',
-      17: 'Explosives dumping',
-      18: 'Spoil ground',
-      19: 'No anchoring',
-      20: 'No diving',
-      21: 'No fishing',
-      22: 'No trawling',
-      23: 'No wake zone',
-      24: 'Swinging area',
-      25: 'Water skiing area',
-      26: 'Environmentally sensitive',
-      27: 'To be avoided',
-    };
-    result['Category'] = categories[catrea] || `Code ${catrea}`;
-  }
-  
-  // RESTRN - Restrictions
-  const restrn = props.RESTRN;
-  if (restrn) {
-    const restrictions: Record<number, string> = {
-      1: 'Anchoring prohibited',
-      2: 'Anchoring restricted',
-      3: 'Fishing prohibited',
-      4: 'Fishing restricted',
-      5: 'Trawling prohibited',
-      6: 'Trawling restricted',
-      7: 'Entry prohibited',
-      8: 'Entry restricted',
-      9: 'Dredging prohibited',
-      10: 'Dredging restricted',
-      11: 'Diving prohibited',
-      12: 'Diving restricted',
-      13: 'No wake',
-      14: 'To be avoided',
-    };
-    const codes = Array.isArray(restrn) ? restrn : [restrn];
-    const names = codes.map((c: number) => restrictions[c] || `Code ${c}`);
-    result['Restrictions'] = names.join(', ');
-  }
-  
-  // INFORM - Information
-  if (props.INFORM) {
-    result['Info'] = String(props.INFORM);
-  }
-  
-  return result;
-}
-
-// Format caution area info
-function formatCautionAreaInfo(props: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {};
-  
-  // INFORM - Information about the caution
-  if (props.INFORM) {
-    result['Info'] = String(props.INFORM);
-  }
-  
-  // TXTDSC - Text description
-  if (props.TXTDSC) {
-    result['Description'] = String(props.TXTDSC);
-  }
-  
-  return result;
-}
-
-// Format military practice area info
-function formatMilitaryAreaInfo(props: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {};
-  
-  // CATMPA - Category of military practice area
-  const catmpa = props.CATMPA as number | undefined;
-  if (catmpa !== undefined) {
-    const categories: Record<number, string> = {
-      1: 'Torpedo exercise area',
-      2: 'Submarine exercise area',
-      3: 'Firing danger area',
-      4: 'Mine-laying practice area',
-      5: 'Small arms firing range',
-    };
-    result['Category'] = categories[catmpa] || `Code ${catmpa}`;
-  }
-  
-  // INFORM - Information
-  if (props.INFORM) {
-    result['Info'] = String(props.INFORM);
-  }
-  
-  return result;
-}
-
-// Format anchorage info
-function formatAnchorageInfo(props: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {};
-  
-  // CATACH - Category of anchorage
-  const catach = props.CATACH as number | undefined;
-  if (catach !== undefined) {
-    const categories: Record<number, string> = {
-      1: 'Unrestricted anchorage',
-      2: 'Deep water anchorage',
-      3: 'Tanker anchorage',
-      4: 'Explosives anchorage',
-      5: 'Quarantine anchorage',
-      6: 'Sea-plane anchorage',
-      7: 'Small craft anchorage',
-      8: '24-hour anchorage',
-      9: 'Limited period anchorage',
-    };
-    result['Category'] = categories[catach] || `Code ${catach}`;
-  }
-  
-  // PEREND/PERSTA - Period of validity
-  if (props.PEREND || props.PERSTA) {
-    const start = props.PERSTA ? String(props.PERSTA) : '';
-    const end = props.PEREND ? String(props.PEREND) : '';
-    if (start || end) {
-      result['Period'] = `${start} - ${end}`.trim();
-    }
-  }
-  
-  // INFORM - Information
-  if (props.INFORM) {
-    result['Info'] = String(props.INFORM);
-  }
-  
-  return result;
-}
-
-// Format marine farm/aquaculture info
-function formatMarineFarmInfo(props: Record<string, unknown>): Record<string, string> {
-  const result: Record<string, string> = {};
-  
-  // CATMFA - Category of marine farm/culture
-  const catmfa = props.CATMFA as number | undefined;
-  if (catmfa !== undefined) {
-    const categories: Record<number, string> = {
-      1: 'Crustaceans',
-      2: 'Oysters/mussels',
-      3: 'Fish',
-      4: 'Seaweed',
-      5: 'Pearl culture',
-    };
-    result['Type'] = categories[catmfa] || `Code ${catmfa}`;
-  }
-  
-  // INFORM - Information
-  if (props.INFORM) {
-    result['Info'] = String(props.INFORM);
-  }
-  
-  return result;
-}
 
 // Memoized Feature Inspector - prevents full component tree re-render
 const FeatureInspector = memo(function FeatureInspector({ 
@@ -8356,7 +7006,6 @@ const FeatureInspector = memo(function FeatureInspector({
   formattedProps: [string, string][] | null;
   onClose: () => void;
 }) {
-  const renderStart = Date.now();
   
   const content = (
     <View style={styles.inspector}>
@@ -8383,17 +7032,6 @@ const FeatureInspector = memo(function FeatureInspector({
   return content;
 });
 
-// Toggle component (legacy)
-function Toggle({ label, value, onToggle }: { label: string; value: boolean; onToggle: (v: boolean) => void }) {
-  return (
-    <TouchableOpacity style={styles.toggle} onPress={() => onToggle(!value)}>
-      <View style={[styles.toggleBox, value && styles.toggleBoxActive]}>
-        {value && <Text style={styles.toggleCheck}>✓</Text>}
-      </View>
-      <Text style={styles.toggleLabel}>{label}</Text>
-    </TouchableOpacity>
-  );
-}
 
 // ForeFlight-style Toggle component for dark translucent panels
 function FFToggle({ label, value, onToggle, indent = false }: { label: string; value: boolean; onToggle: (v: boolean) => void; indent?: boolean }) {
@@ -8412,1335 +7050,3 @@ function FFToggle({ label, value, onToggle, indent = false }: { label: string; v
     </TouchableOpacity>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  // Map section wrapper - holds map and all overlays, takes remaining flex space
-  mapSection: { flex: 1 },
-  mapTouchWrapper: { flex: 1 },
-  map: { flex: 1 },
-  // Bottom stack for detail charts - flex layout, sits above tab bar naturally
-  bottomStack: {
-    // No absolute positioning - flex child that takes its content height
-  },
-  // Vertical quick toggles (left side)
-  quickTogglesVertical: {
-    position: 'absolute',
-    backgroundColor: 'rgba(21, 21, 23, 0.65)',
-  },
-  quickToggleBtnV: {
-    width: 44,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  quickToggleDividerH: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    marginHorizontal: 4,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-  },
-  loadingText: { marginTop: 16, fontSize: 16, color: '#666' },
-  // Chart loading progress overlay (non-blocking background loading indicator)
-  chartLoadingOverlay: {
-    position: 'absolute',
-    bottom: 100,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    pointerEvents: 'none', // Don't block touch events
-  },
-  chartLoadingContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  chartLoadingText: {
-    marginLeft: 10,
-    fontSize: 14,
-    color: '#333',
-    fontWeight: '500',
-  },
-  chartLoadingProgress: {
-    marginLeft: 8,
-    fontSize: 13,
-    color: '#666',
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    padding: 32,
-  },
-  emptyTitle: { fontSize: 24, fontWeight: '600', color: '#333', marginBottom: 12 },
-  emptyText: { fontSize: 16, color: '#666', marginBottom: 24 },
-  downloadBtn: {
-    backgroundColor: '#007AFF',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  downloadBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  zoomBadge: {
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 4,
-  },
-  maxZoomIndicator: {
-    position: 'absolute',
-    backgroundColor: 'rgba(255, 152, 0, 0.85)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
-  },
-  maxZoomText: {
-    fontSize: 10,
-    color: '#fff',
-    fontWeight: '600',
-  },
-  layersBtn: {
-    position: 'absolute',
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    width: 40,
-    height: 40,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-    elevation: 3,
-  },
-  debugBtn: {
-    position: 'absolute',
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    width: 40,
-    height: 40,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-    elevation: 3,
-  },
-  debugBtnText: {
-    fontSize: 20,
-  },
-  debugPanel: {
-    position: 'absolute',
-    right: 12,
-    width: 280,
-    backgroundColor: 'rgba(0, 0, 0, 0.92)',
-    borderRadius: 10,
-    padding: 12,
-    maxHeight: 400,
-  },
-  debugScrollView: {
-    maxHeight: 280,
-  },
-  debugTitle: {
-    color: '#fff',
-    fontSize: 15,
-    fontWeight: '700',
-    marginBottom: 12,
-  },
-  debugSectionTitle: {
-    color: '#888',
-    fontSize: 10,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 6,
-    marginTop: 4,
-  },
-  debugText: {
-    color: '#ddd',
-    fontSize: 12,
-    marginBottom: 4,
-  },
-  debugInfo: {
-    color: '#88ff88',
-    fontSize: 9,
-    fontFamily: 'monospace',
-    lineHeight: 14,
-  },
-  debugStorageRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginVertical: 2,
-  },
-  debugStorageLabel: {
-    color: '#aaa',
-    fontSize: 11,
-  },
-  debugStorageValue: {
-    color: '#4CAF50',
-    fontSize: 14,
-    fontWeight: '700',
-    fontFamily: 'monospace',
-  },
-  debugStorageValueSmall: {
-    color: '#888',
-    fontSize: 11,
-    fontFamily: 'monospace',
-  },
-  debugChartList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-  },
-  debugChartItem: {
-    color: '#4FC3F7',
-    fontSize: 10,
-    fontFamily: 'monospace',
-    backgroundColor: 'rgba(79, 195, 247, 0.15)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  debugDivider: {
-    height: 1,
-    backgroundColor: '#333',
-    marginVertical: 10,
-  },
-  // Debug buttons for tile diagnostics
-  debugButtonRow: {
-    position: 'absolute',
-    bottom: 100,
-    left: 12,
-    flexDirection: 'row',
-    backgroundColor: 'rgba(180, 60, 60, 0.85)',
-    borderRadius: 8,
-    padding: 4,
-    gap: 4,
-  },
-  debugButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    borderRadius: 4,
-  },
-  debugButtonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  debugToggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  debugToggle: {
-    flex: 1,
-    backgroundColor: '#222',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#444',
-  },
-  debugToggleActive: {
-    backgroundColor: '#1B5E20',
-    borderColor: '#4CAF50',
-  },
-  debugToggleText: {
-    color: '#888',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  debugToggleTextActive: {
-    color: '#fff',
-  },
-  debugActions: {
-    borderTopWidth: 1,
-    borderTopColor: '#333',
-    paddingTop: 10,
-    marginTop: 4,
-  },
-  debugActionBtn: {
-    backgroundColor: '#007AFF',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    marginBottom: 8,
-    alignItems: 'center',
-  },
-  debugActionBtnText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  debugCloseBtn: {
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  debugCloseBtnText: {
-    color: '#666',
-    fontSize: 13,
-  },
-  layersIcon: {
-    width: 22,
-    height: 22,
-    position: 'relative',
-  },
-  layersSquare: {
-    position: 'absolute',
-    width: 14,
-    height: 10,
-    borderWidth: 1.5,
-    borderColor: '#333',
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    borderRadius: 2,
-  },
-  layersSquare1: {
-    top: 0,
-    left: 0,
-  },
-  layersSquare2: {
-    top: 4,
-    left: 4,
-  },
-  layersSquare3: {
-    top: 8,
-    left: 8,
-  },
-  controls: {
-    position: 'absolute',
-    right: 12,
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 12,
-    maxHeight: 420,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  controlsScroll: { maxHeight: 340 },
-  controlSectionTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#666',
-    textTransform: 'uppercase',
-    marginBottom: 8,
-    marginTop: 4,
-  },
-  allToggleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-    gap: 8,
-  },
-  allToggleBtn: {
-    flex: 1,
-    backgroundColor: '#007AFF',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  allToggleBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  mapStyleRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginBottom: 12,
-  },
-  mapStyleBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#f0f0f0',
-    borderWidth: 1,
-    borderColor: '#ddd',
-  },
-  mapStyleBtnActive: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
-  },
-  mapStyleBtnText: {
-    fontSize: 12,
-    color: '#333',
-    fontWeight: '500',
-  },
-  mapStyleBtnTextActive: {
-    color: '#fff',
-  },
-  toggle: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
-  toggleBox: {
-    width: 20,
-    height: 20,
-    borderWidth: 2,
-    borderColor: '#ccc',
-    borderRadius: 4,
-    marginRight: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  toggleBoxActive: { backgroundColor: '#007AFF', borderColor: '#007AFF' },
-  toggleCheck: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
-  toggleLabel: { fontSize: 14, color: '#333' },
-  closeBtn: { marginTop: 8, alignItems: 'center' },
-  closeBtnText: { color: '#007AFF', fontSize: 14 },
-  inspector: {
-    position: 'absolute',
-    bottom: 32,
-    left: 16,
-    right: 16,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    maxHeight: 200,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 4,
-  },
-  inspectorHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#ddd',
-    backgroundColor: '#f8f9fa',
-    borderTopLeftRadius: 10,
-    borderTopRightRadius: 10,
-  },
-  inspectorTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  inspectorType: { fontSize: 13, fontWeight: '600', color: '#666' },
-  inspectorId: { fontSize: 13, fontWeight: '500', color: '#333', marginLeft: 8 },
-  inspectorClose: { fontSize: 18, color: '#999', paddingLeft: 8 },
-  inspectorContent: { padding: 10 },
-  inspectorRow: { flexDirection: 'row', paddingVertical: 3 },
-  inspectorKey: { flex: 1, fontSize: 12, color: '#666' },
-  inspectorValue: { flex: 2, fontSize: 12, color: '#333' },
-  
-  // GPS and Compass styles
-  activeToggleBtn: {
-    backgroundColor: 'rgba(33, 150, 243, 0.9)',
-    borderWidth: 2,
-    borderColor: '#1976d2',
-  },
-  shipMarker: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  shipIcon: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  locationDot: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: 'rgba(0, 122, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: '#FFFFFF',
-  },
-  locationDotInner: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#007AFF',
-  },
-  shipBow: {
-    width: 0,
-    height: 0,
-    borderLeftWidth: 8,
-    borderRightWidth: 8,
-    borderBottomWidth: 12,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderBottomColor: '#4FC3F7',
-  },
-  shipBody: {
-    width: 16,
-    height: 20,
-    backgroundColor: '#4FC3F7',
-    borderBottomLeftRadius: 4,
-    borderBottomRightRadius: 4,
-    marginTop: -2,
-    borderWidth: 2,
-    borderColor: '#0288D1',
-    borderTopWidth: 0,
-  },
-  accuracyRing: {
-    position: 'absolute',
-    borderWidth: 2,
-    borderColor: 'rgba(33, 150, 243, 0.4)',
-    backgroundColor: 'rgba(33, 150, 243, 0.1)',
-  },
-  
-  // ========== ForeFlight-style UI Styles ==========
-  
-  // Top menu bar - horizontal strip (same button size as vertical quick toggles)
-  topMenuBar: {
-    position: 'absolute',
-    alignSelf: 'center',
-    flexDirection: 'row',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  topMenuBtn: {
-    width: 44,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topMenuBtnActive: {
-    backgroundColor: 'rgba(79, 195, 247, 0.4)',
-  },
-  topMenuBtnText: {
-    fontSize: 24,
-    color: '#fff',
-  },
-  topMenuBtnTextSmall: {
-    fontSize: 11,
-    color: '#fff',
-    fontWeight: '600',
-  },
-  topMenuDivider: {
-    width: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    marginVertical: 6,
-  },
-  
-  // Scale bar - centered below top menu bar
-  scaleBarContainer: {
-    position: 'absolute',
-    alignSelf: 'center',
-    alignItems: 'center',
-  },
-  scaleBarInner: {
-    alignItems: 'center',
-  },
-  scaleBarLine: {
-    height: 2,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderRadius: 1,
-    position: 'relative',
-  },
-  scaleBarEndCapLeft: {
-    position: 'absolute',
-    left: 0,
-    top: -3,
-    width: 2,
-    height: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderRadius: 1,
-  },
-  scaleBarEndCapRight: {
-    position: 'absolute',
-    right: 0,
-    top: -3,
-    width: 2,
-    height: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderRadius: 1,
-  },
-  scaleBarLabel: {
-    fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.9)',
-    marginTop: 2,
-    fontWeight: '600',
-    textShadowColor: 'rgba(0, 0, 0, 0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
-  },
-  
-  // 3D layer stack icon (bigger)
-  layerStackIcon: {
-    width: 24,
-    height: 20,
-    position: 'relative',
-  },
-  layerStackLine: {
-    position: 'absolute',
-    width: 18,
-    height: 4,
-    backgroundColor: '#fff',
-    borderRadius: 1,
-  },
-  
-  // Upper right controls container - Day/Dusk/Night + Center on location
-  upperRightControls: {
-    position: 'absolute',
-    flexDirection: 'row',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 8,
-    overflow: 'hidden',
-    alignItems: 'center',
-  },
-  upperRightDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  modeToggleText: {
-    fontSize: 20,
-  },
-  centerBtnText: {
-    fontSize: 28,
-    color: '#fff',
-  },
-  
-  // Quick toggles strip - minimalist style, bottom left
-  quickToggleBtn: {
-    width: 44,
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  quickToggleBtnActive: {
-    backgroundColor: 'rgba(79, 195, 247, 0.4)',
-  },
-  quickToggleBtnText: {
-    fontSize: 11,
-    color: '#fff',
-    fontWeight: '600',
-  },
-  quickToggleBtnTextLarge: {
-    fontSize: 22,
-    fontWeight: '400',
-  },
-  quickToggleDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    marginHorizontal: 8,
-  },
-  quickToggleDividerThick: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
-    marginVertical: 4,
-  },
-  
-  
-  // Bottom Control Panel - tabbed interface
-  controlPanel: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: '40%',
-    minHeight: 280,
-    maxHeight: 450,
-    backgroundColor: 'rgba(20, 25, 35, 0.95)',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    zIndex: 9999,
-    elevation: 20, // Android
-  },
-  tabBar: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  tabButton: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  tabButtonActive: {
-    borderBottomWidth: 2,
-    borderBottomColor: '#4FC3F7',
-  },
-  tabButtonText: {
-    fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontWeight: '500',
-  },
-  tabButtonTextActive: {
-    color: '#4FC3F7',
-    fontWeight: '600',
-  },
-  tabContent: {
-    flex: 1,
-    overflow: 'hidden',
-  },
-  tabScrollContent: {
-    padding: 16,
-    paddingBottom: 64,
-  },
-  panelSectionTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: 'rgba(255, 255, 255, 0.5)',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 10,
-    marginTop: 4,
-  },
-  panelDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    marginVertical: 12,
-  },
-  
-  // Base Map tab
-  basemapGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  basemapOption: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    minWidth: 80,
-    alignItems: 'center',
-  },
-  basemapOptionActive: {
-    backgroundColor: 'rgba(79, 195, 247, 0.3)',
-  },
-  basemapOptionText: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.8)',
-  },
-  basemapOptionTextActive: {
-    color: '#4FC3F7',
-    fontWeight: '600',
-  },
-  activeChartInfo: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 8,
-  },
-  activeChartText: {
-    color: '#4FC3F7',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  activeChartSubtext: {
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontSize: 12,
-    marginTop: 4,
-  },
-  chartScaleList: {
-    marginTop: 8,
-  },
-  chartScaleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 4,
-    marginBottom: 4,
-  },
-  chartScaleLabel: {
-    color: '#4FC3F7',
-    fontSize: 14,
-    fontWeight: '600',
-    fontFamily: 'monospace',
-  },
-  chartScaleCount: {
-    color: 'rgba(255, 255, 255, 0.6)',
-    fontSize: 12,
-  },
-  
-  // Layers tab container
-  layersTabContainer: {
-    flex: 1,
-  },
-  subTabBar: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
-    paddingHorizontal: 8,
-  },
-  subTabButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    marginRight: 4,
-  },
-  subTabButtonActive: {
-    borderBottomWidth: 2,
-    borderBottomColor: '#4FC3F7',
-  },
-  subTabButtonText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontWeight: '500',
-  },
-  subTabButtonTextActive: {
-    color: '#4FC3F7',
-    fontWeight: '600',
-  },
-  layersColumnsContainer: {
-    flex: 1,
-  },
-  layersColumnsContent: {
-    padding: 12,
-    paddingBottom: 20,
-  },
-  layersAllToggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-    paddingHorizontal: 4,
-  },
-  layersThreeColumns: {
-    flex: 1,
-    flexDirection: 'row',
-  },
-  layersTwoColumns: {
-    flex: 1,
-    flexDirection: 'row',
-  },
-  layersColumn: {
-    flex: 1,
-    paddingHorizontal: 8,
-  },
-  layersColumnTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: 'rgba(255, 255, 255, 0.5)',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 8,
-  },
-  layersIndentGroup: {
-    paddingLeft: 8,
-    borderLeftWidth: 2,
-    borderLeftColor: 'rgba(79, 195, 247, 0.3)',
-    marginLeft: 4,
-    marginTop: 4,
-  },
-  layersDisabledText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.3)',
-    fontStyle: 'italic',
-    marginTop: 4,
-  },
-  dataInfoBox: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    padding: 10,
-    borderRadius: 6,
-    marginBottom: 8,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  dataInfoLabel: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.6)',
-  },
-  dataInfoValue: {
-    fontSize: 14,
-    color: '#4FC3F7',
-    fontWeight: '600',
-  },
-  
-  // Layers tab - All On/Off buttons
-  allToggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-  },
-  allToggleBtn: {
-    flex: 1,
-    backgroundColor: 'rgba(79, 195, 247, 0.2)',
-    paddingVertical: 8,
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  allToggleBtnText: {
-    color: '#4FC3F7',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  
-  // Display tab - vertical layout
-  displayTabContainer: {
-    flex: 1,
-    flexDirection: 'column',
-  },
-  displayControlsTop: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  displayControlHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  displayFeatureName: {
-    fontSize: 16,
-    color: '#fff',
-    fontWeight: '600',
-  },
-  headerRightSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  featureTypeBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  resetIconBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  resetIconText: {
-    fontSize: 18,
-    color: 'rgba(255, 255, 255, 0.7)',
-  },
-  featureTypeBadgeText: {
-    backgroundColor: 'rgba(79, 195, 247, 0.3)',
-  },
-  featureTypeBadgeLine: {
-    backgroundColor: 'rgba(255, 183, 77, 0.3)',
-  },
-  featureTypeBadgeArea: {
-    backgroundColor: 'rgba(129, 199, 132, 0.3)',
-  },
-  featureTypeBadgeLabel: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.8)',
-    textTransform: 'uppercase',
-  },
-  symbolTextToggle: {
-    flexDirection: 'row',
-    borderRadius: 10,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-  },
-  symbolTextToggleBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-  },
-  symbolTextToggleBtnActive: {
-    // Background color set dynamically based on symbol.color
-  },
-  symbolTextToggleText: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.85)',
-    textTransform: 'uppercase',
-  },
-  symbolTextToggleTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  controlRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  controlRowLabel: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-    width: 65,
-  },
-  sliderContainerCompact: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  displaySliderCompact: {
-    flex: 1,
-    height: 32,
-  },
-  sliderMinLabelSmall: {
-    fontSize: 9,
-    color: 'rgba(255, 255, 255, 0.4)',
-    width: 26,
-  },
-  sliderMaxLabelSmall: {
-    fontSize: 9,
-    color: 'rgba(255, 255, 255, 0.4)',
-    width: 26,
-    textAlign: 'right',
-  },
-  sliderValueCompact: {
-    fontSize: 13,
-    color: '#fff',
-    fontWeight: '600',
-    width: 45,
-    textAlign: 'right',
-  },
-  // Feature selector - grid below controls
-  featureSelectorContainer: {
-    flex: 1,
-    paddingHorizontal: 12,
-    paddingTop: 8,
-  },
-  displayLegendInline: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 20,
-    marginBottom: 10,
-  },
-  featureSelectorScroll: {
-    flex: 1,
-  },
-  featureSelectorContent: {
-    paddingBottom: 16,
-  },
-  featureSelectorGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  featureSelectorChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-  },
-  featureSelectorChipActive: {
-    backgroundColor: 'rgba(79, 195, 247, 0.25)',
-  },
-  featureSelectorChipText: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
-  },
-  featureSelectorChipTextActive: {
-    color: '#fff',
-    fontWeight: '500',
-  },
-  featureTypeIndicator: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  featureTypeText: {
-    backgroundColor: '#4FC3F7',
-  },
-  featureTypeLine: {
-    backgroundColor: '#FFB74D',
-  },
-  featureTypeArea: {
-    backgroundColor: '#81C784',
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  legendText: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginLeft: 4,
-  },
-  
-  // Other tab
-  segmentedControl: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 8,
-    padding: 4,
-  },
-  segmentOption: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: 'center',
-    borderRadius: 6,
-  },
-  segmentOptionActive: {
-    backgroundColor: 'rgba(79, 195, 247, 0.3)',
-  },
-  segmentOptionText: {
-    fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.6)',
-  },
-  segmentOptionTextActive: {
-    color: '#4FC3F7',
-    fontWeight: '600',
-  },
-  settingNote: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.4)',
-    marginTop: 8,
-    fontStyle: 'italic',
-  },
-  resetAllBtn: {
-    backgroundColor: 'rgba(244, 67, 54, 0.2)',
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  resetAllBtnText: {
-    color: '#EF5350',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  
-  // ForeFlight-style toggles
-  ffToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-  },
-  ffToggleIndent: {
-    paddingLeft: 16,
-  },
-  ffToggleBox: {
-    width: 18,
-    height: 18,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.4)',
-    borderRadius: 4,
-    marginRight: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  ffToggleBoxActive: {
-    backgroundColor: '#4FC3F7',
-    borderColor: '#4FC3F7',
-  },
-  ffToggleCheck: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: 'bold',
-  },
-  ffToggleLabel: {
-    fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.85)',
-  },
-  
-  // Feature Picker - for selecting between multiple features at tap location
-  featurePickerContainer: {
-    position: 'absolute',
-    bottom: 100,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(20, 25, 35, 0.95)',
-    borderRadius: 12,
-    maxHeight: 300,
-    overflow: 'hidden',
-  },
-  featurePickerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  featurePickerTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  featurePickerClose: {
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  featurePickerCloseText: {
-    fontSize: 24,
-    color: '#888',
-    fontWeight: '300',
-  },
-  featurePickerList: {
-    maxHeight: 240,
-  },
-  featurePickerItem: {
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  featurePickerItemText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#4FC3F7',
-  },
-  featurePickerItemSubtext: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.6)',
-    marginTop: 2,
-  },
-
-  // Layer Selector Panel - ForeFlight-style multi-column overlay (compact)
-  layerSelectorOverlay: {
-    position: 'absolute',
-    left: 6,
-    backgroundColor: 'rgba(21, 21, 23, 0.94)',
-    borderRadius: 10,
-    maxHeight: '80%',
-    overflow: 'hidden',
-  },
-  layerSelectorScroll: {
-    maxHeight: '100%',
-  },
-  layerSelectorContent: {
-    flexDirection: 'row',
-    justifyContent: 'flex-start',
-    padding: 8,
-    paddingBottom: 12,
-    gap: 12,
-  },
-  layerSelectorColumn: {
-    paddingHorizontal: 4,
-  },
-  layerSectionHeader: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#4FC3F7',
-    marginTop: 8,
-    marginBottom: 2,
-    marginLeft: 2,
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
-  layerToggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 5,
-    paddingHorizontal: 4,
-    borderRadius: 4,
-    marginVertical: 0,
-  },
-  layerToggleRowActive: {
-    backgroundColor: 'rgba(79, 195, 247, 0.25)',
-  },
-  layerToggleText: {
-    fontSize: 12,
-    color: '#fff',
-  },
-  
-  // Navigation data boxes
-  navDataBox: {
-    position: 'absolute',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: 8,
-    padding: 8,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-    minWidth: 80,
-  },
-  navDataUpperLeft: {
-    left: 0,
-    zIndex: 100,
-  },
-  navDataUpperRight: {
-    right: 0,
-    zIndex: 100,
-  },
-  navDataLowerLeft: {
-    left: 0,
-    zIndex: 1000, // Above detail charts
-  },
-  navDataLowerRight: {
-    right: 0,
-    zIndex: 1000, // Above detail charts
-  },
-  navDataMiddleLeft: {
-    left: 0,
-    zIndex: 100,
-  },
-  navDataMiddleRight: {
-    right: 0,
-    zIndex: 100,
-  },
-  navDataLabel: {
-    fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.6)',
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  navDataLabelRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    alignSelf: 'stretch',
-    marginBottom: 2,
-  },
-  navDataZoom: {
-    fontSize: 10,
-    color: 'rgba(255, 255, 255, 0.5)',
-    fontWeight: '500',
-  },
-  navDataValue: {
-    fontSize: 28,
-    color: '#fff',
-    fontWeight: 'bold',
-    fontVariant: ['tabular-nums'],
-  },
-  navDataValueSmall: {
-    fontSize: 13,
-    color: '#fff',
-    fontWeight: '600',
-    fontVariant: ['tabular-nums'],
-  },
-  navDataUnit: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.7)',
-    marginTop: -2,
-  },
-  // Route point markers
-  routePointMarker: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#FF6B35',
-    borderWidth: 2,
-    borderColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 3,
-    elevation: 5,
-  },
-  routePointNumber: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-});

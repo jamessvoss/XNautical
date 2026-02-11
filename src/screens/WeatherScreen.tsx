@@ -404,6 +404,7 @@ export default function WeatherScreen() {
   };
 
   return (
+    // @ts-ignore - react-native-safe-area-context type resolution issue
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
       <View style={styles.header}>
@@ -701,5 +702,11 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 20,
     textAlign: 'center',
+  },
+  updateTime: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginTop: 8,
+    fontStyle: 'italic',
   },
 });

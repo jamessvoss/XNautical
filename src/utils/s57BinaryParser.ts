@@ -104,7 +104,7 @@ export class ISO8211Parser {
   private position: number = 0;
 
   constructor(data: Buffer | ArrayBuffer) {
-    this.buffer = Buffer.from(data);
+    this.buffer = Buffer.from(data as any);
   }
 
   /**

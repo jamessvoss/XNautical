@@ -32,49 +32,16 @@ let firestoreFns: {
 if (Platform.OS !== 'web') {
   try {
     const rnfbFirestore = require('@react-native-firebase/firestore');
-    firestoreDb = rnfbFirestore.default().firestore();
+    firestoreDb = rnfbFirestore.getFirestore();
     firestoreFns = {
-      collection: (db: any, ...pathSegments: string[]) => {
-        let ref = db;
-        for (const segment of pathSegments) {
-          ref = ref.collection(segment);
-        }
-        return ref;
-      },
-      doc: (db: any, ...pathSegments: string[]) => {
-        let ref = db;
-        for (let i = 0; i < pathSegments.length; i += 2) {
-          ref = ref.collection(pathSegments[i]);
-          if (i + 1 < pathSegments.length) {
-            ref = ref.doc(pathSegments[i + 1]);
-          }
-        }
-        return ref;
-      },
-      setDoc: async (docRef: any, data: any, options?: any) => {
-        return docRef.set(data, options);
-      },
-      deleteDoc: async (docRef: any) => {
-        return docRef.delete();
-      },
-      onSnapshot: (query: any, callback: (snapshot: any) => void, errorCallback?: (error: any) => void) => {
-        return query.onSnapshot(callback, errorCallback);
-      },
-      writeBatch: (db: any) => db.batch(),
-      orderBy: (field: string, direction?: string) => ({
-        type: 'orderBy',
-        field,
-        direction: direction || 'asc',
-      }),
-      query: (collectionRef: any, ...constraints: any[]) => {
-        let query = collectionRef;
-        constraints.forEach((constraint) => {
-          if (constraint.type === 'orderBy') {
-            query = query.orderBy(constraint.field, constraint.direction);
-          }
-        });
-        return query;
-      },
+      collection: rnfbFirestore.collection,
+      doc: rnfbFirestore.doc,
+      setDoc: rnfbFirestore.setDoc,
+      deleteDoc: rnfbFirestore.deleteDoc,
+      onSnapshot: rnfbFirestore.onSnapshot,
+      writeBatch: rnfbFirestore.writeBatch,
+      orderBy: rnfbFirestore.orderBy,
+      query: rnfbFirestore.query,
     };
     console.log('[BoatStorageService] Native Firestore SDK initialized');
   } catch (e) {
@@ -83,6 +50,24 @@ if (Platform.OS !== 'web') {
 }
 
 const LOCAL_BOATS_KEY = '@XNautical:boats';
+
+/**
+ * Recursively strip undefined values from an object.
+ * Firestore does not accept undefined — this converts them to null or removes them.
+ */
+function stripUndefined(obj: any): any {
+  if (obj === undefined) return null;
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(stripUndefined);
+  
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      cleaned[key] = stripUndefined(value);
+    }
+  }
+  return cleaned;
+}
 
 /**
  * Generate a unique boat ID
@@ -176,10 +161,11 @@ export async function saveBoatToCloud(userId: string, boat: Boat): Promise<void>
 
   try {
     const docRef = getBoatDoc(userId, boat.id);
-    await firestoreFns.setDoc(docRef, {
+    const cleanedBoat = stripUndefined({
       ...boat,
       updatedAt: new Date().toISOString(),
     });
+    await firestoreFns.setDoc(docRef, cleanedBoat);
     console.log(`[BoatStorageService] Saved boat ${boat.id} to cloud`);
   } catch (error) {
     console.error('[BoatStorageService] Error saving to cloud:', error);
@@ -288,14 +274,26 @@ export async function clearLocalBoats(): Promise<void> {
  * Save boat based on its storageType preference
  */
 export async function saveBoat(userId: string, boat: Boat): Promise<void> {
-  const { storageType } = boat;
+  const storageType = boat.storageType || 'both'; // Default to 'both' if not specified
+  const boatToSave: Boat = { ...boat, storageType: 'both' as const }; // Ensure storageType is always set
 
   if (storageType === 'cloud' || storageType === 'both') {
-    await saveBoatToCloud(userId, boat);
+    try {
+      await saveBoatToCloud(userId, boatToSave);
+    } catch (error) {
+      console.error('[BoatStorageService] Cloud save failed:', error);
+      // If cloud fails and storageType is 'cloud', fall back to local
+      if (storageType === 'cloud') {
+        console.log('[BoatStorageService] Falling back to local storage');
+        await saveBoatToLocal(boatToSave);
+        return;
+      }
+      // If storageType is 'both', continue to save locally
+    }
   }
 
   if (storageType === 'local' || storageType === 'both') {
-    await saveBoatToLocal(boat);
+    await saveBoatToLocal(boatToSave);
   }
 }
 
@@ -303,7 +301,8 @@ export async function saveBoat(userId: string, boat: Boat): Promise<void> {
  * Delete boat from appropriate storage(s)
  */
 export async function deleteBoat(userId: string, boat: Boat): Promise<void> {
-  const { storageType, id } = boat;
+  const storageType = boat.storageType || 'both'; // Default to 'both' if not specified
+  const { id } = boat;
 
   if (storageType === 'cloud' || storageType === 'both') {
     await deleteBoatFromCloud(userId, id);
@@ -406,19 +405,16 @@ export async function deleteMaintenanceRecord(
 }
 
 /**
- * Update performance data for a specific engine
+ * Update performance data for a boat (boat-level, not per-engine)
  */
 export async function updatePerformanceData(
   userId: string,
   boat: Boat,
-  engineId: string,
   performanceData: PerformancePoint[]
 ): Promise<void> {
   const updatedBoat = {
     ...boat,
-    engines: boat.engines.map(engine =>
-      engine.id === engineId ? { ...engine, performanceData } : engine
-    ),
+    performanceData,
     updatedAt: new Date().toISOString(),
   };
 
