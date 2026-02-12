@@ -186,18 +186,18 @@ export function useMapConfiguration() {
         roadNightDim: s52Mode === 'night' ? 0.3 : s52Mode === 'dusk' ? 0.7 : 1,
       },
       street: {
-        bg: '#f0ede8', water: '#aadaff', waterway: '#aadaff', ice: '#f0f0f0',
-        grass: '#e8e8dc',        // Very muted beige/tan - barely visible
-        wood: '#e0e0d4',          // Very light gray-tan - subtle
-        wetland: '#e4e4d8',       // Light neutral
-        residential: '#f0e8e0', industrial: '#e8dcd0', 
-        park: '#e8e8dc',          // Same as grass - neutral
-        building: '#d8d0c0', road: '#ffffff', roadCasing: '#c8c8c8',
-        text: '#333333', textHalo: '#ffffff', grid: '#c8c8c8',
+        bg: '#f5f5f0', water: '#aadaff', waterway: '#aadaff', ice: '#f0f0f0',
+        grass: '#f5f5f0',         // Almost white - matches background
+        wood: '#f5f5f0',          // Almost white - matches background  
+        wetland: '#f5f5f0',       // Almost white - matches background
+        residential: '#f5f5f0', industrial: '#f0f0ec', 
+        park: '#e8f5e8',          // Extremely subtle hint of green - like Google Maps
+        building: '#e8e8e8', road: '#ffffff', roadCasing: '#d0d0d0',
+        text: '#333333', textHalo: '#ffffff', grid: '#d8d8d8',
         waterText: '#5d8cae', 
-        landcoverOpacity: 0.3,    // Much lower - barely visible
-        buildingOpacity: 0.85,
-        parkOpacity: 0.2,         // Very subtle
+        landcoverOpacity: 0.15,   // Extremely low - almost invisible
+        buildingOpacity: 0.9,     // Buildings more visible
+        parkOpacity: 0.1,         // Barely there - like Google Maps
         roadNightDim: 1,
       },
     };
