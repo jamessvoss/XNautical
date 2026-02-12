@@ -2481,7 +2481,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Uses ~20 layers instead of 3000+ for massive performance improvement */}
         {/* Requires mbtiles converted with sourceLayerID="charts" */}
         {/* ================================================================== */}
-        {useMBTiles && tileServerReady && useCompositeTiles && debugIsSourceVisible('charts') && (
+        {useMBTiles && tileServerReady && useCompositeTiles && debugIsSourceVisible('charts') && mapStyle !== 'street' && (
           <MapLibre.VectorSource
             key={`composite-charts-${s52Mode}`}
             id="composite-charts"
