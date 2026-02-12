@@ -59,7 +59,7 @@ const US_OVERVIEW_BOUNDS = {
 };
 
 const OPTIONAL_MAP_OPTIONS = [
-  { id: 'basemap', label: 'Basemap', description: 'Light/Dark/Street/Nautical', estimatedSizeMB: 724 },
+  { id: 'basemap', label: 'Basemap', description: 'Light/Dark/Street/ECDIS', estimatedSizeMB: 724 },
   { id: 'ocean', label: 'Ocean Map', description: 'ESRI Ocean Basemap', estimatedSizeMB: 400 },
   { id: 'terrain', label: 'Terrain Map', description: 'OpenTopoMap', estimatedSizeMB: 500 },
 ];

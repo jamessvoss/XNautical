@@ -23,7 +23,7 @@ export function useMapConfiguration() {
   const [mapStyle, setMapStyleInternal] = useState<MapStyleOption>('satellite');
 
   // Which styles use the vector basemap tiles
-  const VECTOR_BASEMAP_STYLES: MapStyleOption[] = ['light', 'dark', 'nautical', 'street'];
+  const VECTOR_BASEMAP_STYLES: MapStyleOption[] = ['light', 'dark', 'ecdis', 'street'];
   const isVectorStyle = VECTOR_BASEMAP_STYLES.includes(mapStyle);
 
   // Local basemap availability
@@ -206,7 +206,7 @@ export function useMapConfiguration() {
     satellite: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.DEPDW } }] },
     light: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f5f5f5' } }] },
     dark: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a1a2e' } }] },
-    nautical: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.LANDA } }] },
+    ecdis: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#FFFFFF' } }] }, // Traditional ECDIS white background
     street: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f0ede8' } }] },
     ocean: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a3a5c' } }] },
     terrain: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#dfe6e9' } }] },

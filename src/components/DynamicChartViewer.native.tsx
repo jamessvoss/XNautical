@@ -2424,7 +2424,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
         {/* ================================================================== */}
         {/* VECTOR BASEMAP (BACKGROUND) - water, landcover, landuse, parks     */}
-        {/* Powers: Light, Dark, Nautical, Street modes from one download      */}
+        {/* Powers: Light, Dark, ECDIS, Street modes from one download         */}
         {/* Colors are driven by basemapPalette (changes per selected style)   */}
         {/* Foreground layers (roads, labels) are in BASEMAP OVERLAY below     */}
         {/* ================================================================== */}
@@ -2502,15 +2502,27 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               minZoomLevel={0}
               filter={['==', ['get', 'OBJL'], 42]}
               style={{
-                fillColor: [
-                  'step',
-                  ['coalesce', ['get', 'DRVAL1'], 0],
-                  s52Colors.DEPIT,       // < 0m - Drying/intertidal
-                  0, s52Colors.DEPVS,    // 0-2m - very shallow
-                  2, s52Colors.DEPMS,    // 2-5m - medium shallow
-                  5, s52Colors.DEPMD,    // 5-10m - medium deep
-                  10, s52Colors.DEPDW,   // 10m+ - deep water
-                ],
+                fillColor: mapStyle === 'ecdis' 
+                  ? [
+                      // Traditional ECDIS/Paper Chart colors - more saturated and distinct
+                      'step',
+                      ['coalesce', ['get', 'DRVAL1'], 0],
+                      '#D4E6C8',            // < 0m - Drying/intertidal (greenish)
+                      0, '#C8E1F5',         // 0-2m - very shallow (bright blue)
+                      2, '#A0D0F0',         // 2-5m - medium shallow (light blue)
+                      5, '#6EB8E8',         // 5-10m - medium deep (medium blue)
+                      10, '#FFFFFF',        // 10m+ - deep water (white - traditional)
+                    ]
+                  : [
+                      // Modern themed colors (current implementation)
+                      'step',
+                      ['coalesce', ['get', 'DRVAL1'], 0],
+                      s52Colors.DEPIT,       // < 0m - Drying/intertidal
+                      0, s52Colors.DEPVS,    // 0-2m - very shallow
+                      2, s52Colors.DEPMS,    // 2-5m - medium shallow
+                      5, s52Colors.DEPMD,    // 5-10m - medium deep
+                      10, s52Colors.DEPDW,   // 10m+ - deep water
+                    ],
                 fillOpacity: mapStyle === 'satellite' ? scaledDepthAreaOpacitySatellite : scaledDepthAreaOpacity,
                 visibility: (showDepthAreas && mapStyle !== 'satellite') ? 'visible' : 'none',
               }}
@@ -2522,7 +2534,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               sourceLayerID="charts"
               filter={['==', ['get', 'OBJL'], 71]}
               style={{
-                fillColor: s52Colors.LANDA,
+                fillColor: mapStyle === 'ecdis' ? '#F0E9D2' : s52Colors.LANDA, // Traditional buff/tan for ECDIS
                 fillOpacity: mapStyle === 'satellite' ? 0.2 : 1,
                 visibility: (showLand && mapStyle !== 'satellite') ? 'visible' : 'none',
               }}
@@ -4607,10 +4619,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   <Text style={styles.layerToggleText}>Street{!hasLocalBasemap ? ' ⬇' : ''}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.layerToggleRow, mapStyle === 'nautical' && styles.layerToggleRowActive, !hasLocalBasemap && { opacity: 0.4 }]}
-                  onPress={() => hasLocalBasemap ? setMapStyle('nautical') : setMapStyle('nautical')}
+                  style={[styles.layerToggleRow, mapStyle === 'ecdis' && styles.layerToggleRowActive, !hasLocalBasemap && { opacity: 0.4 }]}
+                  onPress={() => hasLocalBasemap ? setMapStyle('ecdis') : setMapStyle('ecdis')}
                 >
-                  <Text style={styles.layerToggleText}>Nautical{!hasLocalBasemap ? ' ⬇' : ''}</Text>
+                  <Text style={styles.layerToggleText}>ECDIS{!hasLocalBasemap ? ' ⬇' : ''}</Text>
                 </TouchableOpacity>
 
                 {/* Display Mode Section */}
@@ -5817,7 +5829,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               <DebugToggle label="Light" value={mapStyle === 'light'} onToggle={() => setMapStyle('light')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
               <DebugToggle label="Dark" value={mapStyle === 'dark'} onToggle={() => setMapStyle('dark')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
               <DebugToggle label="Street" value={mapStyle === 'street'} onToggle={() => setMapStyle('street')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
-              <DebugToggle label="Nautical (S-52)" value={mapStyle === 'nautical'} onToggle={() => setMapStyle('nautical')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
+              <DebugToggle label="ECDIS (Traditional)" value={mapStyle === 'ecdis'} onToggle={() => setMapStyle('ecdis')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
               <DebugToggle label="Ocean" value={mapStyle === 'ocean'} onToggle={() => setMapStyle('ocean')} radio subtitle={hasLocalOcean ? `${oceanTileSets.length} zoom sets` : 'Not downloaded'} />
               <DebugToggle label="Terrain" value={mapStyle === 'terrain'} onToggle={() => setMapStyle('terrain')} radio subtitle={hasLocalTerrain ? `${terrainTileSets.length} zoom sets` : 'Not downloaded'} />
             </View>
