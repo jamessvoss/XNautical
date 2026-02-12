@@ -187,12 +187,18 @@ export function useMapConfiguration() {
       },
       street: {
         bg: '#f0ede8', water: '#aadaff', waterway: '#aadaff', ice: '#f0f0f0',
-        grass: '#cde6b8', wood: '#b8d8a0', wetland: '#c0dcc8',
-        residential: '#f0e8e0', industrial: '#e8dcd0', park: '#b8d8a0',
-        building: '#d8d0c0', road: '#fff5c0', roadCasing: '#c8b870',
+        grass: '#e8e8dc',        // Very muted beige/tan - barely visible
+        wood: '#e0e0d4',          // Very light gray-tan - subtle
+        wetland: '#e4e4d8',       // Light neutral
+        residential: '#f0e8e0', industrial: '#e8dcd0', 
+        park: '#e8e8dc',          // Same as grass - neutral
+        building: '#d8d0c0', road: '#ffffff', roadCasing: '#c8c8c8',
         text: '#333333', textHalo: '#ffffff', grid: '#c8c8c8',
-        waterText: '#5d8cae', landcoverOpacity: 0.7, buildingOpacity: 0.85,
-        parkOpacity: 0.5, roadNightDim: 1,
+        waterText: '#5d8cae', 
+        landcoverOpacity: 0.3,    // Much lower - barely visible
+        buildingOpacity: 0.85,
+        parkOpacity: 0.2,         // Very subtle
+        roadNightDim: 1,
       },
     };
     if (mapStyle === 'light' || mapStyle === 'dark' || mapStyle === 'nautical' || mapStyle === 'street') {
