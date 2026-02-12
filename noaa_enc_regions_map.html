@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOAA ENC Regions Interactive Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #map {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+        }
+        .map-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 1;
+            max-width: 350px;
+            max-height: 85vh;
+            overflow-y: auto;
+        }
+        .map-overlay h2 {
+            margin: 0 0 10px 0;
+            font-size: 18px;
+            color: #0066cc;
+        }
+        .map-overlay h3 {
+            margin: 15px 0 5px 0;
+            font-size: 14px;
+            color: #333;
+        }
+        .region-list {
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .region-item {
+            padding: 5px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+            margin-bottom: 3px;
+        }
+        .region-item:hover {
+            background-color: #e6f2ff;
+        }
+        .region-item.selected {
+            background-color: #cce5ff;
+            font-weight: bold;
+        }
+        .region-number {
+            font-weight: bold;
+            color: #0066cc;
+            display: inline-block;
+            width: 30px;
+        }
+        .legend {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #ddd;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            margin-right: 8px;
+            border-radius: 3px;
+            border: 1px solid rgba(0,0,0,0.2);
+        }
+        .maplibregl-popup-content {
+            padding: 15px;
+            min-width: 200px;
+        }
+        .popup-title {
+            font-weight: bold;
+            color: #0066cc;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+        .popup-description {
+            font-size: 12px;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="map-overlay">
+        <h2>NOAA ENC® Regions</h2>
+        <p style="font-size: 12px; color: #666; margin: 5px 0;">Click a region below to view its location on the map</p>
+        <div class="region-list" id="regionList"></div>
+        <div class="legend">
+            <h3>Legend</h3>
+            <div class="legend-item">
+                <div class="legend-color" style="background-color: rgba(0, 102, 204, 0.3);"></div>
+                <span>Region Boundaries (Approximate)</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Define region data with approximate boundaries
+        const regions = [
+            {
+                id: '02',
+                name: 'Block Island, RI to the Canadian Border',
+                color: '#FF6B6B',
+                bounds: [[-71.5, 40.5], [-66.0, 47.5]]
+            },
+            {
+                id: '03',
+                name: 'New York to Nantucket and Cape May, New Jersey',
+                color: '#4ECDC4',
+                bounds: [[-75.5, 38.8], [-69.0, 41.5]]
+            },
+            {
+                id: '04',
+                name: 'Chesapeake and Delaware Bays',
+                color: '#45B7D1',
+                bounds: [[-77.5, 36.5], [-74.5, 40.0]]
+            },
+            {
+                id: '06',
+                name: 'Norfolk, VA to Florida - The Intracoastal Waterway',
+                color: '#96CEB4',
+                bounds: [[-81.5, 28.5], [-75.5, 37.0]]
+            },
+            {
+                id: '07',
+                name: 'Florida East Coast and the Keys',
+                color: '#FFEAA7',
+                bounds: [[-81.5, 24.5], [-79.5, 30.5]]
+            },
+            {
+                id: '08',
+                name: 'Florida West Coast and the Keys',
+                color: '#DFE6E9',
+                bounds: [[-83.5, 24.5], [-80.0, 31.0]]
+            },
+            {
+                id: '10',
+                name: 'Puerto Rico and US Virgin Islands',
+                color: '#74B9FF',
+                bounds: [[-67.5, 17.5], [-64.0, 18.8]]
+            },
+            {
+                id: '12',
+                name: 'Southern California - Point Arena to Mexican Border',
+                color: '#A29BFE',
+                bounds: [[-124.5, 32.5], [-117.0, 39.0]]
+            },
+            {
+                id: '13',
+                name: 'Lake Michigan',
+                color: '#FD79A8',
+                bounds: [[-88.0, 41.5], [-84.5, 46.0]]
+            },
+            {
+                id: '14',
+                name: 'San Francisco to Cape Flattery',
+                color: '#FDCB6E',
+                bounds: [[-125.0, 37.5], [-122.0, 48.5]]
+            },
+            {
+                id: '15',
+                name: 'Pacific Northwest - Puget Sound to Canadian Border',
+                color: '#6C5CE7',
+                bounds: [[-125.0, 47.0], [-122.0, 49.0]]
+            },
+            {
+                id: '17',
+                name: 'Mobile, AL to Mexican Border',
+                color: '#00B894',
+                bounds: [[-98.0, 25.8], [-87.5, 30.5]]
+            },
+            {
+                id: '22',
+                name: 'Lake Superior and Lake Huron',
+                color: '#00CEC9',
+                bounds: [[-92.0, 45.0], [-82.0, 49.0]]
+            },
+            {
+                id: '24',
+                name: 'Lake Erie (US Waters)',
+                color: '#0984E3',
+                bounds: [[-83.5, 41.0], [-78.5, 43.0]]
+            },
+            {
+                id: '26',
+                name: 'Lake Ontario (US Waters)',
+                color: '#E17055',
+                bounds: [[-79.8, 43.0], [-76.0, 44.5]]
+            },
+            {
+                id: '30',
+                name: 'Southeast Alaska',
+                color: '#2D3436',
+                bounds: [[-138.0, 54.5], [-130.0, 60.0]]
+            },
+            {
+                id: '32',
+                name: 'South Central Alaska',
+                color: '#B2BEC3',
+                bounds: [[-154.0, 58.0], [-144.0, 62.0]]
+            },
+            {
+                id: '34',
+                name: 'Alaska - The Aleutians and Bristol Bay',
+                color: '#55EFC4',
+                bounds: [[-180.0, 51.0], [-156.0, 58.0]]
+            },
+            {
+                id: '36',
+                name: 'Alaska - Norton Sound to Beaufort Sea',
+                color: '#A29BFE',
+                bounds: [[-168.0, 64.0], [-140.0, 71.5]]
+            },
+            {
+                id: '40',
+                name: 'Hawaiian Islands',
+                color: '#FD79A8',
+                bounds: [[-161.0, 18.5], [-154.5, 22.5]]
+            }
+        ];
+
+        // Initialize map
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: {
+                version: 8,
+                sources: {
+                    'osm': {
+                        type: 'raster',
+                        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+                        tileSize: 256,
+                        attribution: '© OpenStreetMap contributors'
+                    }
+                },
+                layers: [{
+                    id: 'osm',
+                    type: 'raster',
+                    source: 'osm'
+                }]
+            },
+            center: [-98.5795, 39.8283],
+            zoom: 3
+        });
+
+        let selectedRegion = null;
+
+        map.on('load', () => {
+            // Add region polygons
+            regions.forEach(region => {
+                const [[west, south], [east, north]] = region.bounds;
+                
+                // Create polygon coordinates for the bounding box
+                const coordinates = [[
+                    [west, north],
+                    [east, north],
+                    [east, south],
+                    [west, south],
+                    [west, north]
+                ]];
+
+                // Add source
+                map.addSource(`region-${region.id}`, {
+                    type: 'geojson',
+                    data: {
+                        type: 'Feature',
+                        properties: {
+                            id: region.id,
+                            name: region.name
+                        },
+                        geometry: {
+                            type: 'Polygon',
+                            coordinates: coordinates
+                        }
+                    }
+                });
+
+                // Add fill layer
+                map.addLayer({
+                    id: `region-fill-${region.id}`,
+                    type: 'fill',
+                    source: `region-${region.id}`,
+                    paint: {
+                        'fill-color': region.color,
+                        'fill-opacity': 0.3
+                    }
+                });
+
+                // Add outline layer
+                map.addLayer({
+                    id: `region-outline-${region.id}`,
+                    type: 'line',
+                    source: `region-${region.id}`,
+                    paint: {
+                        'line-color': region.color,
+                        'line-width': 2
+                    }
+                });
+
+                // Add label layer
+                map.addLayer({
+                    id: `region-label-${region.id}`,
+                    type: 'symbol',
+                    source: `region-${region.id}`,
+                    layout: {
+                        'text-field': region.id,
+                        'text-size': 16,
+                        'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold']
+                    },
+                    paint: {
+                        'text-color': '#000000',
+                        'text-halo-color': '#FFFFFF',
+                        'text-halo-width': 2
+                    }
+                });
+
+                // Add click handler for region
+                map.on('click', `region-fill-${region.id}`, (e) => {
+                    // Fit bounds to region
+                    map.fitBounds(region.bounds, {
+                        padding: 50,
+                        duration: 1000
+                    });
+
+                    // Show popup
+                    new maplibregl.Popup()
+                        .setLngLat(e.lngLat)
+                        .setHTML(`
+                            <div class="popup-title">Region ${region.id}</div>
+                            <div class="popup-description">${region.name}</div>
+                        `)
+                        .addTo(map);
+
+                    highlightRegion(region.id);
+                });
+
+                // Change cursor on hover
+                map.on('mouseenter', `region-fill-${region.id}`, () => {
+                    map.getCanvas().style.cursor = 'pointer';
+                });
+
+                map.on('mouseleave', `region-fill-${region.id}`, () => {
+                    map.getCanvas().style.cursor = '';
+                });
+            });
+        });
+
+        // Populate region list
+        const regionList = document.getElementById('regionList');
+        regions.forEach(region => {
+            const item = document.createElement('div');
+            item.className = 'region-item';
+            item.innerHTML = `<span class="region-number">${region.id}</span> ${region.name}`;
+            item.onclick = () => {
+                map.fitBounds(region.bounds, {
+                    padding: 50,
+                    duration: 1000
+                });
+                highlightRegion(region.id);
+            };
+            item.dataset.regionId = region.id;
+            regionList.appendChild(item);
+        });
+
+        function highlightRegion(regionId) {
+            // Remove previous selection
+            document.querySelectorAll('.region-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            // Add selection to clicked region
+            const selectedItem = document.querySelector(`[data-region-id="${regionId}"]`);
+            if (selectedItem) {
+                selectedItem.classList.add('selected');
+            }
+        }
+
+        // Add navigation controls
+        map.addControl(new maplibregl.NavigationControl(), 'top-right');
+        
+        // Add scale control
+        map.addControl(new maplibregl.ScaleControl(), 'bottom-right');
+    </script>
+</body>
+</html>

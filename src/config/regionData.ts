@@ -54,7 +54,7 @@ export interface Region {
   us1Charts: US1ChartBounds[];
 }
 
-export type SatelliteResolution = 'low' | 'medium' | 'high';
+export type SatelliteResolution = 'none' | 'low' | 'medium' | 'high' | 'ultra';
 
 export interface SatelliteOption {
   resolution: SatelliteResolution;
@@ -68,9 +68,11 @@ export interface SatelliteOption {
 // ============================================
 
 export const SATELLITE_OPTIONS: SatelliteOption[] = [
-  { resolution: 'low', label: 'Low', zoomLevels: 'z0-5', estimatedSizeMB: 30 },
-  { resolution: 'medium', label: 'Medium', zoomLevels: 'z0-9', estimatedSizeMB: 120 },
-  { resolution: 'high', label: 'High', zoomLevels: 'z0-14', estimatedSizeMB: 800 },
+  { resolution: 'none', label: 'None', zoomLevels: 'none', estimatedSizeMB: 0 },
+  { resolution: 'low', label: 'Low', zoomLevels: 'z0-8', estimatedSizeMB: 27 },
+  { resolution: 'medium', label: 'Medium', zoomLevels: 'z0-11', estimatedSizeMB: 136 },
+  { resolution: 'high', label: 'High', zoomLevels: 'z0-12', estimatedSizeMB: 394 },
+  { resolution: 'ultra', label: 'Ultra', zoomLevels: 'z0-14', estimatedSizeMB: 4800 },
 ];
 
 // ============================================

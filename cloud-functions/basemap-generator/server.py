@@ -22,11 +22,11 @@ Request body for /generate:
   }
 
 Generates per-zoom MBTiles uploaded to Firebase Storage:
-  {regionId}/basemap/basemap_z0-5.mbtiles    (z0-5 combined)
-  {regionId}/basemap/basemap_z6.mbtiles      (z6)
-  {regionId}/basemap/basemap_z7.mbtiles      (z7)
+  {regionId}/basemaps/basemap_z0-5.mbtiles    (z0-5 combined)
+  {regionId}/basemaps/basemap_z6.mbtiles      (z6)
+  {regionId}/basemaps/basemap_z7.mbtiles      (z7)
   ...
-  {regionId}/basemap/basemap_z14.mbtiles     (z14)
+  {regionId}/basemaps/basemap_z14.mbtiles     (z14)
 
 Data Source: VersaTiles (OpenMapTiles-format PBF vector tiles)
 """
@@ -40,6 +40,7 @@ import sqlite3
 import logging
 import asyncio
 import tempfile
+import zipfile
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -66,8 +67,8 @@ BUCKET_NAME = os.environ.get('STORAGE_BUCKET', 'xnautical-8a296.firebasestorage.
 TILE_URL = "https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}"
 
 # Download settings
-MAX_CONCURRENT = 12
-REQUEST_DELAY = 0.02  # seconds between requests
+MAX_CONCURRENT = 50
+REQUEST_DELAY = 0  # VersaTiles is open infrastructure built for bulk access
 REQUEST_TIMEOUT = 30  # seconds per tile
 
 # Natural Earth land data (bundled in Docker image)
@@ -493,6 +494,88 @@ def update_status(db, region_id, status):
 
 
 # ============================================================================
+# Combine + zip helper (used by both /generate and /package)
+# ============================================================================
+
+def _combine_and_zip(bucket, region_id, layer_name, region_bounds, db, work_dir, logger):
+    """
+    Download per-zoom MBTiles from storage one at a time, combine into
+    a single MBTiles, zip it, and upload. Keeps memory low by processing
+    one file at a time.
+    """
+    import shutil as _shutil
+
+    prefix = f'{region_id}/{layer_name}/'
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    mbtiles_blobs = [b for b in blobs if b.name.endswith('.mbtiles')]
+
+    if not mbtiles_blobs:
+        logger.warning(f'  No {layer_name} MBTiles found at {prefix}, skipping zip')
+        return
+
+    pkg_dir = tempfile.mkdtemp(prefix=f'pkg_{layer_name}_{region_id}_')
+
+    try:
+        combined_path = Path(pkg_dir) / f'{layer_name}.mbtiles'
+        init_mbtiles(combined_path, 0, 14, f'{region_id} {layer_name.title()}', region_bounds)
+
+        logger.info(f'Combining {len(mbtiles_blobs)} {layer_name} packs from storage...')
+        update_status(db, region_id, {
+            'state': 'packaging',
+            'message': f'Combining {len(mbtiles_blobs)} {layer_name} packs...',
+        })
+
+        for blob in sorted(mbtiles_blobs, key=lambda b: b.name):
+            local_path = Path(pkg_dir) / ('src_' + os.path.basename(blob.name))
+            logger.info(f'  Downloading {blob.name} ({blob.size / 1024 / 1024:.1f} MB)...')
+            blob.download_to_filename(str(local_path))
+
+            src_conn = sqlite3.connect(str(local_path))
+            combined_conn = sqlite3.connect(str(combined_path))
+            cursor = src_conn.execute('SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles')
+            while True:
+                batch = cursor.fetchmany(1000)
+                if not batch:
+                    break
+                combined_conn.executemany('INSERT OR REPLACE INTO tiles VALUES (?, ?, ?, ?)', batch)
+            combined_conn.commit()
+            combined_conn.close()
+            src_conn.close()
+
+            local_path.unlink()
+
+        combined_size = combined_path.stat().st_size / 1024 / 1024
+        logger.info(f'  Combined: {combined_size:.1f} MB, zipping...')
+        update_status(db, region_id, {
+            'state': 'packaging',
+            'message': f'Zipping combined {layer_name} ({combined_size:.0f} MB)...',
+        })
+
+        zip_path = Path(pkg_dir) / f'{layer_name}.mbtiles.zip'
+        with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(str(combined_path), f'{layer_name}.mbtiles')
+
+        combined_path.unlink()
+
+        zip_size = zip_path.stat().st_size / 1024 / 1024
+        logger.info(f'  Compressed: {combined_size:.1f} MB → {zip_size:.1f} MB')
+
+        zip_storage_path = f'{region_id}/{layer_name}/{layer_name}.mbtiles.zip'
+        logger.info(f'  Uploading to {zip_storage_path}...')
+        update_status(db, region_id, {
+            'state': 'uploading',
+            'message': f'Uploading combined {layer_name} zip ({zip_size:.0f} MB)...',
+        })
+
+        blob = bucket.blob(zip_storage_path)
+        blob.upload_from_filename(str(zip_path), timeout=1200)
+        logger.info(f'  Combined {layer_name} zip uploaded.')
+
+    finally:
+        _shutil.rmtree(pkg_dir, ignore_errors=True)
+
+
+# ============================================================================
 # Main generation endpoint
 # ============================================================================
 
@@ -578,7 +661,7 @@ def generate_basemap():
                         f'{size_mb:.1f} MB, {stats["failed"]} failed')
 
             # Upload to Firebase Storage
-            storage_path = f'{region_id}/basemap/{filename}'
+            storage_path = f'{region_id}/basemaps/{filename}'
             logger.info(f'  Uploading to {storage_path} ({size_mb:.1f} MB)...')
 
             update_status(db, region_id, {
@@ -604,6 +687,10 @@ def generate_basemap():
             db_path.unlink(missing_ok=True)
 
             logger.info(f'  {pack_name} complete and uploaded.')
+
+        # Package: combine per-zoom packs from storage into single zip
+        # Done separately to keep memory low (downloads one file at a time)
+        _combine_and_zip(bucket, region_id, 'basemaps', region['bounds'], db, work_dir, logger)
 
         # Update Firestore with results
         total_duration = time.time() - start_time
@@ -656,6 +743,51 @@ def generate_basemap():
         if os.path.exists(work_dir):
             logger.info(f'Cleaning up: {work_dir}')
             shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ============================================================================
+# Package endpoint - zip existing per-zoom MBTiles without re-downloading
+# ============================================================================
+
+@app.route('/package', methods=['POST'])
+def package_basemap():
+    """
+    Combine and zip existing per-zoom MBTiles from storage.
+    Does NOT re-download tiles - just repackages what's already there.
+    """
+    data = request.get_json(silent=True) or {}
+    region_id = data.get('regionId', '').strip()
+
+    if region_id not in REGION_BOUNDS:
+        return jsonify({
+            'error': f'Invalid regionId: {region_id}',
+            'valid': sorted(REGION_BOUNDS.keys()),
+        }), 400
+
+    region = REGION_BOUNDS[region_id]
+    start_time = time.time()
+
+    logger.info(f'=== Packaging basemap for {region_id} ({region["name"]}) ===')
+
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(BUCKET_NAME)
+    db = firestore.Client()
+
+    try:
+        _combine_and_zip(bucket, region_id, 'basemaps', region['bounds'], db, None, logger)
+
+        duration = time.time() - start_time
+        logger.info(f'=== Basemap packaging complete for {region_id}: {duration:.1f}s ===')
+
+        return jsonify({
+            'status': 'success',
+            'regionId': region_id,
+            'durationSeconds': round(duration, 1),
+        }), 200
+
+    except Exception as e:
+        logger.error(f'Error packaging basemap for {region_id}: {e}', exc_info=True)
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
 
 # ============================================================================

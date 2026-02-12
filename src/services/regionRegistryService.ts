@@ -18,6 +18,7 @@ export interface InstalledDistrictRecord {
   hasCharts: boolean;
   hasPredictions: boolean;
   hasBuoys: boolean;
+  hasMarineZones: boolean;
   hasSatellite: boolean;
   hasBasemap: boolean;
   hasGnis: boolean;
@@ -98,6 +99,7 @@ export async function registerDistrict(
     hasCharts: false,
     hasPredictions: false,
     hasBuoys: false,
+    hasMarineZones: false,
     hasSatellite: false,
     hasBasemap: false,
     hasGnis: false,

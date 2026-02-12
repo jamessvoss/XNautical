@@ -30,6 +30,7 @@ import shutil
 import sqlite3
 import logging
 import tempfile
+import zipfile
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
@@ -599,6 +600,16 @@ def convert_district():
             blob.upload_from_filename(str(pack_path), timeout=600)
             upload_sizes[scale] = info['sizeMB']
 
+            # Zip and upload for app download
+            zip_path = Path(scale_pack_dir) / f'{scale}.mbtiles.zip'
+            with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.write(str(pack_path), f'{scale}.mbtiles')
+            zip_storage_path = f'{district_label}/charts/{scale}.mbtiles.zip'
+            zip_blob = bucket.blob(zip_storage_path)
+            zip_blob.upload_from_filename(str(zip_path), timeout=600)
+            zip_size = zip_path.stat().st_size / 1024 / 1024
+            logger.info(f'  Uploaded zip: {info["sizeMB"]:.1f} → {zip_size:.1f} MB -> {zip_storage_path}')
+
         # Upload manifest
         manifest_storage_path = f'{district_label}/charts/manifest.json'
         blob = bucket.blob(manifest_storage_path)
@@ -857,21 +868,28 @@ def convert_batch():
         upload_start = time.time()
         
         upload_details = []
-        for result in successful:
-            if 'output_path' in result:
-                mbtiles_path = Path(result['output_path'])
-                if mbtiles_path.exists():
-                    chart_id = result['chart_id']
-                    storage_path = f'{district_label}/charts/temp/{batch_id}/{chart_id}.mbtiles'
-                    
-                    blob = bucket.blob(storage_path)
-                    blob.upload_from_filename(str(mbtiles_path), timeout=300)
-                    
-                    upload_details.append({
-                        'chartId': chart_id,
-                        'storagePath': storage_path,
-                        'sizeMB': result['size_mb'],
-                    })
+
+        def _upload_chart_mbtiles(result):
+            """Upload a single per-chart MBTiles to temp storage."""
+            if 'output_path' not in result:
+                return None
+            mbtiles_path = Path(result['output_path'])
+            if not mbtiles_path.exists():
+                return None
+            chart_id = result['chart_id']
+            storage_path = f'{district_label}/charts/temp/{batch_id}/{chart_id}.mbtiles'
+            blob = bucket.blob(storage_path)
+            blob.upload_from_filename(str(mbtiles_path), timeout=300)
+            return {
+                'chartId': chart_id,
+                'storagePath': storage_path,
+                'sizeMB': result['size_mb'],
+            }
+
+        with ThreadPoolExecutor(max_workers=len(successful)) as upload_pool:
+            for detail in upload_pool.map(_upload_chart_mbtiles, successful):
+                if detail:
+                    upload_details.append(detail)
         
         upload_duration = time.time() - upload_start
         logger.info(f'Upload complete in {upload_duration:.1f}s')

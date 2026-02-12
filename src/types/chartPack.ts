@@ -163,6 +163,20 @@ export interface District {
   /** US1 chart bounding boxes (auto-extracted during ENC conversion) */
   us1ChartBounds?: { name: string; west: number; south: number; east: number; north: number }[];
   
+  /** Additional metadata from pre-generated metadata file */
+  metadata?: {
+    buoyCount?: number;
+    marineZoneCount?: number;
+    predictionSizes?: {
+      tides?: number;
+      currents?: number;
+    };
+    predictionSizeMB?: {
+      tides?: number;
+      currents?: number;
+    };
+  };
+  
   /** Firestore timestamps */
   createdAt?: any;
   updatedAt?: any;

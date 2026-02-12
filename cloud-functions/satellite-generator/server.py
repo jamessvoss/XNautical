@@ -44,6 +44,7 @@ import sqlite3
 import logging
 import asyncio
 import tempfile
+import zipfile
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -70,8 +71,8 @@ BUCKET_NAME = os.environ.get('STORAGE_BUCKET', 'xnautical-8a296.firebasestorage.
 TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
 
 # Download settings
-MAX_CONCURRENT = 12
-REQUEST_DELAY = 0.02  # seconds between requests
+MAX_CONCURRENT = 30
+REQUEST_DELAY = 0.01  # ESRI CDN handles high concurrency
 REQUEST_TIMEOUT = 30  # seconds per tile
 
 # Natural Earth land data (bundled in Docker image)
@@ -600,8 +601,24 @@ def generate_satellite():
                 'maxZoom': max_zoom,
             }
 
-            # Delete local file to free disk
+            # Zip and upload for app download
+            zip_filename = filename + '.zip'
+            zip_path = Path(work_dir) / zip_filename
+            logger.info(f'  Zipping {filename}...')
+
+            with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.write(str(db_path), filename)
+
+            zip_size_mb = zip_path.stat().st_size / 1024 / 1024
+            zip_storage_path = f'{region_id}/satellite/{zip_filename}'
+            logger.info(f'  Uploading zip to {zip_storage_path} ({zip_size_mb:.1f} MB)...')
+
+            zip_blob = bucket.blob(zip_storage_path)
+            zip_blob.upload_from_filename(str(zip_path), timeout=600)
+
+            # Delete local files to free disk
             db_path.unlink(missing_ok=True)
+            zip_path.unlink(missing_ok=True)
 
             logger.info(f'  {pack_name} complete and uploaded.')
 
@@ -655,6 +672,93 @@ def generate_satellite():
         import shutil
         if os.path.exists(work_dir):
             logger.info(f'Cleaning up: {work_dir}')
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ============================================================================
+# Package endpoint - zip existing per-zoom MBTiles without re-downloading
+# ============================================================================
+
+@app.route('/package', methods=['POST'])
+def package_satellite():
+    """
+    Zip existing per-zoom satellite MBTiles from storage individually.
+    Does NOT re-download tiles - just zips what's already there.
+    """
+    data = request.get_json(silent=True) or {}
+    region_id = data.get('regionId', '').strip()
+
+    if region_id not in REGION_BOUNDS:
+        return jsonify({
+            'error': f'Invalid regionId: {region_id}',
+            'valid': sorted(REGION_BOUNDS.keys()),
+        }), 400
+
+    region = REGION_BOUNDS[region_id]
+    start_time = time.time()
+
+    logger.info(f'=== Packaging satellite for {region_id} ({region["name"]}) ===')
+
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(BUCKET_NAME)
+
+    work_dir = tempfile.mkdtemp(prefix=f'package_satellite_{region_id}_')
+
+    try:
+        prefix = f'{region_id}/satellite/'
+        blobs = list(bucket.list_blobs(prefix=prefix))
+        mbtiles_blobs = [b for b in blobs if b.name.endswith('.mbtiles')]
+
+        if not mbtiles_blobs:
+            return jsonify({'error': f'No satellite MBTiles found at {prefix}'}), 404
+
+        logger.info(f'  Found {len(mbtiles_blobs)} per-zoom packs')
+        results = []
+
+        for blob in sorted(mbtiles_blobs, key=lambda b: b.name):
+            filename = os.path.basename(blob.name)
+            local_path = Path(work_dir) / filename
+            logger.info(f'  Downloading {blob.name} ({blob.size / 1024 / 1024:.1f} MB)...')
+            blob.download_to_filename(str(local_path))
+
+            zip_filename = filename + '.zip'
+            zip_path = Path(work_dir) / zip_filename
+            with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.write(str(local_path), filename)
+
+            zip_size = zip_path.stat().st_size / 1024 / 1024
+            zip_storage_path = f'{region_id}/satellite/{zip_filename}'
+            logger.info(f'  Uploading {zip_storage_path} ({zip_size:.1f} MB)...')
+
+            zip_blob = bucket.blob(zip_storage_path)
+            zip_blob.upload_from_filename(str(zip_path), timeout=600)
+
+            results.append({
+                'storagePath': zip_storage_path,
+                'zipSizeMB': round(zip_size, 1),
+            })
+
+            local_path.unlink()
+            zip_path.unlink()
+
+        duration = time.time() - start_time
+        logger.info(f'=== Satellite packaging complete for {region_id}: {duration:.1f}s ===')
+
+        return jsonify({
+            'status': 'success',
+            'regionId': region_id,
+            'packs': results,
+            'packCount': len(results),
+            'durationSeconds': round(duration, 1),
+        }), 200
+
+    except Exception as e:
+        logger.error(f'Error packaging satellite for {region_id}: {e}', exc_info=True)
+        return jsonify({'status': 'error', 'error': str(e)}), 500
+
+    finally:
+        import shutil
+        if os.path.exists(work_dir):
             shutil.rmtree(work_dir, ignore_errors=True)
 
 

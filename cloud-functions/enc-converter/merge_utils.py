@@ -153,11 +153,11 @@ def merge_mbtiles(input_files: list, output_path: Path, name: str,
     current_level = sorted(input_files)
     level_num = 0
 
-    # Parallel workers: level 0 can run more (small sparse files),
-    # dense levels use fewer to keep memory bounded
-    level0_workers = max(1, min(4, os.cpu_count() or 2) // 2 * 2)
-    dense_workers = 2  # conservative for large intermediate files
-    logger.info(f'  Parallel workers: {level0_workers} (L0), {dense_workers} (dense)')
+    # Parallel workers: scale to available CPUs, capped per-level by chunk count
+    cpu_count = os.cpu_count() or 4
+    level0_workers = max(2, cpu_count)
+    dense_workers = max(2, cpu_count)
+    logger.info(f'  Parallel workers: up to {level0_workers} (L0), up to {dense_workers} (dense)')
 
     # Use large chunks for level 0 (small sparse per-chart files),
     # then triples for level 1+ (dense intermediates).
@@ -165,9 +165,10 @@ def merge_mbtiles(input_files: list, output_path: Path, name: str,
     # decompress/recompress cycles — only the final merge compresses.
     while len(current_level) > DENSE_CHUNK_SIZE:
         chunk_size = INITIAL_CHUNK_SIZE if level_num == 0 else DENSE_CHUNK_SIZE
-        workers = level0_workers if level_num == 0 else dense_workers
         is_intermediate = True  # skip compression for intermediate outputs
         total_chunks = (len(current_level) + chunk_size - 1) // chunk_size
+        # Cap workers at actual chunk count — no idle threads
+        workers = min(total_chunks, level0_workers if level_num == 0 else dense_workers)
         level_start = time.time()
         logger.info(f'  === Merge level {level_num}: {len(current_level)} files -> '
                     f'{total_chunks} chunks of up to {chunk_size} '

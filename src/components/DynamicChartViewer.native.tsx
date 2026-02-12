@@ -7,7 +7,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffe
 import {
   View,
   Text,
-  StyleSheet,
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
@@ -21,24 +20,16 @@ import Slider from '@react-native-community/slider';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapLibre from '@maplibre/maplibre-react-native';
-import {
-  FeatureType,
-  GeoJSONFeatureCollection,
-} from '../types/chart';
 import * as chartCacheService from '../services/chartCacheService';
 import * as chartPackService from '../services/chartPackService';
 import * as tileServer from '../services/tileServer';
-import {
-  formatLightInfo,
-  formatBuoyInfo,
-  formatBeaconInfo,
-  formatLandmarkInfo,
-  formatSeabedInfo,
-  formatCableInfo,
-} from '../utils/chartRendering';
 // Extracted modules (Phase 1 refactor)
-import { NAV_SYMBOLS, DISPLAY_FEATURES, SYMBOL_FEATURES, OBJL_NAMES, OBJL_PRIORITIES, LAYER_DISPLAY_NAMES, getDepthUnitSuffix, getLayerName } from './DynamicChartViewer/constants';
-import type { Props, FeatureInfo, LoadedChartData, LoadedMBTilesChart, LoadedRasterChart, LayerVisibility, LayerVisibilityAction, DisplayFeatureConfig, SymbolFeatureConfig } from './DynamicChartViewer/types';
+import { NAV_SYMBOLS, DISPLAY_FEATURES, SYMBOL_FEATURES, OBJL_PRIORITIES, LAYER_DISPLAY_NAMES, getDepthUnitSuffix, getLayerName } from './DynamicChartViewer/constants';
+// Phase 2: Extracted hooks
+import { useDisplaySettings } from './DynamicChartViewer/hooks/useDisplaySettings';
+import { useStationData } from './DynamicChartViewer/hooks/useStationData';
+import { useMapConfiguration } from './DynamicChartViewer/hooks/useMapConfiguration';
+import type { Props, FeatureInfo, LoadedChartData, LoadedMBTilesChart, LoadedRasterChart, LayerVisibility } from './DynamicChartViewer/types';
 import { initialLayerVisibility, layerVisibilityReducer } from './DynamicChartViewer/layerState';
 import { getFeatureId, formatFeatureProperties } from './DynamicChartViewer/utils/featureFormatting';
 import { styles } from './DynamicChartViewer/styles/chartViewerStyles';
@@ -52,10 +43,8 @@ import { logger, LogCategory } from '../services/loggingService';
 import { performanceTracker, StartupPhase, RuntimeMetric } from '../services/performanceTracker';
 import * as themeService from '../services/themeService';
 import type { S52DisplayMode } from '../services/themeService';
-import { getCachedTideStations, getCachedCurrentStations, loadFromStorage, migrateLegacyPredictionDatabases, TideStation, CurrentStation } from '../services/stationService';
-import { calculateAllStationStates, createIconNameMap } from '../services/stationStateService';
+import { migrateLegacyPredictionDatabases, TideStation } from '../services/stationService';
 import { tideCorrectionService } from '../services/tideCorrectionService';
-import { getBuoysCatalog, getBuoy, BuoySummary, Buoy } from '../services/buoyService';
 import StationInfoModal from './StationInfoModal';
 import TideDetailChart from './TideDetailChart';
 import CurrentDetailChart from './CurrentDetailChart';
@@ -75,6 +64,33 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Route context
   const { activeRoute, addPointToActiveRoute, startNewRoute, showRoutesModal, openRoutesModal, closeRoutesModal, navigation } = useRoutes();
   const insets = useSafeAreaInsets();
+  // Phase 2: Extracted hooks
+  const { displaySettings, setDisplaySettings } = useDisplaySettings();
+  const {
+    tideStations, currentStations, liveBuoys,
+    selectedBuoy, setSelectedBuoy, loadingBuoyDetail,
+    tideIconMap, currentIconMap,
+    selectedStation, setSelectedStation,
+    detailChartTideStationId, setDetailChartTideStationId,
+    detailChartCurrentStationId, setDetailChartCurrentStationId,
+    handleBuoyClick, reloadStations,
+  } = useStationData();
+  const {
+    s52Mode, setS52Mode, uiTheme, s52Colors,
+    mapStyle, setMapStyle, isVectorStyle,
+    basemapPalette, mapStyleUrls, themedStyles,
+    hasLocalBasemap, setHasLocalBasemap,
+    satelliteTileSets, setSatelliteTileSets,
+    basemapTileSets, setBasemapTileSets,
+    oceanTileSets, setOceanTileSets,
+    terrainTileSets, setTerrainTileSets,
+    hasLocalOcean, hasLocalTerrain,
+    debugInfo, setDebugInfo, showDebug, setShowDebug,
+    debugDiagnostics, debugHiddenSources,
+    debugIsSourceVisible, debugToggleSource,
+    createRunDiagnostics,
+    styleSwitchStartRef,
+  } = useMapConfiguration();
   const mapRef = useRef<any>(null);
   const cameraRef = useRef<any>(null);
   
@@ -163,49 +179,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showCoastalNames] = useState(true);  // Capes, islands, beaches
   const [showLandmarkNames] = useState(true); // Summits, glaciers
   
-  // Tide and Current station data
-  const [tideStations, setTideStations] = useState<TideStation[]>([]);
-  const [currentStations, setCurrentStations] = useState<CurrentStation[]>([]);
-  
   // Tide correction for depth soundings
   const [currentTideCorrection, setCurrentTideCorrection] = useState<number>(0);
   const [tideCorrectionStation, setTideCorrectionStation] = useState<TideStation | null>(null);
-  
-  // Live Buoy data
-  const [liveBuoys, setLiveBuoys] = useState<BuoySummary[]>([]);
-  const [selectedBuoy, setSelectedBuoy] = useState<Buoy | null>(null);
-  const [loadingBuoyDetail, setLoadingBuoyDetail] = useState(false);
-  
-  // Station icon states (calculated every 15 minutes)
-  const [tideIconMap, setTideIconMap] = useState<Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null }>>(new Map());
-  const [currentIconMap, setCurrentIconMap] = useState<Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null }>>(new Map());
-  
-  // Station modal state
-  const [selectedStation, setSelectedStation] = useState<{
-    type: 'tide' | 'current';
-    id: string;
-    name: string;
-  } | null>(null);
-  
-  // State for detail chart station selection (separate from modal selection)
-  const [detailChartTideStationId, setDetailChartTideStationId] = useState<string | null>(null);
-  const [detailChartCurrentStationId, setDetailChartCurrentStationId] = useState<string | null>(null);
-  
-  // Handler for buoy clicks - load and display buoy detail
-  const handleBuoyClick = async (buoyId: string) => {
-    console.log('[BUOY] Clicked:', buoyId);
-    setLoadingBuoyDetail(true);
-    try {
-      const detail = await getBuoy(buoyId);
-      setSelectedBuoy(detail);
-      console.log('[BUOY] Loaded detail:', detail?.name);
-    } catch (error) {
-      console.error('[BUOY] Error loading detail:', error);
-      setSelectedBuoy(null);
-    } finally {
-      setLoadingBuoyDetail(false);
-    }
-  };
 
   // Handler for selecting a special feature (tide/current station, live buoy) from the picker
   const handleSpecialFeatureSelect = (feature: FeatureInfo) => {
@@ -236,130 +212,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showLakeNames] = useState(false);        // Lakes (off by default)
   const [showTerrainNames] = useState(false);  // Valleys, basins (off by default)
   
-  // Display settings (font scales, line widths, area opacities)
-  const [displaySettings, setDisplaySettings] = useState<DisplaySettings>({
-    // Font sizes (1.5 = nominal 100%, range 1.0-3.0)
-    soundingsFontScale: 1.5,
-    gnisFontScale: 1.5,
-    depthContourFontScale: 1.5,
-    chartLabelsFontScale: 1.5,
-    // Text halo/stroke
-    soundingsHaloScale: 1.0,
-    gnisHaloScale: 1.0,
-    depthContourLabelHaloScale: 1.0,
-    chartLabelsHaloScale: 1.0,
-    // Text opacities
-    soundingsOpacityScale: 1.0,
-    gnisOpacityScale: 1.0,
-    depthContourLabelOpacityScale: 1.0,
-    chartLabelsOpacityScale: 1.0,
-    // Line widths
-    depthContourLineScale: 1.0,
-    coastlineLineScale: 1.0,
-    cableLineScale: 1.0,
-    pipelineLineScale: 1.0,
-    bridgeLineScale: 1.0,
-    mooringLineScale: 1.0,
-    shorelineConstructionLineScale: 1.0,
-    // Line halos - temporarily disabled to debug crash
-    depthContourLineHaloScale: 0,
-    coastlineHaloScale: 0,
-    cableLineHaloScale: 0,
-    pipelineLineHaloScale: 0,
-    bridgeLineHaloScale: 0,
-    mooringLineHaloScale: 0,
-    shorelineConstructionHaloScale: 0,
-    // Line opacities
-    depthContourLineOpacityScale: 1.0,
-    coastlineOpacityScale: 1.0,
-    cableLineOpacityScale: 1.0,
-    pipelineLineOpacityScale: 1.0,
-    bridgeOpacityScale: 1.0,
-    mooringOpacityScale: 1.0,
-    shorelineConstructionOpacityScale: 1.0,
-    // Area opacities
-    depthAreaOpacityScale: 1.0,
-    restrictedAreaOpacityScale: 1.0,
-    cautionAreaOpacityScale: 1.0,
-    militaryAreaOpacityScale: 1.0,
-    anchorageOpacityScale: 1.0,
-    marineFarmOpacityScale: 1.0,
-    cableAreaOpacityScale: 1.0,
-    pipelineAreaOpacityScale: 1.0,
-    fairwayOpacityScale: 1.0,
-    dredgedAreaOpacityScale: 1.0,
-    // Area strokes
-    depthAreaStrokeScale: 1.0,
-    restrictedAreaStrokeScale: 1.0,
-    cautionAreaStrokeScale: 1.0,
-    militaryAreaStrokeScale: 1.0,
-    anchorageStrokeScale: 1.0,
-    marineFarmStrokeScale: 1.0,
-    cableAreaStrokeScale: 1.0,
-    pipelineAreaStrokeScale: 1.0,
-    fairwayStrokeScale: 1.0,
-    dredgedAreaStrokeScale: 1.0,
-    // Symbol sizes (nominal values based on S-52 standard visibility)
-    lightSymbolSizeScale: 2.0,    // 200% nominal
-    buoySymbolSizeScale: 2.0,     // 200% nominal
-    beaconSymbolSizeScale: 1.5,   // 150% nominal
-    wreckSymbolSizeScale: 1.5,    // 150% nominal
-    rockSymbolSizeScale: 1.5,     // 150% nominal
-    hazardSymbolSizeScale: 1.5,   // 150% nominal
-    landmarkSymbolSizeScale: 1.5, // 150% nominal
-    mooringSymbolSizeScale: 1.5,  // 150% nominal
-    anchorSymbolSizeScale: 1.5,   // 150% nominal
-    tideRipsSymbolSizeScale: 1.5, // 150% nominal
-    // Symbol halos (white background for visibility per S-52)
-    lightSymbolHaloScale: 0.1,
-    buoySymbolHaloScale: 0.1,
-    beaconSymbolHaloScale: 0.1,
-    wreckSymbolHaloScale: 0.1,
-    rockSymbolHaloScale: 0.1,
-    hazardSymbolHaloScale: 0.1,
-    landmarkSymbolHaloScale: 0.1,
-    mooringSymbolHaloScale: 0.1,
-    anchorSymbolHaloScale: 0.1,
-    tideRipsSymbolHaloScale: 0.1,
-    tideStationSymbolSizeScale: 1.0,
-    currentStationSymbolSizeScale: 1.0,
-    tideStationSymbolHaloScale: 0.1,
-    currentStationSymbolHaloScale: 0.1,
-    // Symbol opacities
-    lightSymbolOpacityScale: 1.0,
-    buoySymbolOpacityScale: 1.0,
-    beaconSymbolOpacityScale: 1.0,
-    wreckSymbolOpacityScale: 1.0,
-    rockSymbolOpacityScale: 1.0,
-    hazardSymbolOpacityScale: 1.0,
-    landmarkSymbolOpacityScale: 1.0,
-    mooringSymbolOpacityScale: 1.0,
-    anchorSymbolOpacityScale: 1.0,
-    tideRipsSymbolOpacityScale: 1.0,
-    tideStationSymbolOpacityScale: 1.0,
-    currentStationSymbolOpacityScale: 1.0,
-    // Live Buoy symbol
-    liveBuoySymbolSizeScale: 1.0,
-    liveBuoySymbolHaloScale: 0.05,
-    liveBuoySymbolOpacityScale: 1.0,
-    // Live buoy text
-    liveBuoyTextSizeScale: 1.0,
-    liveBuoyTextHaloScale: 0.05,   // 5% default
-    liveBuoyTextOpacityScale: 1.0,
-    // Tide station text
-    tideStationTextSizeScale: 1.0,
-    tideStationTextHaloScale: 0.05,  // 5% default, max 25%
-    tideStationTextOpacityScale: 1.0,
-    // Current station text
-    currentStationTextSizeScale: 1.0,
-    currentStationTextHaloScale: 0.05, // 5% default, max 25%
-    currentStationTextOpacityScale: 1.0,
-    // Other settings
-    dayNightMode: 'day',
-    orientationMode: 'north-up',
-    depthUnits: 'meters',
-    tideCorrectedSoundings: false,
-  });
 
   // Memoized depth text field expression based on unit setting
   const depthTextFieldExpression = useMemo(() => {
@@ -988,528 +840,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Track tap start time for end-to-end performance measurement
   const tapStartTimeRef = useRef<number>(0);
   
-  // === STYLE SWITCH PERFORMANCE TRACKING ===
-  const styleSwitchStartRef = useRef<number>(0);
-  const styleSwitchFromRef = useRef<string>('');
-  const styleSwitchToRef = useRef<string>('');
-  const styleSwitchRenderCountRef = useRef<number>(0);
-  
-  // S-52 Display Mode (Day/Dusk/Night)
-  const [s52Mode, setS52ModeInternal] = useState<S52DisplayMode>('dusk');
-  const [uiTheme, setUITheme] = useState(themeService.getUITheme('dusk'));
-  
-  // Map style options
-  type MapStyleOption = 'satellite' | 'light' | 'dark' | 'nautical' | 'street' | 'ocean' | 'terrain';
-  const [mapStyle, setMapStyleInternal] = useState<MapStyleOption>('satellite');
-  
-  // Which styles use the vector basemap tiles (Light/Dark/Nautical/Street all share one download)
-  const VECTOR_BASEMAP_STYLES: MapStyleOption[] = ['light', 'dark', 'nautical', 'street'];
-  const isVectorStyle = VECTOR_BASEMAP_STYLES.includes(mapStyle);
-  
-  // Local basemap availability
-  const [hasLocalBasemap, setHasLocalBasemap] = useState(false);
-  
-  // Ocean and Terrain tile sets - per-zoom MBTiles (same pattern as satellite)
-  interface TileSet { id: string; minZoom: number; maxZoom: number; }
-  const [oceanTileSets, setOceanTileSets] = useState<TileSet[]>([]);
-  const [terrainTileSets, setTerrainTileSets] = useState<TileSet[]>([]);
-  const hasLocalOcean = oceanTileSets.length > 0;
-  const hasLocalTerrain = terrainTileSets.length > 0;
-  
-  // Basemap tile sets - per-zoom vector MBTiles
-  const [basemapTileSets, setBasemapTileSets] = useState<TileSet[]>([]);
-  
-  // Debug map overrides - toggle individual map sources on/off
-  // Keys: 'satellite', 'charts', 'bathymetry', 'gnis', 'basemap', 'ocean', 'terrain'
-  const [debugHiddenSources, setDebugHiddenSources] = useState<Set<string>>(new Set());
-  const debugIsSourceVisible = useCallback((sourceId: string) => {
-    return !debugHiddenSources.has(sourceId);
-  }, [debugHiddenSources]);
-  const debugToggleSource = useCallback((sourceId: string) => {
-    setDebugHiddenSources(prev => {
-      const next = new Set(prev);
-      if (next.has(sourceId)) next.delete(sourceId);
-      else next.add(sourceId);
-      return next;
-    });
-  }, []);
-  
-  // Set S-52 display mode and update theme
-  const setS52Mode = useCallback(async (mode: S52DisplayMode) => {
-    await themeService.setDisplayMode(mode);
-    setS52ModeInternal(mode);
-    setUITheme(themeService.getUITheme(mode));
-  }, []);
-  
-  // Dynamic themed styles - overrides for theme-aware UI
-  const themedStyles = useMemo(() => ({
-    // Control panel backgrounds
-    controlPanel: {
-      backgroundColor: uiTheme.panelBackgroundSolid,
-      borderColor: uiTheme.border,
-    },
-    // Tab bar
-    tabBar: {
-      backgroundColor: uiTheme.cardBackground,
-      borderBottomColor: uiTheme.divider,
-    },
-    tabButton: {
-      backgroundColor: uiTheme.tabBackground,
-    },
-    tabButtonActive: {
-      backgroundColor: uiTheme.tabBackgroundActive,
-    },
-    tabButtonText: {
-      color: uiTheme.tabText,
-    },
-    tabButtonTextActive: {
-      color: uiTheme.tabTextActive,
-    },
-    // Section titles and text
-    panelSectionTitle: {
-      color: uiTheme.textPrimary,
-    },
-    // Basemap option buttons
-    basemapOption: {
-      backgroundColor: uiTheme.buttonBackground,
-      borderColor: uiTheme.border,
-    },
-    basemapOptionActive: {
-      backgroundColor: uiTheme.buttonBackgroundActive,
-      borderColor: uiTheme.accentPrimary,
-    },
-    basemapOptionText: {
-      color: uiTheme.buttonText,
-    },
-    basemapOptionTextActive: {
-      color: uiTheme.buttonTextActive,
-    },
-    // Dividers
-    panelDivider: {
-      backgroundColor: uiTheme.divider,
-    },
-    // Toggle labels
-    toggleLabel: {
-      color: uiTheme.textPrimary,
-    },
-    // Slider
-    sliderTrack: {
-      color: uiTheme.sliderTrack,
-    },
-    sliderTrackActive: {
-      color: uiTheme.sliderTrackActive,
-    },
-    sliderThumb: {
-      color: uiTheme.sliderThumb,
-    },
-    // Sub-tabs (layers)
-    subTabBar: {
-      backgroundColor: uiTheme.cardBackground,
-      borderBottomColor: uiTheme.divider,
-    },
-    subTabButtonText: {
-      color: uiTheme.tabText,
-    },
-    subTabButtonTextActive: {
-      color: uiTheme.tabTextActive,
-    },
-    // Chart info
-    activeChartText: {
-      color: uiTheme.textPrimary,
-    },
-    activeChartSubtext: {
-      color: uiTheme.textSecondary,
-    },
-    chartScaleLabel: {
-      color: uiTheme.accentPrimary,
-    },
-    chartScaleCount: {
-      color: uiTheme.textSecondary,
-    },
-    // Scroll content
-    tabScrollContent: {
-      flex: 1,
-      backgroundColor: uiTheme.panelBackgroundSolid,
-    },
-    // Layer rows
-    layerRow: {
-      borderBottomColor: uiTheme.divider,
-    },
-    layerName: {
-      color: uiTheme.textPrimary,
-    },
-    // Symbol items
-    symbolItem: {
-      borderBottomColor: uiTheme.divider,
-    },
-    symbolName: {
-      color: uiTheme.textPrimary,
-    },
-    symbolRow: {
-      borderBottomColor: uiTheme.divider,
-    },
-    // GPS button
-    centerButton: {
-      backgroundColor: uiTheme.panelBackground,
-      borderColor: uiTheme.border,
-    },
-    centerButtonActive: {
-      backgroundColor: uiTheme.accentPrimary,
-    },
-    // Loading overlay
-    chartLoadingContainer: {
-      backgroundColor: uiTheme.overlayBackground,
-    },
-    chartLoadingText: {
-      color: uiTheme.textPrimary,
-    },
-    chartLoadingProgress: {
-      color: uiTheme.textSecondary,
-    },
-    // Feature popup
-    featurePopup: {
-      backgroundColor: uiTheme.panelBackground,
-      borderColor: uiTheme.border,
-    },
-    featurePopupTitle: {
-      color: uiTheme.textPrimary,
-    },
-    featurePopupText: {
-      color: uiTheme.textSecondary,
-    },
-    // Layers tab
-    layersColumnTitle: {
-      color: uiTheme.textPrimary,
-    },
-    dataInfoLabel: {
-      color: uiTheme.textMuted,
-    },
-    dataInfoValue: {
-      color: uiTheme.textPrimary,
-    },
-    // Display/Symbols tab
-    displayFeatureName: {
-      color: uiTheme.textPrimary,
-    },
-    sliderLabel: {
-      color: uiTheme.textSecondary,
-    },
-    sliderValueText: {
-      color: uiTheme.textPrimary,
-    },
-    // Feature list items
-    featureItem: {
-      borderBottomColor: uiTheme.divider,
-    },
-    featureItemSelected: {
-      backgroundColor: uiTheme.tabBackgroundActive,
-    },
-    featureItemText: {
-      color: uiTheme.textPrimary,
-    },
-    featureItemTextSelected: {
-      color: uiTheme.tabTextActive,
-    },
-    // FFToggle
-    ffToggleLabel: {
-      color: uiTheme.textPrimary,
-    },
-    // Control rows (Display/Symbols tabs)
-    controlRowLabel: {
-      color: uiTheme.textSecondary,
-    },
-    sliderMinMaxLabel: {
-      color: uiTheme.textMuted,
-    },
-    sliderValueCompact: {
-      color: uiTheme.textPrimary,
-    },
-    legendText: {
-      color: uiTheme.textSecondary,
-    },
-    // Feature selector chips
-    featureSelectorChipText: {
-      color: uiTheme.textSecondary,
-    },
-    featureSelectorChipTextActive: {
-      color: uiTheme.textPrimary,
-    },
-    // Segmented controls (Other tab)
-    segmentOption: {
-      borderColor: uiTheme.border,
-    },
-    segmentOptionActive: {
-      backgroundColor: uiTheme.accentPrimary,
-    },
-    segmentOptionText: {
-      color: uiTheme.textSecondary,
-    },
-    segmentOptionTextActive: {
-      color: uiTheme.textOnAccent,
-    },
-    settingNote: {
-      color: uiTheme.textMuted,
-    },
-  }), [uiTheme]);
-
-  // Satellite tile sets - each file covers specific zoom levels
-  // Format: satellite_z8.mbtiles, satellite_z0-5.mbtiles, etc.
-  const [satelliteTileSets, setSatelliteTileSets] = useState<TileSet[]>([]);
-  
-  // Wrapper for setMapStyle with timing logs
-  const setMapStyle = useCallback((newStyle: MapStyleOption) => {
-    const now = Date.now();
-    logger.info(LogCategory.UI, `Style switch: "${mapStyle}" → "${newStyle}"`);
-    performanceTracker.recordMetric(RuntimeMetric.STYLE_SWITCH);
-    
-    styleSwitchStartRef.current = now;
-    styleSwitchFromRef.current = mapStyle;
-    styleSwitchToRef.current = newStyle;
-    styleSwitchRenderCountRef.current = 0;
-    
-    setMapStyleInternal(newStyle);
-  }, [mapStyle]);
-  
-  // Glyphs URL for local font serving (Noto Sans fonts bundled in assets)
-  const glyphsUrl = 'http://127.0.0.1:8765/fonts/{fontstack}/{range}.pbf';
-  
-  // Get S-52 colors for current mode
-  const s52Colors = useMemo(() => themeService.getS52ColorTable(s52Mode), [s52Mode]);
-  
-  // Basemap color palettes - one palette per vector style, driven by S-52 mode
-  // These are used by the shared VectorSource layers to render Light/Dark/Nautical/Street
-  const basemapPalette = useMemo(() => {
-    const palettes = {
-      light: {
-        bg: '#f5f5f5',
-        water: '#aadaff',
-        waterway: '#aadaff',
-        ice: '#ffffff',
-        grass: '#d8e8c8',
-        wood: '#c5ddb0',
-        wetland: '#d0e8d8',
-        residential: '#eee8e0',
-        industrial: '#e8e0d8',
-        park: '#c8e6c9',
-        building: '#e0d8d0',
-        road: '#ffffff',
-        roadCasing: '#cccccc',
-        text: '#333333',
-        textHalo: '#ffffff',
-        grid: '#c8c8c8',
-        waterText: '#5d8cae',
-        landcoverOpacity: 0.6,
-        buildingOpacity: 0.8,
-        parkOpacity: 0.4,
-        roadNightDim: 1,
-      },
-      dark: {
-        bg: '#1a1a2e',
-        water: '#1a3a5c',
-        waterway: '#1a3a5c',
-        ice: '#303040',
-        grass: '#1a2818',
-        wood: '#142014',
-        wetland: '#152818',
-        residential: '#252028',
-        industrial: '#201c24',
-        park: '#152018',
-        building: '#302830',
-        road: '#444444',
-        roadCasing: '#222222',
-        text: '#cccccc',
-        textHalo: '#1a1a2e',
-        grid: '#404050',
-        waterText: '#4a6a8a',
-        landcoverOpacity: 0.4,
-        buildingOpacity: 0.5,
-        parkOpacity: 0.3,
-        roadNightDim: 0.6,
-      },
-      nautical: {
-        bg: s52Colors.LANDA,
-        water: s52Colors.WATRW,
-        waterway: s52Colors.WATRW,
-        ice: s52Mode === 'day' ? '#ffffff' : s52Mode === 'dusk' ? '#404050' : '#202028',
-        grass: s52Mode === 'day' ? '#d8e8c8' : s52Mode === 'dusk' ? '#2a3a28' : '#181c18',
-        wood: s52Mode === 'day' ? '#c5ddb0' : s52Mode === 'dusk' ? '#283820' : '#141c14',
-        wetland: s52Mode === 'day' ? '#d0e8d8' : s52Mode === 'dusk' ? '#203830' : '#101814',
-        residential: s52Colors.CHBRN,
-        industrial: s52Colors.CHBRN,
-        park: s52Mode === 'day' ? '#c8e6c9' : s52Mode === 'dusk' ? '#203828' : '#101810',
-        building: s52Colors.CHBRN,
-        road: s52Colors.ROADF,
-        roadCasing: s52Colors.ROADC,
-        text: s52Colors.CHBLK,
-        textHalo: s52Mode === 'day' ? '#FFFFFF' : s52Colors.LANDA,
-        grid: s52Colors.CHGRD,
-        waterText: s52Mode === 'day' ? '#5d8cae' : s52Mode === 'dusk' ? '#6080a0' : '#304050',
-        landcoverOpacity: s52Mode === 'day' ? 0.6 : s52Mode === 'dusk' ? 0.3 : 0.1,
-        buildingOpacity: s52Mode === 'day' ? 0.8 : s52Mode === 'dusk' ? 0.4 : 0.15,
-        parkOpacity: s52Mode === 'day' ? 0.4 : s52Mode === 'dusk' ? 0.2 : 0.08,
-        roadNightDim: s52Mode === 'night' ? 0.3 : s52Mode === 'dusk' ? 0.7 : 1,
-      },
-      street: {
-        bg: '#f0ede8',
-        water: '#aadaff',
-        waterway: '#aadaff',
-        ice: '#f0f0f0',
-        grass: '#cde6b8',
-        wood: '#b8d8a0',
-        wetland: '#c0dcc8',
-        residential: '#f0e8e0',
-        industrial: '#e8dcd0',
-        park: '#b8d8a0',
-        building: '#d8d0c0',
-        road: '#fff5c0',
-        roadCasing: '#c8b870',
-        text: '#333333',
-        textHalo: '#ffffff',
-        grid: '#c8c8c8',
-        waterText: '#5d8cae',
-        landcoverOpacity: 0.7,
-        buildingOpacity: 0.85,
-        parkOpacity: 0.5,
-        roadNightDim: 1,
-      },
-    };
-    // Only return palette for vector styles; raster styles don't need one
-    if (mapStyle === 'light' || mapStyle === 'dark' || mapStyle === 'nautical' || mapStyle === 'street') {
-      return palettes[mapStyle];
-    }
-    return palettes.light; // fallback
-  }, [mapStyle, s52Colors, s52Mode]);
-
-  // MapLibre background styles per mode
-  const mapStyleUrls = useMemo<Record<MapStyleOption, object>>(() => ({
-    satellite: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.DEPDW } }] },
-    light: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f5f5f5' } }] },
-    dark: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a1a2e' } }] },
-    nautical: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.LANDA } }] },
-    street: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f0ede8' } }] },
-    ocean: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a3a5c' } }] },
-    terrain: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#dfe6e9' } }] },
-  }), [s52Colors, glyphsUrl]);
-
-  // Debug state
-  const [debugInfo, setDebugInfo] = useState<string>('');
-  const [showDebug, setShowDebug] = useState(false);
-
-  // Debug Map diagnostics - collected on demand
-  const [debugDiagnostics, setDebugDiagnostics] = useState<{
-    timestamp: string;
-    mapStyle: string;
-    s52Mode: string;
-    tileServerReady: boolean;
-    hasLocalBasemap: boolean;
-    hasLocalOcean: boolean;
-    hasLocalTerrain: boolean;
-    gnisAvailable: boolean;
-    useMBTiles: boolean;
-    useCompositeTiles: boolean;
-    tileServerUrl: string;
-    styleJSON: string;
-    gates: { label: string; expression: string; pass: boolean }[];
-    mapLibreSources: { id: string; type: string; urls?: string[] }[];
-    mapLibreLayers: { id: string; type: string; source?: string; sourceLayer?: string; visibility?: string }[];
-    styleError?: string;
-  } | null>(null);
-
-  const runDiagnostics = useCallback(async () => {
-    const serverUrl = tileServer.getTileServerUrl();
-    const currentStyleJSON = JSON.stringify(mapStyleUrls[mapStyle]);
-
-    // Render gate checks
-    const gates = [
-      {
-        label: 'Vector basemap renders',
-        expression: `tileServerReady(${tileServerReady}) && hasLocalBasemap(${hasLocalBasemap}) && isVectorStyle(${isVectorStyle})`,
-        pass: tileServerReady && hasLocalBasemap && isVectorStyle,
-      },
-      {
-        label: 'Ocean source renders',
-        expression: `tileServerReady(${tileServerReady}) && oceanTileSets.length(${oceanTileSets.length}) > 0 && mapStyle === 'ocean'`,
-        pass: tileServerReady && oceanTileSets.length > 0 && mapStyle === 'ocean',
-      },
-      {
-        label: 'Terrain source renders',
-        expression: `tileServerReady(${tileServerReady}) && terrainTileSets.length(${terrainTileSets.length}) > 0 && mapStyle === 'terrain'`,
-        pass: tileServerReady && terrainTileSets.length > 0 && mapStyle === 'terrain',
-      },
-      {
-        label: 'Charts source renders',
-        expression: `useMBTiles(${useMBTiles}) && tileServerReady(${tileServerReady}) && useCompositeTiles(${useCompositeTiles})`,
-        pass: useMBTiles && tileServerReady && useCompositeTiles,
-      },
-      {
-        label: 'Satellite source renders',
-        expression: `tileServerReady(${tileServerReady}) && satelliteTileSets.length(${satelliteTileSets.length}) > 0`,
-        pass: tileServerReady && satelliteTileSets.length > 0,
-      },
-      {
-        label: 'GNIS source renders',
-        expression: `tileServerReady(${tileServerReady}) && gnisAvailable(${gnisAvailable}) && showGNISNames(${showGNISNames}) && showPlaceNames(${showPlaceNames})`,
-        pass: tileServerReady && gnisAvailable && showGNISNames && showPlaceNames,
-      },
-    ];
-
-    // Query MapLibre for the live style
-    let mapLibreSources: { id: string; type: string; urls?: string[] }[] = [];
-    let mapLibreLayers: { id: string; type: string; source?: string; sourceLayer?: string; visibility?: string }[] = [];
-    let styleError: string | undefined;
-
-    try {
-      if (mapRef.current) {
-        // getStyle() returns the current computed style from the native map
-        const style = await mapRef.current.getStyle();
-        if (style) {
-          // Extract sources
-          if (style.sources) {
-            mapLibreSources = Object.entries(style.sources).map(([id, src]: [string, any]) => ({
-              id,
-              type: src.type || 'unknown',
-              urls: src.tiles || src.url ? [...(src.tiles || []), ...(src.url ? [src.url] : [])] : undefined,
-            }));
-          }
-          // Extract layers in render order
-          if (style.layers && Array.isArray(style.layers)) {
-            mapLibreLayers = style.layers.map((layer: any) => ({
-              id: layer.id || '?',
-              type: layer.type || '?',
-              source: layer.source,
-              sourceLayer: layer['source-layer'],
-              visibility: layer.layout?.visibility || 'visible',
-            }));
-          }
-        } else {
-          styleError = 'getStyle() returned null/undefined';
-        }
-      } else {
-        styleError = 'mapRef.current is null';
-      }
-    } catch (e: any) {
-      styleError = `getStyle() error: ${e.message || e}`;
-    }
-
-    setDebugDiagnostics({
-      timestamp: new Date().toISOString(),
-      mapStyle,
-      s52Mode,
-      tileServerReady,
-      hasLocalBasemap,
-      hasLocalOcean,
-      hasLocalTerrain,
-      gnisAvailable,
-      useMBTiles,
-      useCompositeTiles,
-      tileServerUrl: serverUrl,
-      styleJSON: currentStyleJSON.length > 300 ? currentStyleJSON.substring(0, 300) + '...' : currentStyleJSON,
-      gates,
-      mapLibreSources,
-      mapLibreLayers,
-      styleError,
-    });
-  }, [mapStyle, s52Mode, tileServerReady, hasLocalBasemap, hasLocalOcean, hasLocalTerrain, isVectorStyle, gnisAvailable, useMBTiles, useCompositeTiles, satelliteTileSets, oceanTileSets, terrainTileSets, showGNISNames, showPlaceNames, mapStyleUrls]);
   
   // GPS and Navigation state - overlay visibility from context (rendered in App.tsx)
   const { showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails, showDebugMap, setShowDebugMap, showNavData, setShowNavData } = useOverlay();
@@ -1523,7 +853,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     return `${tileServer.getTileServerUrl()}/tiles/{z}/{x}/{y}.pbf`;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tileServerReady]); // Only recalculate if server restarts
-  
+
+  // Create runDiagnostics from hook factory (needs local component state)
+  const runDiagnostics = useMemo(() => createRunDiagnostics({
+    tileServerReady, gnisAvailable, useMBTiles, useCompositeTiles,
+    showGNISNames, showPlaceNames, mapRef,
+  }), [createRunDiagnostics, tileServerReady, gnisAvailable, useMBTiles, useCompositeTiles, showGNISNames, showPlaceNames]);
+
   // Update overlay context with GPS data
   useEffect(() => {
     updateGPSData(gpsData);
@@ -1709,50 +1045,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           const stationsTimestamp = await AsyncStorage.getItem('@XNautical:stationsTimestamp');
           if (stationsTimestamp) {
             const currentStationsTime = parseInt(stationsTimestamp);
-            
+
             if (lastStationsTimeRef.current > 0 && currentStationsTime > lastStationsTimeRef.current) {
               logger.info(LogCategory.CHARTS, 'Station metadata updated - reloading stations');
-              
-              await loadFromStorage();
-              const tides = getCachedTideStations();
-              const currents = getCachedCurrentStations();
-              
-              console.log(`[MAP] Reloaded ${tides.length} tide stations and ${currents.length} current stations after prediction download`);
-              
-              // Filter current stations (highest bin only)
-              const filteredCurrents = (() => {
-                const stationsByLocation = new Map<string, CurrentStation[]>();
-                
-                for (const station of currents) {
-                  const locationKey = `${station.lat.toFixed(4)},${station.lng.toFixed(4)}`;
-                  if (!stationsByLocation.has(locationKey)) {
-                    stationsByLocation.set(locationKey, []);
-                  }
-                  stationsByLocation.get(locationKey)!.push(station);
-                }
-                
-                const result: CurrentStation[] = [];
-                for (const stations of stationsByLocation.values()) {
-                  if (stations.length === 1) {
-                    result.push(stations[0]);
-                  } else {
-                    const highestBin = Math.max(...stations.map(s => s.bin || 0));
-                    const preferredStation = stations.find(s => s.bin === highestBin);
-                    if (preferredStation) {
-                      result.push(preferredStation);
-                    }
-                  }
-                }
-                
-                return result;
-              })();
-              
-              setTideStations(tides);
-              setCurrentStations(filteredCurrents);
-              
-              console.log(`[MAP] Filtered ${currents.length} current stations to ${filteredCurrents.length} (highest bin per location)`);
+              await reloadStations();
             }
-            
+
             lastStationsTimeRef.current = currentStationsTime;
           }
         } catch (error) {
@@ -1765,204 +1063,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }, [satelliteTileSets.length, basemapTileSets.length, oceanTileSets.length, terrainTileSets.length, hasLocalBasemap, gnisAvailable])
   );
 
-  // Load tide and current stations from AsyncStorage on startup
-  // Stations are only loaded AFTER predictions are downloaded
-  // This prevents showing empty station icons before data is available
-  useEffect(() => {
-    const loadStations = async () => {
-      try {
-        console.log('[MAP] Loading stations from AsyncStorage (if available)...');
-        // Load from AsyncStorage without fetching from cloud
-        // Station metadata is saved when predictions are downloaded
-        await loadFromStorage();
-        
-        const tides = getCachedTideStations();
-        const currents = getCachedCurrentStations();
-        
-        // Only show stations if we actually have data
-        if (tides.length === 0 && currents.length === 0) {
-          console.log('[MAP] No station metadata found - download predictions to see stations');
-          setTideStations([]);
-          setCurrentStations([]);
-          return;
-        }
-        
-        console.log(`[MAP] Loaded ${tides.length} tide stations and ${currents.length} current stations from AsyncStorage`);
-        
-        // Filter current stations to only show the highest bin for each station
-        // Higher bin numbers are closer to the surface
-        const filteredCurrents = (() => {
-          // Group stations by base name (location)
-          const stationsByLocation = new Map<string, CurrentStation[]>();
-          
-          for (const station of currents) {
-            // Extract base station identifier - stations at same location share lat/lng
-            // Use lat/lng as key since station names may vary slightly
-            const locationKey = `${station.lat.toFixed(4)},${station.lng.toFixed(4)}`;
-            
-            if (!stationsByLocation.has(locationKey)) {
-              stationsByLocation.set(locationKey, []);
-            }
-            stationsByLocation.get(locationKey)!.push(station);
-          }
-          
-          // For each location, keep only the station with the highest bin number
-          const result: CurrentStation[] = [];
-          for (const stations of stationsByLocation.values()) {
-            // Find station with highest bin (closest to surface)
-            const highestBinStation = stations.reduce((best, current) => 
-              current.bin > best.bin ? current : best
-            );
-            result.push(highestBinStation);
-          }
-          
-          console.log(`[MAP] Filtered ${currents.length} current stations to ${result.length} (highest bin per location)`);
-          return result;
-        })();
-        
-        if (tides.length > 0 || filteredCurrents.length > 0) {
-          logger.info(LogCategory.CHARTS, `Loaded ${tides.length} tide stations and ${filteredCurrents.length} current stations (highest bin only) from storage`);
-          
-          // Log sample coordinates to verify
-          if (tides.length > 0) {
-            console.log('[MAP] Sample tide station:', { 
-              id: tides[0].id, 
-              name: tides[0].name, 
-              lat: tides[0].lat, 
-              lng: tides[0].lng 
-            });
-          }
-          if (filteredCurrents.length > 0) {
-            console.log('[MAP] Sample current station:', { 
-              id: filteredCurrents[0].id, 
-              name: filteredCurrents[0].name, 
-              lat: filteredCurrents[0].lat, 
-              lng: filteredCurrents[0].lng,
-              bin: filteredCurrents[0].bin
-            });
-          }
-          
-          setTideStations(tides);
-          setCurrentStations(filteredCurrents);
-          console.log(`[MAP] Successfully set ${tides.length} tide stations and ${filteredCurrents.length} current stations into state`);
-        } else {
-          console.log('[MAP] No stations in storage - user needs to press "Refresh Tide Data" in Settings');
-        }
-      } catch (error) {
-        logger.error(LogCategory.CHARTS, 'Error loading stations', error as Error);
-        console.error('[MAP] Error loading stations:', error);
-      }
-    };
-    
-    // Load once on mount
-    loadStations();
-  }, []);
-
-  // Calculate station icon states (runs every 15 minutes)
-  useEffect(() => {
-    // Don't run if no stations loaded
-    if (tideStations.length === 0 && currentStations.length === 0) {
-      return;
-    }
-    
-    const updateStationStates = async () => {
-      try {
-        console.log('[MAP] Calculating station icon states...');
-        const states = await calculateAllStationStates(tideStations, currentStations);
-        const iconMaps = createIconNameMap(states);
-        
-        setTideIconMap(iconMaps.tides);
-        setCurrentIconMap(iconMaps.currents);
-        
-        console.log(`[MAP] Updated icon states: ${iconMaps.tides.size} tide, ${iconMaps.currents.size} current`);
-      } catch (error) {
-        console.error('[MAP] Error calculating station states:', error);
-      }
-    };
-    
-    // Calculate immediately
-    updateStationStates();
-    
-    // Set up 15-minute interval
-    const intervalId = setInterval(updateStationStates, 15 * 60 * 1000);
-    
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [tideStations, currentStations]);
-
-  // Load live buoys catalog - try local cache first, fall back to Firestore
-  useEffect(() => {
-    const loadBuoys = async () => {
-      try {
-        console.log('[MAP] Loading live buoys catalog...');
-        // Load buoys from all districts (cache-first, falls back to Firestore)
-        const allBuoys = await getBuoysCatalog();
-        setLiveBuoys(allBuoys);
-        console.log(`[MAP] Loaded ${allBuoys.length} live buoys`);
-      } catch (error) {
-        console.warn('[MAP] Error loading buoys:', error);
-      }
-    };
-    
-    loadBuoys();
-  }, []);
-
-  // Load and subscribe to display settings
-  useEffect(() => {
-    const loadDisplaySettings = async () => {
-      performanceTracker.startPhase(StartupPhase.DISPLAY_SETTINGS);
-      const settings = await displaySettingsService.loadSettings();
-      performanceTracker.endPhase(StartupPhase.DISPLAY_SETTINGS);
-      logger.debug(LogCategory.SETTINGS, 'Display settings loaded');
-      setDisplaySettings(settings);
-    };
-    loadDisplaySettings();
-    
-    // Load saved S-52 theme mode
-    const loadThemeMode = async () => {
-      const savedMode = await themeService.loadSavedMode();
-      setS52ModeInternal(savedMode);
-      setUITheme(themeService.getUITheme(savedMode));
-      logger.debug(LogCategory.SETTINGS, `S-52 display mode loaded: ${savedMode}`);
-    };
-    loadThemeMode();
-    
-    // Subscribe to changes from Settings screen
-    const unsubscribe = displaySettingsService.subscribe((settings) => {
-      logger.debug(LogCategory.SETTINGS, 'Display settings updated via subscription');
-      setDisplaySettings(settings);
-    });
-    
-    // Subscribe to theme mode changes
-    const unsubscribeTheme = themeService.subscribeToModeChanges((mode) => {
-      setS52ModeInternal(mode);
-      setUITheme(themeService.getUITheme(mode));
-      logger.debug(LogCategory.SETTINGS, `S-52 display mode changed: ${mode}`);
-    });
-    
-    return () => {
-      unsubscribe();
-      unsubscribeTheme();
-    };
-  }, []);
-  
-  // === STYLE SWITCH TRACKING: Log when mapStyle state actually updates ===
-  useEffect(() => {
-    if (styleSwitchStartRef.current > 0) {
-      const elapsed = Date.now() - styleSwitchStartRef.current;
-      logger.debug(LogCategory.UI, `Style switch: React state updated to "${mapStyle}" (${elapsed}ms)`);
-    }
-  }, [mapStyle]);
-  
-  // === STYLE SWITCH TRACKING: Log when React commits the render (useLayoutEffect runs sync after DOM mutations) ===
-  useLayoutEffect(() => {
-    if (styleSwitchStartRef.current > 0) {
-      const elapsed = Date.now() - styleSwitchStartRef.current;
-      logger.debug(LogCategory.UI, `Style switch: render committed (${elapsed}ms)`);
-    }
-  }, [mapStyle]);
-  
   // Ref to track if progressive loading is in progress (prevents duplicate runs)
   const progressiveLoadingRef = useRef<boolean>(false);
   

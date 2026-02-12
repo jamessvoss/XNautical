@@ -18,9 +18,12 @@ import {
   Modal,
   TouchableOpacity,
   Dimensions,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import NetInfo from '@react-native-community/netinfo';
+import * as FileSystem from 'expo-file-system/legacy';
 import MapLibre from '@maplibre/maplibre-react-native';
 import {
   REGIONS,
@@ -32,6 +35,7 @@ import {
 } from '../config/regionData';
 import * as chartPackService from '../services/chartPackService';
 import { getInstalledDistricts, type InstalledDistrictRecord } from '../services/regionRegistryService';
+import type { District } from '../types/chartPack';
 import DownloadPanel from './DownloadPanel';
 
 // ============================================
@@ -58,7 +62,6 @@ const OPTIONAL_MAP_OPTIONS = [
   { id: 'basemap', label: 'Basemap', description: 'Light/Dark/Street/Nautical', estimatedSizeMB: 724 },
   { id: 'ocean', label: 'Ocean Map', description: 'ESRI Ocean Basemap', estimatedSizeMB: 400 },
   { id: 'terrain', label: 'Terrain Map', description: 'OpenTopoMap', estimatedSizeMB: 500 },
-  { id: 'gnis', label: 'Place Names', description: 'GNIS overlay', estimatedSizeMB: 60 },
 ];
 
 // ============================================
@@ -69,12 +72,30 @@ export default function RegionSelector({ visible, onClose }: Props) {
   const insets = useSafeAreaInsets();
   const [state, setState] = useState<SelectorState>('selecting');
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
-  const [selectedResolution, setSelectedResolution] = useState<SatelliteResolution>('high');
-  const [selectedOptionalMaps, setSelectedOptionalMaps] = useState<Set<string>>(new Set(['gnis']));
+  const [selectedResolution, setSelectedResolution] = useState<SatelliteResolution>('none');
+  const [selectedOptionalMaps, setSelectedOptionalMaps] = useState<Set<string>>(new Set());
   const cameraRef = useRef<any>(null);
 
   // Track which districts are installed on device
   const [installedDistricts, setInstalledDistricts] = useState<InstalledDistrictRecord[]>([]);
+  
+  // Track loaded district metadata for selected region
+  const [districtData, setDistrictData] = useState<District | null>(null);
+  
+  // Track device storage info
+  const [storageInfo, setStorageInfo] = useState<{
+    totalGB: number;
+    usedGB: number;
+    availableGB: number;
+  } | null>(null);
+  
+  // Track download confirmation modal
+  const [showDownloadConfirm, setShowDownloadConfirm] = useState(false);
+  const [downloadInfo, setDownloadInfo] = useState<{
+    sizeGB: string;
+    isWifi: boolean;
+    isConnected: boolean;
+  } | null>(null);
   
   // Load installed districts when modal opens
   useEffect(() => {
@@ -82,6 +103,34 @@ export default function RegionSelector({ visible, onClose }: Props) {
       getInstalledDistricts().then(setInstalledDistricts).catch(() => {});
     }
   }, [visible, state]);
+  
+  // Load device storage info
+  useEffect(() => {
+    const fetchStorageInfo = async () => {
+      try {
+        console.log('[RegionSelector] Fetching storage info...');
+        const [freeSpace, totalSpace] = await Promise.all([
+          FileSystem.getFreeDiskStorageAsync(),
+          FileSystem.getTotalDiskCapacityAsync(),
+        ]);
+        
+        console.log('[RegionSelector] Storage raw values:', { freeSpace, totalSpace });
+        
+        const totalGB = totalSpace / 1024 / 1024 / 1024;
+        const availableGB = freeSpace / 1024 / 1024 / 1024;
+        const usedGB = totalGB - availableGB;
+        
+        console.log('[RegionSelector] Storage calculated:', { totalGB, usedGB, availableGB });
+        setStorageInfo({ totalGB, usedGB, availableGB });
+      } catch (error) {
+        console.error('[RegionSelector] Error fetching storage info:', error);
+      }
+    };
+    
+    if (visible) {
+      fetchStorageInfo();
+    }
+  }, [visible]);
 
   const selectedRegion = useMemo(
     () => REGIONS.find(r => r.id === selectedRegionId) || null,
@@ -98,8 +147,8 @@ export default function RegionSelector({ visible, onClose }: Props) {
     return installedDistricts.some(d => d.districtId === region.firestoreId);
   }, [installedDistricts]);
 
-  // Can download when region is ready and resolution is chosen
-  const canDownload = !!(selectedRegion && selectedRegion.status === 'converted' && selectedResolution);
+  // Can download when region is ready (satellite is optional now)
+  const canDownload = !!(selectedRegion && selectedRegion.status === 'converted');
 
   // Firestore US1 chart bounds (fetched dynamically, populated by enc-converter)
   const [firestoreBounds, setFirestoreBounds] = useState<
@@ -110,16 +159,27 @@ export default function RegionSelector({ visible, onClose }: Props) {
   useEffect(() => {
     if (!selectedRegion) {
       setFirestoreBounds(null);
+      setDistrictData(null);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
+        console.log(`[RegionSelector] Loading district data for ${selectedRegion.firestoreId}...`);
         const district = await chartPackService.getDistrict(selectedRegion.firestoreId);
-        if (!cancelled && district?.us1ChartBounds && district.us1ChartBounds.length > 0) {
-          setFirestoreBounds(district.us1ChartBounds);
+        console.log(`[RegionSelector] District data loaded:`, district);
+        console.log(`[RegionSelector] District has metadata?`, district?.metadata ? 'YES' : 'NO');
+        if (district?.metadata) {
+          console.log(`[RegionSelector] Metadata:`, JSON.stringify(district.metadata, null, 2));
         }
-      } catch {
+        if (!cancelled) {
+          setDistrictData(district);
+          if (district?.us1ChartBounds && district.us1ChartBounds.length > 0) {
+            setFirestoreBounds(district.us1ChartBounds);
+          }
+        }
+      } catch (error) {
+        console.error('[RegionSelector] Error loading district:', error);
         // Firestore fetch failed -- will fall back to static data
       }
     })();
@@ -244,11 +304,74 @@ export default function RegionSelector({ visible, onClose }: Props) {
     });
   }, []);
 
-  const handleDownloadPress = useCallback(() => {
-    if (canDownload) {
-      setState('downloading');
+  const handleDownloadPress = useCallback(async () => {
+    if (!canDownload || !districtData) return;
+    
+    try {
+      // Calculate total download size
+      const chartPacks = districtData.downloadPacks?.filter(p => p.type === 'charts') || [];
+      const gnisPack = districtData.downloadPacks?.find(p => p.type === 'gnis');
+      let totalBytes = chartPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+      if (gnisPack) totalBytes += gnisPack.sizeBytes;
+      
+      // Add predictions (compressed size from metadata)
+      if (districtData.metadata?.predictionSizes) {
+        totalBytes += (districtData.metadata.predictionSizes.tides || 0);
+        totalBytes += (districtData.metadata.predictionSizes.currents || 0);
+      }
+      
+      // Add selected satellite packs
+      if (selectedResolution !== 'none' && districtData.downloadPacks) {
+        let maxZoom = 8;
+        if (selectedResolution === 'medium') maxZoom = 11;
+        if (selectedResolution === 'high') maxZoom = 12;
+        if (selectedResolution === 'ultra') maxZoom = 14;
+        
+        const satPacks = districtData.downloadPacks.filter(p => {
+          if (p.type !== 'satellite') return false;
+          const zoomMatch = p.id.match(/z(\d+)(?:-(\d+))?/);
+          if (!zoomMatch) return false;
+          const zStart = parseInt(zoomMatch[1]);
+          return zStart <= maxZoom;
+        });
+        
+        totalBytes += satPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+      }
+      
+      // Add selected optional maps
+      if (districtData.downloadPacks) {
+        selectedOptionalMaps.forEach(mapId => {
+          const pack = districtData.downloadPacks.find(p => p.type === mapId);
+          if (pack) totalBytes += pack.sizeBytes;
+        });
+      }
+      
+      const sizeGB = (totalBytes / 1024 / 1024 / 1024).toFixed(2);
+      
+      // Check network connection
+      const netInfo = await NetInfo.fetch();
+      const isWifi = netInfo.type === 'wifi';
+      const isConnected = netInfo.isConnected;
+      
+      // Store download info and show custom modal
+      setDownloadInfo({ sizeGB, isWifi, isConnected: isConnected ?? false });
+      setShowDownloadConfirm(true);
+    } catch (error) {
+      console.error('[RegionSelector] Error checking network:', error);
+      Alert.alert('Error', 'Unable to check network status. Please try again.');
     }
-  }, [canDownload]);
+  }, [canDownload, districtData, selectedResolution, selectedOptionalMaps]);
+  
+  const handleConfirmDownload = useCallback(() => {
+    setShowDownloadConfirm(false);
+    setDownloadInfo(null);
+    setState('downloading');
+  }, []);
+  
+  const handleCancelDownload = useCallback(() => {
+    setShowDownloadConfirm(false);
+    setDownloadInfo(null);
+  }, []);
 
   const handleBackFromDownload = useCallback(() => {
     setState('selecting');
@@ -301,13 +424,120 @@ export default function RegionSelector({ visible, onClose }: Props) {
   const renderInfoOverlay = () => {
     if (!selectedRegion || state === 'downloading') return null;
 
+    console.log(`[RegionSelector] renderInfoOverlay - districtData:`, districtData);
+    console.log(`[RegionSelector] renderInfoOverlay - metadata:`, districtData?.metadata);
+    console.log(`[RegionSelector] renderInfoOverlay - selectedResolution:`, selectedResolution);
+
     const isReady = selectedRegion.status === 'converted';
-    const chartsMB = selectedRegion.estimatedChartSizeMB;
-    const satMB = selectedSatOption ? selectedSatOption.estimatedSizeMB : 0;
-    const optionalMB = OPTIONAL_MAP_OPTIONS
-      .filter(opt => selectedOptionalMaps.has(opt.id))
-      .reduce((sum, opt) => sum + opt.estimatedSizeMB, 0);
-    const totalMB = chartsMB + satMB + optionalMB;
+    
+    // === REQUIRED ITEMS ===
+    
+    // 1. Charts (US1-US6)
+    let chartsMB = selectedRegion.estimatedChartSizeMB; // Fallback
+    if (districtData?.downloadPacks) {
+      const chartPacks = districtData.downloadPacks.filter(p => p.type === 'charts');
+      if (chartPacks.length > 0) {
+        chartsMB = chartPacks.reduce((sum, p) => sum + p.sizeBytes, 0) / 1024 / 1024;
+        console.log(`[RegionSelector] Charts: ${chartsMB.toFixed(1)} MB from ${chartPacks.length} packs`);
+      }
+    }
+    
+    // 2. GNIS Place Names
+    let gnisMB = 60; // Fallback estimate
+    if (districtData?.downloadPacks) {
+      const gnisPack = districtData.downloadPacks.find(p => p.type === 'gnis');
+      if (gnisPack) {
+        gnisMB = gnisPack.sizeBytes / 1024 / 1024;
+        console.log(`[RegionSelector] GNIS: ${gnisMB.toFixed(1)} MB`);
+      }
+    }
+    
+    // 3. Tides (uncompressed size estimate: compressed * 2)
+    let tidesMB = 50; // Fallback estimate
+    if (districtData?.metadata?.predictionSizeMB?.tides) {
+      const compressedMB = districtData.metadata.predictionSizeMB.tides;
+      tidesMB = compressedMB * 2; // Estimate uncompressed
+      console.log(`[RegionSelector] Tides: ${tidesMB.toFixed(1)} MB (uncompressed from ${compressedMB} MB compressed)`);
+    }
+    
+    // 4. Currents (uncompressed size estimate: compressed * 2)
+    let currentsMB = 90; // Fallback estimate
+    if (districtData?.metadata?.predictionSizeMB?.currents) {
+      const compressedMB = districtData.metadata.predictionSizeMB.currents;
+      currentsMB = compressedMB * 2; // Estimate uncompressed
+      console.log(`[RegionSelector] Currents: ${currentsMB.toFixed(1)} MB (uncompressed from ${compressedMB} MB compressed)`);
+    }
+    
+    // 5. Buoys metadata (rough estimate: count * 5KB)
+    let buoysMB = 1; // Fallback estimate
+    if (districtData?.metadata?.buoyCount) {
+      buoysMB = (districtData.metadata.buoyCount * 5 * 1024) / 1024 / 1024;
+      console.log(`[RegionSelector] Buoys: ${buoysMB.toFixed(1)} MB for ${districtData.metadata.buoyCount} buoys`);
+    }
+    
+    // 6. Marine Zones metadata (rough estimate: count * 20KB)
+    let marineZonesMB = 0.5; // Fallback estimate
+    if (districtData?.metadata?.marineZoneCount) {
+      marineZonesMB = (districtData.metadata.marineZoneCount * 20 * 1024) / 1024 / 1024;
+      console.log(`[RegionSelector] Marine Zones: ${marineZonesMB.toFixed(1)} MB for ${districtData.metadata.marineZoneCount} zones`);
+    }
+    
+    const requiredMB = chartsMB + gnisMB + tidesMB + currentsMB + buoysMB + marineZonesMB;
+    
+    // === OPTIONAL ITEMS ===
+    
+    // Satellite (filtered by resolution)
+    let satMB = 0;
+    if (selectedResolution !== 'none' && districtData?.downloadPacks) {
+      let maxZoom = 8; // low
+      if (selectedResolution === 'medium') maxZoom = 11;
+      if (selectedResolution === 'high') maxZoom = 12;
+      if (selectedResolution === 'ultra') maxZoom = 14;
+      
+      console.log(`[RegionSelector] Filtering satellite packs for ${selectedResolution} (z0-${maxZoom})`);
+      
+      const satPacks = districtData.downloadPacks.filter(p => {
+        if (p.type !== 'satellite') return false;
+        const zoomMatch = p.id.match(/z(\d+)(?:-(\d+))?/);
+        if (!zoomMatch) return false;
+        const zStart = parseInt(zoomMatch[1]);
+        const zEnd = zoomMatch[2] ? parseInt(zoomMatch[2]) : zStart;
+        return zStart <= maxZoom;
+      });
+      
+      if (satPacks.length > 0) {
+        satMB = satPacks.reduce((sum, p) => sum + p.sizeBytes, 0) / 1024 / 1024;
+        console.log(`[RegionSelector] Satellite: ${satMB.toFixed(1)} MB from ${satPacks.length} packs`);
+      }
+    }
+    
+    // Other optional maps (using real data from downloadPacks)
+    let optionalMapsMB = 0;
+    if (districtData?.downloadPacks) {
+      OPTIONAL_MAP_OPTIONS.filter(opt => selectedOptionalMaps.has(opt.id)).forEach(opt => {
+        const pack = districtData.downloadPacks.find(p => p.type === opt.id);
+        if (pack) {
+          const sizeMB = pack.sizeBytes / 1024 / 1024;
+          optionalMapsMB += sizeMB;
+          console.log(`[RegionSelector] Optional map ${opt.label}: ${sizeMB.toFixed(1)} MB (real data)`);
+        } else {
+          optionalMapsMB += opt.estimatedSizeMB;
+          console.log(`[RegionSelector] Optional map ${opt.label}: ${opt.estimatedSizeMB.toFixed(1)} MB (estimate - pack not found)`);
+        }
+      });
+    } else {
+      // Fallback to estimates if no downloadPacks data
+      OPTIONAL_MAP_OPTIONS.filter(opt => selectedOptionalMaps.has(opt.id)).forEach(opt => {
+        optionalMapsMB += opt.estimatedSizeMB;
+        console.log(`[RegionSelector] Optional map ${opt.label}: ${opt.estimatedSizeMB.toFixed(1)} MB (estimate - no district data)`);
+      });
+    }
+    
+    const optionalMB = satMB + optionalMapsMB;
+    const totalMB = requiredMB + optionalMB;
+    
+    console.log(`[RegionSelector] Total: Required=${requiredMB.toFixed(1)} Optional=${optionalMB.toFixed(1)} Total=${totalMB.toFixed(1)}`);
+    console.log(`[RegionSelector] renderInfoOverlay - storageInfo:`, storageInfo);
 
     return (
       <View style={styles.infoOverlay} pointerEvents="none">
@@ -317,59 +547,151 @@ export default function RegionSelector({ visible, onClose }: Props) {
           <Text style={styles.infoDescription}>{selectedRegion.description}</Text>
 
           <View style={styles.infoDivider} />
-
+          
+          {/* REQUIRED SECTION */}
+          <Text style={styles.infoSectionTitle}>Required</Text>
+          
           <View style={styles.infoSizeRow}>
-            <Text style={styles.infoSizeLabel}>Charts</Text>
+            <Text style={styles.infoSizeLabel}>Charts (US1-US6)</Text>
             <Text style={styles.infoSizeValue}>{formatSize(chartsMB)}</Text>
           </View>
-          {selectedSatOption && (
-            <View style={styles.infoSizeRow}>
-              <Text style={styles.infoSizeLabel}>Satellite ({selectedSatOption.label})</Text>
-              <Text style={styles.infoSizeValue}>{formatSize(selectedSatOption.estimatedSizeMB)}</Text>
-            </View>
-          )}
-          {OPTIONAL_MAP_OPTIONS.filter(opt => selectedOptionalMaps.has(opt.id)).map(opt => (
-            <View key={opt.id} style={styles.infoSizeRow}>
-              <Text style={styles.infoSizeLabel}>{opt.label}</Text>
-              <Text style={styles.infoSizeValue}>{formatSize(opt.estimatedSizeMB)}</Text>
-            </View>
-          ))}
+          <View style={styles.infoSizeRow}>
+            <Text style={styles.infoSizeLabel}>Place Names</Text>
+            <Text style={styles.infoSizeValue}>{formatSize(gnisMB)}</Text>
+          </View>
+          <View style={styles.infoSizeRow}>
+            <Text style={styles.infoSizeLabel}>Tide Predictions</Text>
+            <Text style={styles.infoSizeValue}>{formatSize(tidesMB)}</Text>
+          </View>
+          <View style={styles.infoSizeRow}>
+            <Text style={styles.infoSizeLabel}>Current Predictions</Text>
+            <Text style={styles.infoSizeValue}>{formatSize(currentsMB)}</Text>
+          </View>
+          <View style={styles.infoSizeRow}>
+            <Text style={styles.infoSizeLabel}>Buoy Metadata</Text>
+            <Text style={styles.infoSizeValue}>{formatSize(buoysMB)}</Text>
+          </View>
+          <View style={styles.infoSizeRow}>
+            <Text style={styles.infoSizeLabel}>Marine Zones</Text>
+            <Text style={styles.infoSizeValue}>{formatSize(marineZonesMB)}</Text>
+          </View>
+          
+          <View style={styles.infoDivider} />
+          
+          {/* OPTIONAL SECTION */}
+          <Text style={styles.infoSectionTitle}>Optional</Text>
+          
+          <View style={styles.infoSizeRow}>
+            <Text style={styles.infoSizeLabel}>Satellite ({selectedResolution === 'none' ? 'None' : SATELLITE_OPTIONS.find(o => o.resolution === selectedResolution)?.label})</Text>
+            <Text style={styles.infoSizeValue}>{satMB > 0 ? formatSize(satMB) : '0 MB'}</Text>
+          </View>
+          {OPTIONAL_MAP_OPTIONS.filter(opt => selectedOptionalMaps.has(opt.id)).map(opt => {
+            // Get real size from downloadPacks or fall back to estimate
+            let optMapMB = opt.estimatedSizeMB;
+            if (districtData?.downloadPacks) {
+              const pack = districtData.downloadPacks.find(p => p.type === opt.id);
+              if (pack) {
+                optMapMB = pack.sizeBytes / 1024 / 1024;
+                console.log(`[RegionSelector] ${opt.label}: ${optMapMB.toFixed(1)} MB (real data)`);
+              } else {
+                console.log(`[RegionSelector] ${opt.label}: ${optMapMB.toFixed(1)} MB (estimate - pack not found)`);
+              }
+            }
+            
+            return (
+              <View key={opt.id} style={styles.infoSizeRow}>
+                <Text style={styles.infoSizeLabel}>{opt.label}</Text>
+                <Text style={styles.infoSizeValue}>{formatSize(optMapMB)}</Text>
+              </View>
+            );
+          })}
 
           <View style={styles.infoDivider} />
           <View style={styles.infoSizeRow}>
-            <Text style={styles.infoTotalLabel}>Total</Text>
+            <Text style={styles.infoTotalLabel}>Total Download</Text>
             <Text style={styles.infoTotalValue}>{formatSize(totalMB)}</Text>
           </View>
 
           <View style={styles.infoDivider} />
 
-          <View style={styles.infoRow}>
-            <Ionicons
-              name={isReady ? 'checkmark-circle' : 'time-outline'}
-              size={12}
-              color={isReady ? '#2ecc71' : '#8888aa'}
-            />
-            <Text style={[styles.infoDetail, { color: isReady ? '#2ecc71' : '#8888aa' }]}>
-              {isReady ? 'Available' : 'Coming soon'}
-            </Text>
-          </View>
+          {/* Storage Info */}
+          {storageInfo && (
+            <View style={styles.infoStorageSection}>
+              <Text style={styles.infoStorageLabel}>Device Storage</Text>
+              <Text style={[
+                styles.infoStorageValue,
+                {
+                  color: storageInfo.availableGB > 5 
+                    ? '#2ecc71'  // Green: plenty of space
+                    : storageInfo.availableGB > 1
+                    ? '#f39c12'  // Yellow: cautious
+                    : '#e74c3c'  // Red: low space
+                }
+              ]}>
+                {storageInfo.availableGB.toFixed(1)} GB available
+              </Text>
+              <Text style={styles.infoStorageDetail}>
+                {storageInfo.usedGB.toFixed(1)} GB used • {storageInfo.totalGB.toFixed(1)} GB total
+              </Text>
+            </View>
+          )}
         </View>
       </View>
     );
   };
 
   // ============================================
-  // Render: Resolution picker (upper-right of map)
+  // Render: Combined optional downloads picker (upper-right of map)
   // ============================================
 
-  const renderResolutionPicker = () => {
-    if (state === 'downloading') return null;
+  const renderOptionalDownloadsPicker = () => {
+    if (state === 'downloading' || !selectedRegion) return null;
+
+    console.log('[RegionSelector] renderOptionalDownloadsPicker - districtData available?', !!districtData);
+    console.log('[RegionSelector] renderOptionalDownloadsPicker - downloadPacks count:', districtData?.downloadPacks?.length || 0);
+
+    // Calculate real satellite sizes for each resolution option
+    const getSatelliteSizeForResolution = (resolution: SatelliteResolution): number => {
+      if (resolution === 'none' || !districtData?.downloadPacks) {
+        console.log(`[RegionSelector] Satellite ${resolution}: no data available, returning 0`);
+        return 0;
+      }
+      
+      let maxZoom = 8; // low
+      if (resolution === 'medium') maxZoom = 11;
+      if (resolution === 'high') maxZoom = 12;
+      if (resolution === 'ultra') maxZoom = 14;
+      
+      const satPacks = districtData.downloadPacks.filter(p => {
+        if (p.type !== 'satellite') return false;
+        const zoomMatch = p.id.match(/z(\d+)(?:-(\d+))?/);
+        if (!zoomMatch) return false;
+        const zStart = parseInt(zoomMatch[1]);
+        return zStart <= maxZoom;
+      });
+      
+      if (satPacks.length === 0) {
+        console.log(`[RegionSelector] Satellite ${resolution} (z0-${maxZoom}): no packs found`);
+        return 0;
+      }
+      
+      const sizeMB = satPacks.reduce((sum, p) => sum + p.sizeBytes, 0) / 1024 / 1024;
+      console.log(`[RegionSelector] Satellite ${resolution} (z0-${maxZoom}): ${sizeMB.toFixed(1)} MB from ${satPacks.length} packs`);
+      return sizeMB;
+    };
 
     return (
-      <View style={styles.resPicker}>
+      <View style={styles.optionalPicker}>
+        {/* Title */}
+        <Text style={styles.optionalPickerTitle}>Optional Maps</Text>
+        
+        {/* Satellite Section */}
         <Text style={styles.resPickerTitle}>SATELLITE</Text>
         {SATELLITE_OPTIONS.map(opt => {
           const isSelected = selectedResolution === opt.resolution;
+          const realSizeMB = getSatelliteSizeForResolution(opt.resolution);
+          const displaySize = realSizeMB > 0 ? realSizeMB : opt.estimatedSizeMB;
+          
           return (
             <TouchableOpacity
               key={opt.resolution}
@@ -380,26 +702,27 @@ export default function RegionSelector({ visible, onClose }: Props) {
               <Text style={[styles.resOptionLabel, isSelected && styles.resOptionLabelSelected]}>
                 {opt.label}
               </Text>
-              <Text style={styles.resOptionSize}>{formatSize(opt.estimatedSizeMB)}</Text>
+              <Text style={styles.resOptionSize}>{formatSize(displaySize)}</Text>
             </TouchableOpacity>
           );
         })}
-      </View>
-    );
-  };
-
-  // ============================================
-  // Render: Optional maps picker (upper-right, below satellite)
-  // ============================================
-
-  const renderOptionalMapsPicker = () => {
-    if (state === 'downloading') return null;
-
-    return (
-      <View style={styles.optMapsPicker}>
-        <Text style={styles.resPickerTitle}>OPTIONAL MAPS</Text>
+        
+        {/* Separator */}
+        <View style={styles.optionalPickerSeparator} />
+        
+        {/* Optional Maps Section */}
         {OPTIONAL_MAP_OPTIONS.map(opt => {
           const isSelected = selectedOptionalMaps.has(opt.id);
+          
+          // Get real size from downloadPacks or fall back to estimate
+          let optMapMB = opt.estimatedSizeMB;
+          if (districtData?.downloadPacks) {
+            const pack = districtData.downloadPacks.find(p => p.type === opt.id);
+            if (pack) {
+              optMapMB = pack.sizeBytes / 1024 / 1024;
+            }
+          }
+          
           return (
             <TouchableOpacity
               key={opt.id}
@@ -417,7 +740,7 @@ export default function RegionSelector({ visible, onClose }: Props) {
                   {opt.label}
                 </Text>
               </View>
-              <Text style={styles.resOptionSize}>{formatSize(opt.estimatedSizeMB)}</Text>
+              <Text style={styles.resOptionSize}>{formatSize(optMapMB)}</Text>
             </TouchableOpacity>
           );
         })}
@@ -548,6 +871,104 @@ export default function RegionSelector({ visible, onClose }: Props) {
   };
 
   // ============================================
+  // Render: Download confirmation modal
+  // ============================================
+
+  const renderDownloadConfirmation = () => {
+    if (!showDownloadConfirm || !downloadInfo) return null;
+
+    const { sizeGB, isWifi, isConnected } = downloadInfo;
+
+    if (!isConnected) {
+      return (
+        <Modal
+          visible={true}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={handleCancelDownload}
+        >
+          <View style={styles.confirmOverlay}>
+            <View style={styles.confirmModal}>
+              <Ionicons name="wifi" size={80} color="#e74c3c" style={{ marginBottom: 20 }} />
+              <Text style={styles.confirmTitle}>No Internet Connection</Text>
+              <Text style={styles.confirmMessage}>
+                You must be connected to the internet to download region data.
+              </Text>
+              <TouchableOpacity style={styles.confirmButtonSingle} onPress={handleCancelDownload}>
+                <Text style={styles.confirmButtonText}>OK</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      );
+    }
+
+    return (
+      <Modal
+        visible={true}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleCancelDownload}
+      >
+        <View style={styles.confirmOverlay}>
+          <View style={styles.confirmModal}>
+            {isWifi ? (
+              <Ionicons name="wifi" size={80} color="#2ecc71" style={{ marginBottom: 20 }} />
+            ) : (
+              <View style={{ marginBottom: 20, alignItems: 'center' }}>
+                <Ionicons name="wifi" size={80} color="#e74c3c" />
+                <View style={styles.wifiSlash} />
+                <Text style={styles.cellularLabel}>Cellular</Text>
+              </View>
+            )}
+            
+            <Text style={styles.confirmTitle}>
+              {isWifi ? 'Download Region Data' : 'Cellular Data Warning'}
+            </Text>
+            
+            <View style={styles.confirmSizeBox}>
+              <Text style={styles.confirmSizeLabel}>Download Size</Text>
+              <Text style={styles.confirmSizeValue}>{sizeGB} GB</Text>
+            </View>
+            
+            {isWifi ? (
+              <Text style={styles.confirmMessage}>
+                You are about to download {sizeGB} GB of data over WiFi.{'\n\n'}
+                This will take a few minutes depending on your connection speed.
+              </Text>
+            ) : (
+              <Text style={styles.confirmMessage}>
+                You are about to download {sizeGB} GB of data over your cellular connection.{'\n\n'}
+                This will use a significant amount of your data plan and may take considerable time.{'\n\n'}
+                <Text style={{ fontWeight: '700', color: '#f39c12' }}>
+                  We strongly recommend connecting to WiFi first.
+                </Text>
+              </Text>
+            )}
+            
+            <View style={styles.confirmButtons}>
+              <TouchableOpacity 
+                style={styles.confirmButtonCancel} 
+                onPress={handleCancelDownload}
+              >
+                <Text style={styles.confirmButtonCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.confirmButtonDownload, !isWifi && styles.confirmButtonWarning]} 
+                onPress={handleConfirmDownload}
+              >
+                <Text style={styles.confirmButtonText}>
+                  {isWifi ? 'Download' : 'Download Anyway'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
+  // ============================================
   // Render: Bottom panel
   // ============================================
 
@@ -571,17 +992,18 @@ export default function RegionSelector({ visible, onClose }: Props) {
   // ============================================
 
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="fullScreen"
-      onRequestClose={onClose}
-    >
-      <View style={styles.container}>
-        {renderHeader()}
+    <>
+      <Modal
+        visible={visible}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={onClose}
+      >
+        <View style={styles.container}>
+          {renderHeader()}
 
-        {/* Map fills remaining space */}
-        <View style={styles.mapContainer}>
+          {/* Map fills remaining space */}
+          <View style={styles.mapContainer}>
           <MapLibre.MapView
             style={styles.map}
             styleURL="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
@@ -608,11 +1030,8 @@ export default function RegionSelector({ visible, onClose }: Props) {
           {/* Info overlay - upper left */}
           {renderInfoOverlay()}
 
-          {/* Resolution picker - upper right */}
-          {renderResolutionPicker()}
-
-          {/* Optional maps picker - upper right, below satellite */}
-          {renderOptionalMapsPicker()}
+          {/* Optional downloads picker - upper right */}
+          {renderOptionalDownloadsPicker()}
         </View>
 
         {/* Bottom Panel */}
@@ -621,6 +1040,10 @@ export default function RegionSelector({ visible, onClose }: Props) {
         </View>
       </View>
     </Modal>
+    
+    {/* Download confirmation modal */}
+    {renderDownloadConfirmation()}
+    </>
   );
 }
 
@@ -685,7 +1108,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 25, 35, 0.92)',
     borderRadius: 10,
     overflow: 'hidden',
-    maxWidth: 200,
+    maxWidth: 180,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
   },
@@ -711,6 +1134,14 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
     marginVertical: 6,
   },
+  infoSectionTitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: 'rgba(255, 255, 255, 0.4)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
   infoSizeRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -718,21 +1149,21 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   infoSizeLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: 'rgba(255, 255, 255, 0.55)',
   },
   infoSizeValue: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '600',
     color: 'rgba(255, 255, 255, 0.8)',
   },
   infoTotalLabel: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
     color: 'rgba(255, 255, 255, 0.8)',
   },
   infoTotalValue: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
     color: '#ffffff',
   },
@@ -745,9 +1176,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: 'rgba(255, 255, 255, 0.6)',
   },
+  infoStorageSection: {
+    marginTop: 2,
+  },
+  infoStorageLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginBottom: 2,
+  },
+  infoStorageValue: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 1,
+  },
+  infoStorageDetail: {
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.4)',
+  },
 
-  // Resolution picker (upper-right of map)
-  resPicker: {
+  // Combined optional downloads picker (upper-right of map)
+  optionalPicker: {
     position: 'absolute',
     top: 10,
     right: 10,
@@ -756,7 +1205,14 @@ const styles = StyleSheet.create({
     padding: 8,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
-    width: 150,
+    width: 170,
+  },
+  optionalPickerTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 8,
+    textAlign: 'center',
   },
   resPickerTitle: {
     fontSize: 9,
@@ -765,6 +1221,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     marginBottom: 5,
     textAlign: 'center',
+  },
+  optionalPickerSeparator: {
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    marginVertical: 8,
   },
   resOption: {
     flexDirection: 'row',
@@ -791,19 +1252,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: 'rgba(255, 255, 255, 0.4)',
     marginLeft: 8,
-  },
-
-  // Optional maps picker (upper-right of map, below satellite)
-  optMapsPicker: {
-    position: 'absolute',
-    top: 138,
-    right: 10,
-    backgroundColor: 'rgba(15, 25, 35, 0.92)',
-    borderRadius: 10,
-    padding: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    width: 150,
   },
 
   // Bottom Panel
@@ -904,5 +1352,123 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: 'rgba(255, 255, 255, 0.35)',
+  },
+  
+  // Download confirmation modal
+  confirmOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  confirmModal: {
+    backgroundColor: '#1a1f2e',
+    borderRadius: 16,
+    padding: 30,
+    width: '100%',
+    maxWidth: 400,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(79, 195, 247, 0.3)',
+  },
+  wifiSlash: {
+    position: 'absolute',
+    width: 100,
+    height: 3,
+    backgroundColor: '#e74c3c',
+    transform: [{ rotate: '45deg' }],
+    top: 38,
+  },
+  cellularLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#e74c3c',
+    marginTop: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  confirmTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#ffffff',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  confirmSizeBox: {
+    backgroundColor: 'rgba(79, 195, 247, 0.1)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+    width: '100%',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(79, 195, 247, 0.3)',
+  },
+  confirmSizeLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.5)',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  confirmSizeValue: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#4FC3F7',
+  },
+  confirmMessage: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: 'rgba(255, 255, 255, 0.75)',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  confirmButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+  },
+  confirmButtonCancel: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 10,
+    padding: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  confirmButtonCancelText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.7)',
+    textAlign: 'center',
+  },
+  confirmButtonDownload: {
+    flex: 1,
+    backgroundColor: '#2ecc71',
+    borderRadius: 10,
+    padding: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmButtonWarning: {
+    backgroundColor: '#e74c3c',
+  },
+  confirmButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+    textAlign: 'center',
+  },
+  confirmButtonSingle: {
+    backgroundColor: '#4FC3F7',
+    borderRadius: 10,
+    padding: 14,
+    alignItems: 'center',
+    width: '100%',
+    marginTop: 10,
   },
 });

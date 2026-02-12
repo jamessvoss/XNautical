@@ -478,6 +478,9 @@ async function downloadAndExtractDatabase(
       throw new Error('Download failed - no result returned');
     }
     
+    // Notify extraction starting
+    onProgress?.(100); // Show 100% to indicate download complete, extraction starting
+    
     // Extract
     const targetDirectory = FileSystem.documentDirectory;
     if (!targetDirectory) {
@@ -515,8 +518,14 @@ export async function downloadAllPredictions(
     
     const updateProgress = () => {
       const combinedProgress = Math.round((tidesProgress + currentsProgress) / 2);
-      const uiPercent = 10 + Math.round(combinedProgress * 0.8); // 10-90%
-      onProgress?.(`Downloading... Tides: ${tidesProgress}%, Currents: ${currentsProgress}%`, uiPercent);
+      
+      // If both at 100%, we're extracting
+      if (tidesProgress === 100 && currentsProgress === 100) {
+        onProgress?.('Extracting databases...', 90);
+      } else {
+        const uiPercent = 10 + Math.round(combinedProgress * 0.8); // 10-90%
+        onProgress?.(`Downloading... Tides: ${tidesProgress}%, Currents: ${currentsProgress}%`, uiPercent);
+      }
     };
     
     onProgress?.('Downloading prediction databases...', 10);

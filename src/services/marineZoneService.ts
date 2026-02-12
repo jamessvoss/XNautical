@@ -5,10 +5,15 @@
  * Multi-district architecture:
  * - Zones are stored under districts/{districtId}/marine-zones
  * - Forecasts are stored under districts/{districtId}/marine-forecasts
+ * 
+ * Offline support:
+ * - Zone boundaries cached in AsyncStorage per district
+ * - Forecasts require online access (live data)
  */
 
 import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 import { firestore } from '../config/firebase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export interface MarineZone {
   id: string;
@@ -52,7 +57,11 @@ export interface MarineForecast {
   districtId?: string;
 }
 
-// Cache for zone data (per district)
+// AsyncStorage keys
+const MARINE_ZONES_KEY = (districtId: string) => `@XNautical:marineZones:${districtId}`;
+const MARINE_ZONES_DOWNLOADED_KEY = (districtId: string) => `@XNautical:marineZonesDownloaded:${districtId}`;
+
+// Cache for zone data (per district) - in-memory
 const zonesCache: Record<string, MarineZone[]> = {};
 const zonesCacheTime: Record<string, number> = {};
 const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
@@ -84,14 +93,33 @@ export async function getMarineZoneSummaries(districtId: string): Promise<Marine
 
 /**
  * Get all marine zones with full geometry for a district
+ * Tries AsyncStorage cache first, then Firestore if online
  * @param districtId District ID (e.g., '17cgd', '07cgd')
  */
 export async function getMarineZones(districtId: string): Promise<MarineZone[]> {
-  // Check cache
+  // Check in-memory cache first
   if (zonesCache[districtId] && Date.now() - (zonesCacheTime[districtId] || 0) < CACHE_DURATION) {
     return zonesCache[districtId];
   }
   
+  // Try loading from AsyncStorage (offline support)
+  try {
+    const cachedData = await AsyncStorage.getItem(MARINE_ZONES_KEY(districtId));
+    if (cachedData) {
+      const zones: MarineZone[] = JSON.parse(cachedData);
+      console.log(`[Marine] Loaded ${zones.length} zones from AsyncStorage for ${districtId}`);
+      
+      // Update in-memory cache
+      zonesCache[districtId] = zones;
+      zonesCacheTime[districtId] = Date.now();
+      
+      return zones;
+    }
+  } catch (error) {
+    console.warn(`[Marine] Error loading zones from AsyncStorage for ${districtId}:`, error);
+  }
+  
+  // Fetch from Firestore if not cached
   try {
     const zonesRef = collection(firestore, 'districts', districtId, 'marine-zones');
     const snapshot = await getDocs(zonesRef);
@@ -111,13 +139,23 @@ export async function getMarineZones(districtId: string): Promise<MarineZone[]> 
       };
     });
     
-    // Update cache
+    console.log(`[Marine] Fetched ${zones.length} zones from Firestore for ${districtId}`);
+    
+    // Update both caches
     zonesCache[districtId] = zones;
     zonesCacheTime[districtId] = Date.now();
     
+    // Save to AsyncStorage for offline access
+    try {
+      await AsyncStorage.setItem(MARINE_ZONES_KEY(districtId), JSON.stringify(zones));
+      console.log(`[Marine] Saved ${zones.length} zones to AsyncStorage for ${districtId}`);
+    } catch (storageError) {
+      console.warn(`[Marine] Could not save zones to AsyncStorage:`, storageError);
+    }
+    
     return zones;
   } catch (error) {
-    console.error(`Error fetching marine zones for ${districtId}:`, error);
+    console.error(`[Marine] Error fetching marine zones for ${districtId}:`, error);
     return [];
   }
 }
@@ -205,5 +243,123 @@ export function formatForecastTime(isoString: string): string {
     });
   } catch {
     return isoString;
+  }
+}
+
+// ============================================
+// Download & Cache Functions
+// ============================================
+
+/**
+ * Download and cache marine zone boundaries for a district.
+ * Fetches all zone data from Firestore and stores in AsyncStorage.
+ * Called during the district download flow.
+ */
+export async function downloadMarineZones(
+  districtId: string,
+  onProgress?: (message: string, percent: number) => void
+): Promise<{ success: boolean; zoneCount: number; error?: string }> {
+  try {
+    onProgress?.('Fetching marine zone boundaries...', 10);
+
+    // Fetch zones from Firestore
+    const zonesRef = collection(firestore, 'districts', districtId, 'marine-zones');
+    const snapshot = await getDocs(zonesRef);
+
+    if (snapshot.empty) {
+      // No zones for this district - still mark as downloaded (empty)
+      await AsyncStorage.setItem(MARINE_ZONES_KEY(districtId), JSON.stringify([]));
+      await AsyncStorage.setItem(MARINE_ZONES_DOWNLOADED_KEY(districtId), JSON.stringify({
+        downloadedAt: new Date().toISOString(),
+        zoneCount: 0,
+      }));
+      onProgress?.('No marine zones found for this district', 100);
+      return { success: true, zoneCount: 0 };
+    }
+
+    onProgress?.(`Processing ${snapshot.size} marine zones...`, 40);
+
+    const zones = snapshot.docs.map(doc => {
+      const data = doc.data();
+      // Parse geometry from JSON string
+      const geometry = JSON.parse(data.geometryJson);
+      
+      return {
+        id: data.id,
+        name: data.name,
+        wfo: data.wfo,
+        centroid: data.centroid,
+        geometry,
+        districtId: districtId
+      };
+    });
+
+    onProgress?.(`Caching ${zones.length} marine zone boundaries...`, 70);
+
+    // Cache to AsyncStorage
+    await AsyncStorage.setItem(MARINE_ZONES_KEY(districtId), JSON.stringify(zones));
+    await AsyncStorage.setItem(MARINE_ZONES_DOWNLOADED_KEY(districtId), JSON.stringify({
+      downloadedAt: new Date().toISOString(),
+      zoneCount: zones.length,
+    }));
+
+    // Update in-memory cache
+    zonesCache[districtId] = zones;
+    zonesCacheTime[districtId] = Date.now();
+
+    onProgress?.(`${zones.length} marine zones cached`, 100);
+    return { success: true, zoneCount: zones.length };
+  } catch (error: any) {
+    console.error(`[Marine] Error downloading zones for ${districtId}:`, error);
+    return { success: false, zoneCount: 0, error: error.message || 'Download failed' };
+  }
+}
+
+/**
+ * Check if marine zones are downloaded for a district
+ */
+export async function areMarineZonesDownloaded(districtId: string): Promise<boolean> {
+  try {
+    const metadata = await AsyncStorage.getItem(MARINE_ZONES_DOWNLOADED_KEY(districtId));
+    return metadata !== null;
+  } catch (error) {
+    console.error(`[Marine] Error checking zones download status for ${districtId}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Clear cached marine zones for a district
+ */
+export async function clearMarineZones(districtId: string): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(MARINE_ZONES_KEY(districtId));
+    await AsyncStorage.removeItem(MARINE_ZONES_DOWNLOADED_KEY(districtId));
+    
+    // Clear in-memory cache
+    delete zonesCache[districtId];
+    delete zonesCacheTime[districtId];
+    
+    console.log(`[Marine] Cleared marine zones for ${districtId}`);
+  } catch (error) {
+    console.error(`[Marine] Error clearing zones for ${districtId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Get metadata about downloaded marine zones
+ */
+export async function getMarineZoneMetadata(districtId: string): Promise<{
+  downloadedAt: string;
+  zoneCount: number;
+} | null> {
+  try {
+    const metadata = await AsyncStorage.getItem(MARINE_ZONES_DOWNLOADED_KEY(districtId));
+    if (!metadata) return null;
+    return JSON.parse(metadata);
+  } catch (error) {
+    console.error(`[Marine] Error getting zone metadata for ${districtId}:`, error);
+    return null;
   }
 }

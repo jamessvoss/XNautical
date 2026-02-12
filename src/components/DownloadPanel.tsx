@@ -37,6 +37,11 @@ import {
   areBuoysDownloaded,
   clearBuoys,
 } from '../services/buoyService';
+import {
+  downloadMarineZones,
+  areMarineZonesDownloaded,
+  clearMarineZones,
+} from '../services/marineZoneService';
 import type { Region, SatelliteResolution } from '../config/regionData';
 import { SATELLITE_OPTIONS } from '../config/regionData';
 import type { District, DistrictDownloadPack, PackDownloadStatus } from '../types/chartPack';
@@ -67,6 +72,8 @@ interface DownloadCategory {
 // ============================================
 
 export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: Props) {
+  console.log('[DownloadPanel] Component rendering, region:', region?.firestoreId);
+  
   const [loading, setLoading] = useState(true);
   const [districtData, setDistrictData] = useState<District | null>(null);
   const [installedPackIds, setInstalledPackIds] = useState<string[]>([]);
@@ -79,20 +86,31 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
   const [predictionsDownloaded, setPredictionsDownloaded] = useState(false);
   const [downloadingPredictions, setDownloadingPredictions] = useState(false);
   const [predictionsPercent, setPredictionsPercent] = useState(0);
+  const [predictionsMessage, setPredictionsMessage] = useState('');
 
   // Buoys state
   const [buoysDownloaded, setBuoysDownloaded] = useState(false);
   const [downloadingBuoys, setDownloadingBuoys] = useState(false);
   const [buoysPercent, setBuoysPercent] = useState(0);
+  const [buoysMessage, setBuoysMessage] = useState('');
+
+  // Marine zones state
+  const [marineZonesDownloaded, setMarineZonesDownloaded] = useState(false);
+  const [downloadingMarineZones, setDownloadingMarineZones] = useState(false);
+  const [marineZonesPercent, setMarineZonesPercent] = useState(0);
+  const [marineZonesMessage, setMarineZonesMessage] = useState('');
 
   const firestoreId = region?.firestoreId || '';
+  console.log('[DownloadPanel] firestoreId:', firestoreId);
 
   // ============================================
   // Load data
   // ============================================
 
   useEffect(() => {
+    console.log('[DownloadPanel] useEffect triggered, region:', region?.firestoreId);
     if (region) {
+      console.log('[DownloadPanel] Calling loadData()');
       loadData();
     }
   }, [region]);
@@ -103,7 +121,13 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       setLoading(true);
 
       // Load district data from Firestore
+      console.log(`[DownloadPanel] Loading district data for ${region.firestoreId}...`);
       const data = await chartPackService.getDistrict(region.firestoreId);
+      console.log(`[DownloadPanel] District data loaded:`, data);
+      console.log(`[DownloadPanel] District has metadata?`, data?.metadata ? 'YES' : 'NO');
+      if (data?.metadata) {
+        console.log(`[DownloadPanel] Metadata contents:`, JSON.stringify(data.metadata, null, 2));
+      }
       setDistrictData(data);
 
       // Check installed packs
@@ -117,6 +141,10 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       // Check buoys status
       const buoysDl = await areBuoysDownloaded(region.firestoreId);
       setBuoysDownloaded(buoysDl);
+
+      // Check marine zones status
+      const marineZonesDl = await areMarineZonesDownloaded(region.firestoreId);
+      setMarineZonesDownloaded(marineZonesDl);
     } catch (error) {
       console.error('[DownloadPanel] Error loading data:', error);
     } finally {
@@ -130,6 +158,9 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
 
   const categories = useMemo((): DownloadCategory[] => {
     if (!districtData?.downloadPacks) return [];
+
+    console.log(`[DownloadPanel] Building categories from districtData`);
+    console.log(`[DownloadPanel] districtData.metadata:`, districtData.metadata);
 
     const packs = districtData.downloadPacks;
     const cats: DownloadCategory[] = [];
@@ -152,26 +183,76 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
     }
 
     // Predictions (required - not a Firestore pack, handled separately)
+    // Try to get actual size from district metadata
+    let predictionSize = 48 * 1024 * 1024; // Default estimate
+    if (districtData.downloadPacks) {
+      // Check if metadata includes prediction sizes
+      const metadataAny = districtData as any;
+      console.log(`[DownloadPanel] Checking prediction sizes from metadata...`);
+      console.log(`[DownloadPanel] metadataAny.metadata:`, metadataAny.metadata);
+      if (metadataAny.metadata?.predictionSizes) {
+        const predSizes = metadataAny.metadata.predictionSizes;
+        console.log(`[DownloadPanel] Found prediction sizes:`, predSizes);
+        predictionSize = (predSizes.tides || 0) + (predSizes.currents || 0);
+        console.log(`[DownloadPanel] Calculated prediction size:`, predictionSize, 'bytes');
+      } else {
+        console.log(`[DownloadPanel] No prediction sizes in metadata, using default estimate`);
+      }
+    }
+    
     cats.push({
       id: 'predictions',
       label: 'Predictions (Tides & Currents)',
       description: 'Tide and current prediction data',
       icon: 'water',
-      sizeBytes: 48 * 1024 * 1024, // ~48 MB estimate
+      sizeBytes: predictionSize,
       required: true,
       installed: predictionsDownloaded,
       packs: [],
     });
 
     // Live Buoys (required - cached from Firestore for offline use)
+    // Try to get actual count from district metadata
+    let buoySize = 1 * 1024 * 1024; // Default estimate
+    const metadataAny = districtData as any;
+    console.log(`[DownloadPanel] Checking buoy count from metadata...`);
+    console.log(`[DownloadPanel] metadataAny.metadata?.buoyCount:`, metadataAny.metadata?.buoyCount);
+    if (metadataAny.metadata?.buoyCount) {
+      // Rough estimate: 5 KB per buoy station
+      buoySize = metadataAny.metadata.buoyCount * 5 * 1024;
+      console.log(`[DownloadPanel] Calculated buoy size:`, buoySize, 'bytes for', metadataAny.metadata.buoyCount, 'buoys');
+    }
+    
     cats.push({
       id: 'buoys',
       label: 'Live Buoys',
       description: 'Weather buoy locations & observations',
       icon: 'radio-outline',
-      sizeBytes: 1 * 1024 * 1024, // ~1 MB estimate (small catalog)
+      sizeBytes: buoySize,
       required: true,
       installed: buoysDownloaded,
+      packs: [],
+    });
+
+    // Marine Zone Boundaries (required - for offline weather zone display)
+    // Try to get actual count from district metadata
+    let marineZoneSize = 0.5 * 1024 * 1024; // Default estimate
+    console.log(`[DownloadPanel] Checking marine zone count from metadata...`);
+    console.log(`[DownloadPanel] metadataAny.metadata?.marineZoneCount:`, metadataAny.metadata?.marineZoneCount);
+    if (metadataAny.metadata?.marineZoneCount) {
+      // Rough estimate: 20 KB per zone (includes geometry)
+      marineZoneSize = metadataAny.metadata.marineZoneCount * 20 * 1024;
+      console.log(`[DownloadPanel] Calculated marine zone size:`, marineZoneSize, 'bytes for', metadataAny.metadata.marineZoneCount, 'zones');
+    }
+    
+    cats.push({
+      id: 'marine-zones',
+      label: 'Marine Zone Boundaries',
+      description: 'Weather forecast zone boundaries',
+      icon: 'map-outline',
+      sizeBytes: marineZoneSize,
+      required: true,
+      installed: marineZonesDownloaded,
       packs: [],
     });
 
@@ -272,7 +353,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
 
 
     return cats;
-  }, [districtData, installedPackIds, satelliteResolution, predictionsDownloaded, buoysDownloaded, selectedOptionalMaps]);
+  }, [districtData, installedPackIds, satelliteResolution, predictionsDownloaded, buoysDownloaded, marineZonesDownloaded, selectedOptionalMaps]);
 
   // ============================================
   // Total size calculation
@@ -288,9 +369,64 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
 
   const allInstalled = installedCount === categories.length;
 
+  // Split categories into required and optional
+  const requiredCategories = useMemo(() => {
+    return categories.filter(c => c.required);
+  }, [categories]);
+
+  const optionalCategories = useMemo(() => {
+    return categories.filter(c => !c.required);
+  }, [categories]);
+
+  const requiredSizeBytes = useMemo(() => {
+    return requiredCategories.reduce((sum, cat) => sum + cat.sizeBytes, 0);
+  }, [requiredCategories]);
+
+  const optionalSizeBytes = useMemo(() => {
+    return optionalCategories.reduce((sum, cat) => sum + cat.sizeBytes, 0);
+  }, [optionalCategories]);
+
   // ============================================
   // Download handlers
   // ============================================
+
+  // Helper to format category size for display
+  const formatCategorySize = (cat: DownloadCategory): string => {
+    const metadataAny = districtData as any;
+    
+    console.log(`[DownloadPanel] formatCategorySize called for ${cat.id}`);
+    
+    // Special formatting for metadata-based categories
+    if (cat.id === 'buoys') {
+      const count = metadataAny.metadata?.buoyCount;
+      console.log(`[DownloadPanel] Formatting buoys - count:`, count);
+      return count ? `${count} buoys` : '? buoys';
+    }
+    
+    if (cat.id === 'marine-zones') {
+      const count = metadataAny.metadata?.marineZoneCount;
+      console.log(`[DownloadPanel] Formatting marine zones - count:`, count);
+      return count ? `${count} zones` : '? zones';
+    }
+    
+    if (cat.id === 'predictions') {
+      const predSizes = metadataAny.metadata?.predictionSizeMB;
+      console.log(`[DownloadPanel] Formatting predictions - sizes:`, predSizes);
+      if (predSizes?.tides && predSizes?.currents) {
+        return `Tides ${predSizes.tides}MB • Currents ${predSizes.currents}MB`;
+      }
+    }
+    
+    // Standard size formatting
+    const mb = cat.sizeBytes / 1024 / 1024;
+    if (mb >= 1024) {
+      return `${(mb / 1024).toFixed(1)}GB`;
+    } else if (mb < 1) {
+      return `${(cat.sizeBytes / 1024).toFixed(0)}KB`;
+    } else {
+      return `${mb.toFixed(0)}MB`;
+    }
+  };
 
   const handleDownloadAll = async () => {
     if (downloadingAll || packDownloadStatus) {
@@ -338,12 +474,15 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
           setCurrentDownloadItem('Predictions');
           setDownloadingPredictions(true);
           setPredictionsPercent(0);
+          setPredictionsMessage('');
 
           const result = await downloadAllPredictions((message, percent) => {
             setPredictionsPercent(percent);
+            setPredictionsMessage(message);
           }, firestoreId);
 
           setDownloadingPredictions(false);
+          setPredictionsMessage('');
           if (result.success) {
             setPredictionsDownloaded(true);
           }
@@ -355,14 +494,37 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
           setCurrentDownloadItem('Live Buoys');
           setDownloadingBuoys(true);
           setBuoysPercent(0);
+          setBuoysMessage('');
 
           const result = await downloadBuoyCatalog(firestoreId, (message, percent) => {
             setBuoysPercent(percent);
+            setBuoysMessage(message);
           });
 
           setDownloadingBuoys(false);
+          setBuoysMessage('');
           if (result.success) {
             setBuoysDownloaded(true);
+          }
+          continue;
+        }
+
+        if (category.id === 'marine-zones') {
+          // Handle marine zones separately
+          setCurrentDownloadItem('Marine Zone Boundaries');
+          setDownloadingMarineZones(true);
+          setMarineZonesPercent(0);
+          setMarineZonesMessage('');
+
+          const result = await downloadMarineZones(firestoreId, (message, percent) => {
+            setMarineZonesPercent(percent);
+            setMarineZonesMessage(message);
+          });
+
+          setDownloadingMarineZones(false);
+          setMarineZonesMessage('');
+          if (result.success) {
+            setMarineZonesDownloaded(true);
           }
           continue;
         }
@@ -392,6 +554,8 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       setPredictionsDownloaded(predDownloaded);
       const buoysDl = await areBuoysDownloaded(firestoreId);
       setBuoysDownloaded(buoysDl);
+      const marineZonesDl = await areMarineZonesDownloaded(firestoreId);
+      setMarineZonesDownloaded(marineZonesDl);
 
       // Register this district in the region registry
       const { registerDistrict } = await import('../services/regionRegistryService');
@@ -399,6 +563,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
         hasCharts: installed.some(id => id.startsWith('charts-')),
         hasPredictions: predDownloaded,
         hasBuoys: buoysDl,
+        hasMarineZones: marineZonesDl,
         hasSatellite: installed.some(id => id.startsWith('satellite-')),
         hasBasemap: installed.includes('basemap'),
         hasGnis: installed.includes('gnis'),
@@ -435,6 +600,11 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
 
     if (category.id === 'buoys') {
       handleDownloadBuoys();
+      return;
+    }
+
+    if (category.id === 'marine-zones') {
+      handleDownloadMarineZones();
       return;
     }
 
@@ -495,9 +665,11 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
             onPress: async () => {
               setDownloadingPredictions(true);
               setPredictionsPercent(0);
+              setPredictionsMessage('');
               try {
                 const result = await downloadAllPredictions((message, percent) => {
                   setPredictionsPercent(percent);
+                  setPredictionsMessage(message);
                 }, firestoreId);
                 if (result.success) {
                   setPredictionsDownloaded(true);
@@ -512,6 +684,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               } finally {
                 setDownloadingPredictions(false);
                 setPredictionsPercent(0);
+                setPredictionsMessage('');
               }
             },
           },
@@ -533,9 +706,11 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
           onPress: async () => {
             setDownloadingBuoys(true);
             setBuoysPercent(0);
+            setBuoysMessage('');
             try {
               const result = await downloadBuoyCatalog(firestoreId, (message, percent) => {
                 setBuoysPercent(percent);
+                setBuoysMessage(message);
               });
               if (result.success) {
                 setBuoysDownloaded(true);
@@ -550,6 +725,45 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
             } finally {
               setDownloadingBuoys(false);
               setBuoysPercent(0);
+              setBuoysMessage('');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDownloadMarineZones = async () => {
+    Alert.alert(
+      'Download Marine Zone Boundaries',
+      'Download weather forecast zone boundaries for offline display?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Download',
+          onPress: async () => {
+            setDownloadingMarineZones(true);
+            setMarineZonesPercent(0);
+            setMarineZonesMessage('');
+            try {
+              const result = await downloadMarineZones(firestoreId, (message, percent) => {
+                setMarineZonesPercent(percent);
+                setMarineZonesMessage(message);
+              });
+              if (result.success) {
+                setMarineZonesDownloaded(true);
+                const { registerDistrict } = await import('../services/regionRegistryService');
+                await registerDistrict(firestoreId, { hasMarineZones: true });
+                Alert.alert('Complete', `${result.zoneCount} marine zone boundaries cached.`);
+              } else {
+                Alert.alert('Error', result.error || 'Download failed');
+              }
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Download failed');
+            } finally {
+              setDownloadingMarineZones(false);
+              setMarineZonesPercent(0);
+              setMarineZonesMessage('');
             }
           },
         },
@@ -594,6 +808,29 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               try {
                 await clearBuoys(firestoreId);
                 setBuoysDownloaded(false);
+              } catch (error: any) {
+                Alert.alert('Error', error.message || 'Delete failed');
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    if (category.id === 'marine-zones') {
+      Alert.alert(
+        'Delete Marine Zone Boundaries',
+        'Delete cached marine zone boundaries?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await clearMarineZones(firestoreId);
+                setMarineZonesDownloaded(false);
               } catch (error: any) {
                 Alert.alert('Error', error.message || 'Delete failed');
               }
@@ -652,6 +889,9 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               // Clear buoy data
               await clearBuoys(firestoreId);
               
+              // Clear marine zone boundaries
+              await clearMarineZones(firestoreId);
+              
               // Unregister from the region registry
               await unregisterDistrict(firestoreId);
               
@@ -659,6 +899,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               setInstalledPackIds([]);
               setPredictionsDownloaded(false);
               setBuoysDownloaded(false);
+              setMarineZonesDownloaded(false);
               
               const freedMB = result.freedBytes / 1024 / 1024;
               Alert.alert(
@@ -701,17 +942,38 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
   }
 
   const regionName = region?.name || 'Region';
-  const isDownloading = downloadingAll || !!packDownloadStatus || downloadingPredictions || downloadingBuoys;
+  const isDownloading = downloadingAll || !!packDownloadStatus || downloadingPredictions || downloadingBuoys || downloadingMarineZones;
 
   return (
     <ScrollView style={styles.scrollContainer} showsVerticalScrollIndicator={false}>
       {/* Region header */}
       <View style={styles.regionHeader}>
         <Text style={styles.regionName}>{regionName}</Text>
+        
+        {/* Required downloads summary */}
         <Text style={styles.regionSummary}>
-          {categories.find(c => c.id === 'charts')?.packs.length || 0} chart packs |{' '}
-          ~{(totalSizeBytes / 1024 / 1024 / 1024).toFixed(1)} GB total
+          Required ({requiredCategories.length} items • {(requiredSizeBytes / 1024 / 1024 / 1024).toFixed(1)} GB)
         </Text>
+        <Text style={styles.regionDetailsSummary}>
+          {requiredCategories.map(cat => {
+            const size = formatCategorySize(cat);
+            // Simplify label for compact display
+            const label = cat.id === 'charts' ? 'Charts' :
+                         cat.id === 'predictions' ? '' : // Special handling - size includes both
+                         cat.id === 'gnis' ? 'GNIS' :
+                         cat.id === 'buoys' ? 'Buoys' :
+                         cat.id === 'marine-zones' ? 'Zones' :
+                         cat.label;
+            return label ? `${label}: ${size}` : size;
+          }).join(' • ')}
+        </Text>
+        
+        {/* Optional downloads summary */}
+        {optionalCategories.length > 0 && (
+          <Text style={styles.regionOptionalSummary}>
+            Optional: {optionalCategories.map(c => c.label).join(', ')} ({(optionalSizeBytes / 1024 / 1024 / 1024).toFixed(1)} GB)
+          </Text>
+        )}
       </View>
 
       {/* Category items */}
@@ -719,6 +981,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
         const isThisDownloading =
           (category.id === 'predictions' && downloadingPredictions) ||
           (category.id === 'buoys' && downloadingBuoys) ||
+          (category.id === 'marine-zones' && downloadingMarineZones) ||
           (category.packs.some(p => packDownloadStatus?.packId === p.id));
         const sizeMB = category.sizeBytes / 1024 / 1024;
 
@@ -756,13 +1019,35 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               {isThisDownloading ? (
                 <View style={styles.progressContainer}>
                   <ActivityIndicator size="small" color="#4FC3F7" />
-                  <Text style={styles.progressText}>
-                    {category.id === 'predictions'
-                      ? `${predictionsPercent}%`
-                      : category.id === 'buoys'
-                      ? `${buoysPercent}%`
-                      : `${packDownloadStatus?.progress || 0}%`}
-                  </Text>
+                  <View style={styles.progressInfo}>
+                    <Text style={styles.progressText}>
+                      {category.id === 'predictions'
+                        ? `${predictionsPercent}%`
+                        : category.id === 'buoys'
+                        ? `${buoysPercent}%`
+                        : category.id === 'marine-zones'
+                        ? `${marineZonesPercent}%`
+                        : `${packDownloadStatus?.progress || 0}%`}
+                    </Text>
+                    {/* Show status message */}
+                    {category.id === 'predictions' && predictionsMessage ? (
+                      <Text style={styles.statusText}>{predictionsMessage}</Text>
+                    ) : category.id === 'buoys' && buoysMessage ? (
+                      <Text style={styles.statusText}>{buoysMessage}</Text>
+                    ) : category.id === 'marine-zones' && marineZonesMessage ? (
+                      <Text style={styles.statusText}>{marineZonesMessage}</Text>
+                    ) : packDownloadStatus?.status ? (
+                      <Text style={styles.statusText}>
+                        {packDownloadStatus.status === 'downloading'
+                          ? 'Downloading...'
+                          : packDownloadStatus.status === 'extracting'
+                          ? 'Extracting...'
+                          : packDownloadStatus.status === 'completed'
+                          ? 'Complete'
+                          : ''}
+                      </Text>
+                    ) : null}
+                  </View>
                 </View>
               ) : category.installed ? (
                 <>
@@ -856,9 +1141,20 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
             {isDownloading ? (
               <>
                 <ActivityIndicator size="small" color="#ffffff" />
-                <Text style={styles.downloadAllText}>
-                  Downloading {currentDownloadItem}...
-                </Text>
+                <View style={styles.downloadAllTextContainer}>
+                  <Text style={styles.downloadAllText}>
+                    {currentDownloadItem || 'Downloading...'}
+                  </Text>
+                  {packDownloadStatus?.status && (
+                    <Text style={styles.downloadAllStatus}>
+                      {packDownloadStatus.status === 'downloading'
+                        ? `Downloading ${packDownloadStatus.progress}%`
+                        : packDownloadStatus.status === 'extracting'
+                        ? `Extracting ${packDownloadStatus.progress}%`
+                        : packDownloadStatus.status}
+                    </Text>
+                  )}
+                </View>
               </>
             ) : (
               <>
@@ -954,6 +1250,17 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.5)',
     marginTop: 4,
   },
+  regionDetailsSummary: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  regionOptionalSummary: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.4)',
+    marginTop: 4,
+  },
 
   // Category items
   categoryItem: {
@@ -1027,10 +1334,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
   },
+  progressInfo: {
+    flexDirection: 'column',
+  },
   progressText: {
     fontSize: 12,
     color: '#4FC3F7',
     fontWeight: '600',
+  },
+  statusText: {
+    fontSize: 10,
+    color: 'rgba(79, 195, 247, 0.7)',
+    marginTop: 1,
   },
 
   // Satellite resolution
@@ -1135,10 +1450,19 @@ const styles = StyleSheet.create({
   downloadAllButtonDisabled: {
     backgroundColor: 'rgba(79, 195, 247, 0.4)',
   },
+  downloadAllTextContainer: {
+    flexDirection: 'column',
+    alignItems: 'center',
+  },
   downloadAllText: {
     fontSize: 16,
     fontWeight: '700',
     color: '#ffffff',
+  },
+  downloadAllStatus: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.8)',
+    marginTop: 2,
   },
   allInstalledBanner: {
     flexDirection: 'row',

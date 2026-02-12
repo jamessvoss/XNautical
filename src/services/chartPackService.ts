@@ -202,12 +202,60 @@ export async function getTileSourcesForPack(
 /**
  * Fetch district information from Firestore.
  * Includes available download packs with sizes and storage paths.
+ * 
+ * First tries to load pre-generated metadata from Storage ({districtId}/download-metadata.json).
+ * Falls back to Firestore district document if metadata file doesn't exist.
  */
 export async function getDistrict(districtId: string): Promise<District | null> {
   try {
     const { firestore } = await import('../config/firebase');
     const { doc, getDoc } = await import('firebase/firestore');
     
+    // Try to load pre-generated metadata from Storage first
+    try {
+      // Use direct public URL to avoid getDownloadURL auth issues
+      const bucketName = 'xnautical-8a296.firebasestorage.app';
+      const metadataPath = `${districtId}/download-metadata.json`;
+      const encodedPath = encodeURIComponent(metadataPath);
+      const metadataUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
+      
+      console.log(`[ChartPackService] Fetching metadata from: ${metadataUrl}`);
+      const response = await fetch(metadataUrl);
+      
+      if (response.ok) {
+        const metadata = await response.json();
+        console.log(`[ChartPackService] Loaded pre-generated metadata for ${districtId} with ${metadata.downloadPacks?.length || 0} packs`);
+        console.log(`[ChartPackService] Metadata object:`, JSON.stringify(metadata.metadata, null, 2));
+        
+        // Fetch basic district info from Firestore for non-download fields
+        const districtRef = doc(firestore, 'districts', districtId);
+        const districtSnap = await getDoc(districtRef);
+        const districtData = districtSnap.exists() ? districtSnap.data() : {};
+        
+        // Merge metadata with Firestore data
+        const result = {
+          code: metadata.code || districtData.code || '',
+          name: metadata.name || districtData.name || districtId,
+          timezone: districtData.timezone || '',
+          defaultCenter: districtData.defaultCenter || [0, 0],
+          bounds: districtData.bounds || { west: 0, east: 0, south: 0, north: 0 },
+          states: districtData.states || [],
+          downloadPacks: metadata.downloadPacks || [],
+          us1ChartBounds: districtData.us1ChartBounds,
+          metadata: metadata.metadata, // Include metadata for buoy/zone counts and prediction sizes
+        };
+        console.log(`[ChartPackService] Returning district with metadata:`, result.metadata ? 'YES' : 'NO');
+        console.log(`[ChartPackService] Metadata details:`, result.metadata);
+        return result;
+      } else {
+        console.log(`[ChartPackService] Metadata fetch returned ${response.status}, falling back to Firestore`);
+      }
+    } catch (metadataError) {
+      console.log(`[ChartPackService] Error loading metadata for ${districtId}:`, metadataError);
+      console.log(`[ChartPackService] Falling back to Firestore`);
+    }
+    
+    // Fallback: Load from Firestore
     const districtRef = doc(firestore, 'districts', districtId);
     const snapshot = await getDoc(districtRef);
     
@@ -449,6 +497,8 @@ export async function downloadPack(
     if (!dirInfo.exists) {
       await FileSystem.makeDirectoryAsync(mbtilesDir, { intermediates: true });
     }
+    
+    console.log(`[ChartPackService] Extracting ${compressedPath} to ${mbtilesDir}...`);
     
     // Extract the zip file
     await unzip(compressedPath, mbtilesDir);

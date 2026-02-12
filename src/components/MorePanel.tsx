@@ -143,7 +143,9 @@ export default function MorePanel({ visible, onClose, onCloseComplete }: Props) 
           <TouchableOpacity
             style={styles.actionButton}
             onPress={() => {
-              // TODO: Open settings
+              console.log('[MorePanel] Settings button pressed');
+              setContextView('settings');
+              onClose();
             }}
           >
             <Ionicons name="settings" size={24} color="#4FC3F7" />

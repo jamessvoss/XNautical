@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py /app/server.py
 
 # Cloud Run entrypoint
-# - 1 worker (async handles concurrency internally)
+# - 2 workers so /status can respond while /generate runs (separate GILs)
 # - Long timeout for large downloads (up to 2 hours)
 ENV PORT=8080
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 4 --timeout 7200 server:app
+CMD exec gunicorn --bind :$PORT --workers 2 --threads 4 --timeout 7200 server:app

@@ -18,6 +18,7 @@ import logging
 import tempfile
 import shutil
 import sqlite3
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime, timezone
@@ -135,6 +136,17 @@ def main():
         upload_start = datetime.now(timezone.utc)
         blob = bucket.blob(storage_path)
         blob.upload_from_filename(str(output_path), timeout=600)
+
+        # Zip and upload for app download
+        zip_path = Path(output_dir) / f'{scale}.mbtiles.zip'
+        with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(str(output_path), f'{scale}.mbtiles')
+        zip_storage_path = f'{district_label}/charts/{scale}.mbtiles.zip'
+        zip_blob = bucket.blob(zip_storage_path)
+        zip_blob.upload_from_filename(str(zip_path), timeout=600)
+        zip_size = zip_path.stat().st_size / 1024 / 1024
+        logger.info(f'  Uploaded zip: {size_mb:.1f} → {zip_size:.1f} MB -> {zip_storage_path}')
+
         upload_duration = (datetime.now(timezone.utc) - upload_start).total_seconds()
         
         # Compute checksum
