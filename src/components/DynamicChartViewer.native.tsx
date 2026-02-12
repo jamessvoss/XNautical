@@ -2523,7 +2523,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                       5, s52Colors.DEPMD,    // 5-10m - medium deep
                       10, s52Colors.DEPDW,   // 10m+ - deep water
                     ],
-                fillOpacity: mapStyle === 'satellite' ? scaledDepthAreaOpacitySatellite : scaledDepthAreaOpacity,
+                fillOpacity: mapStyle === 'satellite' 
+                  ? scaledDepthAreaOpacitySatellite 
+                  : mapStyle === 'street' 
+                    ? 0 
+                    : scaledDepthAreaOpacity,
                 visibility: (showDepthAreas && mapStyle !== 'satellite') ? 'visible' : 'none',
               }}
             />
@@ -2535,7 +2539,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['==', ['get', 'OBJL'], 71]}
               style={{
                 fillColor: mapStyle === 'ecdis' ? '#F0E9D2' : s52Colors.LANDA, // Traditional buff/tan for ECDIS
-                fillOpacity: mapStyle === 'satellite' ? 0.2 : 1,
+                fillOpacity: mapStyle === 'satellite' 
+                  ? 0.2 
+                  : mapStyle === 'street' 
+                    ? 0 
+                    : 1,
                 visibility: (showLand && mapStyle !== 'satellite') ? 'visible' : 'none',
               }}
             />
