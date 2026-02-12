@@ -166,7 +166,7 @@ export function useMapConfiguration() {
         waterText: '#4a6a8a', landcoverOpacity: 0.4, buildingOpacity: 0.5,
         parkOpacity: 0.3, roadNightDim: 0.6,
       },
-      nautical: {
+      ecdis: {
         bg: s52Colors.LANDA, water: s52Colors.WATRW, waterway: s52Colors.WATRW,
         ice: s52Mode === 'day' ? '#ffffff' : s52Mode === 'dusk' ? '#404050' : '#202028',
         grass: s52Mode === 'day' ? '#d8e8c8' : s52Mode === 'dusk' ? '#2a3a28' : '#181c18',
@@ -201,7 +201,7 @@ export function useMapConfiguration() {
         roadNightDim: 1,
       },
     };
-    if (mapStyle === 'light' || mapStyle === 'dark' || mapStyle === 'nautical' || mapStyle === 'street') {
+    if (mapStyle === 'light' || mapStyle === 'dark' || mapStyle === 'ecdis' || mapStyle === 'street') {
       return palettes[mapStyle];
     }
     return palettes.light; // fallback
