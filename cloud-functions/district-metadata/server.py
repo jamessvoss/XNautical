@@ -309,12 +309,13 @@ def generate_metadata():
                    f'{metadata["totalSizeGB"]} GB total')
         logger.info(f'Saved to Storage: {metadata_path}')
         
-        # Also update Firestore district document with downloadPacks
+        # Also update Firestore district document with downloadPacks and conversion status
         district_ref.set({
             'downloadPacks': download_packs,
             'totalDownloadSizeBytes': total_size,
             'metadataPath': metadata_path,
             'metadataGeneratedAt': firestore.SERVER_TIMESTAMP,
+            'conversionStatus': 'completed',  # Mark district as fully converted
         }, merge=True)
         
         return jsonify({

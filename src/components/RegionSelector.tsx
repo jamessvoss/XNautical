@@ -570,26 +570,36 @@ export default function RegionSelector({ visible, onClose }: Props) {
     
     // Satellite (filtered by resolution)
     let satMB = 0;
-    if (selectedResolution !== 'none' && districtData?.downloadPacks) {
-      let maxZoom = 8; // low
-      if (selectedResolution === 'medium') maxZoom = 11;
-      if (selectedResolution === 'high') maxZoom = 12;
-      if (selectedResolution === 'ultra') maxZoom = 14;
-      
-      console.log(`[RegionSelector] Filtering satellite packs for ${selectedResolution} (z0-${maxZoom})`);
-      
-      const satPacks = districtData.downloadPacks.filter(p => {
-        if (p.type !== 'satellite') return false;
-        const zoomMatch = p.id.match(/z(\d+)(?:-(\d+))?/);
-        if (!zoomMatch) return false;
-        const zStart = parseInt(zoomMatch[1]);
-        const zEnd = zoomMatch[2] ? parseInt(zoomMatch[2]) : zStart;
-        return zStart <= maxZoom;
-      });
-      
-      if (satPacks.length > 0) {
-        satMB = satPacks.reduce((sum, p) => sum + p.sizeBytes, 0) / 1024 / 1024;
-        console.log(`[RegionSelector] Satellite: ${satMB.toFixed(1)} MB from ${satPacks.length} packs`);
+    if (selectedResolution !== 'none') {
+      if (districtData?.downloadPacks) {
+        // Use real data from Firebase Storage
+        let maxZoom = 8; // low
+        if (selectedResolution === 'medium') maxZoom = 11;
+        if (selectedResolution === 'high') maxZoom = 12;
+        if (selectedResolution === 'ultra') maxZoom = 14;
+        
+        console.log(`[RegionSelector] Filtering satellite packs for ${selectedResolution} (z0-${maxZoom})`);
+        
+        const satPacks = districtData.downloadPacks.filter(p => {
+          if (p.type !== 'satellite') return false;
+          const zoomMatch = p.id.match(/z(\d+)(?:[-_](\d+))?/);
+          if (!zoomMatch) return false;
+          const zStart = parseInt(zoomMatch[1]);
+          const zEnd = zoomMatch[2] ? parseInt(zoomMatch[2]) : zStart;
+          return zStart <= maxZoom;
+        });
+        
+        if (satPacks.length > 0) {
+          satMB = satPacks.reduce((sum, p) => sum + p.sizeBytes, 0) / 1024 / 1024;
+          console.log(`[RegionSelector] Satellite: ${satMB.toFixed(1)} MB from ${satPacks.length} packs`);
+        }
+      } else {
+        // Fall back to estimates for pending regions
+        const satOption = SATELLITE_OPTIONS.find(o => o.resolution === selectedResolution);
+        if (satOption) {
+          satMB = satOption.estimatedSizeMB;
+          console.log(`[RegionSelector] Satellite (estimate): ${satMB.toFixed(1)} MB for ${selectedResolution}`);
+        }
       }
     }
     
@@ -746,7 +756,7 @@ export default function RegionSelector({ visible, onClose }: Props) {
       
       const satPacks = districtData.downloadPacks.filter(p => {
         if (p.type !== 'satellite') return false;
-        const zoomMatch = p.id.match(/z(\d+)(?:-(\d+))?/);
+        const zoomMatch = p.id.match(/z(\d+)(?:[-_](\d+))?/);
         if (!zoomMatch) return false;
         const zStart = parseInt(zoomMatch[1]);
         return zStart <= maxZoom;
