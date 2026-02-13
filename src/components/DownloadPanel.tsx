@@ -54,6 +54,7 @@ interface Props {
   region: Region | null;
   onBack: () => void;
   selectedOptionalMaps?: Set<string>;
+  autoStartDownload?: boolean;  // Auto-start download when panel opens
 }
 
 interface DownloadCategory {
@@ -71,7 +72,7 @@ interface DownloadCategory {
 // Component
 // ============================================
 
-export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: Props) {
+export default function DownloadPanel({ region, onBack, selectedOptionalMaps, autoStartDownload }: Props) {
   console.log('[DownloadPanel] Component rendering, region:', region?.firestoreId);
   
   const [loading, setLoading] = useState(true);
@@ -81,6 +82,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
   const [packDownloadStatus, setPackDownloadStatus] = useState<PackDownloadStatus | null>(null);
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [currentDownloadItem, setCurrentDownloadItem] = useState<string>('');
+  const [hasIncompleteDownloads, setHasIncompleteDownloads] = useState(false);
 
   // Predictions state
   const [predictionsDownloaded, setPredictionsDownloaded] = useState(false);
@@ -104,6 +106,37 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
   console.log('[DownloadPanel] firestoreId:', firestoreId);
 
   // ============================================
+  // Check for incomplete downloads
+  // ============================================
+
+  useEffect(() => {
+    checkForIncompleteDownloads();
+  }, [firestoreId]);
+
+  const checkForIncompleteDownloads = async () => {
+    if (!firestoreId) return;
+    
+    try {
+      const { downloadManager } = await import('../services/downloadManager');
+      const incomplete = await downloadManager.getIncompleteDownloads(firestoreId);
+      setHasIncompleteDownloads(incomplete.length > 0);
+    } catch (error) {
+      console.error('[DownloadPanel] Error checking incomplete downloads:', error);
+    }
+  };
+
+  const handleResumeDownloads = async () => {
+    try {
+      const { downloadManager } = await import('../services/downloadManager');
+      await downloadManager.resumeAllForDistrict(firestoreId);
+      setDownloadingAll(true);
+      setHasIncompleteDownloads(false);
+    } catch (error) {
+      console.error('[DownloadPanel] Error resuming downloads:', error);
+    }
+  };
+
+  // ============================================
   // Load data
   // ============================================
 
@@ -114,6 +147,17 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       loadData();
     }
   }, [region]);
+
+  // Auto-start download if requested
+  useEffect(() => {
+    if (autoStartDownload && !loading && districtData && !downloadingAll) {
+      console.log('[DownloadPanel] Auto-starting download...');
+      // Small delay to ensure UI is ready
+      setTimeout(() => {
+        executeDownloadAll();
+      }, 500);
+    }
+  }, [autoStartDownload, loading, districtData, downloadingAll]);
 
   const loadData = async () => {
     if (!region) return;
@@ -162,13 +206,16 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
     console.log(`[DownloadPanel] Building categories from districtData`);
     console.log(`[DownloadPanel] districtData.metadata:`, districtData.metadata);
 
+    // Decompression ratio: MBTiles and SQLite compress to ~50%, so 2x for decompressed size
+    const DECOMPRESSION_RATIO = 2.0;
+
     const packs = districtData.downloadPacks;
     const cats: DownloadCategory[] = [];
 
     // Charts (US1-US6) - grouped as one required package
     const chartPacks = packs.filter(p => p.type === 'charts');
     if (chartPacks.length > 0) {
-      const totalSize = chartPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+      const totalSize = chartPacks.reduce((sum, p) => sum + (p.sizeBytes * DECOMPRESSION_RATIO), 0);
       const allInstalled = chartPacks.every(p => installedPackIds.includes(p.id));
       cats.push({
         id: 'charts',
@@ -193,8 +240,8 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       if (metadataAny.metadata?.predictionSizes) {
         const predSizes = metadataAny.metadata.predictionSizes;
         console.log(`[DownloadPanel] Found prediction sizes:`, predSizes);
-        predictionSize = (predSizes.tides || 0) + (predSizes.currents || 0);
-        console.log(`[DownloadPanel] Calculated prediction size:`, predictionSize, 'bytes');
+        predictionSize = ((predSizes.tides || 0) + (predSizes.currents || 0)) * DECOMPRESSION_RATIO;
+        console.log(`[DownloadPanel] Calculated prediction size (decompressed):`, predictionSize, 'bytes');
       } else {
         console.log(`[DownloadPanel] No prediction sizes in metadata, using default estimate`);
       }
@@ -259,7 +306,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
     // GNIS Place Names (required - small overlay)
     const gnisPacks = packs.filter(p => p.type === 'gnis');
     if (gnisPacks.length > 0) {
-      const totalSize = gnisPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+      const totalSize = gnisPacks.reduce((sum, p) => sum + (p.sizeBytes * DECOMPRESSION_RATIO), 0);
       const allInstalled = gnisPacks.every(p => installedPackIds.includes(p.id));
       cats.push({
         id: 'gnis',
@@ -277,10 +324,24 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
     const satellitePacks = packs.filter(p => p.type === 'satellite');
     if (satellitePacks.length > 0) {
       const selectedOption = SATELLITE_OPTIONS.find(o => o.resolution === satelliteResolution);
-      const relevantPacks = satellitePacks; // All satellite packs available
-      const totalSize = selectedOption
-        ? selectedOption.estimatedSizeMB * 1024 * 1024
-        : relevantPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+      
+      // Calculate actual size from packs based on resolution
+      let maxZoom = 8;
+      if (satelliteResolution === 'medium') maxZoom = 11;
+      if (satelliteResolution === 'high') maxZoom = 12;
+      if (satelliteResolution === 'ultra') maxZoom = 14;
+      
+      const relevantPacks = satellitePacks.filter(p => {
+        // Match patterns like: satellite-z0-5, satellite_z0-5, satellite-z8, satellite_z14
+        const zoomMatch = p.id.match(/z(\d+)(?:[-_](\d+))?/);
+        if (!zoomMatch) return false;
+        
+        const zStart = parseInt(zoomMatch[1]);
+        // Include if zoom range starts at or below our max zoom
+        return zStart <= maxZoom;
+      });
+      
+      const totalSize = relevantPacks.reduce((sum, p) => sum + (p.sizeBytes * DECOMPRESSION_RATIO), 0);
       const anyInstalled = relevantPacks.some(p => installedPackIds.includes(p.id));
       cats.push({
         id: 'satellite',
@@ -298,7 +359,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
     if (!selectedOptionalMaps || selectedOptionalMaps.has('basemap')) {
       const basemapPacks = packs.filter(p => p.type === 'basemap');
       if (basemapPacks.length > 0) {
-        const totalSize = basemapPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+        const totalSize = basemapPacks.reduce((sum, p) => sum + (p.sizeBytes * DECOMPRESSION_RATIO), 0);
         const allInstalled = basemapPacks.every(p => installedPackIds.includes(p.id));
         cats.push({
           id: 'basemap',
@@ -317,7 +378,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
     if (!selectedOptionalMaps || selectedOptionalMaps.has('ocean')) {
       const oceanPacks = packs.filter(p => p.type === 'ocean');
       if (oceanPacks.length > 0) {
-        const totalSize = oceanPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+        const totalSize = oceanPacks.reduce((sum, p) => sum + (p.sizeBytes * DECOMPRESSION_RATIO), 0);
         const allInstalled = oceanPacks.every(p => installedPackIds.includes(p.id));
         cats.push({
           id: 'ocean',
@@ -336,7 +397,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
     if (!selectedOptionalMaps || selectedOptionalMaps.has('terrain')) {
       const terrainPacks = packs.filter(p => p.type === 'terrain');
       if (terrainPacks.length > 0) {
-        const totalSize = terrainPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+        const totalSize = terrainPacks.reduce((sum, p) => sum + (p.sizeBytes * DECOMPRESSION_RATIO), 0);
         const allInstalled = terrainPacks.every(p => installedPackIds.includes(p.id));
         cats.push({
           id: 'terrain',
@@ -976,6 +1037,23 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
         )}
       </View>
 
+      {/* Resume incomplete downloads banner */}
+      {hasIncompleteDownloads && !downloadingAll && (
+        <View style={styles.resumeBanner}>
+          <Ionicons name="pause-circle" size={24} color="#FFA726" />
+          <View style={styles.resumeBannerText}>
+            <Text style={styles.resumeBannerTitle}>Incomplete Downloads</Text>
+            <Text style={styles.resumeBannerSubtitle}>You have paused downloads</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.resumeBannerButton}
+            onPress={handleResumeDownloads}
+          >
+            <Text style={styles.resumeBannerButtonText}>Resume</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Category items */}
       {categories.map(category => {
         const isThisDownloading =
@@ -1516,5 +1594,43 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#ff6b6b',
+  },
+
+  // Resume banner
+  resumeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 167, 38, 0.1)',
+    borderRadius: 12,
+    padding: 14,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 167, 38, 0.3)',
+    gap: 12,
+  },
+  resumeBannerText: {
+    flex: 1,
+  },
+  resumeBannerTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFA726',
+    marginBottom: 2,
+  },
+  resumeBannerSubtitle: {
+    fontSize: 12,
+    color: 'rgba(255, 167, 38, 0.7)',
+  },
+  resumeBannerButton: {
+    backgroundColor: '#FFA726',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  resumeBannerButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0a0e1a',
   },
 });

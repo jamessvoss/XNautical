@@ -1061,6 +1061,7 @@ export default function RegionSelector({ visible, onClose }: Props) {
             region={selectedRegion}
             onBack={handleBackFromDownload}
             selectedOptionalMaps={selectedOptionalMaps}
+            autoStartDownload={true}
           />
         </View>
       );
