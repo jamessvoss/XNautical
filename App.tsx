@@ -2,7 +2,7 @@ console.log('[App.tsx] Module loading started...');
 
 import React, { useState, useEffect, useRef, useMemo, Component, ErrorInfo, ReactNode } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, View, Text, Platform, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { StyleSheet, View, Text, Platform, ActivityIndicator, TouchableOpacity, AppState, Modal } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NavigationContainer, NavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -210,9 +210,10 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
 
 // Wrapper components to handle navigation props
 function ViewerTab() {
+  const { setShowDownloads } = useOverlay();
   console.log('[ViewerTab] Rendering...');
   if (!DynamicChartViewer) return null;
-  return <DynamicChartViewer />;
+  return <DynamicChartViewer onNavigateToDownloads={() => setShowDownloads(true)} />;
 }
 
 function WeatherTab() {
@@ -295,6 +296,63 @@ function AppContent() {
   console.log('[AppContent] Initializing...');
   const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [showResumeDialog, setShowResumeDialog] = useState(false);
+  const [pausedDownloadsCount, setPausedDownloadsCount] = useState(0);
+
+  // Initialize download manager and restore state
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+
+    const initDownloadManager = async () => {
+      try {
+        const { downloadManager } = await import('./src/services/downloadManager');
+        await downloadManager.loadState();
+        const incomplete = await downloadManager.getIncompleteDownloads();
+        
+        if (incomplete.length > 0) {
+          console.log(`[App] Found ${incomplete.length} incomplete downloads`);
+        }
+      } catch (error) {
+        console.error('[App] Error initializing download manager:', error);
+      }
+    };
+
+    initDownloadManager();
+  }, []);
+
+  // Monitor app state for background/foreground transitions
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+
+    const subscription = AppState.addEventListener('change', async (nextAppState) => {
+      if (nextAppState === 'background') {
+        // App is going to background - pause all downloads
+        try {
+          const { downloadManager } = await import('./src/services/downloadManager');
+          await downloadManager.pauseAll();
+          console.log('[App] Paused all downloads - app backgrounded');
+        } catch (error) {
+          console.error('[App] Error pausing downloads:', error);
+        }
+      } else if (nextAppState === 'active') {
+        // App returned to foreground - check for paused downloads
+        try {
+          const { downloadManager } = await import('./src/services/downloadManager');
+          const paused = await downloadManager.getPausedDownloads();
+          
+          if (paused.length > 0) {
+            console.log(`[App] Found ${paused.length} paused downloads`);
+            setPausedDownloadsCount(paused.length);
+            setShowResumeDialog(true);
+          }
+        } catch (error) {
+          console.error('[App] Error checking paused downloads:', error);
+        }
+      }
+    });
+    
+    return () => subscription.remove();
+  }, []);
 
   // Initialize Crashlytics and listen for auth state changes
   useEffect(() => {
@@ -329,6 +387,21 @@ function AppContent() {
     });
     return unsubscribe;
   }, []);
+
+  const handleResumeAll = async () => {
+    try {
+      const { downloadManager } = await import('./src/services/downloadManager');
+      await downloadManager.resumeAll();
+      setShowResumeDialog(false);
+      setPausedDownloadsCount(0);
+    } catch (error) {
+      console.error('[App] Error resuming downloads:', error);
+    }
+  };
+
+  const handleDismissResume = () => {
+    setShowResumeDialog(false);
+  };
 
   // Show loading while checking auth
   if (authLoading) {
@@ -367,6 +440,39 @@ function AppContent() {
               {/* Overlays rendered OUTSIDE NavigationContainer to avoid MapLibre view conflicts */}
               <OverlayRenderer />
               <StatusBar style="light" />
+              
+              {/* Resume downloads dialog */}
+              {showResumeDialog && (
+                <Modal
+                  transparent
+                  visible={showResumeDialog}
+                  animationType="fade"
+                  onRequestClose={handleDismissResume}
+                >
+                  <View style={styles.modalOverlay}>
+                    <View style={styles.resumeDialog}>
+                      <Text style={styles.resumeTitle}>Resume Downloads?</Text>
+                      <Text style={styles.resumeMessage}>
+                        You have {pausedDownloadsCount} paused download{pausedDownloadsCount !== 1 ? 's' : ''}.
+                      </Text>
+                      <View style={styles.resumeButtons}>
+                        <TouchableOpacity
+                          style={[styles.resumeButton, styles.resumeButtonSecondary]}
+                          onPress={handleDismissResume}
+                        >
+                          <Text style={styles.resumeButtonTextSecondary}>Later</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.resumeButton, styles.resumeButtonPrimary]}
+                          onPress={handleResumeAll}
+                        >
+                          <Text style={styles.resumeButtonTextPrimary}>Resume All</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+                </Modal>
+              )}
             </RouteProvider>
           </WaypointProvider>
         </OverlayProvider>
@@ -481,5 +587,65 @@ const styles = StyleSheet.create({
     marginTop: 16,
     color: '#fff',
     fontSize: 16,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  resumeDialog: {
+    backgroundColor: '#1a1f2e',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  resumeTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#fff',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  resumeMessage: {
+    fontSize: 16,
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginBottom: 24,
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  resumeButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  resumeButton: {
+    flex: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resumeButtonPrimary: {
+    backgroundColor: '#4FC3F7',
+  },
+  resumeButtonSecondary: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  resumeButtonTextPrimary: {
+    color: '#0a0e1a',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  resumeButtonTextSecondary: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

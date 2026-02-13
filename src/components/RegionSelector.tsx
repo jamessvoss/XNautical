@@ -30,7 +30,6 @@ import {
   Region,
   SATELLITE_OPTIONS,
   SatelliteResolution,
-  getUS1ChartsGeoJSON,
   getRegionBBox,
 } from '../config/regionData';
 import * as chartPackService from '../services/chartPackService';
@@ -92,7 +91,8 @@ export default function RegionSelector({ visible, onClose }: Props) {
   // Track download confirmation modal
   const [showDownloadConfirm, setShowDownloadConfirm] = useState(false);
   const [downloadInfo, setDownloadInfo] = useState<{
-    sizeGB: string;
+    downloadSizeGB: string;
+    deviceSizeGB: string;
     isWifi: boolean;
     isConnected: boolean;
   } | null>(null);
@@ -150,98 +150,133 @@ export default function RegionSelector({ visible, onClose }: Props) {
   // Can download when region is ready (satellite is optional now)
   const canDownload = !!(selectedRegion && selectedRegion.status === 'converted');
 
-  // Firestore US1 chart bounds (fetched dynamically, populated by enc-converter)
-  const [firestoreBounds, setFirestoreBounds] = useState<
-    { name: string; west: number; south: number; east: number; north: number }[] | null
+  // Region boundary (fetched dynamically from Firestore, computed from all chart scales)
+  const [regionBoundary, setRegionBoundary] = useState<
+    { west: number; south: number; east: number; north: number } | null
   >(null);
 
-  // Fetch US1 chart bounds from Firestore when a region is selected
+  // Fetch district data (including regionBoundary) when a region is selected
   useEffect(() => {
     if (!selectedRegion) {
-      setFirestoreBounds(null);
+      setRegionBoundary(null);
       setDistrictData(null);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        console.log(`[RegionSelector] Loading district data for ${selectedRegion.firestoreId}...`);
         const district = await chartPackService.getDistrict(selectedRegion.firestoreId);
-        console.log(`[RegionSelector] District data loaded:`, district);
-        console.log(`[RegionSelector] District has metadata?`, district?.metadata ? 'YES' : 'NO');
-        if (district?.metadata) {
-          console.log(`[RegionSelector] Metadata:`, JSON.stringify(district.metadata, null, 2));
-        }
         if (!cancelled) {
           setDistrictData(district);
-          if (district?.us1ChartBounds && district.us1ChartBounds.length > 0) {
-            setFirestoreBounds(district.us1ChartBounds);
+          
+          // Priority 1: Use Firestore regionBoundary if available
+          if (district?.regionBoundary) {
+            console.log(`[RegionSelector] Using Firestore regionBoundary for ${selectedRegion.id}:`, district.regionBoundary);
+            setRegionBoundary(district.regionBoundary);
+          } 
+          // Priority 2: Compute from US1 chart bounds (with antimeridian filtering)
+          else if (district?.us1ChartBounds && district.us1ChartBounds.length > 0) {
+            const usableCharts = district.us1ChartBounds.filter((b: any) => b.west < 0 && b.east < 0);
+            
+            if (usableCharts.length > 0) {
+              let w = 180, s = 90, e = -180, n = -90;
+              for (const b of usableCharts) {
+                if (b.west < w) w = b.west;
+                if (b.south < s) s = b.south;
+                if (b.east > e) e = b.east;
+                if (b.north > n) n = b.north;
+              }
+              console.log(`[RegionSelector] Computed boundary for ${selectedRegion.id} from ${usableCharts.length} western-hemisphere charts:`, { west: w, south: s, east: e, north: n });
+              setRegionBoundary({ west: w, south: s, east: e, north: n });
+            } else {
+              // All charts cross antimeridian - use static mapBounds
+              const [west, south, east, north] = selectedRegion.mapBounds;
+              console.log(`[RegionSelector] No usable charts for ${selectedRegion.id}, using static mapBounds:`, { west, south, east, north });
+              setRegionBoundary({ west, south, east, north });
+            }
+          } 
+          // Priority 3: Always fall back to static mapBounds
+          else {
+            const [west, south, east, north] = selectedRegion.mapBounds;
+            console.log(`[RegionSelector] No district data for ${selectedRegion.id}, using static mapBounds:`, { west, south, east, north });
+            setRegionBoundary({ west, south, east, north });
           }
         }
       } catch (error) {
+        // On error, fall back to static bounds
         console.error('[RegionSelector] Error loading district:', error);
-        // Firestore fetch failed -- will fall back to static data
+        if (!cancelled) {
+          const [west, south, east, north] = selectedRegion.mapBounds;
+          console.log(`[RegionSelector] Error fallback for ${selectedRegion.id}, using static mapBounds:`, { west, south, east, north });
+          setRegionBoundary({ west, south, east, north });
+        }
       }
     })();
     return () => { cancelled = true; };
   }, [selectedRegion]);
 
-  // Resolved US1 chart list: prefer Firestore data, fall back to static regionData
-  const resolvedUS1Charts = useMemo(() => {
-    if (firestoreBounds && firestoreBounds.length > 0) return firestoreBounds;
-    if (selectedRegion && selectedRegion.us1Charts.length > 0) return selectedRegion.us1Charts;
-    return [];
-  }, [firestoreBounds, selectedRegion]);
-
-  // GeoJSON for the selected region's US1 chart bounding boxes
-  const us1GeoJSON = useMemo(() => {
-    if (!selectedRegion || resolvedUS1Charts.length === 0) return null;
-    // If using Firestore bounds, build GeoJSON directly; otherwise use static helper
-    if (firestoreBounds && firestoreBounds.length > 0) {
-      return {
-        type: 'FeatureCollection' as const,
-        features: firestoreBounds.map(chart => ({
-          type: 'Feature' as const,
-          properties: { name: chart.name, regionId: selectedRegion.id, color: selectedRegion.color },
-          geometry: {
-            type: 'Polygon' as const,
-            coordinates: [[
-              [chart.west, chart.south],
-              [chart.east, chart.south],
-              [chart.east, chart.north],
-              [chart.west, chart.north],
-              [chart.west, chart.south],
-            ]],
-          },
-        })),
-      };
+  // Fly to region AFTER boundary data is loaded
+  useEffect(() => {
+    console.log('[RegionSelector] Camera useEffect triggered - selectedRegionId:', selectedRegionId, 'regionBoundary:', regionBoundary);
+    if (selectedRegionId && regionBoundary) {
+      console.log(`[RegionSelector] Flying to region ${selectedRegionId} with bounds:`, regionBoundary);
+      
+      const { west, south, east, north } = regionBoundary;
+      
+      // Calculate extents of the boundary
+      const lngExtent = east - west;
+      const latExtent = north - south;
+      
+      // Add 25% buffer on each side
+      const lngBuf = lngExtent * 0.25;
+      const latBuf = latExtent * 0.25;
+      
+      const ne = [Math.min(east + lngBuf, 180), Math.min(north + latBuf, 90)];
+      const sw = [Math.max(west - lngBuf, -180), Math.max(south - latBuf, -90)];
+      
+      console.log(`[RegionSelector] Calling fitBounds with NE:`, ne, 'SW:', sw);
+      
+      // Apply buffer to create zoomed out view
+      cameraRef.current?.fitBounds(
+        ne,
+        sw,
+        [40, 40, 40, 40],  // Minimal padding since buffer handles zoom
+        1200
+      );
+    } else {
+      console.log('[RegionSelector] NOT flying - missing:', selectedRegionId ? 'regionBoundary' : 'selectedRegionId');
     }
-    const geojson = getUS1ChartsGeoJSON(selectedRegion.id);
-    return geojson.features.length > 0 ? geojson : null;
-  }, [selectedRegion, resolvedUS1Charts, firestoreBounds]);
+  }, [selectedRegionId, regionBoundary]);
 
-  // GeoJSON for US1 chart label points (center of each box)
-  const us1LabelsGeoJSON = useMemo(() => {
-    if (!selectedRegion || resolvedUS1Charts.length === 0) return null;
+  // Resolved boundary: regionBoundary is always set by the useEffect above
+  // (either from Firestore, computed from charts, or fallback to static mapBounds)
+  const resolvedBoundary = useMemo(() => {
+    console.log('[RegionSelector] resolvedBoundary computed:', regionBoundary);
+    return regionBoundary;
+  }, [regionBoundary]);
 
+  // GeoJSON for the selected region's coverage boundary (single rectangle)
+  const regionGeoJSON = useMemo(() => {
+    if (!selectedRegion || !resolvedBoundary) return null;
+    const { west, south, east, north } = resolvedBoundary;
     return {
       type: 'FeatureCollection' as const,
-      features: resolvedUS1Charts.map(chart => ({
+      features: [{
         type: 'Feature' as const,
-        properties: {
-          name: chart.name,
-          color: selectedRegion.color,
-        },
+        properties: { regionId: selectedRegion.id, color: selectedRegion.color },
         geometry: {
-          type: 'Point' as const,
-          coordinates: [
-            (chart.west + chart.east) / 2,
-            (chart.south + chart.north) / 2,
-          ],
+          type: 'Polygon' as const,
+          coordinates: [[
+            [west, south],
+            [east, south],
+            [east, north],
+            [west, north],
+            [west, south],
+          ]],
         },
-      })),
+      }],
     };
-  }, [selectedRegion, resolvedUS1Charts]);
+  }, [selectedRegion, resolvedBoundary]);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -267,15 +302,46 @@ export default function RegionSelector({ visible, onClose }: Props) {
   }, []);
 
   const flyToRegion = useCallback((regionId: string) => {
-    const bbox = getRegionBBox(regionId);
-    const [west, south, east, north] = bbox;
-    cameraRef.current?.fitBounds(
-      [east, north],
-      [west, south],
-      [60, 60, 60, 60],
-      1200
-    );
-  }, []);
+    // Use resolvedBoundary if available (from Firestore)
+    // Otherwise fall back to static bounds for the fallback case
+    const boundary = resolvedBoundary || (() => {
+      const region = REGIONS.find(r => r.id === regionId);
+      if (region) {
+        const [west, south, east, north] = region.mapBounds;
+        return { west, south, east, north };
+      }
+      return null;
+    })();
+    
+    if (boundary) {
+      const { west, south, east, north } = boundary;
+      
+      console.log(`[RegionSelector] flyToRegion(${regionId}) called with boundary:`, boundary);
+      
+      // Calculate extents of the boundary
+      const lngExtent = east - west;
+      const latExtent = north - south;
+      
+      // Add 25% buffer on each side
+      const lngBuf = lngExtent * 0.25;
+      const latBuf = latExtent * 0.25;
+      
+      const ne = [Math.min(east + lngBuf, 180), Math.min(north + latBuf, 90)];
+      const sw = [Math.max(west - lngBuf, -180), Math.max(south - latBuf, -90)];
+      
+      console.log(`[RegionSelector] Calling fitBounds with NE:`, ne, 'SW:', sw);
+      
+      // Apply buffer to create zoomed out view
+      cameraRef.current?.fitBounds(
+        ne,
+        sw,
+        [40, 40, 40, 40],  // Minimal padding since buffer handles zoom
+        1200
+      );
+    } else {
+      console.log(`[RegionSelector] flyToRegion(${regionId}) - no boundary available!`);
+    }
+  }, [resolvedBoundary]);
 
   // ============================================
   // Handlers
@@ -283,13 +349,19 @@ export default function RegionSelector({ visible, onClose }: Props) {
 
   const handleRegionSelect = useCallback((regionId: string) => {
     if (selectedRegionId === regionId) {
+      // Deselecting - clear state and fly to overview
       setSelectedRegionId(null);
+      setRegionBoundary(null);
+      setDistrictData(null);
       flyToOverview();
     } else {
+      // Selecting new region - clear old state first
+      setRegionBoundary(null);
+      setDistrictData(null);
       setSelectedRegionId(regionId);
-      flyToRegion(regionId);
+      // Camera will move after boundary loads (see useEffect below)
     }
-  }, [selectedRegionId, flyToOverview, flyToRegion]);
+  }, [selectedRegionId, flyToOverview]);
 
   const handleResolutionSelect = useCallback((res: SatelliteResolution) => {
     setSelectedResolution(res);
@@ -308,16 +380,16 @@ export default function RegionSelector({ visible, onClose }: Props) {
     if (!canDownload || !districtData) return;
     
     try {
-      // Calculate total download size
+      // Calculate total download size (compressed)
       const chartPacks = districtData.downloadPacks?.filter(p => p.type === 'charts') || [];
       const gnisPack = districtData.downloadPacks?.find(p => p.type === 'gnis');
-      let totalBytes = chartPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
-      if (gnisPack) totalBytes += gnisPack.sizeBytes;
+      let compressedBytes = chartPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+      if (gnisPack) compressedBytes += gnisPack.sizeBytes;
       
       // Add predictions (compressed size from metadata)
       if (districtData.metadata?.predictionSizes) {
-        totalBytes += (districtData.metadata.predictionSizes.tides || 0);
-        totalBytes += (districtData.metadata.predictionSizes.currents || 0);
+        compressedBytes += (districtData.metadata.predictionSizes.tides || 0);
+        compressedBytes += (districtData.metadata.predictionSizes.currents || 0);
       }
       
       // Add selected satellite packs
@@ -329,24 +401,34 @@ export default function RegionSelector({ visible, onClose }: Props) {
         
         const satPacks = districtData.downloadPacks.filter(p => {
           if (p.type !== 'satellite') return false;
-          const zoomMatch = p.id.match(/z(\d+)(?:-(\d+))?/);
+          
+          // Match patterns like: satellite-z0-5, satellite_z0-5, satellite-z8, satellite_z14
+          const zoomMatch = p.id.match(/z(\d+)(?:[-_](\d+))?/);
           if (!zoomMatch) return false;
+          
           const zStart = parseInt(zoomMatch[1]);
+          const zEnd = zoomMatch[2] ? parseInt(zoomMatch[2]) : zStart;
+          
+          // Include if the zoom range overlaps with our max zoom
+          // e.g., z0-5 (0-5), z6-7 (6-7), z8 (8), z9 (9), etc.
           return zStart <= maxZoom;
         });
         
-        totalBytes += satPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
+        compressedBytes += satPacks.reduce((sum, p) => sum + p.sizeBytes, 0);
       }
       
       // Add selected optional maps
       if (districtData.downloadPacks) {
         selectedOptionalMaps.forEach(mapId => {
           const pack = districtData.downloadPacks.find(p => p.type === mapId);
-          if (pack) totalBytes += pack.sizeBytes;
+          if (pack) compressedBytes += pack.sizeBytes;
         });
       }
       
-      const sizeGB = (totalBytes / 1024 / 1024 / 1024).toFixed(2);
+      // Calculate both compressed (download) and decompressed (on-device) sizes
+      const DECOMPRESSION_RATIO = 2.0;
+      const downloadSizeGB = (compressedBytes / 1024 / 1024 / 1024).toFixed(2);
+      const deviceSizeGB = (compressedBytes * DECOMPRESSION_RATIO / 1024 / 1024 / 1024).toFixed(2);
       
       // Check network connection
       const netInfo = await NetInfo.fetch();
@@ -354,7 +436,7 @@ export default function RegionSelector({ visible, onClose }: Props) {
       const isConnected = netInfo.isConnected;
       
       // Store download info and show custom modal
-      setDownloadInfo({ sizeGB, isWifi, isConnected: isConnected ?? false });
+      setDownloadInfo({ downloadSizeGB, deviceSizeGB, isWifi, isConnected: isConnected ?? false });
       setShowDownloadConfirm(true);
     } catch (error) {
       console.error('[RegionSelector] Error checking network:', error);
@@ -828,45 +910,26 @@ export default function RegionSelector({ visible, onClose }: Props) {
   // ============================================
 
   const renderMapLayers = () => {
-    if (!us1GeoJSON) return null;
+    if (!regionGeoJSON) return null;
 
     return (
-      <>
-        <MapLibre.ShapeSource id="us1-charts-source" shape={us1GeoJSON}>
-          <MapLibre.FillLayer
-            id="us1-chart-fills"
-            style={{
-              fillColor: selectedRegion?.color || '#4FC3F7',
-              fillOpacity: 0.12,
-            }}
-          />
-          <MapLibre.LineLayer
-            id="us1-chart-borders"
-            style={{
-              lineColor: selectedRegion?.color || '#4FC3F7',
-              lineWidth: 2,
-              lineOpacity: 0.8,
-            }}
-          />
-        </MapLibre.ShapeSource>
-
-        {us1LabelsGeoJSON && (
-          <MapLibre.ShapeSource id="us1-labels-source" shape={us1LabelsGeoJSON}>
-            <MapLibre.SymbolLayer
-              id="us1-chart-labels"
-              style={{
-                textField: ['get', 'name'],
-                textSize: 11,
-                textColor: '#ffffff',
-                textHaloColor: 'rgba(0, 0, 0, 0.85)',
-                textHaloWidth: 1.5,
-                textAllowOverlap: true,
-                textIgnorePlacement: true,
-              }}
-            />
-          </MapLibre.ShapeSource>
-        )}
-      </>
+      <MapLibre.ShapeSource id="region-boundary-source" shape={regionGeoJSON}>
+        <MapLibre.FillLayer
+          id="region-boundary-fill"
+          style={{
+            fillColor: selectedRegion?.color || '#4FC3F7',
+            fillOpacity: 0.12,
+          }}
+        />
+        <MapLibre.LineLayer
+          id="region-boundary-border"
+          style={{
+            lineColor: selectedRegion?.color || '#4FC3F7',
+            lineWidth: 2,
+            lineOpacity: 0.8,
+          }}
+        />
+      </MapLibre.ShapeSource>
     );
   };
 
@@ -877,7 +940,7 @@ export default function RegionSelector({ visible, onClose }: Props) {
   const renderDownloadConfirmation = () => {
     if (!showDownloadConfirm || !downloadInfo) return null;
 
-    const { sizeGB, isWifi, isConnected } = downloadInfo;
+    const { downloadSizeGB, deviceSizeGB, isWifi, isConnected } = downloadInfo;
 
     if (!isConnected) {
       return (
@@ -927,18 +990,26 @@ export default function RegionSelector({ visible, onClose }: Props) {
             </Text>
             
             <View style={styles.confirmSizeBox}>
-              <Text style={styles.confirmSizeLabel}>Download Size</Text>
-              <Text style={styles.confirmSizeValue}>{sizeGB} GB</Text>
+              <View style={styles.confirmSizeRow}>
+                <Text style={styles.confirmSizeLabel}>Download Size</Text>
+                <Text style={styles.confirmSizeValue}>{downloadSizeGB} GB</Text>
+              </View>
+              <View style={styles.confirmSizeRow}>
+                <Text style={styles.confirmSizeLabel}>Required on Device</Text>
+                <Text style={styles.confirmSizeValue}>{deviceSizeGB} GB</Text>
+              </View>
             </View>
             
             {isWifi ? (
               <Text style={styles.confirmMessage}>
-                You are about to download {sizeGB} GB of data over WiFi.{'\n\n'}
+                You are about to download {downloadSizeGB} GB of data over WiFi.{'\n\n'}
+                This will require {deviceSizeGB} GB of storage space on your device.{'\n\n'}
                 This will take a few minutes depending on your connection speed.
               </Text>
             ) : (
               <Text style={styles.confirmMessage}>
-                You are about to download {sizeGB} GB of data over your cellular connection.{'\n\n'}
+                You are about to download {downloadSizeGB} GB of data over your cellular connection.{'\n\n'}
+                This will require {deviceSizeGB} GB of storage space on your device.{'\n\n'}
                 This will use a significant amount of your data plan and may take considerable time.{'\n\n'}
                 <Text style={{ fontWeight: '700', color: '#f39c12' }}>
                   We strongly recommend connecting to WiFi first.
@@ -1401,20 +1472,25 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 20,
     width: '100%',
-    alignItems: 'center',
     borderWidth: 1,
     borderColor: 'rgba(79, 195, 247, 0.3)',
   },
+  confirmSizeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 8,
+  },
   confirmSizeLabel: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '600',
-    color: 'rgba(255, 255, 255, 0.5)',
+    color: 'rgba(255, 255, 255, 0.6)',
     textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 4,
+    letterSpacing: 0.5,
   },
   confirmSizeValue: {
-    fontSize: 28,
+    fontSize: 18,
     fontWeight: '700',
     color: '#4FC3F7',
   },

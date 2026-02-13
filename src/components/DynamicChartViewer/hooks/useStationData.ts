@@ -7,7 +7,7 @@
 import { useState, useEffect } from 'react';
 import { getCachedTideStations, getCachedCurrentStations, loadFromStorage, TideStation, CurrentStation } from '../../../services/stationService';
 import { calculateAllStationStates, createIconNameMap } from '../../../services/stationStateService';
-import { getBuoysCatalog, getBuoy, BuoySummary, Buoy } from '../../../services/buoyService';
+import { getCachedBuoyCatalog, getBuoy, BuoySummary, Buoy } from '../../../services/buoyService';
 import { logger, LogCategory } from '../../../services/loggingService';
 
 /** Filter current stations to keep only the highest bin per location. */
@@ -159,16 +159,34 @@ export function useStationData() {
     };
   }, [tideStations, currentStations]);
 
-  // Load live buoys catalog
+  // Load live buoys catalog from downloaded districts only
   useEffect(() => {
     const loadBuoys = async () => {
       try {
-        console.log('[MAP] Loading live buoys catalog...');
-        const allBuoys = await getBuoysCatalog();
+        console.log('[MAP] Loading buoys from downloaded districts...');
+        
+        // Get list of downloaded districts
+        const { getInstalledDistricts } = await import('../../../services/regionRegistryService');
+        const installedDistricts = await getInstalledDistricts();
+        
+        if (installedDistricts.length === 0) {
+          console.log('[MAP] No districts downloaded - no buoys to display');
+          setLiveBuoys([]);
+          return;
+        }
+        
+        // Load cached buoys for each downloaded district
+        const allBuoys: BuoySummary[] = [];
+        for (const district of installedDistricts) {
+          const buoys = await getCachedBuoyCatalog(district.districtId);
+          allBuoys.push(...buoys);
+        }
+        
         setLiveBuoys(allBuoys);
-        console.log(`[MAP] Loaded ${allBuoys.length} live buoys`);
+        console.log(`[MAP] Loaded ${allBuoys.length} buoys from ${installedDistricts.length} downloaded districts`);
       } catch (error) {
         console.warn('[MAP] Error loading buoys:', error);
+        setLiveBuoys([]);
       }
     };
 
