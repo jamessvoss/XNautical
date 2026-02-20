@@ -214,6 +214,154 @@ def _flatten_coords(coords):
     return result
 
 
+class TreeMerger:
+    """Merges .mbtiles files using a binary tree strategy with bounded concurrency.
+
+    Instead of serially merging each file into a growing accumulator (O(N^2) total
+    bytes processed), this pairs up the two smallest files and merges them concurrently.
+    Tree depth is O(log N), and intermediate merges use --no-tile-compression to skip
+    PBF gzip, saving ~40% CPU per merge. A final pass re-compresses the output.
+
+    Peak /tmp usage: at most (max_concurrent * 2 inputs + max_concurrent outputs)
+    files exist simultaneously, bounded to ~6GB for typical workloads.
+    """
+
+    def __init__(self, output_dir, max_concurrent=2):
+        self.output_dir = output_dir
+        self.max_concurrent = max_concurrent
+        self.ready = []          # list of (size_bytes, path)
+        self.merge_counter = 0
+        self.lock = threading.Lock()
+        self.merge_pool = ThreadPoolExecutor(max_workers=max_concurrent)
+        self.active_merges = 0
+        self.error = None
+        self.total_added = 0
+        self.total_expected = 0
+
+    def add(self, path):
+        """Add a downloaded .mbtiles file to the merge pool."""
+        sz = os.path.getsize(path)
+        with self.lock:
+            self.ready.append((sz, path))
+            self.total_added += 1
+            logger.info(f'  TreeMerger: added {Path(path).name} ({sz / 1024 / 1024:.1f} MB), '
+                       f'{len(self.ready)} ready, {self.active_merges} merging')
+        self._try_merge_pairs()
+
+    def _try_merge_pairs(self):
+        """Greedily merge the two smallest files while capacity allows."""
+        while True:
+            with self.lock:
+                if self.error:
+                    return
+                if len(self.ready) < 2 or self.active_merges >= self.max_concurrent:
+                    return
+                # Pick two smallest by size
+                self.ready.sort()
+                sz_a, path_a = self.ready.pop(0)
+                sz_b, path_b = self.ready.pop(0)
+                self.active_merges += 1
+
+            logger.info(f'  TreeMerger: merging {Path(path_a).name} ({sz_a / 1024 / 1024:.1f} MB) + '
+                       f'{Path(path_b).name} ({sz_b / 1024 / 1024:.1f} MB)')
+            self.merge_pool.submit(self._do_merge, path_a, path_b)
+
+    def _do_merge(self, path_a, path_b):
+        """Run tile-join on two files, add result back to ready pool."""
+        try:
+            with self.lock:
+                self.merge_counter += 1
+                counter = self.merge_counter
+            out_path = os.path.join(self.output_dir, f'tree_merge_{counter}.mbtiles')
+
+            cmd = [
+                'tile-join',
+                '-o', out_path,
+                '--force',
+                '--no-tile-size-limit',
+                '--no-tile-compression',
+                path_a,
+                path_b,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                with self.lock:
+                    self.error = f'tile-join failed: {proc.stderr[:500]}'
+                    self.active_merges -= 1
+                logger.error(f'  TreeMerger: {self.error}')
+                return
+
+            # Clean up inputs
+            os.remove(path_a)
+            os.remove(path_b)
+
+            sz = os.path.getsize(out_path)
+            with self.lock:
+                self.ready.append((sz, out_path))
+                self.active_merges -= 1
+
+            logger.info(f'  TreeMerger: merge #{counter} → {sz / 1024 / 1024:.1f} MB '
+                       f'({len(self.ready)} ready, {self.active_merges} merging)')
+
+            # Try to kick off more merges
+            self._try_merge_pairs()
+
+        except Exception as e:
+            with self.lock:
+                self.error = str(e)
+                self.active_merges -= 1
+            logger.error(f'  TreeMerger: exception: {e}')
+
+    def finish(self) -> str:
+        """Block until one file remains, then run final merge with compression.
+
+        Returns path to the final compressed .mbtiles file.
+        """
+        # Wait for all in-flight merges and keep triggering new ones
+        while True:
+            with self.lock:
+                if self.error:
+                    self.merge_pool.shutdown(wait=False)
+                    raise RuntimeError(self.error)
+                if len(self.ready) == 1 and self.active_merges == 0:
+                    break
+                if len(self.ready) == 0 and self.active_merges == 0:
+                    raise RuntimeError('TreeMerger: no files to merge')
+            # Try to kick off merges if possible
+            self._try_merge_pairs()
+            time.sleep(2)
+
+        self.merge_pool.shutdown(wait=True)
+
+        uncompressed_path = self.ready[0][1]
+        final_path = os.path.join(self.output_dir, 'merged.mbtiles')
+
+        if self.merge_counter == 0:
+            # Only one file was added — no merges happened, tiles are already
+            # compressed (came directly from tippecanoe worker). Just rename.
+            os.rename(uncompressed_path, final_path)
+            sz = os.path.getsize(final_path) / 1024 / 1024
+            logger.info(f'  TreeMerger: single file, no merge needed ({sz:.1f} MB)')
+        else:
+            # Intermediate merges used --no-tile-compression.
+            # Run a final tile-join WITH compression for the output.
+            logger.info(f'  TreeMerger: final compression pass...')
+            cmd = [
+                'tile-join',
+                '-o', final_path,
+                '--force',
+                '--no-tile-size-limit',
+                uncompressed_path,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                raise RuntimeError(f'Final tile-join failed: {proc.stderr[:500]}')
+            os.remove(uncompressed_path)
+            sz = os.path.getsize(final_path) / 1024 / 1024
+            logger.info(f'  TreeMerger: final output {sz:.1f} MB')
+
+        return final_path
+
 
 def tippecanoe_worker():
     """Standalone tippecanoe worker for fan-out execution.
@@ -455,37 +603,29 @@ def main():
             logger.info(f'Aggregated {len(all_sector_lights)} sector lights from '
                        f'{len(sector_lights_blobs)} charts')
 
-        # ─── Load all charts in parallel ───
-        logger.info('Loading charts in parallel...')
-        load_start = datetime.now(timezone.utc)
+        # ─── Pass 1: Build dedup index (streaming, one chart at a time) ───
+        # Instead of loading all charts into memory (~2.2GB for large districts),
+        # we stream through files twice: once to build the dedup index, once to write.
+        logger.info('Pass 1: Building dedup index (streaming)...')
+        dedup_start = datetime.now(timezone.utc)
 
         sorted_paths = sorted(local_paths)
         num_charts = len(sorted_paths)
 
-        def _load_chart(path):
+        dedup_index = {}       # key -> (chart_id, feat_idx, scale_num)
+        key_scales = defaultdict(set)
+        total_features_input = 0
+        features_per_chart = {}
+
+        for path in sorted_paths:
             chart_id = Path(path).name.replace('.geojson', '')
             with open(path, 'r', encoding='utf-8') as f:
                 collection = json.load(f)
-            return chart_id, collection.get('features', [])
+            features = collection.get('features', [])
+            features_per_chart[chart_id] = len(features)
+            total_features_input += len(features)
 
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            chart_data = list(pool.map(_load_chart, sorted_paths))
-
-        total_features_input = sum(len(feats) for _, feats in chart_data)
-        features_per_chart = {cid: len(feats) for cid, feats in chart_data}
-        load_duration = (datetime.now(timezone.utc) - load_start).total_seconds()
-        logger.info(f'Loaded {num_charts} charts, {total_features_input:,d} features '
-                   f'in {load_duration:.1f}s')
-
-        # ─── Build dedup index (from cached data) ───
-        logger.info('Building dedup index...')
-        dedup_start = datetime.now(timezone.utc)
-
-        dedup_index = {}
-        key_scales = defaultdict(set)
-
-        for chart_id, features in chart_data:
-            for idx, feature in enumerate(features):
+            for feat_idx, feature in enumerate(features):
                 props = feature.get('properties', {})
                 objl = props.get('OBJL', 0)
                 scale_num = props.get('_scaleNum', 0)
@@ -493,16 +633,19 @@ def main():
                 if objl in ALL_DEDUP_OBJLS:
                     key = dedup_key(feature)
                     key_scales[key].add(scale_num)
-
                     existing = dedup_index.get(key)
                     if existing is None or existing[2] < scale_num:
-                        dedup_index[key] = (chart_id, idx, scale_num)
+                        dedup_index[key] = (chart_id, feat_idx, scale_num)
 
         dedup_duration = (datetime.now(timezone.utc) - dedup_start).total_seconds()
-        logger.info(f'Dedup index: {len(dedup_index):,d} unique keys in {dedup_duration:.1f}s')
+        logger.info(f'Pass 1 complete: {len(dedup_index):,d} unique dedup keys from '
+                   f'{num_charts} charts, {total_features_input:,d} features '
+                   f'in {dedup_duration:.1f}s')
 
-        # ─── Write per-scale GeoJSON (from cached data, no re-read) ───
-        logger.info('Writing per-scale deduplicated GeoJSON...')
+        # ─── Pass 2: Write per-scale GeoJSON (streaming, one chart at a time) ───
+        # Re-read each chart from disk and write deduplicated features with buffering.
+        # Peak memory: one chart (~10-50MB) + dedup index + write buffers (~50MB).
+        logger.info('Pass 2: Writing per-scale deduplicated GeoJSON...')
         write_start = datetime.now(timezone.utc)
 
         total_features_output = 0
@@ -527,7 +670,26 @@ def main():
         # Cache for zoom ownership computations (frozenset of scales → ownership dict)
         ownership_cache = {}
 
-        for chart_idx, (chart_id, features) in enumerate(chart_data):
+        # Buffered writes: accumulate JSON strings and flush in batches
+        WRITE_BUFFER_SIZE = 2000
+        write_buffers = {sn: [] for sn in SCALE_ZOOM_RANGES}
+
+        def flush_buffer(sn):
+            if write_buffers[sn]:
+                scale_geojson[sn].write(''.join(write_buffers[sn]))
+                write_buffers[sn] = []
+
+        def buffer_feature(sn, feature_str):
+            write_buffers[sn].append(feature_str)
+            if len(write_buffers[sn]) >= WRITE_BUFFER_SIZE:
+                flush_buffer(sn)
+
+        for chart_idx, path in enumerate(sorted_paths):
+            chart_id = Path(path).name.replace('.geojson', '')
+            with open(path, 'r', encoding='utf-8') as f:
+                collection = json.load(f)
+            features = collection.get('features', [])
+
             for idx, feature in enumerate(features):
                 props = feature.get('properties', {})
                 objl = props.get('OBJL', 0)
@@ -618,8 +780,8 @@ def main():
                             'maxzoom': clamped_max,
                             'layer': orig_layer,
                         }
-                        json.dump(feature_copy, scale_geojson[sn], separators=(',', ':'))
-                        scale_geojson[sn].write('\n')
+                        line = json.dumps(feature_copy, separators=(',', ':')) + '\n'
+                        buffer_feature(sn, line)
                         scale_counts[sn] += 1
 
                     scale_feature_counts[scale_num] += 1
@@ -636,8 +798,8 @@ def main():
                         existing_tippecanoe['layer'] = 'charts'
 
                     sn = scale_num if scale_num in scale_geojson else 1
-                    json.dump(feature, scale_geojson[sn], separators=(',', ':'))
-                    scale_geojson[sn].write('\n')
+                    line = json.dumps(feature, separators=(',', ':')) + '\n'
+                    buffer_feature(sn, line)
                     scale_counts[sn] += 1
                     scale_feature_counts[scale_num] += 1
                     total_features_output += 1
@@ -649,11 +811,11 @@ def main():
                            f'{duplicates_removed:,d} dupes removed ({elapsed:.0f}s)')
                 sys.stdout.flush()
 
+        # Flush remaining buffers and close files
+        for sn in SCALE_ZOOM_RANGES:
+            flush_buffer(sn)
         for f in scale_geojson.values():
             f.close()
-
-        # Free cached chart data before tippecanoe
-        del chart_data
 
         write_duration = (datetime.now(timezone.utc) - write_start).total_seconds()
         for sn in sorted(scale_counts):
@@ -664,6 +826,11 @@ def main():
                            f'{sz:.1f} MB, z{native_lo}-{native_hi}')
         logger.info(f'GeoJSON write complete: {total_features_output:,d} features '
                    f'({duplicates_removed:,d} duplicates removed) in {write_duration:.1f}s')
+
+        # Free per-chart GeoJSON from tmpfs — no longer needed after Pass 2
+        geojson_freed = sum(os.path.getsize(p) for p in local_paths) / 1024 / 1024
+        shutil.rmtree(geojson_dir, ignore_errors=True)
+        logger.info(f'Freed {geojson_freed:.0f} MB of per-chart GeoJSON from tmpfs')
 
         # ─── Tippecanoe: zoom-band fan-out to parallel Cloud Run Job executions ───
         # Each scale's GeoJSON is uploaded once. For high-zoom scales (maxzoom > 14),
@@ -783,11 +950,11 @@ def main():
                 logger.error(f'  Failed to launch US{sn} z{z_lo}-{z_hi}: {e}')
                 sys.exit(1)
 
-        # (d) Poll, download, and incrementally tile-join as workers complete.
+        # (d) Poll, download, and tree-merge as workers complete.
         #     We can't download all mbtiles at once — total output can be 40+ GB
-        #     which exceeds the 32 Gi tmpfs. Instead, we download each file as it
-        #     completes, tile-join it into a running merged.mbtiles, then delete
-        #     the input. At most 2 large files exist on disk at any time.
+        #     which exceeds the 32 Gi tmpfs. Files are downloaded as they appear
+        #     and fed into a TreeMerger that pairs the two smallest files for
+        #     concurrent tile-join, keeping peak /tmp bounded.
         expected_blobs = {}
         for sn, z_lo, z_hi in worker_tasks:
             native_lo, native_hi = SCALE_ZOOM_RANGES[sn]
@@ -797,18 +964,21 @@ def main():
                 mbtiles_name = f'scale_{sn}_z{z_lo}-{z_hi}.mbtiles'
             expected_blobs[mbtiles_name] = f'{compose_prefix}{mbtiles_name}'
 
-        logger.info(f'Polling for {len(expected_blobs)} .mbtiles files (incremental tile-join)...')
+        merge_dir = os.path.join(output_dir, 'merge_work')
+        os.makedirs(merge_dir, exist_ok=True)
+        merger = TreeMerger(merge_dir, max_concurrent=2)
+        merger.total_expected = len(expected_blobs)
+
+        logger.info(f'Polling for {len(expected_blobs)} .mbtiles files (tree merge)...')
         poll_interval = 15  # seconds
         log_interval = 60  # log progress every 60s
         max_wait = 5400  # 90 minutes
         elapsed = 0
         last_log = 0
         detected = set()    # blobs detected in storage
-        merged = set()      # blobs downloaded and merged
-        merged_path = os.path.join(output_dir, 'merged.mbtiles')
-        merge_count = 0
+        downloaded = set()   # blobs downloaded and fed to merger
 
-        while len(merged) < len(expected_blobs) and elapsed < max_wait:
+        while len(downloaded) < len(expected_blobs) and elapsed < max_wait:
             time.sleep(poll_interval)
             elapsed += poll_interval
 
@@ -823,70 +993,54 @@ def main():
                     logger.info(f'  {key} ready: {mb:.1f} MB ({elapsed}s)')
                     detected.add(key)
 
-            # Download and merge any detected-but-not-yet-merged files one at a time
-            for key in sorted(detected - merged):
-                blob_path = expected_blobs[key]
-                local_path = os.path.join(output_dir, key)
+            # Download detected files and feed to tree merger, but throttle to
+            # avoid accumulating too many mbtiles on tmpfs (RAM-backed).
+            # With max_concurrent=2 merges, at most 4 files are being merged
+            # (2 pairs × 2 inputs). We allow up to 4 files in the ready queue
+            # so the merger always has work, for a total of ~8 files on disk.
+            MAX_QUEUED = 4  # max files in ready queue before pausing downloads
+            for key in sorted(detected - downloaded):
+                with merger.lock:
+                    queued = len(merger.ready) + merger.active_merges * 2
+                if queued >= MAX_QUEUED + merger.max_concurrent * 2:
+                    break  # wait for merges to free up space
 
-                # Download
+                blob_path = expected_blobs[key]
+                local_path = os.path.join(merge_dir, key)
+
                 logger.info(f'  Downloading {key}...')
                 bucket.blob(blob_path).download_to_filename(local_path)
                 sz = os.path.getsize(local_path) / 1024 / 1024
                 logger.info(f'  Downloaded {key}: {sz:.1f} MB')
 
-                # Incremental tile-join
-                merge_count += 1
-                if not os.path.exists(merged_path):
-                    # First file — just rename it as the merged base
-                    os.rename(local_path, merged_path)
-                    logger.info(f'  Merge {merge_count}/{len(expected_blobs)}: '
-                               f'{key} -> base ({sz:.1f} MB)')
-                else:
-                    # tile-join merged + new -> temp, then swap
-                    temp_path = os.path.join(output_dir, 'merged_tmp.mbtiles')
-                    join_cmd = [
-                        'tile-join',
-                        '-o', temp_path,
-                        '--force',
-                        '--no-tile-size-limit',
-                        merged_path,
-                        local_path,
-                    ]
-                    logger.info(f'  Merge {merge_count}/{len(expected_blobs)}: '
-                               f'tile-join {key} into merged...')
-                    join_proc = subprocess.Popen(
-                        join_cmd, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, text=True)
-                    _, join_stderr = join_proc.communicate()
-                    if join_proc.returncode != 0:
-                        logger.error(f'tile-join failed: {join_stderr}')
-                        sys.exit(1)
+                merger.add(local_path)
+                downloaded.add(key)
 
-                    # Delete inputs, swap temp to merged
-                    os.remove(local_path)
-                    os.remove(merged_path)
-                    os.rename(temp_path, merged_path)
-                    merged_sz = os.path.getsize(merged_path) / 1024 / 1024
-                    logger.info(f'  Merged: {merged_sz:.1f} MB total')
-
-                merged.add(key)
+            if merger.error:
+                logger.error(f'TreeMerger error: {merger.error}')
+                sys.exit(1)
 
             if elapsed - last_log >= log_interval:
                 remaining = len(expected_blobs) - len(detected)
-                logger.info(f'  Progress: {len(merged)}/{len(expected_blobs)} merged, '
-                           f'{len(detected) - len(merged)} pending merge, '
+                with merger.lock:
+                    ready_count = len(merger.ready)
+                    active = merger.active_merges
+                logger.info(f'  Progress: {len(downloaded)}/{len(expected_blobs)} downloaded, '
+                           f'{ready_count} ready for merge, {active} merging, '
                            f'{remaining} workers still running ({elapsed}s)')
                 last_log = elapsed
 
-        if len(merged) < len(expected_blobs):
+        if len(downloaded) < len(expected_blobs):
             missing = sorted(k for k in expected_blobs if k not in detected)
             logger.error(f'Timeout after {max_wait}s waiting for {len(missing)} workers: '
                         f'{", ".join(missing[:10])}')
             sys.exit(1)
 
-        logger.info(f'All {len(expected_blobs)} tippecanoe workers merged in {elapsed}s')
+        logger.info(f'All {len(expected_blobs)} worker outputs downloaded in {elapsed}s, '
+                   f'waiting for tree merge to complete...')
 
-        output_mbtiles = merged_path
+        # Wait for tree merge to finish (all pairs merged + final compression)
+        output_mbtiles = merger.finish()
         tippecanoe_duration = (datetime.now(timezone.utc) - tippecanoe_start).total_seconds()
         mbtiles_size = os.path.getsize(output_mbtiles) / 1024 / 1024
         logger.info(f'Unified MBTiles complete: {mbtiles_size:.1f} MB in {tippecanoe_duration:.1f}s')

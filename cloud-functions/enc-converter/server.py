@@ -1076,6 +1076,31 @@ def convert_batch():
 # Parallel conversion coordinator endpoint
 # ============================================================================
 
+def _conversion_active(db, district_label, grace_seconds=7200):
+    """Return True if a conversion for this district started recently and hasn't finished."""
+    doc = db.collection('districts').document(district_label).get()
+    if not doc.exists:
+        return False
+    chart_data = doc.to_dict().get('chartData', {})
+    started = chart_data.get('startedAt')
+    composed = chart_data.get('composedAt')
+    if not started:
+        return False
+    try:
+        started_epoch = started.timestamp() if hasattr(started, 'timestamp') else started
+    except Exception:
+        return False
+    # If compose finished after start, this conversion is done
+    if composed:
+        try:
+            composed_epoch = composed.timestamp() if hasattr(composed, 'timestamp') else composed
+            if composed_epoch >= started_epoch:
+                return False
+        except Exception:
+            pass
+    return (time.time() - started_epoch) < grace_seconds
+
+
 @app.route('/convert-district-parallel', methods=['POST'])
 def convert_district_parallel():
     """
@@ -1083,7 +1108,7 @@ def convert_district_parallel():
     
     Request body: {
         "districtId": "05",
-        "batchSize": 10,      # optional, default 10
+        "batchSize": 20,      # optional, default 20
         "maxParallel": 80      # optional, default 80
     }
     
@@ -1096,7 +1121,7 @@ def convert_district_parallel():
     """
     data = request.get_json(silent=True) or {}
     district_id = str(data.get('districtId', '')).zfill(2)
-    batch_size = int(data.get('batchSize', 10))
+    batch_size = int(data.get('batchSize', 20))
     max_parallel = int(data.get('maxParallel', 80))
 
     # Allow districtLabel override for testing (e.g. "017cgd_test")
@@ -1119,7 +1144,16 @@ def convert_district_parallel():
     storage_client = storage.Client()
     bucket = storage_client.bucket(BUCKET_NAME)
     db = firestore.Client()
-    
+
+    # Idempotency guard: reject if a conversion is already running
+    force = data.get('force', False)
+    if not force and _conversion_active(db, district_label):
+        logger.warning(f'Rejected duplicate conversion request for {district_label}')
+        return jsonify({
+            'error': f'Conversion already active for {district_label}',
+            'hint': 'Wait for the current conversion to finish, or pass "force": true to override',
+        }), 409
+
     # Create temp working directory for merge phase
     work_dir = tempfile.mkdtemp(prefix=f'enc_parallel_{district_id}_')
     per_chart_dir = os.path.join(work_dir, 'per_chart')
@@ -1216,7 +1250,7 @@ def convert_district_parallel():
 
             MAX_RETRIES = 8
             RETRY_BASE_DELAY = 5  # seconds
-            INITIAL_CONCURRENCY = 20  # ramp up gradually to avoid 429 thundering herd
+            INITIAL_CONCURRENCY = 10  # ramp up gradually to avoid 429 thundering herd
             import random
 
             def execute_batch_sync(batch, url):
@@ -1408,7 +1442,7 @@ def convert_district_parallel():
 
         # Poll Firestore for compose completion
         poll_interval = 10  # seconds
-        max_wait = 3500  # just under Cloud Run service 3600s max timeout
+        max_wait = 7200  # allow up to 2h for large districts (D17 compose took 3679s)
         elapsed = 0
         launch_time = time.time()
         compose_done = bool(compose_result.get('error'))
