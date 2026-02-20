@@ -47,6 +47,8 @@ import { initialLayerVisibility, layerVisibilityReducer } from './DynamicChartVi
 import { getFeatureId, formatFeatureProperties } from './DynamicChartViewer/utils/featureFormatting';
 import { styles } from './DynamicChartViewer/styles/chartViewerStyles';
 import { debugStyles, diagStyles } from './DynamicChartViewer/styles/debugStyles';
+import GPSMarkerView from './DynamicChartViewer/components/GPSMarkerView';
+import NavDataOverlay from './DynamicChartViewer/components/NavDataOverlay';
 import { useGPS } from '../hooks/useGPS';
 import { useOverlay } from '../contexts/OverlayContext';
 import { getCompassModeLabel } from '../utils/compassUtils';
@@ -917,7 +919,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [followGPS, setFollowGPS] = useState(true); // Follow mode - center map on position
   const followGPSRef = useRef(true); // Ref for immediate follow mode check (avoids race condition)
   const isProgrammaticCameraMove = useRef(false); // Flag to distinguish programmatic vs user camera moves
-  const { gpsData, gpsDataRef, startTracking } = useGPS();
+  const { gpsDataRef, startTracking } = useGPS();
   
   // Background color for the map — derived from S-52 color table per mode.
   // We do NOT use the mapStyle prop on MapView because setting it triggers
@@ -5323,28 +5325,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </MapLibre.MarkerView>
         ))}
 
-        {/* GPS Position Marker - always show when GPS available */}
-        {gpsData.latitude !== null && gpsData.longitude !== null && (
-          <MapLibre.MarkerView
-            coordinate={[gpsData.longitude, gpsData.latitude]}
-            anchor={{ x: 0.5, y: 0.5 }}
-          >
-            <View style={styles.shipMarker}>
-              {/* Always show ship icon - conditional rendering inside MarkerView causes crashes */}
-              <View 
-                style={[
-                  styles.shipIcon,
-                  gpsData.heading !== null && { 
-                    transform: [{ rotate: `${gpsData.heading}deg` }] 
-                  }
-                ]}
-              >
-                <View style={styles.shipBow} />
-                <View style={styles.shipBody} />
-              </View>
-            </View>
-          </MapLibre.MarkerView>
-        )}
+        {/* GPS Position Marker — isolated component with own 1s timer.
+            Only this tiny subtree re-renders from GPS changes, not the
+            entire DynamicChartViewer with 200+ MapLibre layers. */}
+        <GPSMarkerView gpsDataRef={gpsDataRef} />
 
       </MapLibre.MapView>
 
@@ -6567,8 +6551,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         <TideDetailChart
           visible={showTideDetails}
           selectedStationId={detailChartTideStationId}
-          currentLocation={gpsData.latitude !== null && gpsData.longitude !== null 
-            ? [gpsData.longitude, gpsData.latitude] 
+          currentLocation={gpsDataRef.current.latitude !== null && gpsDataRef.current.longitude !== null
+            ? [gpsDataRef.current.longitude, gpsDataRef.current.latitude]
             : null}
           tideStations={tideStations}
           onClearSelection={() => {
@@ -6579,8 +6563,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         <CurrentDetailChart
           visible={showCurrentDetails}
           selectedStationId={detailChartCurrentStationId}
-          currentLocation={gpsData.latitude !== null && gpsData.longitude !== null 
-            ? [gpsData.longitude, gpsData.latitude] 
+          currentLocation={gpsDataRef.current.latitude !== null && gpsDataRef.current.longitude !== null
+            ? [gpsDataRef.current.longitude, gpsDataRef.current.latitude]
             : null}
           currentStations={currentStations}
           onClearSelection={() => {
@@ -6599,113 +6583,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         onClose={() => setSelectedBuoy(null)}
       />
 
-      {/* Navigation Data Displays */}
+      {/* Navigation Data Displays — isolated component with own 1s timer.
+          Only this subtree re-renders from GPS changes. */}
       {showNavData && (
-        <>
-          {/* Upper Left - Speed (below top menu bar) */}
-          <View style={[styles.navDataBox, styles.navDataUpperLeft, { top: insets.top + 52 }]}>
-            <Text style={styles.navDataLabel}>SPD</Text>
-            <Text style={styles.navDataValue}>{gpsData.speedKnots !== null ? `${gpsData.speedKnots.toFixed(1)}` : '--'}</Text>
-            <Text style={styles.navDataUnit}>kn</Text>
-          </View>
-
-          {/* Upper Right - GPS/PAN Position (below top menu bar) */}
-          <View style={[styles.navDataBox, styles.navDataUpperRight, { top: insets.top + 52 }]}>
-            <View style={styles.navDataLabelRow}>
-              <Text style={styles.navDataLabel}>{followGPS ? 'GPS' : 'PAN'}</Text>
-              <Text style={styles.navDataZoom}>z{currentZoom.toFixed(1)}</Text>
-            </View>
-            {followGPS && gpsDataRef.current.latitude !== null ? (
-              <>
-                <Text style={styles.navDataValueSmall}>
-                  {`${Math.abs(gpsDataRef.current.latitude!).toFixed(4)}°${gpsDataRef.current.latitude! >= 0 ? 'N' : 'S'}`}
-                </Text>
-                <Text style={styles.navDataValueSmall}>
-                  {`${Math.abs(gpsDataRef.current.longitude!).toFixed(4)}°${gpsDataRef.current.longitude! >= 0 ? 'E' : 'W'}`}
-                </Text>
-              </>
-            ) : (
-              <>
-                <Text style={styles.navDataValueSmall}>
-                  {`${Math.abs(centerCoordRef.current[1]).toFixed(4)}°${centerCoordRef.current[1] >= 0 ? 'N' : 'S'}`}
-                </Text>
-                <Text style={styles.navDataValueSmall}>
-                  {`${Math.abs(centerCoordRef.current[0]).toFixed(4)}°${centerCoordRef.current[0] >= 0 ? 'E' : 'W'}`}
-                </Text>
-              </>
-            )}
-          </View>
-
-          {/* Lower Left - Heading (high z-index to stay above detail charts) */}
-          <View style={[
-            styles.navDataBox, 
-            styles.navDataLowerLeft, 
-            { 
-              bottom: showTideDetails && showCurrentDetails
-                ? Dimensions.get('window').height * 0.30  // Both charts = 30% (15% each)
-                : (showTideDetails || showCurrentDetails)
-                  ? Dimensions.get('window').height * 0.15  // One chart = 15%
-                  : 0  // No charts = tab bar level
-            }
-          ]}>
-            <Text style={styles.navDataLabel}>HDG</Text>
-            <Text style={styles.navDataValue}>{gpsData.heading !== null ? `${Math.round(gpsData.heading)}` : '--'}</Text>
-            <Text style={styles.navDataUnit}>°</Text>
-          </View>
-
-          {/* Lower Right - Bearing Next (high z-index to stay above detail charts) */}
-          <View style={[
-            styles.navDataBox, 
-            styles.navDataLowerRight, 
-            { 
-              bottom: showTideDetails && showCurrentDetails
-                ? Dimensions.get('window').height * 0.30  // Both charts = 30% (15% each)
-                : (showTideDetails || showCurrentDetails)
-                  ? Dimensions.get('window').height * 0.15  // One chart = 15%
-                  : 0  // No charts = tab bar level
-            }
-          ]}>
-            <Text style={styles.navDataLabel}>BRG</Text>
-            <Text style={styles.navDataValue}>--</Text>
-            <Text style={styles.navDataUnit}>°</Text>
-          </View>
-
-          {/* Middle Left - COG (position adjusted for detail charts) */}
-          <View style={[
-            styles.navDataBox, 
-            styles.navDataMiddleLeft,
-            { 
-              top: showTideDetails && showCurrentDetails
-                ? '30%'  // Both charts (30% bottom) - center in remaining 70%
-                : (showTideDetails || showCurrentDetails)
-                  ? '40%'  // One chart (15% bottom) - center in remaining 85%
-                  : '50%', // No charts - center in full screen
-              marginTop: -30 
-            }
-          ]}>
-            <Text style={styles.navDataLabel}>COG</Text>
-            <Text style={styles.navDataValue}>{gpsData.course !== null ? `${Math.round(gpsData.course)}` : '--'}</Text>
-            <Text style={styles.navDataUnit}>°</Text>
-          </View>
-
-          {/* Middle Right - ETE (position adjusted for detail charts) */}
-          <View style={[
-            styles.navDataBox, 
-            styles.navDataMiddleRight,
-            { 
-              top: showTideDetails && showCurrentDetails
-                ? '30%'  // Both charts (30% bottom) - center in remaining 70%
-                : (showTideDetails || showCurrentDetails)
-                  ? '40%'  // One chart (15% bottom) - center in remaining 85%
-                  : '50%', // No charts - center in full screen
-              marginTop: -30 
-            }
-          ]}>
-            <Text style={styles.navDataLabel}>ETE</Text>
-            <Text style={styles.navDataValue}>--</Text>
-            <Text style={styles.navDataUnit}>min</Text>
-          </View>
-        </>
+        <NavDataOverlay
+          gpsDataRef={gpsDataRef}
+          centerCoordRef={centerCoordRef}
+          followGPS={followGPS}
+          currentZoom={currentZoom}
+          showTideDetails={showTideDetails}
+          showCurrentDetails={showCurrentDetails}
+          topInset={insets.top}
+        />
       )}
 
       {/* Debug Map Modal - Map source toggle panel */}

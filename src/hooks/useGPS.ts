@@ -8,12 +8,13 @@
  * - Accuracy
  *
  * GPS data is stored in a ref (gpsDataRef) for real-time reads without
- * triggering React re-renders. A separate gpsData state is synced every
- * 2 seconds for display components that need to re-render (nav bar, etc.).
+ * triggering React re-renders. The gpsData state only updates on
+ * start/stop/error events — not on a timer.
  *
- * This two-tier approach prevents GPS updates (~1-2/sec) from re-rendering
- * the heavy DynamicChartViewer component, which caused MapLibre to reset
- * zoom gestures mid-animation.
+ * GPS-dependent display elements (ship marker, nav data HUD) live in
+ * isolated components that read gpsDataRef on their own 1-second timers,
+ * so only tiny subtrees re-render — not the 7000-line DynamicChartViewer
+ * with 200+ MapLibre layers.
  *
  * NOTE: Device heading (compass) is now handled by useDeviceHeading hook
  * which uses sensor fusion for smoother updates.
@@ -71,9 +72,11 @@ const INITIAL_GPS_DATA: GPSData = {
   error: null,
 };
 
-// How often to sync ref → state for display updates (ms).
-// Kept slow to avoid interrupting MapLibre gestures with re-renders.
-const DISPLAY_SYNC_INTERVAL = 2000;
+// Display sync interval removed — the 2-second timer was causing
+// DynamicChartViewer (7000+ lines, 200+ MapLibre layers) to re-render
+// every 2 seconds via gpsData state, even when idle. GPS-dependent
+// display elements (marker, nav data) now manage their own state in
+// isolated components so only tiny subtrees re-render.
 
 export function useGPS(options: UseGPSOptions = {}) {
   const {
@@ -86,9 +89,9 @@ export function useGPS(options: UseGPSOptions = {}) {
   // Camera centerCoordinate, overlay context) should read gpsDataRef.current.
   const gpsDataRef = useRef<GPSData>({ ...INITIAL_GPS_DATA });
 
-  // Display-only state — synced from ref on a slow timer.
-  // Only used by components that need to re-render on GPS changes
-  // (nav bar speed/heading, GPS marker position).
+  // Display-only state — updates on start/stop/error events only.
+  // Not synced on a timer. GPS-dependent UI lives in isolated
+  // components (GPSMarkerView, NavDataOverlay) that read gpsDataRef.
   const [gpsData, setGpsData] = useState<GPSData>({ ...INITIAL_GPS_DATA });
 
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
@@ -96,13 +99,9 @@ export function useGPS(options: UseGPSOptions = {}) {
   const lastPositionUpdate = useRef<{ lat: number; lon: number } | null>(null);
   const MIN_POSITION_CHANGE_M = 1;
 
-  // Sync ref → state on a slow timer for display updates
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setGpsData({ ...gpsDataRef.current });
-    }, DISPLAY_SYNC_INTERVAL);
-    return () => clearInterval(interval);
-  }, []);
+  // No auto-sync timer — gpsData state only updates on start/stop/error.
+  // Display components that need live GPS reads use gpsDataRef directly
+  // with their own lightweight timers in isolated components.
 
   // Helper: update the ref (no re-render)
   const updateRef = useCallback((updater: (prev: GPSData) => GPSData) => {
@@ -292,7 +291,7 @@ export function useGPS(options: UseGPSOptions = {}) {
   }, []);
 
   return {
-    gpsData,        // Display state — synced every 2s, safe for rendering
+    gpsData,        // Display state — updates on start/stop/error only
     gpsDataRef,     // Live ref — always current, no re-renders
     startTracking,
     stopTracking,
