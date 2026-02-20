@@ -283,7 +283,7 @@ def _node_convert_s57_to_geojson(s57_path: str, output_dir: str) -> tuple:
     OBJL_NAME strings, M_COVR coverage polygons, and all post-processing.
 
     Returns:
-        (geojson_path, has_safety_areas) tuple
+        (geojson_path, has_safety_areas, sector_lights_path) tuple
     """
     result = subprocess.run(
         ['node', '/app/dist/convert_s57.js', s57_path, output_dir],
@@ -291,7 +291,8 @@ def _node_convert_s57_to_geojson(s57_path: str, output_dir: str) -> tuple:
         timeout=120,
     )
     data = json.loads(result.stdout.strip())
-    return data['geojson_path'], data['has_safety_areas']
+    return (data['geojson_path'], data['has_safety_areas'],
+            data.get('sector_lights_path'))
 
 
 # ============================================================================
@@ -323,7 +324,9 @@ def _convert_one(args: tuple) -> dict:
 
     try:
         # S-57 → GeoJSON via TypeScript parser
-        geojson_path, has_safety = _node_convert_s57_to_geojson(s57_path_str, output_dir_str)
+        geojson_path, has_safety, sector_lights_path = _node_convert_s57_to_geojson(s57_path_str, output_dir_str)
+        if sector_lights_path:
+            result['sector_lights_path'] = sector_lights_path
         # GeoJSON → MBTiles via tippecanoe
         output_path = os.path.join(output_dir_str, f'{chart_id}.mbtiles')
         convert_geojson_to_mbtiles(geojson_path, output_path, chart_id, has_safety_areas=has_safety)
@@ -382,13 +385,15 @@ def _convert_to_geojson(args: tuple) -> dict:
     }
 
     try:
-        geojson_path, _has_safety = _node_convert_s57_to_geojson(s57_path_str, output_dir_str)
+        geojson_path, _has_safety, sector_lights_path = _node_convert_s57_to_geojson(s57_path_str, output_dir_str)
 
         geojson_file = Path(geojson_path)
         if geojson_file.exists():
             result['success'] = True
             result['size_mb'] = geojson_file.stat().st_size / 1024 / 1024
             result['geojson_path'] = str(geojson_file)
+            if sector_lights_path:
+                result['sector_lights_path'] = sector_lights_path
         else:
             result['error'] = 'GeoJSON not created'
     except Exception as e:
@@ -986,7 +991,7 @@ def convert_batch():
         upload_details = []
 
         def _upload_chart_geojson(result):
-            """Upload a single chart GeoJSON to temp storage."""
+            """Upload a single chart GeoJSON and sector-lights sidecar to temp storage."""
             geojson_path = result.get('geojson_path')
             if not geojson_path:
                 return None
@@ -997,6 +1002,14 @@ def convert_batch():
             storage_path = f'{district_label}/chart-geojson/{chart_id}/{chart_id}.geojson'
             blob = bucket.blob(storage_path)
             blob.upload_from_filename(str(geojson_file), timeout=300)
+            # Upload sector-lights sidecar if it exists
+            sector_lights_path = result.get('sector_lights_path')
+            if sector_lights_path:
+                sl_file = Path(sector_lights_path)
+                if sl_file.exists():
+                    sl_storage_path = f'{district_label}/chart-geojson/{chart_id}/{chart_id}.sector-lights.json'
+                    sl_blob = bucket.blob(sl_storage_path)
+                    sl_blob.upload_from_filename(str(sl_file), timeout=120)
             return {
                 'chartId': chart_id,
                 'storagePath': storage_path,

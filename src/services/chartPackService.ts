@@ -837,6 +837,8 @@ export function getDistrictFilePatterns(districtId: string): {
       (f: string) => f.startsWith(`${prefix}_ocean`) && f.endsWith('.mbtiles'),
       // Terrain: d07_terrain.mbtiles or d07_terrain_z8.mbtiles
       (f: string) => f.startsWith(`${prefix}_terrain`) && f.endsWith('.mbtiles'),
+      // Sector lights sidecar: sector-lights-07cgd.json
+      (f: string) => f === `sector-lights-${districtId}.json`,
     ],
   };
 }
@@ -982,5 +984,96 @@ export async function deleteRegion(
     }
     
     return { deletedFiles, freedBytes };
+  }
+}
+
+// ─── Sector Light Sidecar JSON ──────────────────────────────────────────
+// Pre-computed sector light data eliminates unreliable queryRenderedFeaturesInRect
+// calls for arc rendering. The JSON is generated during chart conversion and
+// uploaded per-district to Firebase Storage.
+
+export interface SectorLight {
+  lon: number;
+  lat: number;
+  sectr1: number;
+  sectr2: number;
+  colour: number;
+  scamin: number;
+  chartId: string;
+}
+
+/**
+ * Fetch sector-lights.json for a district from Firebase Storage and cache locally.
+ * Returns the number of sector lights fetched, or 0 if not available.
+ */
+export async function fetchSectorLights(districtId: string): Promise<number> {
+  const mbtilesDir = await getMBTilesDir();
+  const localPath = `${mbtilesDir}sector-lights-${districtId}.json`;
+
+  try {
+    const bucketName = 'xnautical-8a296.firebasestorage.app';
+    const storagePath = `${districtId}/charts/sector-lights.json`;
+    const encodedPath = encodeURIComponent(storagePath);
+    const url = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.log(`[ChartPackService] No sector-lights.json for ${districtId} (${response.status})`);
+      return 0;
+    }
+
+    const text = await response.text();
+    await FileSystem.writeAsStringAsync(localPath, text);
+    const lights: SectorLight[] = JSON.parse(text);
+    console.log(`[ChartPackService] Cached ${lights.length} sector lights for ${districtId}`);
+    return lights.length;
+  } catch (error) {
+    console.warn(`[ChartPackService] Error fetching sector lights for ${districtId}:`, error);
+    return 0;
+  }
+}
+
+/**
+ * Load all locally cached sector lights across all installed districts.
+ * Returns a combined array of sector lights with deduplication
+ * (keeps the copy with the largest SCAMIN per unique position+sector key).
+ */
+export async function loadLocalSectorLights(): Promise<SectorLight[]> {
+  const mbtilesDir = await getMBTilesDir();
+
+  try {
+    const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
+    if (!dirInfo.exists) return [];
+
+    const files = await FileSystem.readDirectoryAsync(mbtilesDir);
+    const slFiles = files.filter(f => f.startsWith('sector-lights-') && f.endsWith('.json'));
+
+    if (slFiles.length === 0) return [];
+
+    // Load and aggregate all district sector-lights files
+    const deduped = new Map<string, SectorLight>();
+
+    for (const file of slFiles) {
+      try {
+        const content = await FileSystem.readAsStringAsync(`${mbtilesDir}${file}`);
+        const lights: SectorLight[] = JSON.parse(content);
+        for (const light of lights) {
+          const key = `${light.lon.toFixed(5)},${light.lat.toFixed(5)},${light.sectr1},${light.sectr2}`;
+          const existing = deduped.get(key);
+          // Keep the copy with the largest SCAMIN (most permissive — visible at lowest zoom)
+          if (!existing || (existing.scamin < light.scamin)) {
+            deduped.set(key, light);
+          }
+        }
+      } catch (error) {
+        console.warn(`[ChartPackService] Error loading ${file}:`, error);
+      }
+    }
+
+    console.log(`[ChartPackService] Loaded ${deduped.size} unique sector lights from ${slFiles.length} files`);
+    return Array.from(deduped.values());
+  } catch (error) {
+    console.warn('[ChartPackService] Error loading sector lights:', error);
+    return [];
   }
 }

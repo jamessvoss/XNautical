@@ -62,52 +62,14 @@ interface GeoJSONFeatureCollection {
   features: GeoJSONFeature[];
 }
 
-// ─── Light sector arc geometry ────────────────────────────────────────────
-
-/**
- * Generate a LineString arc for a light sector.
- *
- * S-57 SECTR1/SECTR2 are "true bearings as seen FROM SEAWARD towards the light".
- * The visible sector spans clockwise from SECTR1 to SECTR2.
- * We add 180 deg to get the direction the light shines from the light outward.
- */
-function generateArcGeometry(
-  centerLon: number,
-  centerLat: number,
-  startBearing: number,
-  endBearing: number,
-  radiusNm: number = 0.15,
-  numPoints: number = 32,
-): { type: 'LineString'; coordinates: [number, number][] } {
-  const radiusDeg = radiusNm / 60.0;
-  const latRad = (centerLat * Math.PI) / 180;
-  const lonScale = Math.cos(latRad);
-
-  const start = (startBearing + 180) % 360;
-  const end = (endBearing + 180) % 360;
-
-  let arcSpan = ((end - start) % 360 + 360) % 360;
-  if (arcSpan === 0 && startBearing !== endBearing) arcSpan = 360;
-  if (arcSpan < 1) arcSpan = 1;
-
-  const pointsForArc = Math.max(8, Math.floor(numPoints * arcSpan / 90));
-  const coords: [number, number][] = [];
-
-  for (let i = 0; i <= pointsForArc; i++) {
-    const fraction = i / pointsForArc;
-    const bearing = start + arcSpan * fraction;
-    const bearingRad = (bearing * Math.PI) / 180;
-
-    const dx = radiusDeg * Math.sin(bearingRad) / lonScale;
-    const dy = radiusDeg * Math.cos(bearingRad);
-
-    coords.push([
-      roundCoord(centerLon + dx),
-      roundCoord(centerLat + dy),
-    ]);
-  }
-
-  return { type: 'LineString', coordinates: coords };
+interface SectorLight {
+  lon: number;
+  lat: number;
+  sectr1: number;
+  sectr2: number;
+  colour: number;
+  scamin: number;
+  chartId: string;
 }
 
 // ─── Coordinate rounding ──────────────────────────────────────────────────
@@ -188,6 +150,7 @@ function main(): void {
 
   // Post-process features
   const outputFeatures: GeoJSONFeature[] = [];
+  const sectorLights: SectorLight[] = [];
   let hasSafetyAreas = false;
 
   for (const feature of rawGeoJSON.features) {
@@ -219,7 +182,7 @@ function main(): void {
       ? { minzoom: 0, maxzoom: 15 }
       : undefined;
 
-    // ── LIGHTS: calculate orientation and generate sector arcs ──
+    // ── LIGHTS: calculate orientation (arcs generated client-side per S-52) ──
     if (objl === LIGHTS_OBJL) {
       const sectr1 = props.SECTR1 !== undefined ? parseFloat(String(props.SECTR1)) : undefined;
       const sectr2 = props.SECTR2 !== undefined ? parseFloat(String(props.SECTR2)) : undefined;
@@ -236,35 +199,6 @@ function main(): void {
         props._ORIENT = 135;
       }
 
-      // Generate sector arc feature
-      if (
-        sectr1 !== undefined && sectr2 !== undefined &&
-        !isNaN(sectr1) && !isNaN(sectr2) &&
-        feature.geometry && feature.geometry.type === 'Point'
-      ) {
-        const coords = feature.geometry.coordinates;
-        const colourCode = props.COLOUR ?? 1;
-
-        const arcGeom = generateArcGeometry(coords[0], coords[1], sectr1, sectr2, 0.15);
-
-        outputFeatures.push({
-          type: 'Feature',
-          geometry: arcGeom,
-          properties: {
-            OBJL: LIGHTS_OBJL,
-            OBJL_NAME: 'LIGHTS',
-            COLOUR: colourCode,
-            SECTR1: sectr1,
-            SECTR2: sectr2,
-            OBJNAM: props.OBJNAM,
-            CHART_ID: chartId,
-            _chartId: chartId,
-            _scaleNum: scaleNum,
-          },
-          tippecanoe: { minzoom: 0, maxzoom: 15, layer: 'arcs' },
-        });
-      }
-
       // Add the light feature itself
       outputFeatures.push({
         type: 'Feature',
@@ -272,6 +206,24 @@ function main(): void {
         properties: props,
         ...(tipp ? { tippecanoe: tipp } : {}),
       });
+
+      // Collect sector lights for sidecar JSON (used by app for reliable arc rendering)
+      if (sectr1 !== undefined && sectr2 !== undefined && !isNaN(sectr1) && !isNaN(sectr2)) {
+        const geom = feature.geometry;
+        if (geom && geom.type === 'Point' && geom.coordinates) {
+          const colour = normalizeColour(props.COLOUR);
+          const scamin = props.SCAMIN !== undefined ? parseFloat(String(props.SCAMIN)) : Infinity;
+          sectorLights.push({
+            lon: roundCoord(geom.coordinates[0]),
+            lat: roundCoord(geom.coordinates[1]),
+            sectr1,
+            sectr2,
+            colour: colour ?? 1,
+            scamin: isNaN(scamin) ? Infinity : scamin,
+            chartId,
+          });
+        }
+      }
     }
 
     // ── SOUNDG: split MultiPoint into individual Point features ──
@@ -348,11 +300,22 @@ function main(): void {
   const fileSizeKB = fs.statSync(geojsonPath).size / 1024;
   process.stderr.write(`Created GeoJSON: ${geojsonPath} (${fileSizeKB.toFixed(1)} KB)\n`);
 
+  // Write sector lights sidecar JSON (used by app for reliable arc rendering
+  // without needing queryRenderedFeaturesInRect)
+  let sectorLightsPath: string | undefined;
+  if (sectorLights.length > 0) {
+    sectorLightsPath = path.join(outputDir, `${chartId}.sector-lights.json`);
+    fs.writeFileSync(sectorLightsPath, JSON.stringify(sectorLights));
+    process.stderr.write(`Sector lights: ${sectorLights.length} → ${sectorLightsPath}\n`);
+  }
+
   // Output metadata to stdout (parsed by server.py)
   const result = {
     geojson_path: geojsonPath,
     has_safety_areas: hasSafetyAreas,
     feature_count: outputFeatures.length,
+    sector_lights_path: sectorLightsPath,
+    sector_lights_count: sectorLights.length,
   };
   process.stdout.write(JSON.stringify(result) + '\n');
 }

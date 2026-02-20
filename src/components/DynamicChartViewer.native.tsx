@@ -860,6 +860,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // UI state
   const [currentZoom, setCurrentZoom] = useState(8);
 
+  // Dynamic sector arc state (screen-constant per S-52 §3.1.5)
+  const [sectorArcFeatures, setSectorArcFeatures] = useState<{
+    type: 'FeatureCollection'; features: any[];
+  }>({ type: 'FeatureCollection', features: [] });
+  const sectorArcDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Accumulated sector lights — persists across queries for stability.
+  // queryRenderedFeaturesInRect is non-deterministic (misses features on some calls).
+  // Once a sector light is found, we keep it until it's far outside the viewport.
+  // Key: "lon,lat,sectr1,sectr2", Value: light data
+  const sectorLightCacheRef = useRef<Map<string, {
+    lon: number; lat: number; sectr1: number; sectr2: number; colour: number; scamin: number;
+  }>>(new Map());
+  // Pre-computed sector lights loaded from sidecar JSON (generated during conversion).
+  // When available, this eliminates the need for queryRenderedFeaturesInRect entirely.
+  const sectorLightIndexRef = useRef<chartPackService.SectorLight[] | null>(null);
+
   // Lazy-load: only render VectorSources whose zoom range overlaps current zoom (with buffer)
   // Use integer zoom so fractional changes during pan don't trigger recalculation
   const zoomInt = Math.round(currentZoom);
@@ -1668,6 +1684,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             setChartScaleSources(scaleSources);
             logger.info(LogCategory.CHARTS, `Chart rendering: ${scaleSources.length} source(s)`);
 
+            // Load pre-computed sector lights from sidecar JSON (non-blocking).
+            // This eliminates unreliable queryRenderedFeaturesInRect for arc rendering.
+            chartPackService.loadLocalSectorLights().then(lights => {
+              if (lights.length > 0) {
+                sectorLightIndexRef.current = lights;
+                logger.info(LogCategory.CHARTS, `Loaded ${lights.length} pre-computed sector lights`);
+              }
+            }).catch(() => {});
 
             const chartSummary = `${loadedMbtiles.length} charts (${scaleSources.length} source${scaleSources.length === 1 ? '' : 's'})`;
             setDebugInfo(`Server: ${serverUrl}\nCharts: ${chartSummary}\nMode: Multi-source\nDir: ${mbtilesDir}`);
@@ -1719,6 +1743,206 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       initialLoadCompleteRef.current = true;
     }
   };
+
+  // ─── Dynamic sector arc generation (screen-constant per S-52 §3.1.5) ───
+  const TARGET_ARC_PIXELS = 60; // dp — arc radius in screen pixels at all zoom levels
+
+  const arcUpdateCountRef = useRef(0);
+  const updateSectorArcsRef = useRef<() => void>(() => {});
+  updateSectorArcsRef.current = async () => {
+    if (!mapRef.current || !showLights) return;
+
+    const zoom = currentZoom;
+    // Skip arc generation below z6 — sector arcs aren't useful at overview zoom
+    // and the query is expensive (CircleLayer not rendered below z6).
+    if (zoom < 6) {
+      if (sectorLightCacheRef.current.size > 0) {
+        sectorLightCacheRef.current.clear();
+        setSectorArcFeatures({ type: 'FeatureCollection', features: [] });
+      }
+      return;
+    }
+
+    const [lng, lat] = centerCoordRef.current;
+    const callNum = ++arcUpdateCountRef.current;
+    const t0 = Date.now();
+
+    // Calibrate dp-to-degrees conversion directly from the map.
+    // This avoids metersPerPixel/PixelRatio/Mercator-distortion issues.
+    const centerScreen = await mapRef.current.getPointInView([lng, lat]);
+    const rightScreen = [centerScreen[0] + TARGET_ARC_PIXELS, centerScreen[1]];
+    const belowScreen = [centerScreen[0], centerScreen[1] + TARGET_ARC_PIXELS];
+    const rightCoord = await mapRef.current.getCoordinateFromView(rightScreen);
+    const belowCoord = await mapRef.current.getCoordinateFromView(belowScreen);
+    const dpToDegreesLon = Math.abs(rightCoord[0] - lng);
+    const dpToDegreesLat = Math.abs(belowCoord[1] - lat);
+
+    const { width, height } = Dimensions.get('window');
+
+    // Determine viewport bounds for spatial filtering
+    const halfWidthDeg = dpToDegreesLon * width / TARGET_ARC_PIXELS / 2;
+    const halfHeightDeg = dpToDegreesLat * height / TARGET_ARC_PIXELS / 2;
+    const viewWest = lng - halfWidthDeg;
+    const viewEast = lng + halfWidthDeg;
+    const viewSouth = lat - halfHeightDeg;
+    const viewNorth = lat + halfHeightDeg;
+    // Generous padding (1.5x viewport) so arcs near edges are included
+    const padLon = halfWidthDeg * 1.5;
+    const padLat = halfHeightDeg * 1.5;
+
+    // SCAMIN filter in JS: show arc if the light's SCAMIN makes it visible at current zoom
+    const scaminVisible = (scamin: number) => {
+      if (!isFinite(scamin)) return true; // No SCAMIN = always visible
+      const minZoom = 28 - scaminOffset - Math.log2(scamin);
+      return zoom >= minZoom;
+    };
+
+    let rawCount = 0;
+    let sourceLabel: string;
+    const cache = sectorLightCacheRef.current;
+
+    if (sectorLightIndexRef.current) {
+      // ── FAST PATH: Use pre-computed sector light index from sidecar JSON ──
+      // No native bridge calls needed. Just filter the in-memory array by viewport + SCAMIN.
+      sourceLabel = 'index';
+      const index = sectorLightIndexRef.current;
+      cache.clear();
+      for (const light of index) {
+        if (light.lon < viewWest - padLon || light.lon > viewEast + padLon ||
+            light.lat < viewSouth - padLat || light.lat > viewNorth + padLat) continue;
+        const key = `${light.lon.toFixed(5)},${light.lat.toFixed(5)},${light.sectr1},${light.sectr2}`;
+        const existing = cache.get(key);
+        if (!existing || existing.scamin < light.scamin) {
+          cache.set(key, light);
+        }
+      }
+      rawCount = cache.size;
+    } else {
+      // ── FALLBACK: Query MapLibre CircleLayer (non-deterministic) ──
+      sourceLabel = 'query';
+      const bbox: [number, number, number, number] = [0, width, height, 0];
+
+      // Query the invisible CircleLayer for ALL sector lights in loaded tiles.
+      // The CircleLayer has NO scaminFilter — all LIGHTS with SECTR1 in loaded
+      // tiles are always rendered and queryable. SCAMIN is filtered in JS below.
+      const lightsLayerIds = chartScaleSources.map(s => `${s.sourceId}-lights-query`);
+      const result = await mapRef.current.queryRenderedFeaturesInRect(bbox, ['has', 'SECTR1'], lightsLayerIds);
+      const rawFeatures = result?.features ?? result ?? [];
+      rawCount = rawFeatures.length;
+
+      // Accumulate: add newly found sector lights to persistent cache.
+      // queryRenderedFeaturesInRect is non-deterministic — it misses features on
+      // some calls. By accumulating, once we find a light it stays stable.
+      for (const f of rawFeatures) {
+        const props = f.properties;
+        if (!props?.SECTR1 || !props?.SECTR2) continue;
+        const coords = f.geometry?.coordinates;
+        if (!coords || f.geometry?.type !== 'Point') continue;
+
+        const sectr1 = parseFloat(String(props.SECTR1));
+        const sectr2 = parseFloat(String(props.SECTR2));
+        if (isNaN(sectr1) || isNaN(sectr2)) continue;
+
+        const scamin = parseFloat(String(props.SCAMIN));
+        const key = `${coords[0].toFixed(5)},${coords[1].toFixed(5)},${sectr1},${sectr2}`;
+
+        // Keep the copy with the LARGEST SCAMIN (most permissive — visible at lowest zoom)
+        const existing = cache.get(key);
+        if (!existing || (isNaN(existing.scamin) ? 0 : existing.scamin) < (isNaN(scamin) ? Infinity : scamin)) {
+          cache.set(key, {
+            lon: coords[0], lat: coords[1],
+            sectr1, sectr2,
+            colour: typeof props.COLOUR === 'number' ? props.COLOUR : parseInt(String(props.COLOUR)) || 1,
+            scamin: isNaN(scamin) ? Infinity : scamin,
+          });
+        }
+      }
+
+      // Prune lights that are far outside the current viewport (3x screen padding).
+      const pruneLon = dpToDegreesLon * width * 3 / TARGET_ARC_PIXELS;
+      const pruneLat = dpToDegreesLat * height * 3 / TARGET_ARC_PIXELS;
+      for (const [key, light] of cache) {
+        if (light.lon < lng - pruneLon || light.lon > lng + pruneLon ||
+            light.lat < lat - pruneLat || light.lat > lat + pruneLat) {
+          cache.delete(key);
+        }
+      }
+    }
+
+    const t1 = Date.now();
+
+    // Generate arc + sector leg geometries using screen-calibrated dp-to-degrees.
+    // Per S-52 §3.1.5: sector legs at fixed 25mm screen size (~60dp).
+    const arcFeatures: any[] = [];
+
+    for (const [, light] of cache) {
+      if (!scaminVisible(light.scamin)) continue;
+
+      // S-52: SECTR1/SECTR2 are bearings FROM SEAWARD toward the light.
+      // The light shines OUTWARD: add 180° to get the direction it illuminates.
+      const startBearing = (light.sectr1 + 180) % 360;
+      const endBearing = (light.sectr2 + 180) % 360;
+      let arcSpan = ((endBearing - startBearing) % 360 + 360) % 360;
+      if (arcSpan === 0 && light.sectr1 !== light.sectr2) arcSpan = 360;
+      if (arcSpan < 1) arcSpan = 1;
+
+      const startRad = startBearing * Math.PI / 180;
+      const endRad = (startBearing + arcSpan) * Math.PI / 180;
+
+      // Sector leg endpoints (at arc radius distance from light)
+      const legEnd1: [number, number] = [
+        light.lon + dpToDegreesLon * Math.sin(startRad),
+        light.lat + dpToDegreesLat * Math.cos(startRad),
+      ];
+      const legEnd2: [number, number] = [
+        light.lon + dpToDegreesLon * Math.sin(endRad),
+        light.lat + dpToDegreesLat * Math.cos(endRad),
+      ];
+
+      // Sector leg 1 (light center → arc start)
+      arcFeatures.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [[light.lon, light.lat], legEnd1] },
+        properties: { COLOUR: light.colour, _type: 'leg' },
+      });
+      // Sector leg 2 (light center → arc end)
+      arcFeatures.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [[light.lon, light.lat], legEnd2] },
+        properties: { COLOUR: light.colour, _type: 'leg' },
+      });
+
+      // Arc curve connecting leg endpoints
+      const numPoints = Math.max(8, Math.floor(32 * arcSpan / 90));
+      const arcCoords: [number, number][] = [];
+      for (let i = 0; i <= numPoints; i++) {
+        const bearing = startBearing + arcSpan * (i / numPoints);
+        const bearingRad = bearing * Math.PI / 180;
+        arcCoords.push([
+          light.lon + dpToDegreesLon * Math.sin(bearingRad),
+          light.lat + dpToDegreesLat * Math.cos(bearingRad),
+        ]);
+      }
+      arcFeatures.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: arcCoords },
+        properties: { COLOUR: light.colour, _type: 'arc' },
+      });
+    }
+
+    const t2 = Date.now();
+    console.log(`[ARC] #${callNum} z=${zoom.toFixed(1)} src=${sourceLabel} find=${t1-t0}ms gen=${t2-t1}ms raw=${rawCount} cached=${cache.size} arcs=${arcFeatures.length}`);
+
+    setSectorArcFeatures({ type: 'FeatureCollection', features: arcFeatures });
+  };
+
+  // Clear arcs and cache when lights layer is turned off
+  useEffect(() => {
+    if (!showLights) {
+      sectorLightCacheRef.current.clear();
+      setSectorArcFeatures({ type: 'FeatureCollection', features: [] });
+    }
+  }, [showLights]);
 
   // Track if we've done the query warm-up
   const queryWarmupDoneRef = useRef(false);
@@ -1774,6 +1998,15 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const atMax = limitZoomToCharts && roundedZoom >= effectiveMaxZoom - 0.1;
       setIsAtMaxZoom(prev => prev === atMax ? prev : atMax);
     }
+
+    // Debounced arc update — waits 150ms for tiles to load, then schedules
+    // on next animation frame for smooth visual integration.
+    if (sectorArcDebounceRef.current) clearTimeout(sectorArcDebounceRef.current);
+    sectorArcDebounceRef.current = setTimeout(() => {
+      requestAnimationFrame(() => {
+        updateSectorArcsRef.current();
+      });
+    }, 150);
   }, [limitZoomToCharts, effectiveMaxZoom]);
 
   // Lightweight camera update — refs only, no state, no re-renders
@@ -2407,27 +2640,33 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const gnisStreamMinZoom = scaminToZoom(262144);     // ~z9 at high (streams, lakes)
   const gnisTerrainMinZoom = scaminToZoom(131072);    // ~z10 at high
 
-  const renderChartLayers = (prefix: string) => {
-    const p = prefix; // shorthand
-    const scaminFilter: any[] = ['any',
-      ['!', ['has', 'SCAMIN']],
-      ['>=', ['floor', ['zoom']], ['floor', ['-', 28 - scaminOffset, ['/', ['ln', ['get', 'SCAMIN']], ['ln', 2]]]]]
-    ];
+  // SCAMIN may be string-encoded in MVT tiles; ['to-number', ...] ensures ln() math works.
+  // Extracted as a top-level memo so sub-group caches can depend on it independently.
+  const scaminFilter: any[] = useMemo(() => ['any',
+    ['!', ['has', 'SCAMIN']],
+    ['>=', ['floor', ['zoom']], ['floor', ['-', 28 - scaminOffset, ['/', ['ln', ['to-number', ['get', 'SCAMIN']]], ['ln', 2]]]]]
+  ], [scaminOffset]);
 
-    // Background fills (DEPARE, LNDARE) from different chart scales have different
-    // geometry that can't be deduplicated. Without exclusive zoom ranges, overlapping
-    // fills from multiple scales create visible chart boundaries.
-    // This filter gives each scale an exclusive zoom band so only ONE scale's
-    // background fills render at any given zoom level.
-    const bgFillScaleFilter: any[] = ['any',
-      ['!', ['has', '_scaleNum']],  // Features without scale pass through
-      ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 7]],    // US1-2: z0-6
-      ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 7], ['<', ['zoom'], 11]],  // US3: z7-10
-      ['all', ['==', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 11], ['<', ['zoom'], 14]], // US4: z11-13
-      ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 14]],  // US5+: z14+
-    ];
+  // Background fills (DEPARE, LNDARE) from different chart scales have different
+  // geometry that can't be deduplicated. Without exclusive zoom ranges, overlapping
+  // fills from multiple scales create visible chart boundaries.
+  // This filter gives each scale an exclusive zoom band so only ONE scale's
+  // background fills render at any given zoom level. Static — no deps.
+  const bgFillScaleFilter: any[] = useMemo(() => ['any',
+    ['!', ['has', '_scaleNum']],  // Features without scale pass through
+    ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 7]],    // US1-2: z0-6
+    ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 7], ['<', ['zoom'], 11]],  // US3: z7-10
+    ['all', ['==', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 11], ['<', ['zoom'], 14]], // US4: z11-13
+    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 14]],  // US5+: z14+
+  ], []);
 
+  // ─── renderChartLayers: split into sub-group functions ──────────────
+  // Each sub-group has independent dependencies for finer-grained memoization.
+  // When a display slider changes, only the affected sub-group rebuilds its JSX.
 
+  // SUB-GROUP 1: Background & area fills — DEPARE, LNDARE, DRGARE, FAIRWY, restricted/caution/military areas, etc.
+  const renderFillLayers = (prefix: string) => {
+    const p = prefix;
     return [
       /* ============================================== */
       /* S-52 LAYER ORDER: Opaque Background Fills First */
@@ -2750,6 +2989,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
+    ];
+  };
+
+  // SUB-GROUP 2: Structures & construction — bridges, buildings, moorings, shoreline construction, etc.
+  const renderStructureLayers = (prefix: string) => {
+    const p = prefix;
+    return [
       /* ============================================== */
       /* S-52 LAYER ORDER: Structures & Construction    */
       /* ============================================== */
@@ -3008,6 +3254,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
+    ];
+  };
+
+  // SUB-GROUP 3: Line features — depth contours, coastline, cables, pipelines, navigation lines
+  const renderLineLayers = (prefix: string) => {
+    const p = prefix;
+    return [
       /* ============================================== */
       /* S-52 LAYER ORDER: Line Features               */
       /* ============================================== */
@@ -3197,6 +3450,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
+    ];
+  };
+
+  // SUB-GROUP 4: Soundings & seabed — depth soundings, seabed composition
+  const renderSoundingLayers = (prefix: string) => {
+    const p = prefix;
+    return [
       /* ============================================== */
       /* S-52 LAYER ORDER: Soundings & Seabed          */
       /* ============================================== */
@@ -3299,6 +3559,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
+    ];
+  };
+
+  // SUB-GROUP 5: Symbols, labels & outlines — hazards, nav aids, landmarks, labels, area outlines
+  const renderSymbolLayers = (prefix: string) => {
+    const p = prefix;
+    return [
       /* ============================================== */
       /* S-52 LAYER ORDER: Hazards (Safety Critical)   */
       /* ============================================== */
@@ -3634,8 +3901,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
-      /* Light Sector arcs — rendered from "arcs" sourceLayer at end of layer stack */
-
       /* LIGHTS - symbols */
       <MapLibre.SymbolLayer
         key={`${p}-lights`}
@@ -3659,6 +3924,30 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           iconAnchor: 'bottom',
           iconAllowOverlap: true,
           iconIgnorePlacement: true,
+          visibility: showLights ? 'visible' : 'none',
+        }}
+      />,
+
+      /* LIGHTS - invisible query layer for sector arc generation.
+         NO scaminFilter here — we need ALL sector lights in loaded tiles to be
+         queryable regardless of zoom, because the same light can appear in
+         multiple chart scales with different SCAMIN values. The detailed-scale
+         copy (with SECTR1/SECTR2) may have a restrictive SCAMIN, while the
+         overview copy (visible at current zoom) may lack sector data.
+         SCAMIN filtering is applied in JavaScript after the query.
+         minZoomLevel=6: below z6 sector arcs are too small to be useful and
+         querying all sector lights in loaded tiles is expensive (2-3 seconds).
+         CircleLayer is used instead of SymbolLayer because symbol placement
+         makes queryRenderedFeaturesInRect return inconsistent results. */
+      <MapLibre.CircleLayer
+        key={`${p}-lights-query`}
+        id={`${p}-lights-query`}
+        sourceLayerID="charts"
+        minZoomLevel={6}
+        filter={['all', ['==', ['get', 'OBJL'], 75], ['has', 'SECTR1'], ['==', ['geometry-type'], 'Point']]}
+        style={{
+          circleRadius: 2,
+          circleOpacity: 0.01,
           visibility: showLights ? 'visible' : 'none',
         }}
       />,
@@ -4051,109 +4340,120 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
-      /* ============================================== */
-      /* Light Sector Arcs                              */
-      /* Arc features are in the 'arcs' MVT layer.      */
-      /* ============================================== */
-
-      /* Light Sector arcs - outline (black border) */
-      <MapLibre.LineLayer
-        key={`${p}-lights-sector-outline`}
-        id={`${p}-lights-sector-outline`}
-        sourceLayerID="arcs"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 75], scaminFilter]}
-        style={{
-          lineColor: '#000000',
-          lineWidth: 5,
-          lineOpacity: 0.8,
-          visibility: showLights ? 'visible' : 'none',
-        }}
-      />,
-
-      /* Light Sector arcs - color-matched fill */
-      <MapLibre.LineLayer
-        key={`${p}-lights-sector`}
-        id={`${p}-lights-sector`}
-        sourceLayerID="arcs"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 75], scaminFilter]}
-        style={{
-          lineColor: [
-            'match',
-            ['get', 'COLOUR'],
-            1, '#FFFF00',    // White → yellow for visibility
-            3, '#FF0000',    // Red
-            4, '#00FF00',    // Green
-            6, '#FFA500',    // Orange
-            '#FFFF00',       // Default yellow
-          ],
-          lineWidth: 3,
-          lineOpacity: 1.0,
-          visibility: showLights ? 'visible' : 'none',
-        }}
-      />,
+      /* Light Sector Arcs — now rendered dynamically via ShapeSource (screen-constant per S-52) */
     ];
   };
 
-  // ─── CHART LAYER CACHE ──────────────────────────────────────────────
-  // Memoize chart layer JSX to prevent recreation during camera/gesture changes.
-  // Without this, every pan/zoom recreates ~300 JSX elements even though nothing
-  // about the layers has changed. With this cache, layers only rebuild when
-  // visibility, style settings, or display mode actually change.
+  // Composition function — calls all sub-groups in order
+  const renderChartLayers = (prefix: string) => [
+    ...renderFillLayers(prefix),
+    ...renderStructureLayers(prefix),
+    ...renderLineLayers(prefix),
+    ...renderSoundingLayers(prefix),
+    ...renderSymbolLayers(prefix),
+  ];
+
+  // ─── CHART LAYER SUB-CACHES ────────────────────────────────────────
+  // Split into 5 sub-group caches for finer-grained memoization.
+  // When a display slider changes, only the affected sub-group rebuilds its JSX.
+  // Unchanged sub-groups return the same element references — React skips their reconciliation.
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fillLayerCache = useMemo(() => {
+    const cache: Record<string, React.ReactNode[]> = {};
+    for (const source of chartScaleSources) cache[source.sourceId] = renderFillLayers(source.sourceId);
+    return cache;
+  }, [chartScaleSources, scaminFilter, bgFillScaleFilter,
+    showDepthAreas, showLand, showCables, showPipelines,
+    showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages, showMarineFarms,
+    showSeaAreaNames, showLandRegions,
+    mapStyle, ecdisColors, s52Colors, displaySettings.depthContourLineScale,
+    scaledDepthAreaOpacity, scaledDepthAreaOpacitySatellite, scaledDepthContourLineOpacity,
+    scaledDredgedAreaOpacity, scaledFairwayOpacity,
+    scaledCableAreaOpacity, scaledPipelineAreaOpacity,
+    scaledRestrictedAreaOpacity, scaledCautionAreaOpacity,
+    scaledMilitaryAreaOpacity, scaledAnchorageOpacity, scaledMarineFarmOpacity,
+  ]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const structureLayerCache = useMemo(() => {
+    const cache: Record<string, React.ReactNode[]> = {};
+    for (const source of chartScaleSources) cache[source.sourceId] = renderStructureLayers(source.sourceId);
+    return cache;
+  }, [chartScaleSources, scaminFilter, s52Colors,
+    showBridges, showBuildings, showMoorings, showShorelineConstruction,
+    scaledBridgeLineWidth, scaledBridgeLineHalo, scaledBridgeOpacity,
+    scaledMooringIconSize, scaledMooringSymbolOpacity,
+    scaledMooringLineWidth, scaledMooringLineHaloWidth, scaledMooringLineHalo, scaledMooringOpacity,
+    scaledShorelineConstructionLineWidth, scaledShorelineConstructionHaloWidth,
+    scaledShorelineConstructionHalo, scaledShorelineConstructionOpacity,
+  ]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const lineLayerCache = useMemo(() => {
+    const cache: Record<string, React.ReactNode[]> = {};
+    for (const source of chartScaleSources) cache[source.sourceId] = renderLineLayers(source.sourceId);
+    return cache;
+  }, [chartScaleSources, scaminFilter, bgFillScaleFilter, s52Colors, s52Mode,
+    showDepthContours, showLand, showCables, showPipelines,
+    scaledDepthContourLineWidth, scaledDepthContourLineHaloWidth,
+    scaledDepthContourLineHalo, scaledDepthContourLineOpacity,
+    scaledCoastlineLineWidth, scaledCoastlineHaloWidth, scaledCoastlineHalo, scaledCoastlineOpacity,
+    scaledCableLineWidth, scaledCableLineHalo, scaledCableLineOpacity,
+    scaledPipelineLineWidth, scaledPipelineLineHalo, scaledPipelineLineOpacity,
+  ]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const soundingLayerCache = useMemo(() => {
+    const cache: Record<string, React.ReactNode[]> = {};
+    for (const source of chartScaleSources) cache[source.sourceId] = renderSoundingLayers(source.sourceId);
+    return cache;
+  }, [chartScaleSources, scaminFilter,
+    showSoundings, showSeabed, depthTextFieldExpression,
+    scaledSoundingsFontSize, scaledSoundingsHalo, scaledSoundingsOpacity,
+    displaySettings.tideCorrectedSoundings,
+  ]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const symbolLayerCache = useMemo(() => {
+    const cache: Record<string, React.ReactNode[]> = {};
+    for (const source of chartScaleSources) cache[source.sourceId] = renderSymbolLayers(source.sourceId);
+    return cache;
+  }, [chartScaleSources, scaminFilter, bgFillScaleFilter,
+    showHazards, showBuoys, showBeacons, showLights, showLandmarks,
+    showAnchorBerths, showCables, showPipelines, showDepthContours, showLand,
+    showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages, showMarineFarms,
+    scaledRockIconSize, scaledRockSymbolOpacity,
+    scaledWreckIconSize, scaledWreckSymbolOpacity,
+    scaledHazardIconSize, scaledHazardSymbolOpacity,
+    scaledTideRipsIconSize, scaledTideRipsHaloSize, scaledTideRipsSymbolOpacity,
+    scaledBeaconIconSize, scaledBeaconHaloSize, scaledBeaconSymbolOpacity,
+    scaledBuoyIconSize, scaledBuoyHaloSize, scaledBuoySymbolOpacity,
+    scaledLightIconSize, scaledLightSymbolOpacity,
+    scaledLandmarkIconSize, scaledLandmarkHaloSize, scaledLandmarkSymbolOpacity,
+    scaledAnchorIconSize, scaledAnchorSymbolOpacity,
+    scaledDepthContourFontSize, scaledDepthContourLabelHalo, scaledDepthContourLabelOpacity,
+    scaledCableLineWidth, scaledCableLineOpacity,
+    scaledPipelineLineWidth, scaledPipelineLineOpacity,
+  ]);
+
+  // Composition: merge sub-group caches into final layer array per source.
+  // When a sub-group cache is stable (same reference), the spread is cheap
+  // and React's reconciliation skips those elements.
   const chartLayerCache = useMemo(() => {
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) {
-      cache[source.sourceId] = renderChartLayers(source.sourceId);
+      const sid = source.sourceId;
+      cache[sid] = [
+        ...(fillLayerCache[sid] || []),
+        ...(structureLayerCache[sid] || []),
+        ...(lineLayerCache[sid] || []),
+        ...(soundingLayerCache[sid] || []),
+        ...(symbolLayerCache[sid] || []),
+      ];
     }
     return cache;
-  }, [
-    chartScaleSources,
-    // Layer visibility (all from reducer)
-    showDepthAreas, showLand, showDepthContours, showSoundings,
-    showLights, showBuoys, showBeacons, showLandmarks, showHazards,
-    showCables, showSeabed, showPipelines, showBridges, showBuildings,
-    showMoorings, showShorelineConstruction, showSeaAreaNames, showLandRegions,
-    showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
-    showAnchorBerths, showMarineFarms,
-    // Style modes
-    mapStyle, ecdisColors, s52Mode, s52Colors,
-    // Display settings (source for all scaled values)
-    displaySettings, depthTextFieldExpression, currentTideCorrection,
-    // Scaled text values
-    scaledSoundingsFontSize, scaledSoundingsHalo, scaledSoundingsOpacity,
-    scaledDepthContourFontSize, scaledDepthContourLabelHalo, scaledDepthContourLabelOpacity,
-    // Scaled line values
-    scaledDepthContourLineWidth, scaledDepthContourLineHaloWidth,
-    scaledDepthContourLineHalo, scaledDepthContourLineOpacity,
-    scaledCoastlineLineWidth, scaledCoastlineHaloWidth,
-    scaledCoastlineHalo, scaledCoastlineOpacity,
-    scaledCableLineWidth, scaledCableLineHalo, scaledCableLineOpacity,
-    scaledPipelineLineWidth, scaledPipelineLineHalo, scaledPipelineLineOpacity,
-    scaledBridgeLineWidth, scaledBridgeLineHalo, scaledBridgeOpacity,
-    scaledMooringLineWidth, scaledMooringLineHaloWidth,
-    scaledMooringLineHalo, scaledMooringOpacity,
-    scaledShorelineConstructionLineWidth, scaledShorelineConstructionHaloWidth,
-    scaledShorelineConstructionHalo, scaledShorelineConstructionOpacity,
-    // Scaled area values
-    scaledDepthAreaOpacity, scaledDepthAreaOpacitySatellite,
-    scaledDredgedAreaOpacity, scaledFairwayOpacity,
-    scaledRestrictedAreaOpacity, scaledCautionAreaOpacity,
-    scaledMilitaryAreaOpacity, scaledAnchorageOpacity,
-    scaledMarineFarmOpacity, scaledCableAreaOpacity, scaledPipelineAreaOpacity,
-    // Scaled symbol values
-    scaledLightIconSize, scaledLightSymbolOpacity,
-    scaledBuoyIconSize, scaledBuoyHaloSize, scaledBuoySymbolOpacity,
-    scaledBeaconIconSize, scaledBeaconHaloSize, scaledBeaconSymbolOpacity,
-    scaledWreckIconSize, scaledWreckSymbolOpacity,
-    scaledRockIconSize, scaledRockSymbolOpacity,
-    scaledHazardIconSize, scaledHazardSymbolOpacity,
-    scaledTideRipsIconSize, scaledTideRipsHaloSize, scaledTideRipsSymbolOpacity,
-    scaledLandmarkIconSize, scaledLandmarkHaloSize, scaledLandmarkSymbolOpacity,
-    scaledMooringIconSize, scaledMooringSymbolOpacity,
-    scaledAnchorIconSize, scaledAnchorSymbolOpacity,
-  ]);
+  }, [chartScaleSources, fillLayerCache, structureLayerCache, lineLayerCache, soundingLayerCache, symbolLayerCache]);
 
   if (loading) {
     return (
@@ -4201,7 +4501,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         // DO NOT set mapStyle prop — it triggers native removeAllSourcesFromMap()
         // which races with child VectorSource registration. Instead, we cover the
         // default style with a BackgroundLayer (first child below).
-        onMapIdle={handleMapIdle}
         onRegionWillChange={handleRegionWillChange}
         onRegionDidChange={handleCameraChanged}
         onRegionIsChanging={handleCameraMoving}
@@ -4374,7 +4673,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {useMBTiles && tileServerReady && debugIsSourceVisible('charts') && mapStyle !== 'street' && chartScaleSources.length > 0 && (
           chartScaleSources.map(source => (
             <MapLibre.VectorSource
-              key={`${source.sourceId}-${s52Mode}`}
+              key={source.sourceId}
               id={source.sourceId}
               tileUrlTemplates={[source.tileUrl]}
               minZoomLevel={source.minZoom}
@@ -4385,6 +4684,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           ))
         )}
 
+        {/* Dynamic sector arcs — screen-constant size per S-52 §3.1.5.
+            Always mounted to avoid mount/unmount churn; visibility controls display. */}
+        <MapLibre.ShapeSource id="sector-arcs-source" shape={sectorArcFeatures}>
+          <MapLibre.LineLayer id="sector-arcs-outline" style={{
+            lineColor: '#000000', lineWidth: 5, lineOpacity: 0.8,
+            visibility: showLights && sectorArcFeatures.features.length > 0 ? 'visible' : 'none',
+          }} />
+          <MapLibre.LineLayer id="sector-arcs-fill" style={{
+            lineColor: ['match', ['get', 'COLOUR'],
+              1, '#FFFF00', 3, '#FF0000', 4, '#00FF00', 6, '#FFA500', '#FFFF00'],
+            lineWidth: 3, lineOpacity: 1.0,
+            visibility: showLights && sectorArcFeatures.features.length > 0 ? 'visible' : 'none',
+          }} />
+        </MapLibre.ShapeSource>
 
         {/* ================================================================== */}
         {/* BASEMAP OVERLAY - Roads, buildings, labels rendered ABOVE charts   */}

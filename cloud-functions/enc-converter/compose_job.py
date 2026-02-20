@@ -385,19 +385,21 @@ def main():
 
         blobs = list(bucket.list_blobs(prefix=cache_prefix))
 
-        # Filter for .geojson files, apply manifest filtering
+        # Filter for .geojson and .sector-lights.json files, apply manifest filtering
         geojson_blobs = []
+        sector_lights_blobs = []
         for b in blobs:
-            if not b.name.endswith('.geojson'):
-                continue
-            # Extract chart ID from path: {district}/chart-geojson/{chartId}/{chartId}.geojson
+            # Extract chart ID from path: {district}/chart-geojson/{chartId}/{filename}
             parts = b.name[len(cache_prefix):].split('/')
             if len(parts) < 2:
                 continue
             chart_id = parts[0]
             if valid_chart_ids is not None and chart_id not in valid_chart_ids:
                 continue
-            geojson_blobs.append((b, f'{chart_id}.geojson'))
+            if b.name.endswith('.geojson'):
+                geojson_blobs.append((b, f'{chart_id}.geojson'))
+            elif b.name.endswith('.sector-lights.json'):
+                sector_lights_blobs.append((b, f'{chart_id}.sector-lights.json'))
 
         logger.info(f'Found {len(geojson_blobs)} GeoJSON files in chart-geojson cache')
 
@@ -421,6 +423,37 @@ def main():
         total_size = sum(os.path.getsize(p) for p in local_paths) / 1024 / 1024
         logger.info(f'Downloaded {len(geojson_blobs)} files ({total_size:.1f} MB) '
                    f'in {download_duration:.1f}s')
+
+        # ─── Download and aggregate sector-lights sidecar files ───
+        all_sector_lights = []
+        if sector_lights_blobs:
+            logger.info(f'Downloading {len(sector_lights_blobs)} sector-lights sidecar files...')
+            sector_dir = os.path.join(work_dir, 'sector-lights')
+            os.makedirs(sector_dir, exist_ok=True)
+
+            def _download_sector_blob(args):
+                blob, filename = args
+                local_path = os.path.join(sector_dir, filename)
+                blob.download_to_filename(local_path)
+                return local_path
+
+            sl_workers = min(16, len(sector_lights_blobs))
+            sl_paths = []
+            with ThreadPoolExecutor(max_workers=sl_workers) as pool:
+                sl_paths = list(pool.map(_download_sector_blob, sector_lights_blobs))
+
+            # Aggregate all per-chart sector lights into a single list
+            for sl_path in sl_paths:
+                try:
+                    with open(sl_path, 'r') as f:
+                        lights = json.load(f)
+                    if isinstance(lights, list):
+                        all_sector_lights.extend(lights)
+                except Exception as e:
+                    logger.warning(f'Failed to load sector-lights: {sl_path}: {e}')
+
+            logger.info(f'Aggregated {len(all_sector_lights)} sector lights from '
+                       f'{len(sector_lights_blobs)} charts')
 
         # ─── Load all charts in parallel ───
         logger.info('Loading charts in parallel...')
@@ -888,6 +921,20 @@ def main():
         zip_size = os.path.getsize(zip_path) / 1024 / 1024
         upload_duration = (datetime.now(timezone.utc) - upload_start).total_seconds()
 
+        # ─── Upload unified sector-lights.json ───
+        sector_lights_count = 0
+        if all_sector_lights:
+            sl_output_path = os.path.join(output_dir, 'sector-lights.json')
+            with open(sl_output_path, 'w') as f:
+                json.dump(all_sector_lights, f)
+            sl_storage_path = f'{district_label}/charts/sector-lights.json'
+            sl_blob = bucket.blob(sl_storage_path)
+            sl_blob.upload_from_filename(sl_output_path, timeout=120)
+            sector_lights_count = len(all_sector_lights)
+            sl_size_kb = os.path.getsize(sl_output_path) / 1024
+            logger.info(f'Uploaded sector-lights.json: {sector_lights_count} lights '
+                       f'({sl_size_kb:.1f} KB) -> {sl_storage_path}')
+
         # Read bounds from MBTiles metadata
         bounds = None
         try:
@@ -931,6 +978,9 @@ def main():
         }
         if bounds:
             chart_data['bounds'] = bounds
+        if sector_lights_count > 0:
+            chart_data['sectorLightsCount'] = sector_lights_count
+            chart_data['sectorLightsPath'] = f'{district_label}/charts/sector-lights.json'
 
         doc_ref = db.collection('districts').document(district_label)
         doc_ref.set({'chartData': chart_data}, merge=True)
