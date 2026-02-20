@@ -1108,7 +1108,7 @@ def convert_district_parallel():
     
     Request body: {
         "districtId": "05",
-        "batchSize": 20,      # optional, default 20
+        "batchSize": 40,      # optional, default 40
         "maxParallel": 80      # optional, default 80
     }
     
@@ -1121,7 +1121,7 @@ def convert_district_parallel():
     """
     data = request.get_json(silent=True) or {}
     district_id = str(data.get('districtId', '')).zfill(2)
-    batch_size = int(data.get('batchSize', 20))
+    batch_size = int(data.get('batchSize', 40))
     max_parallel = int(data.get('maxParallel', 80))
 
     # Allow districtLabel override for testing (e.g. "017cgd_test")
