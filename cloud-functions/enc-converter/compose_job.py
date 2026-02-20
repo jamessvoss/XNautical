@@ -112,10 +112,12 @@ DEDUP_ZONE_OBJLS = {
 # Category 3: Hydrographic/geographic features — deduplicate, keep highest _scaleNum
 # These features exist on multiple overlapping charts and cause visual doubling
 # (overlapping contour lines, duplicate soundings, doubled coastlines)
+# NOTE: SOUNDG (129) intentionally excluded — soundings are dense survey points,
+# not true cross-scale duplicates. The 4-decimal coordinate rounding in dedup_key()
+# (~11m precision) collapses nearby-but-distinct soundings, losing 40-60% of data.
 DEDUP_HYDRO_OBJLS = {
     43,   # DEPCNT — depth contours
     42,   # DEPARE — depth areas
-    129,  # SOUNDG — soundings
     30,   # COALNE — coastline
     71,   # LNDARE — land areas
 }
@@ -164,6 +166,98 @@ def compute_md5(file_path: Path) -> str:
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
+
+# ── Pipeline validation gates ────────────────────────────────────────────────
+
+def validate_geojson_downloads(local_paths, logger):
+    """Validate downloaded GeoJSON files are non-empty and structurally complete."""
+    valid = []
+    problems = []
+    for p in local_paths:
+        chart_id = Path(p).name.replace('.geojson', '')
+        size = os.path.getsize(p)
+        if size == 0:
+            problems.append({'chartId': chart_id, 'reason': 'empty (0 bytes)'})
+            continue
+        with open(p, 'rb') as f:
+            first = f.read(1)
+            f.seek(-1, 2)
+            last = f.read(1)
+            if last == b'\n':
+                f.seek(-2, 2)
+                last = f.read(1)
+        if first != b'{' or last != b'}':
+            problems.append({'chartId': chart_id,
+                           'reason': f'bookend check failed ({first!r}...{last!r})'})
+            continue
+        valid.append(p)
+    return valid, problems
+
+
+def validate_mbtiles(path, context, logger):
+    """Validate .mbtiles is a valid SQLite database with tiles. Returns error or None."""
+    size = os.path.getsize(path)
+    if size == 0:
+        return f'{context}: file is 0 bytes'
+    try:
+        conn = sqlite3.connect(path)
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r[0] for r in cur.fetchall()}
+        if 'tiles' not in tables:
+            conn.close()
+            return f'{context}: missing tiles table (found: {tables})'
+        if 'metadata' not in tables:
+            conn.close()
+            return f'{context}: missing metadata table'
+        cur.execute("SELECT COUNT(*) FROM tiles")
+        tile_count = cur.fetchone()[0]
+        conn.close()
+        if tile_count == 0:
+            return f'{context}: tiles table is empty'
+        logger.info(f'  Validated {context}: {size / 1024 / 1024:.1f} MB, {tile_count:,d} tiles')
+        return None
+    except sqlite3.DatabaseError as e:
+        return f'{context}: corrupt SQLite: {e}'
+
+
+def validate_merged_mbtiles(path, expected_charts, logger):
+    """Extended validation for the final merged .mbtiles."""
+    error = validate_mbtiles(path, 'merged output', logger)
+    if error:
+        return error
+    size_mb = os.path.getsize(path) / 1024 / 1024
+    if size_mb < 1.0:
+        return f'merged output suspiciously small: {size_mb:.2f} MB for {expected_charts} charts'
+    try:
+        conn = sqlite3.connect(path)
+        cur = conn.cursor()
+        cur.execute("SELECT MIN(zoom_level), MAX(zoom_level), COUNT(DISTINCT zoom_level) FROM tiles")
+        z_min, z_max, z_count = cur.fetchone()
+        conn.close()
+        logger.info(f'  Merged: {size_mb:.1f} MB, zoom {z_min}-{z_max} ({z_count} levels)')
+        return None
+    except sqlite3.DatabaseError as e:
+        return f'merged output zoom check failed: {e}'
+
+
+def validate_upload(bucket, storage_path, expected_size, label, logger):
+    """Verify uploaded blob exists with expected size. Returns error or None."""
+    blob = bucket.blob(storage_path)
+    if not blob.exists():
+        return f'{label}: blob missing at {storage_path}'
+    blob.reload()
+    actual = blob.size or 0
+    if actual == 0:
+        return f'{label}: blob is 0 bytes at {storage_path}'
+    if actual != expected_size:
+        return (f'{label}: size mismatch at {storage_path}: '
+                f'expected {expected_size:,d}, got {actual:,d}')
+    logger.info(f'  Verified {label}: {actual / 1024 / 1024:.1f} MB at {storage_path}')
+    return None
+
+
+# ── End validation gates ─────────────────────────────────────────────────────
 
 def dedup_key(feature: dict) -> str:
     """Generate a deduplication key for a feature.
@@ -463,6 +557,12 @@ def tippecanoe_worker():
         mb = os.path.getsize(mbtiles_path) / 1024 / 1024
         logger.info(f'Tippecanoe complete: {mb:.1f} MB')
 
+        # Gate 3A: Validate tippecanoe output before upload
+        error = validate_mbtiles(mbtiles_path, f'US{scale_num} z{z_lo}-{z_hi}', logger)
+        if error:
+            logger.error(f'Gate 3 FAILED: {error}')
+            sys.exit(1)
+
         # Upload .mbtiles to Cloud Storage
         upload_path = f'{district_label}/charts/temp/compose/{output_stem}.mbtiles'
         logger.info(f'Uploading {upload_path}...')
@@ -571,6 +671,17 @@ def main():
         total_size = sum(os.path.getsize(p) for p in local_paths) / 1024 / 1024
         logger.info(f'Downloaded {len(geojson_blobs)} files ({total_size:.1f} MB) '
                    f'in {download_duration:.1f}s')
+
+        # Gate 2: Validate downloaded GeoJSON files
+        logger.info('Gate 2: Validating downloaded GeoJSON files...')
+        local_paths, download_problems = validate_geojson_downloads(local_paths, logger)
+        if download_problems:
+            for p in download_problems:
+                logger.warning(f"  Download problem: {p['chartId']} - {p['reason']}")
+        if not local_paths:
+            logger.error('Gate 2 FAILED: No valid GeoJSON files after download')
+            sys.exit(1)
+        logger.info(f'Gate 2 passed: {len(local_paths)} files validated')
 
         # ─── Download and aggregate sector-lights sidecar files ───
         all_sector_lights = []
@@ -1013,6 +1124,12 @@ def main():
                 sz = os.path.getsize(local_path) / 1024 / 1024
                 logger.info(f'  Downloaded {key}: {sz:.1f} MB')
 
+                # Gate 3B: Validate downloaded worker .mbtiles
+                error = validate_mbtiles(local_path, key, logger)
+                if error:
+                    logger.error(f'Gate 3B FAILED: {error}')
+                    sys.exit(1)
+
                 merger.add(local_path)
                 downloaded.add(key)
 
@@ -1045,6 +1162,14 @@ def main():
         mbtiles_size = os.path.getsize(output_mbtiles) / 1024 / 1024
         logger.info(f'Unified MBTiles complete: {mbtiles_size:.1f} MB in {tippecanoe_duration:.1f}s')
 
+        # Gate 4: Validate merged MBTiles
+        logger.info('Gate 4: Validating merged MBTiles...')
+        error = validate_merged_mbtiles(output_mbtiles, len(features_per_chart), logger)
+        if error:
+            logger.error(f'Gate 4 FAILED: {error}')
+            sys.exit(1)
+        logger.info('Gate 4 passed')
+
         # ─── Upload unified MBTiles (raw + zip in parallel) ───
         logger.info('Uploading unified MBTiles...')
         upload_start = datetime.now(timezone.utc)
@@ -1074,6 +1199,20 @@ def main():
 
         zip_size = os.path.getsize(zip_path) / 1024 / 1024
         upload_duration = (datetime.now(timezone.utc) - upload_start).total_seconds()
+
+        # Gate 5: Verify uploads landed correctly
+        logger.info('Gate 5: Verifying uploads...')
+        errors = list(filter(None, [
+            validate_upload(bucket, raw_storage_path, os.path.getsize(output_mbtiles),
+                            'raw mbtiles', logger),
+            validate_upload(bucket, zip_storage_path, os.path.getsize(zip_path),
+                            'zip archive', logger),
+        ]))
+        if errors:
+            for e in errors:
+                logger.error(f'Gate 5 FAILED: {e}')
+            sys.exit(1)
+        logger.info('Gate 5 passed')
 
         # ─── Upload unified sector-lights.json ───
         sector_lights_count = 0
@@ -1143,7 +1282,7 @@ def main():
                    f'{total_features_output} features ({duplicates_removed} deduped), '
                    f'{mbtiles_size:.1f} MB, {total_duration:.1f}s ===')
         logger.info(f'  Phases: download={download_duration:.0f}s, '
-                   f'load={load_duration:.0f}s, dedup={dedup_duration:.0f}s, '
+                   f'dedup={dedup_duration:.0f}s, '
                    f'write={write_duration:.0f}s, tippecanoe={tippecanoe_duration:.0f}s, '
                    f'upload={upload_duration:.0f}s')
 
