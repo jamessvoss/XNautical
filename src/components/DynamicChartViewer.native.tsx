@@ -927,14 +927,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const mapBackgroundColor = useMemo(() => {
     const styles: Record<string, string> = {
       satellite: s52Colors.DEPDW,
-      light: '#f5f5f5',
-      dark: '#1a1a2e',
-      ecdis: '#FFFFFF',
+      light: s52Colors.DEPDW,
+      dark: s52Colors.DEPDW,
       street: '#f0ede8',
       ocean: '#1a3a5c',
       terrain: '#dfe6e9',
     };
-    return styles[mapStyle] || '#1a1a2e';
+    return styles[mapStyle] || s52Colors.DEPDW;
   }, [mapStyle, s52Colors]);
 
   // Memoize composite tile URL to prevent constant VectorSource re-renders
@@ -2680,17 +2679,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 42], scaminFilter, bgFillScaleFilter]}
         style={{
-          fillColor: ecdisColors
-            ? [
-                'step',
-                ['coalesce', ['get', 'DRVAL1'], 0],
-                '#D4E6C8',
-                0, '#C8E1F5',
-                2, '#A0D0F0',
-                5, '#6EB8E8',
-                10, '#FFFFFF',
-              ]
-            : [
+          fillColor: [
                 'step',
                 ['coalesce', ['get', 'DRVAL1'], 0],
                 s52Colors.DEPIT,
@@ -2701,9 +2690,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               ],
           fillOpacity: mapStyle === 'satellite'
             ? (ecdisColors ? 0.7 : scaledDepthAreaOpacitySatellite)
-            : mapStyle === 'street'
-              ? 0
-              : scaledDepthAreaOpacity,
+            : scaledDepthAreaOpacity,
           visibility: (showDepthAreas && (mapStyle !== 'satellite' || ecdisColors)) ? 'visible' : 'none',
         }}
       />,
@@ -2725,7 +2712,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             16, 1.0 * displaySettings.depthContourLineScale,
           ],
           lineOpacity: 0.4 * scaledDepthContourLineOpacity,
-          visibility: (showDepthAreas && (mapStyle !== 'satellite' || ecdisColors) && mapStyle !== 'street') ? 'visible' : 'none',
+          visibility: (showDepthAreas && (mapStyle !== 'satellite' || ecdisColors)) ? 'visible' : 'none',
         }}
       />,
 
@@ -2736,12 +2723,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         sourceLayerID="charts"
         filter={['all', ['==', ['get', 'OBJL'], 71], scaminFilter, bgFillScaleFilter]}
         style={{
-          fillColor: ecdisColors ? '#F0E9D2' : s52Colors.LANDA,
+          fillColor: s52Colors.LANDA,
           fillOpacity: mapStyle === 'satellite'
             ? (ecdisColors ? 0.8 : 0.2)
-            : mapStyle === 'street'
-              ? 0
-              : 1,
+            : 1,
           visibility: (showLand && (mapStyle !== 'satellite' || ecdisColors)) ? 'visible' : 'none',
         }}
       />,
@@ -2758,7 +2743,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 46], scaminFilter]}
         style={{
-          fillColor: '#87CEEB',
+          fillColor: s52Colors.DRGARE,
           fillOpacity: scaledDredgedAreaOpacity,
         }}
       />,
@@ -2771,7 +2756,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 51], scaminFilter]}
         style={{
-          fillColor: '#E6E6FA',
+          fillColor: s52Colors.FAIRWY,
           fillOpacity: scaledFairwayOpacity,
         }}
       />,
@@ -2784,7 +2769,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 20], scaminFilter]}
         style={{
-          fillColor: '#800080',
+          fillColor: s52Colors.CBLARE,
           fillOpacity: scaledCableAreaOpacity,
           visibility: showCables ? 'visible' : 'none',
         }}
@@ -2798,7 +2783,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 92], scaminFilter]}
         style={{
-          fillColor: '#008000',
+          fillColor: s52Colors.PIPARE,
           fillOpacity: scaledPipelineAreaOpacity,
           visibility: showPipelines ? 'visible' : 'none',
         }}
@@ -2815,13 +2800,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           fillColor: [
             'match',
             ['get', 'CATREA'],
-            14, '#FF0000',
-            12, '#FF0000',
-            4, '#00AA00',
-            7, '#00AA00',
-            8, '#00AA00',
-            9, '#00AA00',
-            '#FF00FF',
+            14, s52Colors.MIPARE,
+            12, s52Colors.MIPARE,
+            4, s52Colors.RESGR,
+            7, s52Colors.RESGR,
+            8, s52Colors.RESGR,
+            9, s52Colors.RESGR,
+            s52Colors.DNGHL,
           ],
           fillOpacity: scaledRestrictedAreaOpacity,
           visibility: showRestrictedAreas ? 'visible' : 'none',
@@ -2836,7 +2821,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 27], scaminFilter]}
         style={{
-          fillColor: '#FFD700',
+          fillColor: s52Colors.CTNARE,
           fillOpacity: scaledCautionAreaOpacity,
           visibility: showCautionAreas ? 'visible' : 'none',
         }}
@@ -2850,7 +2835,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 83], scaminFilter]}
         style={{
-          fillColor: '#FF0000',
+          fillColor: s52Colors.MIPARE,
           fillOpacity: scaledMilitaryAreaOpacity,
           visibility: showMilitaryAreas ? 'visible' : 'none',
         }}
@@ -2864,7 +2849,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 4], scaminFilter]}
         style={{
-          fillColor: '#4169E1',
+          fillColor: s52Colors.ACHARE,
           fillOpacity: scaledAnchorageOpacity,
           visibility: showAnchorages ? 'visible' : 'none',
         }}
@@ -2878,7 +2863,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 82], scaminFilter]}
         style={{
-          fillColor: '#228B22',
+          fillColor: s52Colors.MARCUL,
           fillOpacity: scaledMarineFarmOpacity,
           visibility: showMarineFarms ? 'visible' : 'none',
         }}
@@ -2892,7 +2877,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 148], scaminFilter]}
         style={{
-          fillColor: '#FF00FF',
+          fillColor: s52Colors.TSSLPT,
           fillOpacity: 0.1,
         }}
       />,
@@ -2905,7 +2890,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 148], scaminFilter]}
         style={{
-          lineColor: '#FF00FF',
+          lineColor: s52Colors.TSSLPT,
           lineWidth: 1.5,
           lineOpacity: 0.6,
           lineDasharray: [4, 4],
@@ -2960,8 +2945,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           textField: ['get', 'OBJNAM'],
           textSize: ['interpolate', ['linear'], ['zoom'], 8, 10, 12, 14],
-          textColor: '#4169E1',
-          textHaloColor: '#FFFFFF',
+          textColor: s52Colors.SENAM,
+          textHaloColor: s52Colors.HLCLR,
           textHaloWidth: 1.5,
           textFont: ['Noto Sans Italic'],
           textAllowOverlap: false,
@@ -2980,8 +2965,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           textField: ['get', 'OBJNAM'],
           textSize: 11,
-          textColor: '#654321',
-          textHaloColor: '#FFFFFF',
+          textColor: s52Colors.LRGNT,
+          textHaloColor: s52Colors.HLCLR,
           textHaloWidth: 1.5,
           textFont: ['Noto Sans Regular'],
           textAllowOverlap: false,
@@ -3008,7 +2993,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
-          lineColor: '#FFFFFF',
+          lineColor: s52Colors.HLCLR,
           lineWidth: scaledBridgeLineWidth + scaledBridgeLineHalo,
           lineOpacity: scaledBridgeLineHalo > 0 ? scaledBridgeOpacity * 0.8 : 0,
           visibility: showBridges ? 'visible' : 'none',
@@ -3023,7 +3008,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
-          lineColor: '#696969',
+          lineColor: s52Colors.BRGLN,
           lineWidth: scaledBridgeLineWidth,
           lineOpacity: scaledBridgeOpacity,
           visibility: showBridges ? 'visible' : 'none',
@@ -3038,7 +3023,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
         style={{
-          fillColor: '#A9A9A9',
+          fillColor: s52Colors.BRGFL,
           fillOpacity: 0.6,
           visibility: showBridges ? 'visible' : 'none',
         }}
@@ -3052,7 +3037,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 12], scaminFilter]}
         style={{
-          fillColor: '#8B4513',
+          fillColor: s52Colors.BUIFL,
           fillOpacity: 0.4,
           visibility: showBuildings ? 'visible' : 'none',
         }}
@@ -3083,7 +3068,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
-          lineColor: '#FFFFFF',
+          lineColor: s52Colors.HLCLR,
           lineWidth: scaledMooringLineHaloWidth,
           lineOpacity: scaledMooringLineHalo > 0 ? scaledMooringOpacity * 0.8 : 0,
           visibility: showMoorings ? 'visible' : 'none',
@@ -3098,7 +3083,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
-          lineColor: '#4B0082',
+          lineColor: s52Colors.MORLN,
           lineWidth: scaledMooringLineWidth,
           lineOpacity: scaledMooringOpacity,
           visibility: showMoorings ? 'visible' : 'none',
@@ -3113,7 +3098,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
         style={{
-          fillColor: '#4B0082',
+          fillColor: s52Colors.MORLN,
           fillOpacity: 0.4,
           visibility: showMoorings ? 'visible' : 'none',
         }}
@@ -3127,7 +3112,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
-          lineColor: '#FFFFFF',
+          lineColor: s52Colors.HLCLR,
           lineWidth: scaledShorelineConstructionHaloWidth,
           lineOpacity: scaledShorelineConstructionHalo > 0 ? scaledShorelineConstructionOpacity * 0.8 : 0,
           visibility: showShorelineConstruction ? 'visible' : 'none',
@@ -3142,7 +3127,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
-          lineColor: '#5C4033',
+          lineColor: s52Colors.SLCLN,
           lineWidth: scaledShorelineConstructionLineWidth,
           lineOpacity: scaledShorelineConstructionOpacity,
           visibility: showShorelineConstruction ? 'visible' : 'none',
@@ -3157,9 +3142,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Point'], scaminFilter]}
         style={{
-          circleColor: '#5C4033',
+          circleColor: s52Colors.SLCLN,
           circleRadius: ['interpolate', ['linear'], ['zoom'], 12, 3, 14, 4, 18, 6],
-          circleStrokeColor: '#FFFFFF',
+          circleStrokeColor: s52Colors.HLCLR,
           circleStrokeWidth: 1,
           visibility: showShorelineConstruction ? 'visible' : 'none',
         }}
@@ -3172,7 +3157,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         sourceLayerID="charts"
         filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
         style={{
-          fillColor: '#808080',
+          fillColor: s52Colors.SLCFL,
           fillOpacity: 0.5,
           visibility: showShorelineConstruction ? 'visible' : 'none',
         }}
@@ -3186,7 +3171,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
-          lineColor: '#808080',
+          lineColor: s52Colors.CSWYL,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4],
           lineOpacity: 0.8,
         }}
@@ -3198,7 +3183,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
         style={{
-          fillColor: '#A9A9A9',
+          fillColor: s52Colors.BRGFL,
           fillOpacity: 0.5,
         }}
       />,
@@ -3211,7 +3196,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
         style={{
-          fillColor: '#808080',
+          fillColor: s52Colors.PONTN,
           fillOpacity: 0.5,
         }}
       />,
@@ -3222,7 +3207,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 95], scaminFilter]}
         style={{
-          lineColor: '#404040',
+          lineColor: s52Colors.CHBLK,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 1, 14, 2],
           lineOpacity: 0.8,
         }}
@@ -3236,7 +3221,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
         style={{
-          fillColor: '#696969',
+          fillColor: s52Colors.HULKS,
           fillOpacity: 0.5,
         }}
       />,
@@ -3247,9 +3232,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Point'], scaminFilter]}
         style={{
-          circleColor: '#696969',
+          circleColor: s52Colors.HULKS,
           circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 5],
-          circleStrokeColor: '#333333',
+          circleStrokeColor: s52Colors.CHBLK,
           circleStrokeWidth: 1,
         }}
       />,
@@ -3273,7 +3258,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, bgFillScaleFilter]}
         style={{
-          lineColor: s52Mode === 'day' ? '#FFFFFF' : s52Colors.DEPDW,
+          lineColor: s52Colors.HLCLR,
           lineWidth: scaledDepthContourLineHaloWidth,
           lineOpacity: scaledDepthContourLineHalo > 0 ? 0.5 * scaledDepthContourLineOpacity : 0,
           visibility: showDepthContours ? 'visible' : 'none',
@@ -3303,7 +3288,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={6}
         filter={['==', ['get', 'OBJL'], 30]}
         style={{
-          lineColor: s52Mode === 'day' ? '#FFFFFF' : s52Colors.DEPDW,
+          lineColor: s52Colors.HLCLR,
           lineWidth: scaledCoastlineHaloWidth,
           lineOpacity: scaledCoastlineHalo > 0 ? scaledCoastlineOpacity * 0.8 : 0,
         }}
@@ -3331,7 +3316,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 85], scaminFilter]}
         style={{
-          lineColor: '#FF00FF',
+          lineColor: s52Colors.NAVLN,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
           lineOpacity: 0.8,
           lineDasharray: [6, 3],
@@ -3346,7 +3331,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 109], scaminFilter]}
         style={{
-          lineColor: '#000000',
+          lineColor: s52Colors.RECTR,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
           lineOpacity: 0.7,
           lineDasharray: [8, 4],
@@ -3361,7 +3346,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 145], scaminFilter]}
         style={{
-          lineColor: '#FF00FF',
+          lineColor: s52Colors.TSELN,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1.5, 12, 3],
           lineOpacity: 0.8,
         }}
@@ -3375,7 +3360,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={8}
         filter={['all', ['==', ['get', 'OBJL'], 72], scaminFilter]}
         style={{
-          lineColor: '#8B4513',
+          lineColor: s52Colors.LDELV,
           lineWidth: 0.5,
           lineOpacity: 0.4,
           visibility: showLand ? 'visible' : 'none',
@@ -3393,7 +3378,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           scaminFilter
         ]}
         style={{
-          lineColor: '#FFFFFF',
+          lineColor: s52Colors.HLCLR,
           lineWidth: scaledCableLineWidth + scaledCableLineHalo,
           lineOpacity: scaledCableLineHalo > 0 ? scaledCableLineOpacity * 0.8 : 0,
           visibility: showCables ? 'visible' : 'none',
@@ -3411,7 +3396,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           scaminFilter
         ]}
         style={{
-          lineColor: '#800080',
+          lineColor: s52Colors.CABLN,
           lineWidth: scaledCableLineWidth,
           lineDasharray: [3, 2],
           lineOpacity: scaledCableLineOpacity,
@@ -3427,7 +3412,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], scaminFilter]}
         style={{
-          lineColor: '#FFFFFF',
+          lineColor: s52Colors.HLCLR,
           lineWidth: scaledPipelineLineWidth + scaledPipelineLineHalo,
           lineOpacity: scaledPipelineLineHalo > 0 ? scaledPipelineLineOpacity * 0.8 : 0,
           visibility: showPipelines ? 'visible' : 'none',
@@ -3442,7 +3427,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], scaminFilter]}
         style={{
-          lineColor: '#008000',
+          lineColor: s52Colors.PIPLN,
           lineWidth: scaledPipelineLineWidth,
           lineDasharray: [5, 3],
           lineOpacity: scaledPipelineLineOpacity,
@@ -3471,8 +3456,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           textField: depthTextFieldExpression,
           textSize: scaledSoundingsFontSize,
-          textColor: displaySettings.tideCorrectedSoundings ? '#00FF00' : '#000080',
-          textHaloColor: displaySettings.tideCorrectedSoundings ? '#000000' : '#FFFFFF',
+          textColor: displaySettings.tideCorrectedSoundings ? s52Colors.LITGN : s52Colors.SNDCR,
+          textHaloColor: displaySettings.tideCorrectedSoundings ? s52Colors.CHBLK : s52Colors.HLCLR,
           textHaloWidth: displaySettings.tideCorrectedSoundings ? scaledSoundingsHalo * 1.5 : scaledSoundingsHalo,
           textOpacity: scaledSoundingsOpacity,
           textAllowOverlap: true,
@@ -3494,7 +3479,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           scaminFilter
         ]}
         style={{
-          fillColor: '#D2B48C',
+          fillColor: s52Colors.SBDFL,
           fillOpacity: 0.15,
           visibility: showSeabed ? 'visible' : 'none',
         }}
@@ -3512,7 +3497,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           scaminFilter
         ]}
         style={{
-          lineColor: '#6B4423',
+          lineColor: s52Colors.SBDLN,
           lineWidth: 0.5,
           lineOpacity: 0.4,
           lineDasharray: [4, 2],
@@ -3549,8 +3534,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             '',
           ],
           textSize: 10,
-          textColor: '#6B4423',
-          textHaloColor: '#FFFFFF',
+          textColor: s52Colors.SBDTX,
+          textHaloColor: s52Colors.HLCLR,
           textHaloWidth: 1.5,
           textFont: ['Noto Sans Italic'],
           textAllowOverlap: true,
@@ -3713,9 +3698,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 58], ['==', ['geometry-type'], 'Point'], scaminFilter]}
         style={{
-          circleColor: '#FF00FF',
+          circleColor: s52Colors.FOGSN,
           circleRadius: ['interpolate', ['linear'], ['zoom'], 8, 3, 14, 5],
-          circleStrokeColor: '#FFFFFF',
+          circleStrokeColor: s52Colors.HLCLR,
           circleStrokeWidth: 1,
           circleOpacity: 0.8,
         }}
@@ -3729,9 +3714,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 90], ['==', ['geometry-type'], 'Point'], scaminFilter]}
         style={{
-          circleColor: '#404040',
+          circleColor: s52Colors.PILPT,
           circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4],
-          circleStrokeColor: '#000000',
+          circleStrokeColor: s52Colors.CHBLK,
           circleStrokeWidth: 1,
         }}
       />,
@@ -3744,9 +3729,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 111], ['==', ['geometry-type'], 'Point'], scaminFilter]}
         style={{
-          circleColor: '#FF0000',
+          circleColor: s52Colors.RSCST,
           circleRadius: ['interpolate', ['linear'], ['zoom'], 8, 4, 14, 6],
-          circleStrokeColor: '#FFFFFF',
+          circleStrokeColor: s52Colors.HLCLR,
           circleStrokeWidth: 2,
         }}
       />,
@@ -4042,8 +4027,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             '',
           ],
           textSize: 10,
-          textColor: '#333333',
-          textHaloColor: '#FFFFFF',
+          textColor: s52Colors.CHBLK,
+          textHaloColor: s52Colors.HLCLR,
           textHaloWidth: 1.5,
           textOffset: [0, 1.3],
           textAllowOverlap: false,
@@ -4082,8 +4067,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           textField: ['coalesce', ['get', 'OBJNAM'], 'Anchorage'],
           textSize: 10,
-          textColor: '#9400D3',
-          textHaloColor: '#FFFFFF',
+          textColor: s52Colors.ACHBT,
+          textHaloColor: s52Colors.HLCLR,
           textHaloWidth: 1.5,
           textOffset: [0, 1.5],
           textAllowOverlap: false,
@@ -4101,8 +4086,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           textField: 'Cable',
           textSize: 9,
-          textColor: '#800080',
-          textHaloColor: '#FFFFFF',
+          textColor: s52Colors.CBLTX,
+          textHaloColor: s52Colors.HLCLR,
           textHaloWidth: 1.5,
           symbolPlacement: 'line',
           symbolSpacing: 400,
@@ -4127,8 +4112,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             'Pipe',
           ],
           textSize: 9,
-          textColor: '#006400',
-          textHaloColor: '#FFFFFF',
+          textColor: s52Colors.PIPTX,
+          textHaloColor: s52Colors.HLCLR,
           textHaloWidth: 1.5,
           symbolPlacement: 'line',
           symbolSpacing: 400,
@@ -4146,8 +4131,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           textField: ['to-string', ['round', ['get', 'VALSOU']]],
           textSize: 9,
-          textColor: '#000000',
-          textHaloColor: '#FFFFFF',
+          textColor: s52Colors.CHBLK,
+          textHaloColor: s52Colors.HLCLR,
           textHaloWidth: 1.5,
           textOffset: [0, 1.3],
           visibility: showHazards ? 'visible' : 'none',
@@ -4164,8 +4149,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           textField: ['to-string', ['coalesce', ['get', 'VALDCO'], '']],
           textSize: scaledDepthContourFontSize,
-          textColor: '#1E3A5F',
-          textHaloColor: '#FFFFFF',
+          textColor: s52Colors.DPCTX,
+          textHaloColor: s52Colors.HLCLR,
           textHaloWidth: scaledDepthContourLabelHalo,
           textOpacity: scaledDepthContourLabelOpacity,
           symbolPlacement: 'line',
@@ -4189,7 +4174,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={4}
         filter={['==', ['get', 'OBJL'], 71]}
         style={{
-          lineColor: '#8B7355',
+          lineColor: s52Colors.LNDOL,
           lineWidth: 1,
           visibility: showLand ? 'visible' : 'none',
         }}
@@ -4203,7 +4188,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 46], scaminFilter]}
         style={{
-          lineColor: '#4682B4',
+          lineColor: s52Colors.DRGOL,
           lineWidth: 1.5,
           lineDasharray: [4, 2],
         }}
@@ -4217,7 +4202,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 51], scaminFilter]}
         style={{
-          lineColor: '#9370DB',
+          lineColor: s52Colors.FWYOL,
           lineWidth: 2,
           lineDasharray: [8, 4],
         }}
@@ -4231,7 +4216,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 20], scaminFilter]}
         style={{
-          lineColor: '#800080',
+          lineColor: s52Colors.CABLN,
           lineWidth: scaledCableLineWidth,
           lineDasharray: [4, 2],
           lineOpacity: scaledCableLineOpacity,
@@ -4247,7 +4232,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 92], scaminFilter]}
         style={{
-          lineColor: '#008000',
+          lineColor: s52Colors.PIPLN,
           lineWidth: scaledPipelineLineWidth * 0.75,
           lineDasharray: [6, 3],
           lineOpacity: scaledPipelineLineOpacity,
@@ -4266,13 +4251,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           lineColor: [
             'match',
             ['get', 'CATREA'],
-            14, '#FF0000',
-            12, '#FF0000',
-            4, '#00AA00',
-            7, '#00AA00',
-            8, '#00AA00',
-            9, '#00AA00',
-            '#FF00FF',
+            14, s52Colors.MIPARE,
+            12, s52Colors.MIPARE,
+            4, s52Colors.RESGR,
+            7, s52Colors.RESGR,
+            8, s52Colors.RESGR,
+            9, s52Colors.RESGR,
+            s52Colors.DNGHL,
           ],
           lineWidth: 2,
           lineDasharray: [6, 3],
@@ -4288,7 +4273,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 27], scaminFilter]}
         style={{
-          lineColor: '#FFA500',
+          lineColor: s52Colors.CTNOL,
           lineWidth: 2,
           lineDasharray: [6, 3],
           visibility: showCautionAreas ? 'visible' : 'none',
@@ -4303,7 +4288,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 83], scaminFilter]}
         style={{
-          lineColor: '#FF0000',
+          lineColor: s52Colors.MIPOL,
           lineWidth: 2,
           lineDasharray: [4, 2],
           visibility: showMilitaryAreas ? 'visible' : 'none',
@@ -4318,7 +4303,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 4], scaminFilter]}
         style={{
-          lineColor: '#9400D3',
+          lineColor: s52Colors.ACHOL,
           lineWidth: 2,
           lineDasharray: [8, 4],
           visibility: showAnchorages ? 'visible' : 'none',
@@ -4333,7 +4318,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 82], scaminFilter]}
         style={{
-          lineColor: '#8B4513',
+          lineColor: s52Colors.MCUOL,
           lineWidth: 2,
           lineDasharray: [4, 2],
           visibility: showMarineFarms ? 'visible' : 'none',
@@ -4670,7 +4655,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Always mount ALL sources to keep layer order stable.                */}
         {/* minZoomLevel/maxZoomLevel on VectorSource prevents tile loading     */}
         {/* outside each source's range, so there's no performance cost.        */}
-        {useMBTiles && tileServerReady && debugIsSourceVisible('charts') && mapStyle !== 'street' && chartScaleSources.length > 0 && (
+        {useMBTiles && tileServerReady && debugIsSourceVisible('charts') && chartScaleSources.length > 0 && (
           chartScaleSources.map(source => (
             <MapLibre.VectorSource
               key={source.sourceId}
@@ -4688,12 +4673,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             Always mounted to avoid mount/unmount churn; visibility controls display. */}
         <MapLibre.ShapeSource id="sector-arcs-source" shape={sectorArcFeatures}>
           <MapLibre.LineLayer id="sector-arcs-outline" style={{
-            lineColor: '#000000', lineWidth: 5, lineOpacity: 0.8,
+            lineColor: s52Colors.CHBLK, lineWidth: 5, lineOpacity: 0.8,
             visibility: showLights && sectorArcFeatures.features.length > 0 ? 'visible' : 'none',
           }} />
           <MapLibre.LineLayer id="sector-arcs-fill" style={{
             lineColor: ['match', ['get', 'COLOUR'],
-              1, '#FFFF00', 3, '#FF0000', 4, '#00FF00', 6, '#FFA500', '#FFFF00'],
+              1, s52Colors.LITYW, 3, s52Colors.LITRD, 4, s52Colors.LITGN, 6, s52Colors.CHCOR, s52Colors.LITYW],
             lineWidth: 3, lineOpacity: 1.0,
             visibility: showLights && sectorArcFeatures.features.length > 0 ? 'visible' : 'none',
           }} />
@@ -4863,8 +4848,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'name'],
                 textFont: ['Noto Sans Regular'],
                 textSize: scaledTideStationLabelSize,
-                textColor: '#0066CC',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.TIDTX,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledTideStationTextHalo * 1.33,
                 textOpacity: scaledTideStationTextOpacity,
                 // Always at arrow head: flip offset direction when arrow points down (falling tide)
@@ -4887,8 +4872,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'heightLabel'],
                 textFont: ['Noto Sans Regular'],
                 textSize: scaledTideStationLabelSize,
-                textColor: '#0066CC',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.TIDTX,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledTideStationTextHalo,
                 textOpacity: scaledTideStationTextOpacity,
                 // Further from head than station name
@@ -4989,8 +4974,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'name'],
                 textFont: ['Noto Sans Regular'],
                 textSize: scaledCurrentStationLabelSize,
-                textColor: '#CC0066',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.CURTX,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledCurrentStationTextHalo * 1.33,
                 textOpacity: scaledCurrentStationTextOpacity,
                 // Always at arrow head: flip offset direction when arrow points down
@@ -5013,8 +4998,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'velocityLabel'],
                 textFont: ['Noto Sans Regular'],
                 textSize: scaledCurrentStationLabelSize,
-                textColor: '#CC0066',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.CURTX,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledCurrentStationTextHalo,
                 textOpacity: scaledCurrentStationTextOpacity,
                 textMaxWidth: 50,  // Prevent line wrapping (50 ems is very wide)
@@ -5090,8 +5075,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   textField: ['get', 'name'],
                   textFont: ['Noto Sans Regular'],
                   textSize: scaledLiveBuoyTextSize,
-                  textColor: '#FF8C00',
-                  textHaloColor: '#FFFFFF',
+                  textColor: s52Colors.BUYTX,
+                  textHaloColor: s52Colors.HLCLR,
                   textHaloWidth: scaledLiveBuoyTextHalo,
                   textOpacity: scaledLiveBuoyTextOpacity,
                   textOffset: [0, 2],
@@ -5123,8 +5108,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'NAME'],
                 textFont: ['Noto Sans Regular'],
                 textSize: scaledGnisFontSizes.water,
-                textColor: '#0066CC',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.GNSWT,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledGnisHalo,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5146,8 +5131,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'NAME'],
                 textFont: ['Noto Sans Regular'],
                 textSize: scaledGnisFontSizes.coastal,
-                textColor: '#5D4037',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.GNSCL,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledGnisHalo,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5169,8 +5154,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'NAME'],
                 textFont: ['Noto Sans Regular'], // Changed from Italic to Regular
                 textSize: scaledGnisFontSizes.landmark,
-                textColor: '#666666',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.GNSLM,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledGnisHalo,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5192,8 +5177,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'NAME'],
                 textFont: ['Noto Sans Regular'], // Changed from Bold to Regular
                 textSize: scaledGnisFontSizes.populated,
-                textColor: '#CC0000',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.GNSPP,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledGnisHalo * 1.25,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5215,8 +5200,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'NAME'],
                 textFont: ['Noto Sans Regular'], // Changed from Italic to Regular
                 textSize: scaledGnisFontSizes.stream,
-                textColor: '#3399FF',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.GNSST,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledGnisHalo * 0.875,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5238,8 +5223,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'NAME'],
                 textFont: ['Noto Sans Regular'], // Changed from Italic to Regular
                 textSize: scaledGnisFontSizes.lake,
-                textColor: '#66CCFF',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.GNSLK,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledGnisHalo * 0.875,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5261,8 +5246,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textField: ['get', 'NAME'],
                 textFont: ['Noto Sans Regular'],
                 textSize: scaledGnisFontSizes.terrain,
-                textColor: '#999966',
-                textHaloColor: '#FFFFFF',
+                textColor: s52Colors.GNSTR,
+                textHaloColor: s52Colors.HLCLR,
                 textHaloWidth: scaledGnisHalo * 0.875,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5542,33 +5527,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.layerToggleRow, mapStyle === 'street' && styles.layerToggleRowActive, !hasLocalBasemap && { opacity: 0.4 }]}
-                  onPress={() => hasLocalBasemap ? setMapStyle('street') : setMapStyle('street')}
+                  onPress={() => hasLocalBasemap && setMapStyle('street')}
+                  disabled={!hasLocalBasemap}
                 >
                   <Text style={styles.layerToggleText}>Street{!hasLocalBasemap ? ' ⬇' : ''}</Text>
                 </TouchableOpacity>
 
-                {/* Chart Colors - Theme + Color Scheme */}
-                <Text style={styles.layerSectionHeader}>Chart Colors</Text>
-                <TouchableOpacity
-                  style={[styles.layerToggleRow, !ecdisColors && s52Mode === 'day' && styles.layerToggleRowActive]}
-                  onPress={() => { setS52Mode('day'); setEcdisColors(false); }}
-                >
-                  <Text style={styles.layerToggleText}>Light</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.layerToggleRow, !ecdisColors && (s52Mode === 'night' || s52Mode === 'dusk') && styles.layerToggleRowActive]}
-                  onPress={() => { setS52Mode('night'); setEcdisColors(false); }}
-                >
-                  <Text style={styles.layerToggleText}>Dark</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.layerToggleRow, ecdisColors && styles.layerToggleRowActive]}
-                  onPress={() => setEcdisColors(true)}
-                >
-                  <Text style={styles.layerToggleText}>ECDIS</Text>
-                </TouchableOpacity>
-
-                {/* Display Mode Section */}
+                {/* Display Mode — Day/Dusk/Night + ECDIS toggle */}
                 <Text style={styles.layerSectionHeader}>Display Mode</Text>
                 <TouchableOpacity style={[styles.layerToggleRow, s52Mode === 'day' && styles.layerToggleRowActive]} onPress={() => setS52Mode('day')}>
                   <Text style={styles.layerToggleText}>Day</Text>
@@ -5578,6 +5543,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.layerToggleRow, s52Mode === 'night' && styles.layerToggleRowActive]} onPress={() => setS52Mode('night')}>
                   <Text style={styles.layerToggleText}>Night</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, ecdisColors && styles.layerToggleRowActive]} onPress={() => setEcdisColors(!ecdisColors)}>
+                  <Text style={styles.layerToggleText}>ECDIS Colors</Text>
                 </TouchableOpacity>
 
                 {/* Depth Section */}
@@ -6398,6 +6366,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.dayNightMode === 'day' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Day</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
+                    style={[styles.segmentOption, displaySettings.dayNightMode === 'dusk' && styles.segmentOptionActive]}
+                    onPress={async () => {
+                      const newSettings = { ...displaySettings, dayNightMode: 'dusk' as const };
+                      setDisplaySettings(newSettings);
+                      await displaySettingsService.saveSettings(newSettings);
+                    }}
+                  >
+                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.dayNightMode === 'dusk' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Dusk</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
                     style={[styles.segmentOption, displaySettings.dayNightMode === 'night' && styles.segmentOptionActive]}
                     onPress={async () => {
                       const newSettings = { ...displaySettings, dayNightMode: 'night' as const };
@@ -6406,16 +6384,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     }}
                   >
                     <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.dayNightMode === 'night' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Night</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.segmentOption, displaySettings.dayNightMode === 'auto' && styles.segmentOptionActive]}
-                    onPress={async () => {
-                      const newSettings = { ...displaySettings, dayNightMode: 'auto' as const };
-                      setDisplaySettings(newSettings);
-                      await displaySettingsService.saveSettings(newSettings);
-                    }}
-                  >
-                    <Text style={[styles.segmentOptionText, themedStyles.segmentOptionText, displaySettings.dayNightMode === 'auto' && styles.segmentOptionTextActive, themedStyles.segmentOptionTextActive]}>Auto</Text>
                   </TouchableOpacity>
                 </View>
                 
@@ -6787,20 +6755,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               <DebugToggle label="Terrain" value={mapStyle === 'terrain'} onToggle={() => setMapStyle('terrain')} radio subtitle={hasLocalTerrain ? `${terrainTileSets.length} zoom sets` : 'Not downloaded'} />
             </View>
 
-            {/* Chart Colors */}
-            <Text style={debugStyles.sectionTitle}>CHART COLORS</Text>
-            <View style={debugStyles.card}>
-              <DebugToggle label="Light" value={!ecdisColors && s52Mode === 'day'} onToggle={() => { setS52Mode('day'); setEcdisColors(false); }} radio />
-              <DebugToggle label="Dark" value={!ecdisColors && (s52Mode === 'night' || s52Mode === 'dusk')} onToggle={() => { setS52Mode('night'); setEcdisColors(false); }} radio />
-              <DebugToggle label="ECDIS (Traditional)" value={ecdisColors} onToggle={() => setEcdisColors(true)} radio />
-            </View>
-
             {/* Display Mode */}
             <Text style={debugStyles.sectionTitle}>S-52 DISPLAY MODE</Text>
             <View style={debugStyles.card}>
               <DebugToggle label="Day" value={s52Mode === 'day'} onToggle={() => setS52Mode('day')} radio />
               <DebugToggle label="Dusk" value={s52Mode === 'dusk'} onToggle={() => setS52Mode('dusk')} radio />
               <DebugToggle label="Night" value={s52Mode === 'night'} onToggle={() => setS52Mode('night')} radio />
+              <DebugToggle label="ECDIS Colors" value={ecdisColors} onToggle={() => setEcdisColors(!ecdisColors)} />
             </View>
 
             {/* MAP SOURCES - the main purpose of this debug panel */}

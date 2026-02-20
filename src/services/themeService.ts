@@ -68,7 +68,71 @@ export type S52ColorToken =
   // Mariner data
   | 'MARINER' // Mariner's data
   | 'ROUTE'   // Route line
-  | 'OWNSH';  // Own ship
+  | 'OWNSH'   // Own ship
+  // Area fills
+  | 'DRGARE'  // Dredged areas
+  | 'FAIRWY'  // Fairways
+  | 'CBLARE'  // Cable areas
+  | 'PIPARE'  // Pipeline areas
+  | 'CTNARE'  // Caution areas
+  | 'MIPARE'  // Military practice areas
+  | 'ACHARE'  // Anchorage areas
+  | 'MARCUL'  // Marine farms/culture
+  | 'TSSLPT'  // Traffic separation lane parts
+  // Structures
+  | 'BRGLN'   // Bridge line
+  | 'BRGFL'   // Bridge fill
+  | 'BUIFL'   // Building fill
+  | 'MORLN'   // Mooring line
+  | 'SLCLN'   // Shoreline construction line
+  | 'SLCFL'   // Shoreline construction fill
+  | 'CSWYL'   // Causeway line/fill
+  | 'PONTN'   // Pontoon
+  | 'HULKS'   // Hulks
+  // Lines
+  | 'NAVLN'   // Navigation lines
+  | 'RECTR'   // Recommended tracks
+  | 'TSELN'   // Traffic separation lines
+  | 'LDELV'   // Land elevation contours
+  | 'CABLN'   // Cable lines
+  | 'PIPLN'   // Pipeline lines
+  // Soundings/seabed
+  | 'SNDCR'   // Sounding color (normal)
+  | 'SBDFL'   // Seabed fill
+  | 'SBDLN'   // Seabed outline
+  | 'SBDTX'   // Seabed text
+  // Text/labels
+  | 'SENAM'   // Sea area names
+  | 'LRGNT'   // Land region name text
+  | 'DPCTX'   // Depth contour text
+  | 'ACHBT'   // Anchor berth text
+  | 'CBLTX'   // Cable text
+  | 'PIPTX'   // Pipeline text
+  | 'FOGSN'   // Fog signal
+  | 'PILPT'   // Pile point
+  | 'RSCST'   // Rescue station
+  // Halos
+  | 'HLCLR'   // Halo color (white in day, deep-water-bg in dusk/night)
+  // Outlines
+  | 'LNDOL'   // Land outline
+  | 'DRGOL'   // Dredged area outline
+  | 'FWYOL'   // Fairway outline
+  | 'CTNOL'   // Caution area outline
+  | 'MIPOL'   // Military area outline
+  | 'ACHOL'   // Anchorage outline
+  | 'MCUOL'   // Marine culture outline
+  // GNIS categories
+  | 'GNSWT'   // GNIS water names
+  | 'GNSCL'   // GNIS coastal names
+  | 'GNSLM'   // GNIS landmark names
+  | 'GNSPP'   // GNIS populated place names
+  | 'GNSST'   // GNIS stream names
+  | 'GNSLK'   // GNIS lake names
+  | 'GNSTR'   // GNIS terrain names
+  // Stations
+  | 'TIDTX'   // Tide station text
+  | 'CURTX'   // Current station text
+  | 'BUYTX';  // Live buoy text
 
 // RGB Color type
 interface RGBColor {
@@ -135,6 +199,70 @@ const S52_COLOR_TABLES: Record<S52DisplayMode, Record<S52ColorToken, string>> = 
     MARINER: '#FF8000', // Mariner data - orange
     ROUTE: '#C00000',   // Route - dark red
     OWNSH: '#FF8000',   // Own ship - orange
+    // Area fills
+    DRGARE: '#87CEEB',  // Dredged areas - sky blue
+    FAIRWY: '#E6E6FA',  // Fairways - lavender
+    CBLARE: '#800080',  // Cable areas - purple
+    PIPARE: '#008000',  // Pipeline areas - green
+    CTNARE: '#FFD700',  // Caution areas - gold
+    MIPARE: '#FF0000',  // Military areas - red
+    ACHARE: '#4169E1',  // Anchorage - royal blue
+    MARCUL: '#228B22',  // Marine farms - forest green
+    TSSLPT: '#FF00FF',  // TSS lane parts - magenta
+    // Structures
+    BRGLN: '#696969',   // Bridge line - dim gray
+    BRGFL: '#A9A9A9',   // Bridge fill - dark gray
+    BUIFL: '#8B4513',   // Building fill - saddle brown
+    MORLN: '#4B0082',   // Mooring line - indigo
+    SLCLN: '#5C4033',   // Shoreline construction - dark brown
+    SLCFL: '#808080',   // Shoreline construction fill - gray
+    CSWYL: '#808080',   // Causeway - gray
+    PONTN: '#808080',   // Pontoon fill - gray
+    HULKS: '#696969',   // Hulks - dim gray
+    // Lines
+    NAVLN: '#FF00FF',   // Navigation lines - magenta
+    RECTR: '#000000',   // Recommended tracks - black
+    TSELN: '#FF00FF',   // Traffic separation lines - magenta
+    LDELV: '#8B4513',   // Land elevation - saddle brown
+    CABLN: '#800080',   // Cable lines - purple
+    PIPLN: '#008000',   // Pipeline lines - green
+    // Soundings/seabed
+    SNDCR: '#000080',   // Sounding color - navy
+    SBDFL: '#D2B48C',   // Seabed fill - tan
+    SBDLN: '#6B4423',   // Seabed outline - brown
+    SBDTX: '#6B4423',   // Seabed text - brown
+    // Text/labels
+    SENAM: '#4169E1',   // Sea area names - royal blue
+    LRGNT: '#654321',   // Land region names - dark brown
+    DPCTX: '#1E3A5F',   // Depth contour text - dark blue
+    ACHBT: '#9400D3',   // Anchor berth text - dark violet
+    CBLTX: '#800080',   // Cable text - purple
+    PIPTX: '#006400',   // Pipeline text - dark green
+    FOGSN: '#FF00FF',   // Fog signal - magenta
+    PILPT: '#404040',   // Pile point - dark gray
+    RSCST: '#FF0000',   // Rescue station - red
+    // Halos
+    HLCLR: '#FFFFFF',   // Halo - white (day mode)
+    // Outlines
+    LNDOL: '#8B7355',   // Land outline - tan
+    DRGOL: '#4682B4',   // Dredged outline - steel blue
+    FWYOL: '#9370DB',   // Fairway outline - medium purple
+    CTNOL: '#FFA500',   // Caution outline - orange
+    MIPOL: '#FF0000',   // Military outline - red
+    ACHOL: '#9400D3',   // Anchorage outline - dark violet
+    MCUOL: '#8B4513',   // Marine culture outline - saddle brown
+    // GNIS
+    GNSWT: '#0066CC',   // GNIS water - blue
+    GNSCL: '#5D4037',   // GNIS coastal - brown
+    GNSLM: '#666666',   // GNIS landmark - gray
+    GNSPP: '#CC0000',   // GNIS populated - red
+    GNSST: '#3399FF',   // GNIS stream - light blue
+    GNSLK: '#66CCFF',   // GNIS lake - cyan
+    GNSTR: '#999966',   // GNIS terrain - olive
+    // Stations
+    TIDTX: '#0066CC',   // Tide station text - blue
+    CURTX: '#CC0066',   // Current station text - pink
+    BUYTX: '#FF8C00',   // Live buoy text - dark orange
   },
 
   // DUSK mode - black backgrounds, usable day or twilight
@@ -191,6 +319,70 @@ const S52_COLOR_TABLES: Record<S52DisplayMode, Record<S52ColorToken, string>> = 
     MARINER: '#FFA040', // Mariner data
     ROUTE: '#FF4040',   // Route - red
     OWNSH: '#FFA040',   // Own ship
+    // Area fills (dimmed for dark background)
+    DRGARE: '#4A7A90',  // Dredged areas - muted sky blue
+    FAIRWY: '#6A6A8A',  // Fairways - muted lavender
+    CBLARE: '#704070',  // Cable areas - dim purple
+    PIPARE: '#307030',  // Pipeline areas - dim green
+    CTNARE: '#9A8030',  // Caution areas - dim gold
+    MIPARE: '#903030',  // Military areas - dim red
+    ACHARE: '#3A5090',  // Anchorage - dim royal blue
+    MARCUL: '#2A6A2A',  // Marine farms - dim forest green
+    TSSLPT: '#904090',  // TSS lane parts - dim magenta
+    // Structures
+    BRGLN: '#909090',   // Bridge line - lighter for dark bg
+    BRGFL: '#707070',   // Bridge fill
+    BUIFL: '#8A6040',   // Building fill - lighter brown
+    MORLN: '#6A40A0',   // Mooring line - lighter indigo
+    SLCLN: '#7A6050',   // Shoreline construction
+    SLCFL: '#606060',   // Shoreline construction fill
+    CSWYL: '#606060',   // Causeway
+    PONTN: '#606060',   // Pontoon fill
+    HULKS: '#808080',   // Hulks
+    // Lines
+    NAVLN: '#FF80FF',   // Navigation lines - bright magenta
+    RECTR: '#C0C0C0',   // Recommended tracks - light gray
+    TSELN: '#FF80FF',   // Traffic separation lines - bright magenta
+    LDELV: '#8A6040',   // Land elevation - lighter brown
+    CABLN: '#A060A0',   // Cable lines - lighter purple
+    PIPLN: '#40A040',   // Pipeline lines - lighter green
+    // Soundings/seabed
+    SNDCR: '#6080C0',   // Sounding color - lighter for dark bg
+    SBDFL: '#705838',   // Seabed fill - dim tan
+    SBDLN: '#806040',   // Seabed outline
+    SBDTX: '#A08060',   // Seabed text - lighter for readability
+    // Text/labels
+    SENAM: '#6090E0',   // Sea area names - brighter blue
+    LRGNT: '#A08060',   // Land region names - lighter brown
+    DPCTX: '#6090C0',   // Depth contour text - lighter blue
+    ACHBT: '#B060FF',   // Anchor berth text - lighter violet
+    CBLTX: '#A060A0',   // Cable text - lighter purple
+    PIPTX: '#40A040',   // Pipeline text - lighter green
+    FOGSN: '#FF80FF',   // Fog signal - bright magenta
+    PILPT: '#808080',   // Pile point - lighter
+    RSCST: '#FF6060',   // Rescue station - bright red
+    // Halos
+    HLCLR: '#1A1A2E',   // Halo - deep water bg (matches dusk background)
+    // Outlines
+    LNDOL: '#8A7050',   // Land outline
+    DRGOL: '#5090B0',   // Dredged outline
+    FWYOL: '#8070C0',   // Fairway outline
+    CTNOL: '#C09030',   // Caution outline
+    MIPOL: '#C04040',   // Military outline
+    ACHOL: '#9060D0',   // Anchorage outline
+    MCUOL: '#8A6040',   // Marine culture outline
+    // GNIS (brighter for dark bg)
+    GNSWT: '#4090E0',   // GNIS water
+    GNSCL: '#907060',   // GNIS coastal
+    GNSLM: '#909090',   // GNIS landmark
+    GNSPP: '#E06060',   // GNIS populated
+    GNSST: '#60B0FF',   // GNIS stream
+    GNSLK: '#80D0FF',   // GNIS lake
+    GNSTR: '#A0A070',   // GNIS terrain
+    // Stations
+    TIDTX: '#4090E0',   // Tide station text
+    CURTX: '#E06090',   // Current station text
+    BUYTX: '#FFA040',   // Live buoy text
   },
 
   // NIGHT mode - very dim, preserves night vision
@@ -248,6 +440,70 @@ const S52_COLOR_TABLES: Record<S52DisplayMode, Record<S52ColorToken, string>> = 
     MARINER: '#603000', // Mariner data
     ROUTE: '#600000',   // Route - dim red
     OWNSH: '#803000',   // Own ship - dim orange
+    // Area fills (severely dimmed for night vision)
+    DRGARE: '#1A3038',  // Dredged areas
+    FAIRWY: '#202030',  // Fairways
+    CBLARE: '#281828',  // Cable areas
+    PIPARE: '#102810',  // Pipeline areas
+    CTNARE: '#302810',  // Caution areas
+    MIPARE: '#301010',  // Military areas
+    ACHARE: '#101830',  // Anchorage
+    MARCUL: '#102010',  // Marine farms
+    TSSLPT: '#281028',  // TSS lane parts
+    // Structures
+    BRGLN: '#404040',   // Bridge line
+    BRGFL: '#303030',   // Bridge fill
+    BUIFL: '#302010',   // Building fill
+    MORLN: '#201830',   // Mooring line
+    SLCLN: '#302820',   // Shoreline construction
+    SLCFL: '#282828',   // Shoreline construction fill
+    CSWYL: '#282828',   // Causeway
+    PONTN: '#282828',   // Pontoon fill
+    HULKS: '#303030',   // Hulks
+    // Lines
+    NAVLN: '#602060',   // Navigation lines
+    RECTR: '#404040',   // Recommended tracks
+    TSELN: '#602060',   // Traffic separation lines
+    LDELV: '#302010',   // Land elevation
+    CABLN: '#381838',   // Cable lines
+    PIPLN: '#183818',   // Pipeline lines
+    // Soundings/seabed
+    SNDCR: '#203050',   // Sounding color
+    SBDFL: '#282018',   // Seabed fill
+    SBDLN: '#302820',   // Seabed outline
+    SBDTX: '#403020',   // Seabed text
+    // Text/labels
+    SENAM: '#203060',   // Sea area names
+    LRGNT: '#403020',   // Land region names
+    DPCTX: '#203050',   // Depth contour text
+    ACHBT: '#382050',   // Anchor berth text
+    CBLTX: '#381838',   // Cable text
+    PIPTX: '#183818',   // Pipeline text
+    FOGSN: '#401040',   // Fog signal
+    PILPT: '#303030',   // Pile point
+    RSCST: '#602020',   // Rescue station
+    // Halos
+    HLCLR: '#0A0A10',   // Halo - near black (matches night background)
+    // Outlines
+    LNDOL: '#382818',   // Land outline
+    DRGOL: '#203848',   // Dredged outline
+    FWYOL: '#302848',   // Fairway outline
+    CTNOL: '#483018',   // Caution outline
+    MIPOL: '#481818',   // Military outline
+    ACHOL: '#302048',   // Anchorage outline
+    MCUOL: '#382010',   // Marine culture outline
+    // GNIS (dim for night vision)
+    GNSWT: '#183050',   // GNIS water
+    GNSCL: '#382820',   // GNIS coastal
+    GNSLM: '#303030',   // GNIS landmark
+    GNSPP: '#502020',   // GNIS populated
+    GNSST: '#204060',   // GNIS stream
+    GNSLK: '#205060',   // GNIS lake
+    GNSTR: '#383820',   // GNIS terrain
+    // Stations
+    TIDTX: '#183050',   // Tide station text
+    CURTX: '#501830',   // Current station text
+    BUYTX: '#603000',   // Live buoy text
   },
 };
 
@@ -531,6 +787,46 @@ export function getS52ColorTable(mode?: S52DisplayMode): Record<S52ColorToken, s
 }
 
 /**
+ * ECDIS color overrides per display mode.
+ * When ECDIS toggle is on, depth zones and land use IHO-standard blue depth shading.
+ */
+const ECDIS_OVERRIDES: Record<S52DisplayMode, Partial<Record<S52ColorToken, string>>> = {
+  day: {
+    DEPIT: '#D4E6C8',   // Intertidal - pale green
+    DEPVS: '#C8E1F5',   // Very shallow - pale blue
+    DEPMS: '#A0D0F0',   // Medium shallow - light blue
+    DEPMD: '#6EB8E8',   // Medium deep - medium blue
+    DEPDW: '#FFFFFF',   // Deep water - white
+    LANDA: '#F0E9D2',   // Land - warm cream
+  },
+  dusk: {
+    DEPIT: '#2A3A20',   // Intertidal - dark green
+    DEPVS: '#1A2A3A',   // Very shallow - dark blue
+    DEPMS: '#203848',   // Medium shallow
+    DEPMD: '#284060',   // Medium deep
+    DEPDW: '#1A1A2E',   // Deep water - dark bg
+    LANDA: '#3A3428',   // Land - warm dark
+  },
+  night: {
+    DEPIT: '#141810',   // Intertidal - very dim green
+    DEPVS: '#0C1018',   // Very shallow - very dim blue
+    DEPMS: '#101820',   // Medium shallow
+    DEPMD: '#142030',   // Medium deep
+    DEPDW: '#0A0A10',   // Deep water - near black
+    LANDA: '#181410',   // Land - very dim warm
+  },
+};
+
+/**
+ * Get S-52 color table with ECDIS overrides applied.
+ * Use this when the ECDIS toggle is on.
+ */
+export function getS52ColorTableWithECDIS(mode?: S52DisplayMode): Record<S52ColorToken, string> {
+  const effectiveMode = mode ?? currentMode;
+  return { ...S52_COLOR_TABLES[effectiveMode], ...ECDIS_OVERRIDES[effectiveMode] };
+}
+
+/**
  * Convert hex color to rgba with opacity
  */
 export function hexToRgba(hex: string, opacity: number): string {
@@ -553,5 +849,6 @@ export default {
   loadSavedMode,
   subscribeToModeChanges,
   getS52ColorTable,
+  getS52ColorTableWithECDIS,
   hexToRgba,
 };

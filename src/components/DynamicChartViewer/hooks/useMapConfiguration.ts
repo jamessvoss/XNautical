@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } fr
 import * as themeService from '../../../services/themeService';
 import type { S52DisplayMode } from '../../../services/themeService';
 import * as tileServer from '../../../services/tileServer';
+import * as displaySettingsService from '../../../services/displaySettingsService';
 import { logger, LogCategory } from '../../../services/loggingService';
 import { performanceTracker, RuntimeMetric } from '../../../services/performanceTracker';
 import type { MapStyleOption } from '../types';
@@ -91,7 +92,7 @@ export function useMapConfiguration() {
     setUITheme(themeService.getUITheme(mode));
   }, []);
 
-  // Wrapper for setMapStyle with timing logs
+  // Wrapper for setMapStyle with timing logs + persistence
   const setMapStyle = useCallback((newStyle: MapStyleOption) => {
     const now = Date.now();
     logger.info(LogCategory.UI, `Style switch: "${mapStyle}" → "${newStyle}"`);
@@ -103,15 +104,33 @@ export function useMapConfiguration() {
     styleSwitchRenderCountRef.current = 0;
 
     setMapStyleInternal(newStyle);
+    displaySettingsService.updateSetting('mapStyle', newStyle);
   }, [mapStyle]);
 
-  // Load saved S-52 theme mode on mount and subscribe to changes
+  // Wrapper for setEcdisColors with persistence
+  const setEcdisColorsWithPersist = useCallback((value: boolean) => {
+    setEcdisColors(value);
+    displaySettingsService.updateSetting('ecdisColors', value);
+  }, []);
+
+  // Load saved S-52 theme mode, mapStyle, ecdisColors on mount and subscribe to changes
   useEffect(() => {
     const loadThemeMode = async () => {
       const savedMode = await themeService.loadSavedMode();
       setS52ModeInternal(savedMode);
       setUITheme(themeService.getUITheme(savedMode));
       logger.debug(LogCategory.SETTINGS, `S-52 display mode loaded: ${savedMode}`);
+
+      // Load persisted mapStyle and ecdisColors
+      const settings = await displaySettingsService.getSettings();
+      if (settings.mapStyle) {
+        setMapStyleInternal(settings.mapStyle as MapStyleOption);
+        logger.debug(LogCategory.SETTINGS, `Map style loaded: ${settings.mapStyle}`);
+      }
+      if (settings.ecdisColors !== undefined) {
+        setEcdisColors(settings.ecdisColors);
+        logger.debug(LogCategory.SETTINGS, `ECDIS colors loaded: ${settings.ecdisColors}`);
+      }
     };
     loadThemeMode();
 
@@ -145,8 +164,13 @@ export function useMapConfiguration() {
   // Glyphs URL for local font serving
   const glyphsUrl = 'http://127.0.0.1:8765/fonts/{fontstack}/{range}.pbf';
 
-  // Get S-52 colors for current mode
-  const s52Colors = useMemo(() => themeService.getS52ColorTable(s52Mode), [s52Mode]);
+  // Get S-52 colors for current mode (ECDIS-aware when toggle is on)
+  const s52Colors = useMemo(
+    () => ecdisColors
+      ? themeService.getS52ColorTableWithECDIS(s52Mode)
+      : themeService.getS52ColorTable(s52Mode),
+    [s52Mode, ecdisColors]
+  );
 
   // Basemap color palettes per vector style
   const basemapPalette = useMemo(() => {
@@ -194,9 +218,8 @@ export function useMapConfiguration() {
   // MapLibre background styles per mode
   const mapStyleUrls = useMemo<Record<MapStyleOption, object>>(() => ({
     satellite: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.DEPDW } }] },
-    light: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f5f5f5' } }] },
-    dark: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a1a2e' } }] },
-    ecdis: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#FFFFFF' } }] }, // Traditional ECDIS white background
+    light: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.DEPDW } }] },
+    dark: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': s52Colors.DEPDW } }] },
     street: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f0ede8' } }] },
     ocean: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a3a5c' } }] },
     terrain: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#dfe6e9' } }] },
@@ -345,7 +368,7 @@ export function useMapConfiguration() {
     setMapStyle,
     isVectorStyle,
     ecdisColors,
-    setEcdisColors,
+    setEcdisColors: setEcdisColorsWithPersist,
     glyphsUrl,
     basemapPalette,
     mapStyleUrls,

@@ -128,11 +128,14 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   currentStationTextHaloScale: 0.05,
   currentStationTextOpacityScale: 1.0,
   // Other settings
-  dayNightMode: 'day',
+  dayNightMode: 'dusk',
   orientationMode: 'north-up',
   depthUnits: 'meters',
   tideCorrectedSoundings: false,
   chartDetail: 'max',
+  // Map display
+  mapStyle: 'dark',
+  ecdisColors: false,
 };
 
 export function useDisplaySettings() {

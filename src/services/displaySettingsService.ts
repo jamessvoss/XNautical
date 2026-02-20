@@ -140,7 +140,7 @@ export interface DisplaySettings {
   currentStationTextOpacityScale: number;
   
   // Other settings
-  dayNightMode: 'day' | 'dusk' | 'night' | 'auto';
+  dayNightMode: 'day' | 'dusk' | 'night';
   orientationMode: 'north-up' | 'head-up' | 'course-up';
   depthUnits: 'meters' | 'feet' | 'fathoms';
   tideCorrectedSoundings: boolean;
@@ -148,6 +148,10 @@ export interface DisplaySettings {
   // Chart detail level - SCAMIN offset for feature visibility
   // Controls how many zoom levels earlier features appear relative to their S-57 SCAMIN value
   chartDetail: 'low' | 'medium' | 'high' | 'ultra' | 'max';
+
+  // Map display settings (persisted)
+  mapStyle: 'satellite' | 'light' | 'dark' | 'street' | 'ocean' | 'terrain';
+  ecdisColors: boolean;
 }
 
 const DEFAULT_SETTINGS: DisplaySettings = {
@@ -273,6 +277,9 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   depthUnits: 'meters',
   tideCorrectedSoundings: true,
   chartDetail: 'max',  // Default: +4 offset, maximum detail — all features visible at earliest zoom levels
+  // Map display
+  mapStyle: 'dark',
+  ecdisColors: false,
 };
 
 // In-memory cache
@@ -303,10 +310,8 @@ export async function loadSettings(): Promise<DisplaySettings> {
       logger.warn(LogCategory.SETTINGS, 'Missing settings keys', { keys: missingKeys });
     }
     
-    // Sync theme service with loaded dayNightMode (if not 'auto')
-    if (cachedSettings!.dayNightMode !== 'auto') {
-      await themeService.setDisplayMode(cachedSettings!.dayNightMode as S52DisplayMode);
-    }
+    // Sync theme service with loaded dayNightMode
+    await themeService.setDisplayMode(cachedSettings!.dayNightMode);
 
     return cachedSettings!;
   } catch (error) {
@@ -324,10 +329,8 @@ export async function saveSettings(settings: DisplaySettings): Promise<void> {
     cachedSettings = settings;
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
     
-    // Sync theme service if dayNightMode changed (not 'auto')
-    if (settings.dayNightMode !== 'auto') {
-      await themeService.setDisplayMode(settings.dayNightMode as S52DisplayMode);
-    }
+    // Sync theme service if dayNightMode changed
+    await themeService.setDisplayMode(settings.dayNightMode);
     
     // Notify all listeners
     listeners.forEach(listener => listener(settings));
@@ -378,6 +381,18 @@ export function subscribe(listener: SettingsListener): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
+
+// Bidirectional sync: when themeService.setDisplayMode() is called directly
+// (e.g., from the Display Mode buttons), keep cachedSettings in sync and persist.
+themeService.subscribeToModeChanges((mode) => {
+  if (cachedSettings && cachedSettings.dayNightMode !== mode) {
+    cachedSettings = { ...cachedSettings, dayNightMode: mode };
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(cachedSettings)).catch((error) => {
+      logger.warn(LogCategory.SETTINGS, 'Failed to persist dayNightMode from theme sync', error as Error);
+    });
+    listeners.forEach(listener => listener(cachedSettings!));
+  }
+});
 
 /**
  * Apply font scale to a base size
