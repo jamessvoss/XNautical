@@ -4,6 +4,7 @@ Cloud Run Job for merging per-chart MBTiles into scale packs.
 
 Environment Variables:
     DISTRICT_ID: District identifier (e.g., "13")
+    DISTRICT_LABEL: Optional override for the district label (e.g., "017cgd_test")
     SCALE: Scale prefix (e.g., "US5")
     BUCKET_NAME: Firebase Storage bucket name
     
@@ -37,6 +38,17 @@ logger = logging.getLogger(__name__)
 # Constants
 SCALE_PREFIXES = ['US1', 'US2', 'US3', 'US4', 'US5', 'US6']
 
+# App-side filename prefixes per district (must match app's DISTRICT_PREFIXES)
+DISTRICT_PREFIXES = {
+    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
+    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
+    '17cgd': 'd17',
+}
+
+def get_district_prefix(district_label: str) -> str:
+    """Get the app-side filename prefix for a district."""
+    return DISTRICT_PREFIXES.get(district_label, district_label.replace('cgd', ''))
+
 
 def main():
     """Main entry point for merge job."""
@@ -55,7 +67,8 @@ def main():
         logger.error(f'Invalid SCALE: {scale}. Must be one of {SCALE_PREFIXES}')
         sys.exit(1)
     
-    district_label = f'{district_id}cgd'
+    # Allow DISTRICT_LABEL override for testing non-standard districts (e.g. "017cgd_test")
+    district_label = os.environ.get('DISTRICT_LABEL') or f'{district_id}cgd'
     
     logger.info(f'=== Starting merge job for {district_label} scale {scale} ===')
     logger.info(f'Bucket: {bucket_name}')
@@ -137,11 +150,12 @@ def main():
         blob = bucket.blob(storage_path)
         blob.upload_from_filename(str(output_path), timeout=600)
 
-        # Zip and upload for app download
+        # Zip and upload for app download (prefixed for multi-region support)
+        district_prefix = get_district_prefix(district_label)
         zip_path = Path(output_dir) / f'{scale}.mbtiles.zip'
         with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.write(str(output_path), f'{scale}.mbtiles')
-        zip_storage_path = f'{district_label}/charts/{scale}.mbtiles.zip'
+            zf.write(str(output_path), f'{district_prefix}_{scale}.mbtiles')
+        zip_storage_path = f'{district_label}/charts/{district_prefix}_{scale}.mbtiles.zip'
         zip_blob = bucket.blob(zip_storage_path)
         zip_blob.upload_from_filename(str(zip_path), timeout=600)
         zip_size = zip_path.stat().st_size / 1024 / 1024
@@ -239,4 +253,14 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    job_type = os.environ.get('JOB_TYPE', '')
+    if job_type == 'compose':
+        # Route to compose job for unified deduplication pipeline
+        from compose_job import main as compose_main
+        compose_main()
+    elif job_type == 'tippecanoe':
+        # Route to tippecanoe worker for fan-out execution
+        from compose_job import tippecanoe_worker
+        tippecanoe_worker()
+    else:
+        main()

@@ -150,7 +150,11 @@ def _ogr_feature_to_geojson(feature, layer_name: str) -> dict:
             elif field_type == ogr.OFTReal:
                 props[name] = feature.GetFieldAsDouble(i)
             elif field_type in (ogr.OFTIntegerList, ogr.OFTRealList, ogr.OFTStringList):
-                props[name] = feature.GetFieldAsString(i)
+                # OGR encodes lists as "(count:val1,val2,...)" — normalize to "val1,val2,..."
+                raw = feature.GetFieldAsString(i)
+                if raw.startswith('(') and ':' in raw:
+                    raw = raw.split(':', 1)[1].rstrip(')')
+                props[name] = raw
             else:
                 props[name] = feature.GetFieldAsString(i)
 
@@ -264,22 +268,43 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str):
             feature['properties']['CHART_ID'] = chart_id
             feature['properties']['_chartId'] = chart_id
 
+            # Add scale number for cross-scale deduplication (e.g., US4AK4PH -> 4)
+            scale_num = int(chart_id[2]) if len(chart_id) >= 3 and chart_id[2].isdigit() else 0
+            feature['properties']['_scaleNum'] = scale_num
+
+            # Default tippecanoe layer for all features
+            feature['tippecanoe'] = {'layer': 'charts'}
+
             # Set OBJL from layer name (authoritative S-57 object class)
             if layer_name in S57_OBJL:
                 feature['properties']['OBJL'] = S57_OBJL[layer_name]
 
             # Force navigation aids and safety areas to appear at all zoom levels
             if layer_name in NAVIGATION_AIDS or layer_name in SAFETY_AREAS:
-                feature['tippecanoe'] = {'minzoom': 0, 'maxzoom': 17}
+                feature['tippecanoe'] = {'minzoom': 0, 'maxzoom': 15, 'layer': 'charts'}
             if layer_name in SAFETY_AREAS:
                 has_safety_areas = True
 
-            # For LIGHTS, calculate orientation and generate sector arcs
+            # For LIGHTS, normalize COLOUR and calculate orientation/sector arcs
             if layer_name == 'LIGHTS':
                 props = feature['properties']
                 sectr1 = props.get('SECTR1')
                 sectr2 = props.get('SECTR2')
                 orient = props.get('ORIENT')
+
+                # Normalize COLOUR from GDAL IntegerList string "(3)" or "(1:4)" to integer
+                # so MapLibre can match on numeric values (1=white, 3=red, 4=green, etc.)
+                raw_colour = props.get('COLOUR')
+                if isinstance(raw_colour, str) and raw_colour:
+                    cleaned = raw_colour.strip('()[]{}').strip()
+                    parts = [p.strip() for p in cleaned.replace(':', ',').split(',') if p.strip()]
+                    if parts:
+                        try:
+                            props['COLOUR'] = int(parts[0])
+                        except ValueError:
+                            props['COLOUR'] = 1
+                elif isinstance(raw_colour, float):
+                    props['COLOUR'] = int(raw_colour)
 
                 if sectr1 is not None and sectr2 is not None:
                     s1 = float(sectr1)
@@ -298,20 +323,11 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str):
                     if geom['type'] == 'Point':
                         coords = geom['coordinates']
 
-                        colour = props.get('COLOUR', [])
-                        if isinstance(colour, list) and len(colour) > 0:
-                            colour_code = str(colour[0])
-                        elif isinstance(colour, str):
-                            colour_code = colour.strip('[]').strip()
-                            if not colour_code:
-                                colour_code = '1'
-                        elif colour is not None:
-                            colour_code = str(colour)
-                        else:
-                            colour_code = '1'
+                        # COLOUR already normalized to int above
+                        colour_code = props.get('COLOUR', 1)
 
                         print(f"    Sector light: SECTR1={sectr1}, SECTR2={sectr2}, "
-                              f"COLOUR={colour} -> {colour_code}, ORIENT={props.get('_ORIENT'):.1f}")
+                              f"COLOUR={colour_code}, ORIENT={props.get('_ORIENT'):.1f}")
 
                         arc_geom = generate_arc_geometry(
                             coords[0], coords[1],
@@ -330,8 +346,9 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str):
                                 'OBJNAM': props.get('OBJNAM'),
                                 'CHART_ID': chart_id,
                                 '_chartId': chart_id,
+                                '_scaleNum': scale_num,
                             },
-                            'tippecanoe': {'minzoom': 0, 'maxzoom': 17}
+                            'tippecanoe': {'minzoom': 0, 'maxzoom': 15, 'layer': 'arcs'}
                         }
                         all_features.append(sector_feature)
 
@@ -352,6 +369,7 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str):
                                 'DEPTH': coord[2],
                                 'CHART_ID': chart_id,
                                 '_chartId': chart_id,
+                                '_scaleNum': scale_num,
                             }
                             if scamin is not None:
                                 point_props['SCAMIN'] = scamin
@@ -361,7 +379,8 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str):
                                     'type': 'Point',
                                     'coordinates': [coord[0], coord[1]]
                                 },
-                                'properties': point_props
+                                'properties': point_props,
+                                'tippecanoe': {'layer': 'charts'}
                             }
                             all_features.append(point_feature)
                 elif geom['type'] == 'Point' and len(coords) >= 3:
@@ -405,9 +424,9 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
     - US1: Overview charts - z0-8 (full coverage)
     - US2: General charts - z0-10 (full coverage)
     - US3: Coastal charts - z4-13 (extended 4 zooms earlier from z8)
-    - US4: Approach charts - z6-16 (extended 4 zooms earlier from z10)
-    - US5: Harbor charts - z8-18 (extended 4 zooms earlier from z12)
-    - US6: Berthing charts - z10-18 (extended 4 zooms earlier from z14)
+    - US4: Approach charts - z6-15 (extended 4 zooms earlier from z10)
+    - US5: Harbor charts - z8-15 (extended 4 zooms earlier from z12)
+    - US6: Berthing charts - z6-15 (extended from z14 for early detail visibility)
     
     The extended min zoom allows the app to offer low/medium/high detail settings
     where users can choose to see detail charts earlier when zoomed out.
@@ -452,8 +471,8 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
         ])
     
     elif chart_id.startswith('US4'):
-        # Approach charts: z6-16 (extended from z10 for detail level options)
-        return (16, 6, [
+        # Approach charts: z6-15 (extended from z10 for detail level options)
+        return (15, 6, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',
@@ -461,8 +480,8 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
         ])
     
     elif chart_id.startswith('US5'):
-        # Harbor charts: z8-18 (extended from z12 for detail level options)
-        return (18, 8, [
+        # Harbor charts: z8-15 (extended from z12 for detail level options)
+        return (15, 8, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',
@@ -471,9 +490,9 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
         ])
     
     elif chart_id.startswith('US6'):
-        # Berthing charts: z6-18 (extended from z14 for early detail visibility)
+        # Berthing charts: z6-15 (extended from z14 for early detail visibility)
         # These are the most detailed charts - make them available earlier
-        return (18, 6, [
+        return (15, 6, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',
@@ -484,7 +503,7 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
     else:
         # Default: assume high-detail chart (US5 settings)
         print(f"Warning: Unknown chart scale for {chart_id}, using US5 settings")
-        return (18, 8, [
+        return (15, 8, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',
@@ -510,7 +529,9 @@ def convert_geojson_to_mbtiles(geojson_path: str, output_path: str, chart_id: st
     print(f"  Scale settings: z{min_zoom}-{max_zoom} ({chart_id[:3]} scale)")
     
     # Build tippecanoe command
-    # Use common layer name "charts" for all charts to enable server-side compositing
+    # Layer names are set per-feature via tippecanoe.layer property:
+    #   - 'charts' for all standard features
+    #   - 'arcs' for light sector arc geometries (separate layer avoids mixed geometry issues)
     # Individual chart ID is stored in _chartId property on each feature
     cmd = [
         "tippecanoe",
@@ -518,7 +539,6 @@ def convert_geojson_to_mbtiles(geojson_path: str, output_path: str, chart_id: st
         "-z", str(max_zoom),
         "-Z", str(min_zoom),
         "--force",
-        "-l", "charts",  # Common layer name for compositing
         "--attribution", "NOAA ENC",
         "--name", chart_id,
         "--description", f"Vector tiles for {chart_id}",

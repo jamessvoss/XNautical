@@ -7,3 +7,4 @@ requests>=2.31.0
 google-auth>=2.27.0
 aiohttp>=3.9.0
 GDAL==3.4.1
+mapbox-vector-tile>=2.1.0

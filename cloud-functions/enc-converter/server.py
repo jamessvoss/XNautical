@@ -29,6 +29,7 @@ import json
 import shutil
 import sqlite3
 import logging
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
@@ -39,8 +40,8 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from flask import Flask, request, jsonify
 from google.cloud import storage, firestore
 
-# Import the proven single-chart converter
-from convert import convert_chart
+# Import tippecanoe conversion (S-57→GeoJSON now handled by TypeScript parser)
+from convert import convert_geojson_to_mbtiles
 # Import shared merge utilities
 from merge_utils import compute_md5, check_for_skipped_tiles, merge_mbtiles as merge_mbtiles_batch
 
@@ -62,13 +63,24 @@ SCALE_DISPLAY_ZOOMS = {
     'US1': {'minZoom': 0, 'maxZoom': 8, 'displayFrom': 0, 'displayTo': 9},
     'US2': {'minZoom': 0, 'maxZoom': 10, 'displayFrom': 8, 'displayTo': 11},
     'US3': {'minZoom': 4, 'maxZoom': 13, 'displayFrom': 10, 'displayTo': 13},
-    'US4': {'minZoom': 6, 'maxZoom': 16, 'displayFrom': 12, 'displayTo': 15},
-    'US5': {'minZoom': 8, 'maxZoom': 18, 'displayFrom': 14, 'displayTo': 17},
-    'US6': {'minZoom': 6, 'maxZoom': 18, 'displayFrom': 16, 'displayTo': 22},
+    'US4': {'minZoom': 6, 'maxZoom': 15, 'displayFrom': 12, 'displayTo': 15},
+    'US5': {'minZoom': 8, 'maxZoom': 15, 'displayFrom': 14, 'displayTo': 15},
+    'US6': {'minZoom': 6, 'maxZoom': 15, 'displayFrom': 14, 'displayTo': 15},
 }
 
 # Number of parallel conversion workers (match vCPU count)
 NUM_WORKERS = int(os.environ.get('NUM_WORKERS', '4'))
+
+# App-side filename prefixes per district (must match app's DISTRICT_PREFIXES)
+DISTRICT_PREFIXES = {
+    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
+    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
+    '17cgd': 'd17',
+}
+
+def get_district_prefix(district_label: str) -> str:
+    """Get the app-side filename prefix for a district."""
+    return DISTRICT_PREFIXES.get(district_label, district_label.replace('cgd', ''))
 
 
 # ============================================================================
@@ -230,6 +242,58 @@ def generate_manifest(scale_results: dict, district_label: str) -> dict:
     return manifest
 
 
+def _compute_region_boundary(packs: list) -> dict | None:
+    """Compute the union bounding box across all manifest packs.
+
+    Args:
+        packs: List of manifest pack dicts, each with a 'bounds' dict
+               containing west, south, east, north.
+
+    Returns:
+        Dict with west, south, east, north or None if no valid bounds.
+    """
+    west, south, east, north = 180, 90, -180, -90
+    found = False
+    for pack in packs:
+        b = pack.get('bounds')
+        if not b:
+            continue
+        # Skip default/fallback bounds
+        if b.get('west') == -180 and b.get('east') == 180:
+            continue
+        found = True
+        west = min(west, b['west'])
+        south = min(south, b['south'])
+        east = max(east, b['east'])
+        north = max(north, b['north'])
+    if not found:
+        return None
+    return {'west': west, 'south': south, 'east': east, 'north': north}
+
+
+# ============================================================================
+# TypeScript S-57 parser bridge
+# ============================================================================
+
+def _node_convert_s57_to_geojson(s57_path: str, output_dir: str) -> tuple:
+    """Convert S-57 to GeoJSON using the TypeScript S-57 parser.
+
+    Calls the compiled Node.js script which reads the .000 binary directly
+    (no GDAL dependency), producing GeoJSON with IHO standard OBJL codes,
+    OBJL_NAME strings, M_COVR coverage polygons, and all post-processing.
+
+    Returns:
+        (geojson_path, has_safety_areas) tuple
+    """
+    result = subprocess.run(
+        ['node', '/app/dist/convert_s57.js', s57_path, output_dir],
+        capture_output=True, text=True, check=True,
+        timeout=120,
+    )
+    data = json.loads(result.stdout.strip())
+    return data['geojson_path'], data['has_safety_areas']
+
+
 # ============================================================================
 # Single-chart conversion wrapper (for ProcessPoolExecutor)
 # ============================================================================
@@ -258,7 +322,11 @@ def _convert_one(args: tuple) -> dict:
     }
 
     try:
-        output_path = convert_chart(s57_path_str, output_dir_str)
+        # S-57 → GeoJSON via TypeScript parser
+        geojson_path, has_safety = _node_convert_s57_to_geojson(s57_path_str, output_dir_str)
+        # GeoJSON → MBTiles via tippecanoe
+        output_path = os.path.join(output_dir_str, f'{chart_id}.mbtiles')
+        convert_geojson_to_mbtiles(geojson_path, output_path, chart_id, has_safety_areas=has_safety)
         mbtiles = Path(output_path)
         if mbtiles.exists():
             result['success'] = True
@@ -284,6 +352,45 @@ def _convert_one(args: tuple) -> dict:
                     pass
         else:
             result['error'] = 'MBTiles file not created'
+    except Exception as e:
+        result['error'] = str(e)[:300]
+
+    result['duration'] = time.time() - start
+    return result
+
+
+def _convert_to_geojson(args: tuple) -> dict:
+    """Convert a single chart to GeoJSON only (no tippecanoe). Subprocess worker.
+
+    Args:
+        args: (s57_path_str, output_dir_str)
+
+    Returns:
+        dict with chart_id, success, size_mb, error, duration, geojson_path
+    """
+    s57_path_str, output_dir_str = args
+    chart_id = Path(s57_path_str).stem
+    start = time.time()
+
+    result = {
+        'chart_id': chart_id,
+        'scale': chart_id[:3] if len(chart_id) >= 3 else 'unknown',
+        'success': False,
+        'size_mb': 0,
+        'error': None,
+        'duration': 0,
+    }
+
+    try:
+        geojson_path, _has_safety = _node_convert_s57_to_geojson(s57_path_str, output_dir_str)
+
+        geojson_file = Path(geojson_path)
+        if geojson_file.exists():
+            result['success'] = True
+            result['size_mb'] = geojson_file.stat().st_size / 1024 / 1024
+            result['geojson_path'] = str(geojson_file)
+        else:
+            result['error'] = 'GeoJSON not created'
     except Exception as e:
         result['error'] = str(e)[:300]
 
@@ -600,11 +707,12 @@ def convert_district():
             blob.upload_from_filename(str(pack_path), timeout=600)
             upload_sizes[scale] = info['sizeMB']
 
-            # Zip and upload for app download
+            # Zip and upload for app download (prefixed for multi-region support)
+            district_prefix = get_district_prefix(district_label)
             zip_path = Path(scale_pack_dir) / f'{scale}.mbtiles.zip'
             with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.write(str(pack_path), f'{scale}.mbtiles')
-            zip_storage_path = f'{district_label}/charts/{scale}.mbtiles.zip'
+                zf.write(str(pack_path), f'{district_prefix}_{scale}.mbtiles')
+            zip_storage_path = f'{district_label}/charts/{district_prefix}_{scale}.mbtiles.zip'
             zip_blob = bucket.blob(zip_storage_path)
             zip_blob.upload_from_filename(str(zip_path), timeout=600)
             zip_size = zip_path.stat().st_size / 1024 / 1024
@@ -635,8 +743,11 @@ def convert_district():
                 'error': info.get('error'),
             }
 
+        # Compute region boundary from manifest packs (union of all scale bounds)
+        region_boundary = _compute_region_boundary(manifest.get('packs', []))
+
         doc_ref = db.collection('districts').document(district_label)
-        doc_ref.set({
+        firestore_data = {
             'chartData': {
                 'lastConverted': firestore.SERVER_TIMESTAMP,
                 'totalCharts': completed,
@@ -655,7 +766,10 @@ def convert_district():
                 'failedCharts': failed,
             },
             'us1ChartBounds': us1_bounds,
-        }, merge=True)
+        }
+        if region_boundary:
+            firestore_data['regionBoundary'] = region_boundary
+        doc_ref.set(firestore_data, merge=True)
 
         # Build response
         summary = {
@@ -767,23 +881,25 @@ def convert_batch():
     This endpoint is called by the parallel coordinator to process
     small batches of charts (typically 5-10) in separate containers.
     
-    Outputs per-chart MBTiles to: {districtId}/charts/temp/{batchId}/
+    Outputs per-chart GeoJSON to: {districtId}/chart-geojson/{chartId}/
     """
     data = request.get_json(silent=True) or {}
     district_id = str(data.get('districtId', '')).zfill(2)
     chart_ids = data.get('chartIds', [])
     batch_id = data.get('batchId', 'batch_unknown')
-    
-    if district_id not in VALID_DISTRICTS:
-        return jsonify({
-            'error': f'Invalid district ID: {district_id}',
-            'valid': sorted(VALID_DISTRICTS),
-        }), 400
-    
+
+    # Allow districtLabel override for testing
+    district_label = data.get('districtLabel')
+    if not district_label:
+        if district_id not in VALID_DISTRICTS:
+            return jsonify({
+                'error': f'Invalid district ID: {district_id}',
+                'valid': sorted(VALID_DISTRICTS),
+            }), 400
+        district_label = f'{district_id}cgd'
+
     if not chart_ids:
         return jsonify({'error': 'No chartIds provided'}), 400
-    
-    district_label = f'{district_id}cgd'
     start_time = time.time()
     
     logger.info(f'=== Starting batch conversion: {batch_id} for {district_label} ===')
@@ -841,45 +957,46 @@ def convert_batch():
                 'batchId': batch_id,
             }), 404
         
-        # Convert each chart
-        logger.info(f'Converting {len(chart_s57_files)} charts with {NUM_WORKERS} workers...')
+        # Convert each chart to GeoJSON (skip tippecanoe — compose job runs it later)
+        logger.info(f'Converting {len(chart_s57_files)} charts to GeoJSON with {NUM_WORKERS} workers...')
         convert_start = time.time()
-        
+
         work_items = []
         for chart_id, s57_path in chart_s57_files.items():
             chart_output = os.path.join(output_dir, chart_id)
             os.makedirs(chart_output, exist_ok=True)
             work_items.append((s57_path, chart_output))
-        
+
         results = []
         with ProcessPoolExecutor(max_workers=NUM_WORKERS) as executor:
-            futures = {executor.submit(_convert_one, item): item for item in work_items}
+            futures = {executor.submit(_convert_to_geojson, item): item for item in work_items}
             for future in as_completed(futures):
                 results.append(future.result())
-        
+
         convert_duration = time.time() - convert_start
         successful = [r for r in results if r['success']]
         failed = [r for r in results if not r['success']]
-        
+
         logger.info(f'Conversion complete: {len(successful)}/{len(results)} succeeded in {convert_duration:.1f}s')
-        
-        # Upload per-chart MBTiles to temp storage
-        logger.info(f'Uploading {len(successful)} per-chart MBTiles to temp storage...')
+
+        # Upload compressed GeoJSON to temp storage
+        logger.info(f'Uploading {len(successful)} GeoJSON files to temp storage...')
         upload_start = time.time()
-        
+
         upload_details = []
 
-        def _upload_chart_mbtiles(result):
-            """Upload a single per-chart MBTiles to temp storage."""
-            if 'output_path' not in result:
+        def _upload_chart_geojson(result):
+            """Upload a single chart GeoJSON to temp storage."""
+            geojson_path = result.get('geojson_path')
+            if not geojson_path:
                 return None
-            mbtiles_path = Path(result['output_path'])
-            if not mbtiles_path.exists():
+            geojson_file = Path(geojson_path)
+            if not geojson_file.exists():
                 return None
             chart_id = result['chart_id']
-            storage_path = f'{district_label}/charts/temp/{batch_id}/{chart_id}.mbtiles'
+            storage_path = f'{district_label}/chart-geojson/{chart_id}/{chart_id}.geojson'
             blob = bucket.blob(storage_path)
-            blob.upload_from_filename(str(mbtiles_path), timeout=300)
+            blob.upload_from_filename(str(geojson_file), timeout=300)
             return {
                 'chartId': chart_id,
                 'storagePath': storage_path,
@@ -887,7 +1004,7 @@ def convert_batch():
             }
 
         with ThreadPoolExecutor(max_workers=len(successful)) as upload_pool:
-            for detail in upload_pool.map(_upload_chart_mbtiles, successful):
+            for detail in upload_pool.map(_upload_chart_geojson, successful):
                 if detail:
                     upload_details.append(detail)
         
@@ -968,14 +1085,18 @@ def convert_district_parallel():
     district_id = str(data.get('districtId', '')).zfill(2)
     batch_size = int(data.get('batchSize', 10))
     max_parallel = int(data.get('maxParallel', 80))
-    
-    if district_id not in VALID_DISTRICTS:
-        return jsonify({
-            'error': f'Invalid district ID: {district_id}',
-            'valid': sorted(VALID_DISTRICTS),
-        }), 400
-    
-    district_label = f'{district_id}cgd'
+
+    # Allow districtLabel override for testing (e.g. "017cgd_test")
+    district_label = data.get('districtLabel')
+    if district_label:
+        logger.info(f'Using custom districtLabel: {district_label}')
+    else:
+        if district_id not in VALID_DISTRICTS:
+            return jsonify({
+                'error': f'Invalid district ID: {district_id}',
+                'valid': sorted(VALID_DISTRICTS),
+            }), 400
+        district_label = f'{district_id}cgd'
     start_time = time.time()
     
     logger.info(f'=== Starting PARALLEL conversion for {district_label} ===')
@@ -1024,397 +1145,346 @@ def convert_district_parallel():
         
         logger.info(f'  Found {len(chart_ids)} charts ({source_file_count} files) in {discovery_duration:.1f}s')
         logger.info(f'  Charts by scale: {dict((k, len(v)) for k, v in charts_by_scale.items())}')
-        
+
         if not chart_ids:
             return jsonify({
                 'status': 'error',
                 'error': 'No charts found in source',
                 'district': district_label,
             }), 404
-        
-        # Phase 2: Create batches and fire parallel conversions
-        batches = create_batches(chart_ids, batch_size)
-        logger.info(f'Phase 2: Converting {len(chart_ids)} charts in {len(batches)} batches...')
-        
-        update_status(db, district_label, {
-            'state': 'converting',
-            'message': f'Converting {len(chart_ids)} charts in {len(batches)} batches...',
-            'totalCharts': len(chart_ids),
-            'totalBatches': len(batches),
-            'completedBatches': 0,
-        })
-        
-        conversion_start = time.time()
-        
-        # Get service URL
-        service_url = os.environ.get('SERVICE_URL', 'https://enc-converter-653355603694.us-central1.run.app')
-        logger.info(f'  Using service URL: {service_url}')
-        
-        # Fire parallel batch conversions using ThreadPoolExecutor
-        batch_results = []
-        completed_charts = set()
-        scales_merged = set()
-        merge_results = {}
-        
-        MAX_RETRIES = 8
-        RETRY_BASE_DELAY = 5  # seconds
-        INITIAL_CONCURRENCY = 20  # ramp up gradually to avoid 429 thundering herd
-        import random
-        
-        def execute_batch_sync(batch, url):
-            """Execute a single batch with retry logic for 429 rate limits."""
-            import requests as req_lib
-            import google.auth
-            import google.auth.transport.requests
-            from google.oauth2 import id_token
-            
-            payload = {
-                'districtId': district_id,
-                'chartIds': batch['chartIds'],
-                'batchId': batch['batchId']
-            }
-            
-            for attempt in range(MAX_RETRIES + 1):
-                try:
-                    # Get fresh ID token each attempt (tokens expire)
-                    auth_req = google.auth.transport.requests.Request()
-                    token = id_token.fetch_id_token(auth_req, url)
-                    
-                    headers = {
-                        'Authorization': f'Bearer {token}',
-                        'Content-Type': 'application/json'
-                    }
-                    
-                    response = req_lib.post(
-                        f'{url}/convert-batch',
-                        json=payload,
-                        headers=headers,
-                        timeout=600
-                    )
-                    
-                    logger.info(f"  Batch {batch['batchId']}: HTTP {response.status_code} (attempt {attempt + 1})")
-                    
-                    # Handle retryable status codes (429 rate limit, 500/503 scaling errors)
-                    if response.status_code in (429, 500, 502, 503):
-                        if attempt < MAX_RETRIES:
+
+        # Check GeoJSON cache
+        cache_prefix = f'{district_label}/chart-geojson/'
+        cached_chart_ids = set()
+        for blob in bucket.list_blobs(prefix=cache_prefix):
+            if blob.name.endswith('.geojson'):
+                parts = blob.name[len(cache_prefix):].split('/')
+                if len(parts) >= 2:
+                    cached_chart_ids.add(parts[0])
+
+        charts_to_convert = sorted(set(chart_ids) - cached_chart_ids)
+        charts_already_cached = sorted(set(chart_ids) & cached_chart_ids)
+        logger.info(f'  {len(charts_already_cached)} cached, {len(charts_to_convert)} need conversion')
+
+        # Phase 2: Create batches and fire parallel conversions (uncached only)
+        if not charts_to_convert:
+            logger.info('Phase 2: All charts cached, skipping conversion')
+            completed_charts = set(chart_ids)
+            batches = []
+            batch_results = []
+            conversion_duration = 0
+            successful_batches = 0
+        else:
+            batches = create_batches(charts_to_convert, batch_size)
+            logger.info(f'Phase 2: Converting {len(charts_to_convert)} charts in {len(batches)} batches '
+                        f'({len(charts_already_cached)} cached, skipped)')
+
+        if charts_to_convert:
+            update_status(db, district_label, {
+                'state': 'converting',
+                'message': f'Converting {len(charts_to_convert)} charts in {len(batches)} batches '
+                           f'({len(charts_already_cached)} cached)...',
+                'totalCharts': len(chart_ids),
+                'totalBatches': len(batches),
+                'completedBatches': 0,
+            })
+
+            conversion_start = time.time()
+
+            # Get service URL
+            service_url = os.environ.get('SERVICE_URL', 'https://enc-converter-653355603694.us-central1.run.app')
+            logger.info(f'  Using service URL: {service_url}')
+
+            # Fire parallel batch conversions using ThreadPoolExecutor
+            batch_results = []
+            completed_charts = set()
+            scales_merged = set()
+            merge_results = {}
+
+            MAX_RETRIES = 8
+            RETRY_BASE_DELAY = 5  # seconds
+            INITIAL_CONCURRENCY = 20  # ramp up gradually to avoid 429 thundering herd
+            import random
+
+            def execute_batch_sync(batch, url):
+                """Execute a single batch with retry logic for 429 rate limits."""
+                import requests as req_lib
+                import google.auth
+                import google.auth.transport.requests
+                from google.oauth2 import id_token
+
+                payload = {
+                    'districtId': district_id,
+                    'districtLabel': district_label,
+                    'chartIds': batch['chartIds'],
+                    'batchId': batch['batchId']
+                }
+
+                for attempt in range(MAX_RETRIES + 1):
+                    try:
+                        # Get fresh ID token each attempt (tokens expire)
+                        auth_req = google.auth.transport.requests.Request()
+                        token = id_token.fetch_id_token(auth_req, url)
+
+                        headers = {
+                            'Authorization': f'Bearer {token}',
+                            'Content-Type': 'application/json'
+                        }
+
+                        response = req_lib.post(
+                            f'{url}/convert-batch',
+                            json=payload,
+                            headers=headers,
+                            timeout=600
+                        )
+
+                        logger.info(f"  Batch {batch['batchId']}: HTTP {response.status_code} (attempt {attempt + 1})")
+
+                        # Handle retryable status codes (429 rate limit, 500/503 scaling errors)
+                        if response.status_code in (429, 500, 502, 503):
+                            if attempt < MAX_RETRIES:
+                                delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 3)
+                                logger.warning(f"  Batch {batch['batchId']}: HTTP {response.status_code}, retrying in {delay:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                                time.sleep(delay)
+                                continue
+                            else:
+                                logger.error(f"  Batch {batch['batchId']}: HTTP {response.status_code}, all {MAX_RETRIES} retries exhausted")
+                                return {
+                                    'status': 'error',
+                                    'error': f'HTTP {response.status_code} after all retries',
+                                    'batchId': batch['batchId']
+                                }
+
+                        response.raise_for_status()
+                        return response.json()
+
+                    except req_lib.exceptions.RequestException as e:
+                        response_text = getattr(e.response, 'text', str(e)) if hasattr(e, 'response') else str(e)
+                        status_code = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
+
+                        # Retry on 429, 500, 502, 503 (scaling/rate limit errors)
+                        if status_code in (429, 500, 502, 503) and attempt < MAX_RETRIES:
                             delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 3)
-                            logger.warning(f"  Batch {batch['batchId']}: HTTP {response.status_code}, retrying in {delay:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                            logger.warning(f"  Batch {batch['batchId']}: HTTP {status_code}, retrying in {delay:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
                             time.sleep(delay)
                             continue
-                        else:
-                            logger.error(f"  Batch {batch['batchId']}: HTTP {response.status_code}, all {MAX_RETRIES} retries exhausted")
-                            return {
-                                'status': 'error',
-                                'error': f'HTTP {response.status_code} after all retries',
-                                'batchId': batch['batchId']
-                            }
-                    
-                    response.raise_for_status()
-                    return response.json()
-                    
-                except req_lib.exceptions.RequestException as e:
-                    response_text = getattr(e.response, 'text', str(e)) if hasattr(e, 'response') else str(e)
-                    status_code = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
-                    
-                    # Retry on 429, 500, 502, 503 (scaling/rate limit errors)
-                    if status_code in (429, 500, 502, 503) and attempt < MAX_RETRIES:
-                        delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 3)
-                        logger.warning(f"  Batch {batch['batchId']}: HTTP {status_code}, retrying in {delay:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
-                        time.sleep(delay)
-                        continue
-                    
-                    logger.error(f"  Batch {batch['batchId']} HTTP error (attempt {attempt + 1}): {response_text[:200]}")
-                    return {
-                        'status': 'error',
-                        'error': f'HTTP error: {response_text[:500]}',
-                        'batchId': batch['batchId']
-                    }
-                except Exception as e:
-                    logger.error(f"  Batch {batch['batchId']} error (attempt {attempt + 1}): {e}")
-                    if attempt < MAX_RETRIES:
-                        delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 3)
-                        time.sleep(delay)
-                        continue
-                    return {
-                        'status': 'error',
-                        'error': str(e),
-                        'batchId': batch['batchId']
-                    }
-            
-            return {'status': 'error', 'error': 'Unexpected retry loop exit', 'batchId': batch['batchId']}
-        
-        # Launch batches with controlled concurrency to avoid overwhelming Cloud Run
-        # INITIAL_CONCURRENCY limits in-flight requests so Cloud Run can scale up
-        # gradually instead of 429-ing a wall of simultaneous requests.
-        effective_concurrency = min(INITIAL_CONCURRENCY, max_parallel, len(batches))
-        logger.info(f'  Launching {len(batches)} batches ({effective_concurrency} concurrent, {MAX_RETRIES} retries with jittered exponential backoff)...')
-        with ThreadPoolExecutor(max_workers=effective_concurrency) as executor:
-            futures = {executor.submit(execute_batch_sync, batch, service_url): batch for batch in batches}
-            
-            for future in as_completed(futures):
-                result = future.result()
-                batch_results.append(result)
-                
-                # Track completed charts
-                if result.get('status') == 'success':
-                    for chart_result in result.get('perChartResults', []):
-                        if chart_result.get('success'):
-                            completed_charts.add(chart_result['chartId'])
-                
-                # Update progress
-                logger.info(f"  Batch {result.get('batchId')} complete: "
-                           f"{result.get('successfulCharts', 0)}/{result.get('totalCharts', 0)} charts "
-                           f"[{len(batch_results)}/{len(batches)} batches done, {len(completed_charts)} charts total]")
-                
-                update_status(db, district_label, {
-                    'completedBatches': len(batch_results),
-                    'completedCharts': len(completed_charts),
-                })
-        
-        conversion_duration = time.time() - conversion_start
-        successful_batches = sum(1 for r in batch_results if r.get('status') == 'success')
-        
-        logger.info(f'Batch conversion complete: {successful_batches}/{len(batches)} batches, '
-                   f'{len(completed_charts)}/{len(chart_ids)} charts in {conversion_duration:.1f}s')
-        
-        # Phase 3: Launch Cloud Run Jobs for scale merging
-        logger.info('Phase 3: Launching Cloud Run Jobs for scale merging...')
+
+                        logger.error(f"  Batch {batch['batchId']} HTTP error (attempt {attempt + 1}): {response_text[:200]}")
+                        return {
+                            'status': 'error',
+                            'error': f'HTTP error: {response_text[:500]}',
+                            'batchId': batch['batchId']
+                        }
+                    except Exception as e:
+                        logger.error(f"  Batch {batch['batchId']} error (attempt {attempt + 1}): {e}")
+                        if attempt < MAX_RETRIES:
+                            delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 3)
+                            time.sleep(delay)
+                            continue
+                        return {
+                            'status': 'error',
+                            'error': str(e),
+                            'batchId': batch['batchId']
+                        }
+
+                return {'status': 'error', 'error': 'Unexpected retry loop exit', 'batchId': batch['batchId']}
+
+            # Launch batches with controlled concurrency to avoid overwhelming Cloud Run
+            # INITIAL_CONCURRENCY limits in-flight requests so Cloud Run can scale up
+            # gradually instead of 429-ing a wall of simultaneous requests.
+            effective_concurrency = min(INITIAL_CONCURRENCY, max_parallel, len(batches))
+            logger.info(f'  Launching {len(batches)} batches ({effective_concurrency} concurrent, {MAX_RETRIES} retries with jittered exponential backoff)...')
+            with ThreadPoolExecutor(max_workers=effective_concurrency) as executor:
+                futures = {executor.submit(execute_batch_sync, batch, service_url): batch for batch in batches}
+
+                for future in as_completed(futures):
+                    result = future.result()
+                    batch_results.append(result)
+
+                    # Track completed charts
+                    if result.get('status') == 'success':
+                        for chart_result in result.get('perChartResults', []):
+                            if chart_result.get('success'):
+                                completed_charts.add(chart_result['chartId'])
+
+                    # Update progress
+                    logger.info(f"  Batch {result.get('batchId')} complete: "
+                               f"{result.get('successfulCharts', 0)}/{result.get('totalCharts', 0)} charts "
+                               f"[{len(batch_results)}/{len(batches)} batches done, {len(completed_charts)} charts total]")
+
+                    update_status(db, district_label, {
+                        'completedBatches': len(batch_results),
+                        'completedCharts': len(completed_charts),
+                    })
+
+            conversion_duration = time.time() - conversion_start
+            successful_batches = sum(1 for r in batch_results if r.get('status') == 'success')
+
+            logger.info(f'Batch conversion complete: {successful_batches}/{len(batches)} batches, '
+                       f'{len(completed_charts)}/{len(charts_to_convert)} charts in {conversion_duration:.1f}s')
+
+        # Add cached charts to completed set
+        completed_charts.update(charts_already_cached)
+        logger.info(f'Total charts for compose: {len(completed_charts)} '
+                   f'({len(completed_charts) - len(charts_already_cached)} converted + {len(charts_already_cached)} cached)')
+
+        # Write chart manifest for compose job (prevents stale cache inclusion)
+        manifest = {'chartIds': sorted(list(completed_charts))}
+        bucket.blob(f'{district_label}/chart-geojson/_manifest.json').upload_from_string(
+            json.dumps(manifest), content_type='application/json')
+        logger.info(f'  Wrote _manifest.json with {len(completed_charts)} chart IDs')
+
+        # Phase 3: Launch compose job (unified deduplication + tippecanoe)
+        logger.info('Phase 3: Launching compose job for unified MBTiles...')
         update_status(db, district_label, {
-            'state': 'merging',
-            'message': 'Merging charts into scale packs via Cloud Run Jobs...',
+            'state': 'composing',
+            'message': 'Deduplicating features and building unified MBTiles...',
         })
-        
-        merge_start = time.time()
+
+        compose_start = time.time()
         all_charts_complete = len(completed_charts) == len(chart_ids)
-        skipped_scales = []
-        upload_details = []
-        
-        # Determine which scales are complete and ready to merge
-        scales_to_merge = {}
-        for scale, expected_ids in charts_by_scale.items():
-            completed_for_scale = [c for c in expected_ids if c in completed_charts]
-            if len(completed_for_scale) == len(expected_ids):
-                scales_to_merge[scale] = expected_ids
-                logger.info(f'  {scale}: Complete - {len(expected_ids)} charts, dispatching merge job')
-            else:
-                skipped_scales.append(scale)
-                logger.warning(f'  {scale}: INCOMPLETE - {len(completed_for_scale)}/{len(expected_ids)} charts. Skipping merge.')
-        
+        compose_result = {}
+
         if not all_charts_complete:
             logger.warning(f'  *** INCOMPLETE: {len(completed_charts)}/{len(chart_ids)} charts. '
-                          f'Only merging fully complete scales. ***')
-        
-        # Memory allocation by scale
-        memory_by_scale = {
-            'US1': '8Gi', 'US2': '8Gi', 'US3': '8Gi',
-            'US4': '16Gi', 'US5': '32Gi', 'US6': '32Gi'
-        }
-        cpu_by_scale = {
-            'US1': '2', 'US2': '2', 'US3': '2',
-            'US4': '4', 'US5': '8', 'US6': '8'
-        }
-        
-        # Launch Cloud Run Jobs for each scale
+                          f'Compose will proceed with available charts. ***')
+
+        # Launch ONE Cloud Run Job for compose
         from google.cloud import run_v2
         from google.protobuf import duration_pb2
-        
+
         jobs_client = run_v2.JobsClient()
         executions_client = run_v2.ExecutionsClient()
-        
+
         job_name = 'enc-converter-merge'
         project_id = os.environ.get('GCP_PROJECT', 'xnautical-8a296')
-        region = 'us-central1'
-        job_path = f'projects/{project_id}/locations/{region}/jobs/{job_name}'
-        
-        logger.info(f'  Launching {len(scales_to_merge)} Cloud Run Job executions...')
+        gcp_region = 'us-central1'
+        job_path = f'projects/{project_id}/locations/{gcp_region}/jobs/{job_name}'
 
-        for scale in scales_to_merge.keys():
-            memory = memory_by_scale.get(scale, '8Gi')
-            cpu = cpu_by_scale.get(scale, '2')
-            
-            logger.info(f'  {scale}: Starting job with {memory} memory, {cpu} vCPU')
-            
-            try:
-                # Create job execution with scale-specific overrides
-                timeout_duration = duration_pb2.Duration()
-                timeout_duration.seconds = 3600
-                
-                run_request = run_v2.RunJobRequest(
-                    name=job_path,
-                    overrides=run_v2.RunJobRequest.Overrides(
-                        container_overrides=[
-                            run_v2.RunJobRequest.Overrides.ContainerOverride(
-                                env=[
-                                    run_v2.EnvVar(name='DISTRICT_ID', value=district_id),
-                                    run_v2.EnvVar(name='SCALE', value=scale),
-                                    run_v2.EnvVar(name='BUCKET_NAME', value=BUCKET_NAME),
-                                ],
-                            )
-                        ],
-                        task_count=1,
-                        timeout=timeout_duration,
-                    ),
-                )
-                
-                # Launch the job (fire and forget - don't wait for execution object)
-                operation = jobs_client.run_job(request=run_request)
-                logger.info(f'  {scale}: Job launch initiated')
-                
-            except Exception as e:
-                logger.error(f'  {scale}: Failed to start job - {e}')
-                merge_results[scale] = {
-                    'chartCount': 0, 'sizeMB': 0,
-                    'error': f'Job launch failed: {str(e)[:200]}',
-                }
-        
-        # Poll Firestore for merge completion (not execution names, which break on retries)
-        pending_scales = set(scales_to_merge.keys())
+        logger.info(f'  Launching compose job with 32Gi memory, 8 vCPU')
+
+        try:
+            timeout_duration = duration_pb2.Duration()
+            timeout_duration.seconds = 7200  # 2 hours for large districts
+
+            run_request = run_v2.RunJobRequest(
+                name=job_path,
+                overrides=run_v2.RunJobRequest.Overrides(
+                    container_overrides=[
+                        run_v2.RunJobRequest.Overrides.ContainerOverride(
+                            env=[
+                                run_v2.EnvVar(name='DISTRICT_ID', value=district_id),
+                                run_v2.EnvVar(name='DISTRICT_LABEL', value=district_label),
+                                run_v2.EnvVar(name='BUCKET_NAME', value=BUCKET_NAME),
+                                run_v2.EnvVar(name='JOB_TYPE', value='compose'),
+                                run_v2.EnvVar(name='METADATA_GENERATOR_URL',
+                                              value=os.environ.get('METADATA_GENERATOR_URL', '')),
+                            ],
+                        )
+                    ],
+                    task_count=1,
+                    timeout=timeout_duration,
+                ),
+            )
+
+            operation = jobs_client.run_job(request=run_request)
+            logger.info(f'  Compose job launch initiated')
+        except Exception as e:
+            logger.error(f'  Compose job failed to start: {e}')
+            compose_result = {'error': f'Job launch failed: {str(e)[:200]}'}
+
+        # Poll Firestore for compose completion
         poll_interval = 10  # seconds
-        max_wait = 3600  # 1 hour timeout
+        max_wait = 3500  # just under Cloud Run service 3600s max timeout
         elapsed = 0
-
-        # Record launch time so we can detect stale Firestore data from previous runs
         launch_time = time.time()
+        compose_done = bool(compose_result.get('error'))
 
-        logger.info(f'  Polling Firestore for {len(pending_scales)} merge completions...')
+        logger.info(f'  Polling Firestore for compose completion...')
 
-        while pending_scales and elapsed < max_wait:
+        while not compose_done and elapsed < max_wait:
             time.sleep(poll_interval)
             elapsed += poll_interval
 
-            # Check Firestore for completed merges
             try:
                 doc_ref = db.collection('districts').document(district_label)
                 doc_snap = doc_ref.get()
 
                 if doc_snap.exists:
                     chart_data = doc_snap.to_dict().get('chartData', {})
-                    scales_data = chart_data.get('scales', {})
+                    composed_at = chart_data.get('composedAt')
 
-                    for scale in list(pending_scales):
-                        scale_data = scales_data.get(scale, {})
-                        merged_at = scale_data.get('mergedAt')
-
-                        if not merged_at:
-                            continue
-
-                        # Convert Firestore timestamp to epoch seconds
+                    if composed_at:
                         try:
-                            merged_epoch = merged_at.timestamp() if hasattr(merged_at, 'timestamp') else merged_at
+                            composed_epoch = composed_at.timestamp() if hasattr(composed_at, 'timestamp') else composed_at
                         except Exception:
-                            continue
+                            composed_epoch = 0
 
-                        # Only accept merges that happened after we launched jobs
-                        if merged_epoch < launch_time - 30:  # 30s grace for clock skew
-                            continue
-
-                        # This scale completed successfully
-                        merge_results[scale] = {
-                            'chartCount': scale_data.get('chartCount', 0),
-                            'sizeMB': scale_data.get('sizeMB', 0),
-                            'storagePath': scale_data.get('storagePath'),
-                            'md5Checksum': scale_data.get('md5Checksum'),
-                            'bounds': scale_data.get('bounds'),
-                            'minZoom': scale_data.get('minZoom'),
-                            'maxZoom': scale_data.get('maxZoom'),
-                            'error': None,
-                        }
-                        upload_details.append({
-                            'scale': scale,
-                            'storagePath': scale_data.get('storagePath'),
-                            'sizeMB': scale_data.get('sizeMB', 0),
-                            'md5Checksum': scale_data.get('md5Checksum'),
-                        })
-                        merge_duration_s = merged_epoch - launch_time
-                        logger.info(f'  {scale}: Merge complete - '
-                                   f'{scale_data.get("chartCount")} charts, '
-                                   f'{scale_data.get("sizeMB", 0):.1f} MB in {merge_duration_s:.0f}s')
-                        pending_scales.discard(scale)
+                        if composed_epoch >= launch_time - 30:
+                            compose_result = {
+                                'totalCharts': chart_data.get('totalCharts', 0),
+                                'sizeMB': chart_data.get('totalSizeMB', 0),
+                                'storagePath': chart_data.get('unifiedStoragePath'),
+                                'bounds': chart_data.get('bounds'),
+                                'dedupStats': chart_data.get('dedupStats'),
+                                'error': None,
+                            }
+                            compose_duration_s = composed_epoch - launch_time
+                            logger.info(f'  Compose complete - '
+                                       f'{compose_result.get("totalCharts")} charts, '
+                                       f'{compose_result.get("sizeMB", 0):.1f} MB in {compose_duration_s:.0f}s')
+                            compose_done = True
             except Exception as e:
                 logger.warning(f'  Error polling Firestore: {e}')
 
-            # For scales still pending, check if all job executions have terminally failed
-            # (this catches cases where the job exhausted all retries)
-            if pending_scales and elapsed % 60 < poll_interval:  # Check every ~60s
+            if not compose_done and elapsed % 60 < poll_interval:
+                # Check if job execution terminally failed
                 try:
                     list_request = run_v2.ListExecutionsRequest(parent=job_path)
                     executions_list = list(executions_client.list_executions(request=list_request))
 
-                    for scale in list(pending_scales):
-                        # Find all executions for this scale
-                        scale_executions = []
-                        for execution in executions_list:
-                            try:
-                                for container in (execution.template.containers or []):
-                                    for env_var in (container.env or []):
-                                        if env_var.name == 'SCALE' and env_var.value == scale:
-                                            scale_executions.append(execution)
-                            except Exception:
-                                pass
+                    compose_executions = []
+                    for execution in executions_list:
+                        try:
+                            for container in (execution.template.containers or []):
+                                for env_var in (container.env or []):
+                                    if env_var.name == 'JOB_TYPE' and env_var.value == 'compose':
+                                        compose_executions.append(execution)
+                        except Exception:
+                            pass
 
-                        if not scale_executions:
-                            continue
-
-                        # If ALL executions for this scale have completed (none still running)
-                        # and none succeeded, the job has terminally failed
-                        all_done = all(e.completion_time for e in scale_executions)
-                        any_running = any(not e.completion_time for e in scale_executions)
-                        any_succeeded = any(e.succeeded_count and e.succeeded_count > 0 for e in scale_executions)
-
-                        if all_done and not any_running and not any_succeeded:
-                            error_msg = f'All {len(scale_executions)} job execution(s) failed'
-                            merge_results[scale] = {
-                                'chartCount': 0, 'sizeMB': 0,
-                                'error': error_msg,
-                            }
-                            logger.error(f'  {scale}: {error_msg}')
-                            pending_scales.discard(scale)
+                    if compose_executions:
+                        all_done = all(e.completion_time for e in compose_executions)
+                        any_succeeded = any(e.succeeded_count and e.succeeded_count > 0 for e in compose_executions)
+                        if all_done and not any_succeeded:
+                            compose_result = {'error': f'All {len(compose_executions)} compose execution(s) failed'}
+                            logger.error(f'  Compose: {compose_result["error"]}')
+                            compose_done = True
                 except Exception as e:
                     logger.warning(f'  Error checking execution status: {e}')
 
-            if pending_scales and elapsed % 30 < poll_interval:
-                logger.info(f'  Still waiting on {len(pending_scales)} scales: {sorted(pending_scales)} ({elapsed}s elapsed)')
+            if not compose_done and elapsed % 30 < poll_interval:
+                logger.info(f'  Still waiting on compose job ({elapsed}s elapsed)')
 
-        # Handle any scales that didn't complete in time
-        for scale in pending_scales:
-            merge_results[scale] = {
-                'chartCount': 0, 'sizeMB': 0,
-                'error': f'Job timeout after {max_wait}s',
-            }
-            logger.error(f'  {scale}: Job timed out after {max_wait}s')
-        
-        merge_duration = time.time() - merge_start
-        logger.info(f'All merge jobs complete in {merge_duration:.1f}s')
-        
-        # Upload manifest if all charts completed
-        manifest_storage_path = f'{district_label}/charts/manifest.json'
-        if all_charts_complete and not any(m.get('error') for m in merge_results.values()):
-            manifest = generate_manifest(
-                {s: {'sizeMB': m['sizeMB'], 'chartCount': m['chartCount'], 'error': m.get('error'),
-                      'bounds': m.get('bounds'), 'minZoom': m.get('minZoom'), 'maxZoom': m.get('maxZoom')}
-                 for s, m in merge_results.items()},
-                district_label
-            )
-            blob = bucket.blob(manifest_storage_path)
-            blob.upload_from_string(json.dumps(manifest, indent=2), content_type='application/json')
-            logger.info(f'  Manifest uploaded: {manifest_storage_path}')
-        else:
-            manifest = {'packs': []}
-            logger.warning(f'  Manifest NOT uploaded - conversion incomplete')
-        
-        upload_duration = 0  # uploads happen inside job executions
-        
-        # Phase 5: Generate comprehensive validation report
+        if not compose_done:
+            compose_result = {'error': f'Compose job timeout after {max_wait}s'}
+            logger.error(f'  Compose job timed out after {max_wait}s')
+
+        compose_duration = time.time() - compose_start
+        logger.info(f'Compose phase complete in {compose_duration:.1f}s')
+
+        # Phase 4: Generate report
         total_duration = time.time() - start_time
-        
-        # Build detailed report
+        output_size_mb = compose_result.get('sizeMB', 0)
+
         report = {
             'district': district_label,
-            'status': 'success',
+            'status': 'success' if not compose_result.get('error') else 'error',
+            'architecture': 'unified',
             'startTime': datetime.fromtimestamp(start_time, timezone.utc).isoformat(),
             'endTime': datetime.fromtimestamp(time.time(), timezone.utc).isoformat(),
             'durationSeconds': round(total_duration, 1),
-            
+
             'phases': {
                 'discovery': {
                     'durationSeconds': round(discovery_duration, 1),
@@ -1427,29 +1497,18 @@ def convert_district_parallel():
                     'totalBatches': len(batches),
                     'successfulBatches': successful_batches,
                     'failedBatches': len(batches) - successful_batches,
+                    'chartsCached': len(charts_already_cached),
+                    'chartsConverted': len(charts_to_convert),
                     'batchDetails': batch_results,
                 },
-                'merge': {
-                    'durationSeconds': round(merge_duration, 1),
-                    'scaleDetails': [
-                        {
-                            'scale': scale,
-                            'chartCount': info.get('chartCount', 0),
-                            'outputPath': f'{district_label}/charts/{scale}.mbtiles',
-                            'sizeMB': info.get('sizeMB', 0),
-                            'error': info.get('error'),
-                            'verified': info.get('error') is None,
-                        }
-                        for scale, info in merge_results.items()
-                    ]
-                },
-                'upload': {
-                    'durationSeconds': round(upload_duration, 1),
-                    'filesUploaded': len(upload_details),
-                    'uploadDetails': upload_details,
+                'compose': {
+                    'durationSeconds': round(compose_duration, 1),
+                    'outputSizeMB': output_size_mb,
+                    'dedupStats': compose_result.get('dedupStats'),
+                    'error': compose_result.get('error'),
                 },
             },
-            
+
             'validation': {
                 'allChartsProcessed': len(completed_charts) == len(chart_ids),
                 'chartVerification': {
@@ -1458,77 +1517,46 @@ def convert_district_parallel():
                     'failed': len(chart_ids) - len(completed_charts),
                     'missingCharts': sorted(list(set(chart_ids) - completed_charts)),
                 },
-                'scalePackVerification': {
-                    scale: {
-                        'exists': info.get('error') is None,
-                        'chartCount': info.get('chartCount', 0),
-                        'expectedChartCount': len(charts_by_scale.get(scale, [])),
-                        'sizeMB': info.get('sizeMB', 0),
-                        'verified': info.get('error') is None,
-                    }
-                    for scale, info in merge_results.items()
-                },
-                'manifestVerification': {
-                    'exists': True,
-                    'packCount': len([p for p in manifest.get('packs', [])]),
-                },
             },
-            
+
             'summary': {
                 'totalCharts': len(chart_ids),
                 'successfulCharts': len(completed_charts),
                 'failedCharts': len(chart_ids) - len(completed_charts),
-                'totalOutputSizeMB': round(sum(info.get('sizeMB', 0) for info in merge_results.values()), 1),
-                'averageChartSizeMB': round(sum(info.get('sizeMB', 0) for info in merge_results.values()) / max(len(completed_charts), 1), 2),
-                'parallelSpeedup': f'{(len(chart_ids) * 2.5 / 60) / (total_duration / 60):.1f}x',
+                'totalOutputSizeMB': round(output_size_mb, 1),
+                'parallelSpeedup': f'{(len(chart_ids) * 2.5 / 60) / max(total_duration / 60, 0.01):.1f}x',
             },
-            
-            'errors': [],
+
+            'errors': [compose_result['error']] if compose_result.get('error') else [],
             'warnings': [],
         }
-        
+
         # Upload report to Storage
         report_path = f'{district_label}/charts/conversion-report.json'
         blob = bucket.blob(report_path)
         blob.upload_from_string(json.dumps(report, indent=2), content_type='application/json')
-        
-        # Update Firestore with final results
+
+        # Update Firestore with final results (compose job writes its own chartData;
+        # we add the conversion report and status here)
         doc_ref = db.collection('districts').document(district_label)
-        doc_ref.set({
-            'chartData': {
-                'lastConverted': firestore.SERVER_TIMESTAMP,
-                'totalCharts': len(completed_charts),
-                'failedCharts': len(chart_ids) - len(completed_charts),
-                'totalSizeMB': report['summary']['totalOutputSizeMB'],
-                'scales': {
-                    scale: {
-                        'chartCount': info.get('chartCount', 0),
-                        'sizeMB': round(info.get('sizeMB', 0), 1),
-                        'storagePath': f'{district_label}/charts/{scale}.mbtiles',
-                        'error': info.get('error'),
-                    }
-                    for scale, info in merge_results.items()
-                },
-                'manifestPath': manifest_storage_path,
-                'conversionDurationSeconds': round(total_duration, 1),
-            },
+        firestore_data = {
             'conversionStatus': {
-                'state': 'complete',
-                'message': f'Parallel conversion complete: {len(completed_charts)} charts',
+                'state': 'complete' if not compose_result.get('error') else 'error',
+                'message': f'Unified conversion complete: {len(completed_charts)} charts, {output_size_mb:.1f} MB'
+                           if not compose_result.get('error') else compose_result['error'],
                 'completedAt': firestore.SERVER_TIMESTAMP,
             },
             'conversionReport': report,
-        }, merge=True)
-        
-        # Clean up temp storage
-        logger.info('Cleaning up temp storage...')
-        temp_prefix = f'{district_label}/charts/temp/'
-        temp_blobs = bucket.list_blobs(prefix=temp_prefix)
-        for blob in temp_blobs:
-            blob.delete()
-        
+        }
+        doc_ref.set(firestore_data, merge=True)
+
+        # NOTE: Do NOT clean up temp storage here — the compose job handles its own
+        # cleanup after tile-join. If the orchestrator times out before the compose
+        # job finishes, cleaning temp would delete .mbtiles files that workers
+        # uploaded and that the compose job still needs to download.
+
         logger.info(f'=== PARALLEL conversion complete for {district_label}: '
-                   f'{len(completed_charts)} charts, {report["summary"]["totalOutputSizeMB"]} MB, '
+                   f'{len(completed_charts)} charts, {output_size_mb:.1f} MB, '
                    f'{total_duration:.1f}s ===')
         
         return jsonify(report), 200
