@@ -2769,7 +2769,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-cblare`}
         id={`${p}-cblare`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={6}
         filter={['all', ['==', ['get', 'OBJL'], 20], scaminFilter]}
         style={{
           fillColor: s52Colors.CBLARE,
@@ -2783,7 +2783,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-pipare`}
         id={`${p}-pipare`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={6}
         filter={['all', ['==', ['get', 'OBJL'], 92], scaminFilter]}
         style={{
           fillColor: s52Colors.PIPARE,
@@ -3394,7 +3394,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-cables-halo`}
         id={`${p}-cables-halo`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={6}
         filter={['all',
           ['any', ['==', ['get', 'OBJL'], 22], ['==', ['get', 'OBJL'], 21]],
           ['==', ['geometry-type'], 'LineString'],
@@ -3413,7 +3413,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-cables`}
         id={`${p}-cables`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={6}
         filter={['all',
           ['any', ['==', ['get', 'OBJL'], 22], ['==', ['get', 'OBJL'], 21]],
           ['==', ['geometry-type'], 'LineString'],
@@ -3433,7 +3433,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-pipsol-halo`}
         id={`${p}-pipsol-halo`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={6}
         filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
@@ -3448,7 +3448,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-pipsol`}
         id={`${p}-pipsol`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={6}
         filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
           lineColor: s52Colors.PIPLN,
@@ -4105,7 +4105,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-cblsub-label`}
         id={`${p}-cblsub-label`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={10}
         filter={['all', ['==', ['get', 'OBJL'], 22], scaminFilter]}
         style={{
           textField: 'Cable',
@@ -4124,7 +4124,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-pipsol-label`}
         id={`${p}-pipsol-label`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={10}
         filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], scaminFilter]}
         style={{
           textField: [
@@ -4237,7 +4237,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-cblare-outline`}
         id={`${p}-cblare-outline`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={6}
         filter={['all', ['==', ['get', 'OBJL'], 20], scaminFilter]}
         style={{
           lineColor: s52Colors.CABLN,
@@ -4253,7 +4253,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-pipare-outline`}
         id={`${p}-pipare-outline`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={6}
         filter={['all', ['==', ['get', 'OBJL'], 92], scaminFilter]}
         style={{
           lineColor: s52Colors.PIPLN,
