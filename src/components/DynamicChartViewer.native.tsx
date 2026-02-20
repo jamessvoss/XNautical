@@ -925,16 +925,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // child VectorSource registration and prevents tiles from loading.
   // Instead, we let MapView use its default style and cover it with a BackgroundLayer.
   const mapBackgroundColor = useMemo(() => {
+    // Background colors are fixed per imagery choice — they must match the
+    // basemap palette (light text on dark bg, dark text on light bg).
+    // Chart *feature* colors (depth areas, land, etc.) change with display mode
+    // via s52Colors tokens; the base background does not.
     const styles: Record<string, string> = {
-      satellite: s52Colors.DEPDW,
-      light: s52Colors.DEPDW,
-      dark: s52Colors.DEPDW,
+      satellite: '#0A0A10',
+      light: '#f5f5f5',
+      dark: '#1a1a2e',
       street: '#f0ede8',
       ocean: '#1a3a5c',
       terrain: '#dfe6e9',
     };
-    return styles[mapStyle] || s52Colors.DEPDW;
-  }, [mapStyle, s52Colors]);
+    return styles[mapStyle] || '#1a1a2e';
+  }, [mapStyle]);
 
   // Memoize composite tile URL to prevent constant VectorSource re-renders
   const compositeTileUrl = useMemo(() => {
