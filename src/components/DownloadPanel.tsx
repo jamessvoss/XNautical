@@ -601,6 +601,16 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       // Regenerate manifest once for all downloaded chart packs
       await chartPackService.generateManifest();
 
+      // Fetch pre-computed sector lights for reliable arc rendering
+      try {
+        const slCount = await chartPackService.fetchSectorLights(firestoreId);
+        if (slCount > 0) {
+          console.log(`[DownloadPanel] Fetched ${slCount} sector lights for ${firestoreId}`);
+        }
+      } catch (slErr) {
+        console.warn('[DownloadPanel] Sector lights fetch failed (non-critical):', slErr);
+      }
+
       // Refresh installed state
       const installed = await chartPackService.getInstalledPackIds(firestoreId);
       setInstalledPackIds(installed);

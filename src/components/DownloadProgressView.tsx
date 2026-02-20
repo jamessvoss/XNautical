@@ -519,6 +519,16 @@ export default function DownloadProgressView({
         // Regenerate manifest once for all downloaded chart packs
         await chartPackService.generateManifest();
 
+        // Fetch pre-computed sector lights for reliable arc rendering
+        try {
+          const slCount = await chartPackService.fetchSectorLights(firestoreId);
+          if (slCount > 0) {
+            console.log(`[DownloadProgressView] Fetched ${slCount} sector lights for ${firestoreId}`);
+          }
+        } catch (slErr) {
+          console.warn('[DownloadProgressView] Sector lights fetch failed (non-critical):', slErr);
+        }
+
         await registerDistrict();
 
         addConsoleEntry('__done__', 'All downloads complete!', 'complete');
