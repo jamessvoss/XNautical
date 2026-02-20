@@ -208,14 +208,9 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str):
     # Convert each layer and merge
     all_features = []
 
-    # Navigation aids that should be visible at all zoom levels
-    NAVIGATION_AIDS = {
-        'LIGHTS', 'BOYLAT', 'BOYCAR', 'BOYSAW', 'BOYSPP', 'BOYISD',
-        'BCNLAT', 'BCNSPP', 'BCNCAR', 'BCNISD', 'BCNSAW',
-        'WRECKS', 'UWTROC', 'OBSTRN',  # Hazards also important
-    }
-
-    # Safety areas that should be visible at all zoom levels for route planning
+    # Safety areas — track presence for chart metadata (no longer forced to
+    # all zooms; features use their chart's native scale range and SCAMIN
+    # controls visibility at render time)
     SAFETY_AREAS = {
         'RESARE',  # Restricted areas (no-go zones, nature reserves)
         'CTNARE',  # Caution areas
@@ -279,9 +274,7 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str):
             if layer_name in S57_OBJL:
                 feature['properties']['OBJL'] = S57_OBJL[layer_name]
 
-            # Force navigation aids and safety areas to appear at all zoom levels
-            if layer_name in NAVIGATION_AIDS or layer_name in SAFETY_AREAS:
-                feature['tippecanoe'] = {'minzoom': 0, 'maxzoom': 15, 'layer': 'charts'}
+            # Track safety areas for chart metadata (but don't force zoom range)
             if layer_name in SAFETY_AREAS:
                 has_safety_areas = True
 

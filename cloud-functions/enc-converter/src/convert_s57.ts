@@ -25,17 +25,8 @@ import { getObjectClassName } from './s52/objectCatalogue';
 // These codes match the actual binary OBJL values in S-57 .000 files,
 // verified empirically against GDAL output from 50+ NOAA charts.
 
-// Navigation aids — always visible at all zoom levels
-const NAVIGATION_AID_OBJLS = new Set([
-  75,                     // LIGHTS
-  17, 14, 18, 19, 16,    // BOY* (BOYLAT, BOYCAR, BOYSAW, BOYSPP, BOYISD)
-  7, 9, 5, 6, 8,         // BCN* (BCNLAT, BCNSPP, BCNCAR, BCNISD, BCNSAW)
-  159,                    // WRECKS
-  153,                    // UWTROC
-  86,                     // OBSTRN
-]);
-
-// Safety areas — always visible for route planning
+// Safety areas — track presence for chart metadata (no longer forced to all zooms;
+// features use their chart's native scale range and SCAMIN controls visibility)
 const SAFETY_AREA_OBJLS = new Set([
   112,  // RESARE
   27,   // CTNARE
@@ -173,14 +164,12 @@ function main(): void {
       }
     }
 
-    const isNavAid = NAVIGATION_AID_OBJLS.has(objl);
     const isSafetyArea = SAFETY_AREA_OBJLS.has(objl);
     if (isSafetyArea) hasSafetyAreas = true;
 
-    // Tippecanoe hints: nav aids and safety areas visible at all zooms
-    const tipp = (isNavAid || isSafetyArea)
-      ? { minzoom: 0, maxzoom: 15 }
-      : undefined;
+    // No forced tippecanoe zoom override — features use their chart's native
+    // scale range (assigned by compose_job) and SCAMIN controls visibility.
+    const tipp: { minzoom: number; maxzoom: number } | undefined = undefined;
 
     // ── LIGHTS: calculate orientation (arcs generated client-side per S-52) ──
     if (objl === LIGHTS_OBJL) {
