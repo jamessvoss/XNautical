@@ -2,58 +2,44 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Chart metadata - readable by all authenticated users
-    match /chart-metadata/{chartId} {
-      allow read: if request.auth != null;
-      allow write: if false; // Only admin/server can write
-    }
-    
-    // Chart regions - readable by all authenticated users
-    match /chart-regions/{regionId} {
-      allow read: if request.auth != null;
-      allow write: if false; // Only admin/server can write
-    }
-    
-    // Chart versions - readable by all authenticated users
-    match /chart-versions/{versionId} {
-      allow read: if request.auth != null;
-      allow write: if false; // Only admin/server can write
-    }
-    
-    // Chart update log - readable by all authenticated users
-    match /chart-update-log/{logId} {
-      allow read: if request.auth != null;
-      allow write: if false; // Only admin/server can write
-    }
-    
     // Verification codes - only accessible by Cloud Functions (admin)
     match /verificationCodes/{phoneId} {
       allow read, write: if false; // Only admin SDK can access
     }
     
-    // User data - users can read/write their own data
+    // Helper function: check if user has admin custom claim
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    // User data - users can read/write their own data, admins can read all
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isAdmin();
     }
-    
+
     // User's downloaded charts tracking
     match /users/{userId}/downloads/{downloadId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isAdmin();
     }
-    
+
     // User's waypoints - markers, fishing spots, etc.
     match /users/{userId}/waypoints/{waypointId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isAdmin();
     }
-    
+
     // User's routes - navigation routes
     match /users/{userId}/routes/{routeId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isAdmin();
     }
-    
+
     // User's boats - boat performance tracking
     match /users/{userId}/boats/{boatId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if isAdmin();
     }
     
     // Tidal stations - read-only for all users (authenticated or not)
@@ -68,78 +54,22 @@ service cloud.firestore {
       allow write: if false; // Only admin/Cloud Functions can write
     }
     
-    // Marine weather zones (LEGACY - flat collection, deprecated)
-    // Use marine-forecast-districts instead
+    // Marine weather zones (LEGACY - flat collection, use districts subcollection instead)
     match /marine-zones/{zoneId} {
       allow read: if true; // Public read access
       allow write: if false; // Only admin/Cloud Functions can write
     }
     
-    // Marine forecasts (LEGACY - flat collection, deprecated)
-    // Use marine-forecast-districts instead
+    // Marine forecasts (LEGACY - flat collection, use districts subcollection instead)
     match /marine-forecasts/{zoneId} {
       allow read: if true; // Public read access
       allow write: if false; // Only admin/Cloud Functions can write
-    }
-    
-    // Marine forecast districts (LEGACY - deprecated, use districts instead)
-    match /marine-forecast-districts/{districtId} {
-      allow read: if true; // Public read access for district info
-      allow write: if false; // Only admin/Cloud Functions can write
-      
-      // Marine zones within districts
-      match /marine-zones/{zoneId} {
-        allow read: if true; // Public read access
-        allow write: if false; // Only admin/Cloud Functions can write
-      }
-      
-      // Marine forecasts within districts
-      match /marine-forecasts/{zoneId} {
-        allow read: if true; // Public read access
-        allow write: if false; // Only admin/Cloud Functions can write
-      }
-      
-      // System metadata within districts
-      match /system/{docId} {
-        allow read: if true; // Public read access for metadata
-        allow write: if false; // Only admin/Cloud Functions can write
-      }
     }
     
     // Live buoy data (LEGACY - flat collection, deprecated, use districts instead)
     match /buoys/{buoyId} {
       allow read: if true; // Public read access
       allow write: if false; // Only admin/Cloud Functions can write
-    }
-    
-    // Regions collection (LEGACY - deprecated, use districts instead)
-    match /regions/{regionId} {
-      allow read: if true; // Public read access for region info
-      allow write: if false; // Only admin/Cloud Functions can write
-      
-      // Tidal stations within regions
-      match /tidal-stations/{stationId} {
-        allow read: if true; // Public read access
-        allow write: if false; // Only admin/Cloud Functions can write
-      }
-      
-      // Current stations within regions
-      match /current-stations/{stationId} {
-        allow read: if true; // Public read access
-        allow write: if false; // Only admin/Cloud Functions can write
-        
-        // Predictions subcollection
-        match /predictions/{month} {
-          allow read: if true; // Public read access
-          allow write: if false; // Only admin/Cloud Functions can write
-        }
-      }
-      
-      // Buoys within regions
-      match /buoys/{buoyId} {
-        allow read: if true; // Public read access
-        allow write: if false; // Only admin/Cloud Functions can write
-      }
     }
     
     // Districts - unified collection for all district-scoped data

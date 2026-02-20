@@ -1,5 +1,17 @@
 {
   "projects": {
     "default": "xnautical-8a296"
+  },
+  "targets": {
+    "xnautical-8a296": {
+      "hosting": {
+        "website": [
+          "xnautical-8a296"
+        ],
+        "admin": [
+          "xnautical-admin"
+        ]
+      }
+    }
   }
 }

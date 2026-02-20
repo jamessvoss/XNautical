@@ -270,67 +270,121 @@ def convert_to_mbtiles(geojson_path: str, mbtiles_path: str, name: str = 'gnis_n
     return True
 
 
+def convert_to_mbtiles_national(geojson_path: str, mbtiles_path: str, name: str = 'gnis_names'):
+    """
+    Convert GeoJSON to MBTiles using tippecanoe with settings optimized for
+    a large national dataset. Uses density-based feature dropping at lower
+    zoom levels to keep file size manageable for mobile download.
+    """
+    cmd = [
+        'tippecanoe',
+        '-o', mbtiles_path,
+        '--name', name,
+        '--layer', 'gnis_names',
+        '--minimum-zoom', '6',
+        '--maximum-zoom', '12',
+        # Drop dense features to keep tile sizes reasonable for mobile
+        '--drop-densest-as-needed',
+        # Sort by priority for rendering order (lower = more important)
+        '--order-by', 'PRIORITY',
+        # Buffer for text labels extending beyond tile boundaries
+        '--buffer', '64',
+        # Force overwrite
+        '--force',
+        geojson_path
+    ]
+
+    print(f"Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"Error running tippecanoe: {result.stderr}", file=sys.stderr)
+        raise RuntimeError("tippecanoe failed")
+
+    print(result.stdout)
+    if result.stderr:
+        # tippecanoe prints progress info to stderr
+        for line in result.stderr.strip().split('\n')[-5:]:
+            print(f"  {line}")
+    return True
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python convert_gnis_names.py <input_file> [output_dir]")
         print("Example: python convert_gnis_names.py 'charts/US Domestic Names/Alaska/DomesticNames_AK.txt'")
         print("\nIf output_dir is not specified, outputs to the same directory as input file.")
         sys.exit(1)
-    
+
     input_file = sys.argv[1]
     # Default output_dir to the same directory as the input file
     output_dir = sys.argv[2] if len(sys.argv) >= 3 else str(Path(input_file).parent)
-    
+
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # Derive output filenames from input
     input_path = Path(input_file)
     state_name = input_path.stem.replace('DomesticNames_', '').lower()
-    
+    is_national = 'national' in state_name.lower()
+
     geojson_path = os.path.join(output_dir, f'gnis_names_{state_name}.geojson')
     mbtiles_path = os.path.join(output_dir, f'gnis_names_{state_name}.mbtiles')
-    
+
     print(f"Input: {input_file}")
     print(f"Output GeoJSON: {geojson_path}")
     print(f"Output MBTiles: {mbtiles_path}")
+    if is_national:
+        print("Mode: NATIONAL (filtering to nautical categories)")
     print()
-    
+
     # Parse GNIS file
     print("Parsing GNIS file...")
     features = parse_gnis_file(input_file)
     print(f"Parsed {len(features)} features")
-    
+
     # Count by category
     category_counts = {}
     for f in features:
         cat = f['category']
         category_counts[cat] = category_counts.get(cat, 0) + 1
-    
+
     print("\nFeatures by category:")
     for cat, count in sorted(category_counts.items(), key=lambda x: -x[1]):
         print(f"  {cat}: {count}")
-    
+
+    # For national files, filter to nautically relevant categories only
+    # to keep MBTiles file size manageable for mobile download
+    if is_national:
+        nautical_categories = {'water', 'coastal', 'populated', 'landmark'}
+        original_count = len(features)
+        features = [f for f in features if f['category'] in nautical_categories]
+        print(f"\nFiltered to nautical categories ({', '.join(sorted(nautical_categories))}):")
+        print(f"  {original_count} -> {len(features)} features")
+
     # Create GeoJSON
     print("\nCreating GeoJSON...")
     geojson = create_geojson(features)
-    
+
     with open(geojson_path, 'w', encoding='utf-8') as f:
         json.dump(geojson, f)
-    
+
     file_size_mb = os.path.getsize(geojson_path) / (1024 * 1024)
     print(f"Wrote {geojson_path} ({file_size_mb:.2f} MB)")
-    
+
     # Convert to MBTiles
     print("\nConverting to MBTiles...")
     try:
-        convert_to_mbtiles(geojson_path, mbtiles_path, f'gnis_{state_name}')
+        if is_national:
+            convert_to_mbtiles_national(geojson_path, mbtiles_path, f'gnis_{state_name}')
+        else:
+            convert_to_mbtiles(geojson_path, mbtiles_path, f'gnis_{state_name}')
         mbtiles_size_mb = os.path.getsize(mbtiles_path) / (1024 * 1024)
         print(f"Wrote {mbtiles_path} ({mbtiles_size_mb:.2f} MB)")
     except Exception as e:
         print(f"Warning: MBTiles conversion failed: {e}")
         print("GeoJSON file was created successfully. You can convert manually with tippecanoe.")
-    
+
     print("\nDone!")
 
 

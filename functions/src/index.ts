@@ -4050,7 +4050,7 @@ async function saveMarineForecastsForDistrict(districtId: string, forecasts: Rec
         zoneName: forecast.zoneName || zoneId,
         advisory: forecast.advisory || '',
         synopsis: forecast.synopsis || '',
-        forecast: forecast.periods,
+        periods: forecast.periods,
         nwsUpdated: forecast.updated,
         districtId: districtId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()

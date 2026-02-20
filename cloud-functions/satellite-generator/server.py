@@ -72,7 +72,7 @@ TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/M
 
 # Download settings
 MAX_CONCURRENT = 30
-REQUEST_DELAY = 0.01  # ESRI CDN handles high concurrency
+REQUEST_DELAY = 0.05  # 50ms delay to reduce load on ESRI CDN
 REQUEST_TIMEOUT = 30  # seconds per tile
 
 # Natural Earth land data (bundled in Docker image)
@@ -80,6 +80,17 @@ LAND_SHAPEFILE = Path('/app/data/ne_10m_land/ne_10m_land.shp')
 
 # Default coastal buffer in nautical miles
 DEFAULT_BUFFER_NM = 25
+
+# App-side filename prefixes per district (must match app's DISTRICT_PREFIXES)
+DISTRICT_PREFIXES = {
+    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
+    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
+    '17cgd': 'd17',
+}
+
+def get_district_prefix(region_id: str) -> str:
+    """Get the app-side filename prefix for a district."""
+    return DISTRICT_PREFIXES.get(region_id, region_id.replace('cgd', ''))
 
 # Zoom level threshold: below this, download full bounding box
 # (tile counts are trivially small at low zoom levels)
@@ -601,13 +612,15 @@ def generate_satellite():
                 'maxZoom': max_zoom,
             }
 
-            # Zip and upload for app download
-            zip_filename = filename + '.zip'
+            # Zip and upload for app download (prefixed for multi-region support)
+            district_prefix = get_district_prefix(region_id)
+            zip_internal_name = f'{district_prefix}_{filename}'
+            zip_filename = zip_internal_name + '.zip'
             zip_path = Path(work_dir) / zip_filename
-            logger.info(f'  Zipping {filename}...')
+            logger.info(f'  Zipping {filename} (internal: {zip_internal_name})...')
 
             with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.write(str(db_path), filename)
+                zf.write(str(db_path), zip_internal_name)
 
             zip_size_mb = zip_path.stat().st_size / 1024 / 1024
             zip_storage_path = f'{region_id}/satellite/{zip_filename}'
@@ -721,10 +734,12 @@ def package_satellite():
             logger.info(f'  Downloading {blob.name} ({blob.size / 1024 / 1024:.1f} MB)...')
             blob.download_to_filename(str(local_path))
 
-            zip_filename = filename + '.zip'
+            district_prefix = get_district_prefix(region_id)
+            zip_internal_name = f'{district_prefix}_{filename}'
+            zip_filename = zip_internal_name + '.zip'
             zip_path = Path(work_dir) / zip_filename
             with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.write(str(local_path), filename)
+                zf.write(str(local_path), zip_internal_name)
 
             zip_size = zip_path.stat().st_size / 1024 / 1024
             zip_storage_path = f'{region_id}/satellite/{zip_filename}'

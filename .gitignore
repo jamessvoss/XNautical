@@ -109,3 +109,6 @@ debug_overview_*.mbtiles
 device_*.png
 screenshot_*.png
 tmp-icon-picker.html
+
+# Admin dashboard (separate repo)
+webAdmin-Xnautical/

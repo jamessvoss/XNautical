@@ -51,6 +51,24 @@ logger = logging.getLogger(__name__)
 BUCKET_NAME = os.environ.get('BUCKET_NAME', 'xnautical-8a296.firebasestorage.app')
 PROJECT_ID = os.environ.get('GCP_PROJECT', 'xnautical-8a296')
 
+# Must match app's DISTRICT_PREFIXES
+DISTRICT_PREFIXES = {
+    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
+    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
+    '17cgd': 'd17',
+}
+
+# Must match app's BASEMAP_FILENAMES
+BASEMAP_FILENAMES = {
+    '01cgd': 'd01_basemap', '05cgd': 'd05_basemap', '07cgd': 'd07_basemap',
+    '08cgd': 'd08_basemap', '09cgd': 'd09_basemap', '11cgd': 'd11_basemap',
+    '13cgd': 'd13_basemap', '14cgd': 'd14_basemap', '17cgd': 'd17_basemap',
+}
+
+
+def get_district_prefix(district_id: str) -> str:
+    return DISTRICT_PREFIXES.get(district_id, district_id.replace('cgd', ''))
+
 
 def get_file_size(bucket, storage_path):
     """Get size of a file in Firebase Storage"""
@@ -139,29 +157,30 @@ def generate_metadata():
         download_packs = []
         total_size = 0
         
-        # Chart packs (US1-US6)
-        chart_scales = ['US1', 'US2', 'US3', 'US4', 'US5', 'US6']
-        for scale in chart_scales:
-            storage_path = f'{district_id}/charts/{scale}.mbtiles.zip'
-            size = get_file_size(bucket, storage_path)
-            
-            if size > 0:
-                download_packs.append({
-                    'id': f'charts-{scale}',
-                    'type': 'charts',
-                    'band': scale,
-                    'name': f'{get_scale_name(scale)} ({scale})',
-                    'description': get_scale_description(scale),
-                    'storagePath': storage_path,
-                    'sizeBytes': size,
-                    'sizeMB': round(size / 1024 / 1024, 1),
-                    'required': scale in ['US4', 'US5'],  # Approach and Harbor charts are required
-                })
-                total_size += size
+        # Unified chart pack (single file with all scales, deduplicated)
+        prefix = get_district_prefix(district_id)
+        charts_path = f'{district_id}/charts/{prefix}_charts.mbtiles.zip'
+        charts_size = get_file_size(bucket, charts_path)
+        if charts_size > 0:
+            download_packs.append({
+                'id': 'charts',
+                'type': 'charts',
+                'name': 'Navigation Charts',
+                'description': 'All chart scales (Overview through Berthing)',
+                'storagePath': charts_path,
+                'sizeBytes': charts_size,
+                'sizeMB': round(charts_size / 1024 / 1024, 1),
+                'required': True,
+            })
+            total_size += charts_size
         
-        # GNIS place names
+        # GNIS place names — check per-district first, then fall back to global
         gnis_path = f'{district_id}/gnis/gnis_names.mbtiles.zip'
         gnis_size = get_file_size(bucket, gnis_path)
+        if gnis_size == 0:
+            # Fall back to a global/shared GNIS file
+            gnis_path = 'global/gnis/gnis_names.mbtiles.zip'
+            gnis_size = get_file_size(bucket, gnis_path)
         if gnis_size > 0:
             download_packs.append({
                 'id': 'gnis',
@@ -176,7 +195,8 @@ def generate_metadata():
             total_size += gnis_size
         
         # Basemap
-        basemap_path = f'{district_id}/basemaps/basemap.mbtiles.zip'
+        basemap_name = BASEMAP_FILENAMES.get(district_id, 'basemap')
+        basemap_path = f'{district_id}/basemaps/{basemap_name}.mbtiles.zip'
         basemap_size = get_file_size(bucket, basemap_path)
         if basemap_size > 0:
             download_packs.append({
@@ -192,7 +212,7 @@ def generate_metadata():
             total_size += basemap_size
         
         # Ocean basemap
-        ocean_path = f'{district_id}/ocean/ocean.mbtiles.zip'
+        ocean_path = f'{district_id}/ocean/{prefix}_ocean.mbtiles.zip'
         ocean_size = get_file_size(bucket, ocean_path)
         if ocean_size > 0:
             download_packs.append({
@@ -208,7 +228,7 @@ def generate_metadata():
             total_size += ocean_size
         
         # Terrain map
-        terrain_path = f'{district_id}/terrain/terrain.mbtiles.zip'
+        terrain_path = f'{district_id}/terrain/{prefix}_terrain.mbtiles.zip'
         terrain_size = get_file_size(bucket, terrain_path)
         if terrain_size > 0:
             download_packs.append({
@@ -224,7 +244,7 @@ def generate_metadata():
             total_size += terrain_size
         
         # Satellite imagery (check for single file or zoom-level files)
-        satellite_path = f'{district_id}/satellite/satellite.mbtiles.zip'
+        satellite_path = f'{district_id}/satellite/{prefix}_satellite.mbtiles.zip'
         satellite_size = get_file_size(bucket, satellite_path)
         
         if satellite_size > 0:
@@ -255,7 +275,7 @@ def generate_metadata():
             ]
             
             for zoom_id, zoom_name, zoom_desc in zoom_levels:
-                sat_path = f'{district_id}/satellite/satellite_{zoom_id}.mbtiles.zip'
+                sat_path = f'{district_id}/satellite/{prefix}_satellite_{zoom_id}.mbtiles.zip'
                 sat_size = get_file_size(bucket, sat_path)
                 if sat_size > 0:
                     download_packs.append({

@@ -30,7 +30,7 @@ OSM_URL="https://download.geofabrik.de/north-america/us/alaska-latest.osm.pbf"
 OSM_FILE="alaska-latest.osm.pbf"
 
 # Output file
-OUTPUT_FILE="basemap_alaska.mbtiles"
+OUTPUT_FILE="d17_basemap.mbtiles"
 
 # Colors
 RED='\033[0;31m'

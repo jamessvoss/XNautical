@@ -27,6 +27,7 @@ const https = require('https');
 const http = require('http');
 const path = require('path');
 const { XMLParser } = require('fast-xml-parser');
+const { DISTRICTS, ensureDistrictExists, isWithinDistrict } = require('./lib/district-config');
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -55,27 +56,12 @@ try {
 const db = admin.firestore();
 
 // ============================================================================
-// Region Bounds (from regionData.ts)
-// ============================================================================
-
-const REGION_BOUNDS = {
-  '17cgd': { name: 'Arctic', mapBounds: [-180, 48, -130, 72] },
-  '14cgd': { name: 'Oceania', mapBounds: [-162, 17, -153, 23] },
-  '13cgd': { name: 'Northwest', mapBounds: [-128, 34, -120, 49] },
-  '11cgd': { name: 'Southwest', mapBounds: [-125, 30, -115, 38] },
-  '08cgd': { name: 'Heartland', mapBounds: [-98, 24, -82, 32] },
-  '09cgd': { name: 'Great Lakes', mapBounds: [-93, 41, -76, 49] },
-  '01cgd': { name: 'Northeast', mapBounds: [-74, 40, -66, 48] },
-  '05cgd': { name: 'East', mapBounds: [-80, 33, -73, 41] },
-  '07cgd': { name: 'Southeast', mapBounds: [-84, 24, -64, 34] },
-};
-
-// ============================================================================
 // Utilities
 // ============================================================================
 
 /**
  * Check if coordinates fall within a bounding box
+ * Note: This is deprecated - use isWithinDistrict() from district-config.js instead
  */
 function isWithinBounds(lat, lng, bounds) {
   const [west, south, east, north] = bounds;
@@ -96,8 +82,8 @@ function isWithinBounds(lat, lng, bounds) {
  * Find which district a buoy belongs to
  */
 function assignDistrict(lat, lng) {
-  for (const [districtId, config] of Object.entries(REGION_BOUNDS)) {
-    if (isWithinBounds(lat, lng, config.mapBounds)) {
+  for (const districtId of Object.keys(DISTRICTS)) {
+    if (isWithinDistrict(lat, lng, districtId)) {
       return districtId;
     }
   }
@@ -232,7 +218,8 @@ async function main() {
   // Summary
   console.log(`   Assigned ${filteredCount} buoys to ${Object.keys(byDistrict).length} districts:`);
   for (const [districtId, districtStations] of Object.entries(byDistrict)) {
-    const regionName = REGION_BOUNDS[districtId]?.name || districtId;
+    const districtConfig = DISTRICTS[districtId];
+    const regionName = districtConfig?.name || districtId;
     console.log(`     ${districtId} (${regionName}): ${districtStations.length} buoys`);
   }
 
@@ -278,10 +265,12 @@ async function main() {
   for (const [districtId, districtStations] of Object.entries(byDistrict)) {
     console.log(`📦 Processing ${districtId} (${districtStations.length} buoys)...`);
     
-    // Check that district document exists
-    const districtDoc = await db.collection('districts').doc(districtId).get();
-    if (!districtDoc.exists) {
-      console.log(`   ⚠️  District document not found, skipping`);
+    // Ensure district document exists with complete metadata
+    try {
+      await ensureDistrictExists(db, districtId);
+    } catch (error) {
+      console.error(`   ✗ Error ensuring district exists: ${error.message}`);
+      totalErrors++;
       continue;
     }
 

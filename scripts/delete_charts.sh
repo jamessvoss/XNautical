@@ -201,9 +201,9 @@ done
 
 # Scan basemap
 if [ "$DELETE_BASEMAP" = true ]; then
-    basemap_exists=$(adb shell "[ -f '$DEVICE_DIR/basemap_alaska.mbtiles' ] && echo 'yes' || echo 'no'" | tr -d '\r')
+    basemap_exists=$(adb shell "[ -f '$DEVICE_DIR/d17_basemap.mbtiles' ] && echo 'yes' || echo 'no'" | tr -d '\r')
     if [ "$basemap_exists" = "yes" ]; then
-        basemap_size=$(adb shell "ls -l '$DEVICE_DIR/basemap_alaska.mbtiles'" | awk '{print $5}' | tr -d '\r')
+        basemap_size=$(adb shell "ls -l '$DEVICE_DIR/d17_basemap.mbtiles'" | awk '{print $5}' | tr -d '\r')
         [ -z "$basemap_size" ] && basemap_size=0
         TOTAL_FILES=$((TOTAL_FILES + 1))
         TOTAL_SIZE=$((TOTAL_SIZE + basemap_size))
@@ -275,10 +275,10 @@ done
 
 # Delete basemap
 if [ "$DELETE_BASEMAP" = true ]; then
-    basemap_exists=$(adb shell "[ -f '$DEVICE_DIR/basemap_alaska.mbtiles' ] && echo 'yes' || echo 'no'" | tr -d '\r')
+    basemap_exists=$(adb shell "[ -f '$DEVICE_DIR/d17_basemap.mbtiles' ] && echo 'yes' || echo 'no'" | tr -d '\r')
     if [ "$basemap_exists" = "yes" ]; then
         echo -n "  Deleting basemap... "
-        adb shell "rm '$DEVICE_DIR/basemap_alaska.mbtiles'" 2>/dev/null
+        adb shell "rm '$DEVICE_DIR/d17_basemap.mbtiles'" 2>/dev/null
         echo "${GREEN}✓${NC}"
         DELETED_FILES=$((DELETED_FILES + 1))
     fi

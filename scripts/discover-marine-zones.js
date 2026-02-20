@@ -26,26 +26,11 @@ const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
 const shapefile = require('shapefile');
+const { DISTRICTS, ensureDistrictExists, getAllDistrictIds } = require('./lib/district-config');
 
 // NOAA Marine Zone Shapefile URLs (March 2026 versions)
 const COASTAL_ZONES_URL = 'https://www.weather.gov/source/gis/Shapefiles/WSOM/mz03mr26.zip';
 const OFFSHORE_ZONES_URL = 'https://www.weather.gov/source/gis/Shapefiles/WSOM/oz03mr26.zip';
-
-// USCG Coast Guard District bounds (from regionData.ts)
-const DISTRICT_BOUNDS = {
-  '01cgd': { name: 'Northeast', bounds: [{ west: -76, south: 39, east: -65, north: 48 }] },
-  '05cgd': { name: 'East', bounds: [{ west: -82, south: 32, east: -72, north: 42 }] },
-  '07cgd': { name: 'Southeast', bounds: [{ west: -85, south: 23, east: -63, north: 35 }] },
-  '08cgd': { name: 'Heartland', bounds: [{ west: -100, south: 23, east: -80, north: 33 }] },
-  '09cgd': { name: 'Great Lakes', bounds: [{ west: -94, south: 40, east: -75, north: 50 }] },
-  '11cgd': { name: 'Southwest', bounds: [{ west: -126, south: 30, east: -114, north: 39 }] },
-  '13cgd': { name: 'Northwest', bounds: [{ west: -130, south: 33, east: -119, north: 50 }] },
-  '14cgd': { name: 'Oceania', bounds: [{ west: -162, south: 17, east: -153, north: 24 }] },
-  '17cgd': { name: 'Arctic', bounds: [
-    { west: -180, south: 50, east: -129, north: 72 },
-    { west: 170, south: 50, east: 180, north: 65 }
-  ]},
-};
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -142,13 +127,27 @@ function extractShapefile(zipPath, extractDir) {
 
 /**
  * Check if a point is within any of the district's bounds
+ * Note: This maintains array-based bounds checking for Alaska's multiple regions
  */
 function isPointInDistrict(lon, lat, district) {
-  const bounds = DISTRICT_BOUNDS[district].bounds;
+  const config = DISTRICTS[district];
+  if (!config) return false;
   
-  for (const b of bounds) {
-    if (lon >= b.west && lon <= b.east && lat >= b.south && lat <= b.north) {
-      return true;
+  const bounds = config.bounds;
+  
+  // Simple single-region bounds check
+  if (bounds.west !== undefined) {
+    return lon >= bounds.west && lon <= bounds.east && 
+           lat >= bounds.south && lat <= bounds.north;
+  }
+  
+  // Multi-region bounds (legacy for Alaska if needed)
+  // This path shouldn't be hit with current shared config
+  if (Array.isArray(bounds)) {
+    for (const b of bounds) {
+      if (lon >= b.west && lon <= b.east && lat >= b.south && lat <= b.north) {
+        return true;
+      }
     }
   }
   
@@ -218,6 +217,15 @@ async function uploadZonesToFirestore(zones, targetDistricts) {
   
   for (const zone of zones) {
     for (const districtId of zone.districts) {
+      // Ensure district exists with complete metadata before writing zones
+      try {
+        await ensureDistrictExists(db, districtId, { silent: true });
+      } catch (error) {
+        console.error(`   ✗ Error ensuring district ${districtId} exists: ${error.message}`);
+        stats[districtId].errors++;
+        continue;
+      }
+      
       const docRef = db.collection('districts').doc(districtId)
         .collection('marine-zones').doc(zone.id);
       
@@ -269,7 +277,7 @@ async function main() {
   
   // Determine target districts
   const targetDistricts = ALL_DISTRICTS 
-    ? Object.keys(DISTRICT_BOUNDS)
+    ? getAllDistrictIds()
     : [TARGET_DISTRICT];
   
   console.log(`\n📍 Target districts: ${targetDistricts.join(', ')}`);
@@ -318,7 +326,8 @@ async function main() {
     for (const districtId of targetDistricts) {
       const count = allZones.filter(z => z.districts.includes(districtId)).length;
       districtCounts[districtId] = count;
-      console.log(`    ${districtId} (${DISTRICT_BOUNDS[districtId].name}): ${count} zones`);
+      const districtConfig = DISTRICTS[districtId];
+      console.log(`    ${districtId} (${districtConfig.name}): ${count} zones`);
     }
     
     // Upload to Firestore

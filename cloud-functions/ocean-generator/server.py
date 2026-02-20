@@ -68,7 +68,7 @@ TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Oce
 
 # Download settings
 MAX_CONCURRENT = 30
-REQUEST_DELAY = 0.01  # ESRI CDN handles high concurrency
+REQUEST_DELAY = 0.05  # 50ms delay to reduce load on ESRI CDN
 REQUEST_TIMEOUT = 30  # seconds per tile
 
 # Natural Earth land data (bundled in Docker image)
@@ -80,6 +80,17 @@ DEFAULT_BUFFER_NM = 25
 # Zoom level threshold: below this, download full bounding box
 # (tile counts are trivially small at low zoom levels)
 COASTAL_BUFFER_MIN_ZOOM = 6
+
+# App-side filename prefixes per district (must match app's DISTRICT_PREFIXES)
+DISTRICT_PREFIXES = {
+    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
+    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
+    '17cgd': 'd17',
+}
+
+def get_district_prefix(region_id: str) -> str:
+    """Get the app-side filename prefix for a district."""
+    return DISTRICT_PREFIXES.get(region_id, region_id.replace('cgd', ''))
 
 # Region bounds definitions [west, south, east, north]
 REGION_BOUNDS = {
@@ -548,17 +559,19 @@ def _combine_and_zip(bucket, region_id, layer_name, region_bounds, db, work_dir,
             'message': f'Zipping combined {layer_name} ({combined_size:.0f} MB)...',
         })
 
+        district_prefix = get_district_prefix(region_id)
+        zip_internal_name = f'{district_prefix}_{layer_name}.mbtiles'
         zip_path = Path(pkg_dir) / f'{layer_name}.mbtiles.zip'
         with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.write(str(combined_path), f'{layer_name}.mbtiles')
+            zf.write(str(combined_path), zip_internal_name)
 
         # Delete combined to free memory before upload
         combined_path.unlink()
 
         zip_size = zip_path.stat().st_size / 1024 / 1024
-        logger.info(f'  Compressed: {combined_size:.1f} MB → {zip_size:.1f} MB')
+        logger.info(f'  Compressed: {combined_size:.1f} MB → {zip_size:.1f} MB (internal: {zip_internal_name})')
 
-        zip_storage_path = f'{region_id}/{layer_name}/{layer_name}.mbtiles.zip'
+        zip_storage_path = f'{region_id}/{layer_name}/{zip_internal_name}.zip'
         logger.info(f'  Uploading to {zip_storage_path}...')
         update_status(db, region_id, {
             'state': 'uploading',

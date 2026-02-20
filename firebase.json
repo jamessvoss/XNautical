@@ -1,34 +1,64 @@
 {
-  "hosting": {
-    "public": "website",
-    "ignore": [
-      "firebase-debug.log",
-      "firebase-debug.*.log",
-      ".*",
-      "node_modules/**"
-    ],
-    "headers": [
-      {
-        "source": "**/*.@(jpg|jpeg|gif|png|svg|webp|ico)",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "max-age=604800"
-          }
-        ]
-      },
-      {
-        "source": "**/*.@(css|js)",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "max-age=86400"
-          }
-        ]
-      }
-    ],
-    "cleanUrls": true
-  },
+  "hosting": [
+    {
+      "target": "website",
+      "public": "website",
+      "ignore": [
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        ".*",
+        "node_modules/**"
+      ],
+      "headers": [
+        {
+          "source": "**/*.@(jpg|jpeg|gif|png|svg|webp|ico)",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "max-age=604800"
+            }
+          ]
+        },
+        {
+          "source": "**/*.@(css|js)",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "max-age=86400"
+            }
+          ]
+        }
+      ],
+      "cleanUrls": true
+    },
+    {
+      "target": "admin",
+      "public": "webAdmin-Xnautical/dist",
+      "ignore": [
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        ".*",
+        "node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "**",
+          "destination": "/index.html"
+        }
+      ],
+      "headers": [
+        {
+          "source": "**/*.@(js|css)",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "max-age=3600"
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "firestore": {
     "database": "(default)",
     "location": "nam5",

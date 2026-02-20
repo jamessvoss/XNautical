@@ -1,16 +1,16 @@
 steps:
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/basemap-orchestrator', '.']
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/district-pipeline', '.']
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/basemap-orchestrator']
+    args: ['push', 'gcr.io/$PROJECT_ID/district-pipeline']
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
       - 'run'
       - 'deploy'
-      - 'basemap-orchestrator'
+      - 'district-pipeline'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/basemap-orchestrator'
+      - 'gcr.io/$PROJECT_ID/district-pipeline'
       - '--region'
       - 'us-central1'
       - '--platform'
@@ -18,15 +18,17 @@ steps:
       - '--memory'
       - '256Mi'
       - '--timeout'
-      - '900'
+      - '3600'
       - '--set-env-vars'
-      - 'SATELLITE_GENERATOR_URL=${_SATELLITE_URL},OCEAN_GENERATOR_URL=${_OCEAN_URL},TERRAIN_GENERATOR_URL=${_TERRAIN_URL},BASEMAP_GENERATOR_URL=${_BASEMAP_URL}'
+      - >-
+        ENC_DOWNLOADER_URL=https://enc-downloader-f2plukcj3a-uc.a.run.app,
+        ENC_CONVERTER_URL=https://enc-converter-f2plukcj3a-uc.a.run.app,
+        SATELLITE_GENERATOR_URL=https://satellite-generator-f2plukcj3a-uc.a.run.app,
+        OCEAN_GENERATOR_URL=https://ocean-generator-f2plukcj3a-uc.a.run.app,
+        TERRAIN_GENERATOR_URL=https://terrain-generator-f2plukcj3a-uc.a.run.app,
+        BASEMAP_GENERATOR_URL=https://basemap-generator-f2plukcj3a-uc.a.run.app,
+        PREDICTION_GENERATOR_URL=https://prediction-generator-f2plukcj3a-uc.a.run.app,
+        METADATA_GENERATOR_URL=https://generate-district-metadata-f2plukcj3a-uc.a.run.app
 
 images:
-  - 'gcr.io/$PROJECT_ID/basemap-orchestrator'
-
-substitutions:
-  _SATELLITE_URL: ''
-  _OCEAN_URL: ''
-  _TERRAIN_URL: ''
-  _BASEMAP_URL: ''
+  - 'gcr.io/$PROJECT_ID/district-pipeline'

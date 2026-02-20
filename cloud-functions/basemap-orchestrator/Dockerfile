@@ -1,5 +1,5 @@
-# Basemap Orchestrator Service
-# Lightweight coordinator for tile generation services
+# District Pipeline Orchestrator
+# Coordinates the full data generation pipeline for a district
 
 FROM python:3.11-slim
 
@@ -13,4 +13,4 @@ COPY server.py .
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "900", "--workers", "2", "server:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "3600", "--workers", "2", "server:app"]

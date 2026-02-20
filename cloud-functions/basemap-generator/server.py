@@ -82,6 +82,17 @@ DEFAULT_BUFFER_NM = 50
 # (tile counts are trivially small at low zoom levels)
 COASTAL_BUFFER_MIN_ZOOM = 6
 
+# App-side basemap filenames per district (must match app's BASEMAP_FILENAMES)
+BASEMAP_FILENAMES = {
+    '01cgd': 'd01_basemap', '05cgd': 'd05_basemap', '07cgd': 'd07_basemap',
+    '08cgd': 'd08_basemap', '09cgd': 'd09_basemap', '11cgd': 'd11_basemap',
+    '13cgd': 'd13_basemap', '14cgd': 'd14_basemap', '17cgd': 'd17_basemap',
+}
+
+def get_basemap_internal_name(region_id: str) -> str:
+    """Get the app-side basemap filename for a district."""
+    return BASEMAP_FILENAMES.get(region_id, 'basemap') + '.mbtiles'
+
 # Region bounds definitions [west, south, east, north]
 REGION_BOUNDS = {
     '01cgd': {'name': 'Northeast', 'bounds': [
@@ -551,16 +562,17 @@ def _combine_and_zip(bucket, region_id, layer_name, region_bounds, db, work_dir,
             'message': f'Zipping combined {layer_name} ({combined_size:.0f} MB)...',
         })
 
+        zip_internal_name = get_basemap_internal_name(region_id)
         zip_path = Path(pkg_dir) / f'{layer_name}.mbtiles.zip'
         with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.write(str(combined_path), f'{layer_name}.mbtiles')
+            zf.write(str(combined_path), zip_internal_name)
 
         combined_path.unlink()
 
         zip_size = zip_path.stat().st_size / 1024 / 1024
-        logger.info(f'  Compressed: {combined_size:.1f} MB → {zip_size:.1f} MB')
+        logger.info(f'  Compressed: {combined_size:.1f} MB → {zip_size:.1f} MB (internal: {zip_internal_name})')
 
-        zip_storage_path = f'{region_id}/{layer_name}/{layer_name}.mbtiles.zip'
+        zip_storage_path = f'{region_id}/{layer_name}/{zip_internal_name}.zip'
         logger.info(f'  Uploading to {zip_storage_path}...')
         update_status(db, region_id, {
             'state': 'uploading',

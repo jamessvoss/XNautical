@@ -309,13 +309,13 @@ fi
 
 # Push basemap if requested
 if [ "$PUSH_BASEMAP" = true ]; then
-    BASEMAP_FILE="$PROJECT_DIR/charts/Basemaps/basemap_alaska.mbtiles"
+    BASEMAP_FILE="$PROJECT_DIR/charts/Basemaps/d17_basemap.mbtiles"
     if [ -f "$BASEMAP_FILE" ]; then
         echo "${CYAN}━━━ Basemap ━━━${NC}"
         BASEMAP_SIZE=$(stat -f%z "$BASEMAP_FILE" 2>/dev/null)
-        echo "  File: basemap_alaska.mbtiles ($(format_size $BASEMAP_SIZE))"
+        echo "  File: d17_basemap.mbtiles ($(format_size $BASEMAP_SIZE))"
         echo "  Pushing to device..."
-        adb push "$BASEMAP_FILE" "$DEVICE_DIR/basemap_alaska.mbtiles"
+        adb push "$BASEMAP_FILE" "$DEVICE_DIR/d17_basemap.mbtiles"
         echo "  ${GREEN}✓ Basemap pushed${NC}"
         echo ""
         TOTAL_SIZE=$((TOTAL_SIZE + BASEMAP_SIZE))

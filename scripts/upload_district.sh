@@ -60,15 +60,15 @@ get_district_name() {
 
 get_district_prefix() {
     case "$1" in
-        17cgd) echo "alaska" ;;
-        01cgd) echo "newengland" ;;
-        05cgd) echo "midatlantic" ;;
-        07cgd) echo "southeast" ;;
-        08cgd) echo "gulfcoast" ;;
-        09cgd) echo "greatlakes" ;;
-        11cgd) echo "california" ;;
-        13cgd) echo "pacificnw" ;;
-        14cgd) echo "pacific" ;;
+        01cgd) echo "d01" ;;
+        05cgd) echo "d05" ;;
+        07cgd) echo "d07" ;;
+        08cgd) echo "d08" ;;
+        09cgd) echo "d09" ;;
+        11cgd) echo "d11" ;;
+        13cgd) echo "d13" ;;
+        14cgd) echo "d14" ;;
+        17cgd) echo "d17" ;;
         *) echo "" ;;
     esac
 }
