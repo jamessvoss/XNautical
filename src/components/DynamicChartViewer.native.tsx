@@ -2650,16 +2650,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 6]],   // US5+: z6+ (native range z6/8-15)
   ], []);
 
-  // Line features (DEPCNT) need EXCLUSIVE zoom bands — overlapping lines from
-  // multiple scales create visual noise (unlike fills which occlude). Shift the
-  // US3→US4 boundary from z11 down to z8 so US4 contours fill the gap where
-  // US3 coverage is absent (e.g. Cook Inlet at z8-10).
+  // Line features (DEPCNT) use the same overlapping bands as fills. Where both
+  // a lower-scale and higher-scale contour exist, dedup has already resolved them
+  // to the same geometry — drawing both just redraws the same line (barely visible).
+  // The alternative (exclusive bands) causes fragmentation where higher-scale
+  // charts have incomplete coverage (e.g. Cook Inlet US4 gaps at z8+).
   const contourScaleFilter: any[] = useMemo(() => ['any',
     ['!', ['has', '_scaleNum']],
-    ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 7]],                      // US1-2: z0-6
-    ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 7], ['<', ['zoom'], 8]],  // US3: z7
-    ['all', ['==', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 8], ['<', ['zoom'], 14]], // US4: z8-13
-    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 14]],                     // US5+: z14+
+    ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 11]],   // US1-2: z0-10 (native max)
+    ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 4]],   // US3: z4+ (native range z4-13)
+    ['all', ['==', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 6]],   // US4: z6+ (native range z6-15)
+    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 6]],   // US5+: z6+ (native range z6/8-15)
   ], []);
 
   // ─── renderChartLayers: split into sub-group functions ──────────────
