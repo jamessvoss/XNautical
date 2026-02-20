@@ -244,7 +244,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const [showStreamNames] = useState(false);    // Rivers, creeks (off by default - too many)
   const [showLakeNames] = useState(false);        // Lakes (off by default)
   const [showTerrainNames] = useState(false);  // Valleys, basins (off by default)
-  
+
+  // Scale coverage debug overlay
+  const [showScaleDebug, setShowScaleDebug] = useState(false);
 
   // Memoized depth text field expression based on unit setting
   const depthTextFieldExpression = useMemo(() => {
@@ -1752,7 +1754,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // ─── Dynamic sector arc generation (screen-constant per S-52 §3.1.5) ───
   const TARGET_ARC_PIXELS = 60; // dp — arc radius in screen pixels at all zoom levels
 
-  const arcUpdateCountRef = useRef(0);
   const updateSectorArcsRef = useRef<() => void>(() => {});
   updateSectorArcsRef.current = async () => {
     if (!mapRef.current || !showLights) return;
@@ -1769,9 +1770,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }
 
     const [lng, lat] = centerCoordRef.current;
-    const callNum = ++arcUpdateCountRef.current;
-    const t0 = Date.now();
-
     // Calibrate dp-to-degrees conversion directly from the map.
     // This avoids metersPerPixel/PixelRatio/Mercator-distortion issues.
     const centerScreen = await mapRef.current.getPointInView([lng, lat]);
@@ -1802,14 +1800,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       return zoom >= minZoom;
     };
 
-    let rawCount = 0;
-    let sourceLabel: string;
     const cache = sectorLightCacheRef.current;
 
     if (sectorLightIndexRef.current) {
       // ── FAST PATH: Use pre-computed sector light index from sidecar JSON ──
       // No native bridge calls needed. Just filter the in-memory array by viewport + SCAMIN.
-      sourceLabel = 'index';
       const index = sectorLightIndexRef.current;
       cache.clear();
       for (const light of index) {
@@ -1821,10 +1816,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           cache.set(key, light);
         }
       }
-      rawCount = cache.size;
     } else {
       // ── FALLBACK: Query MapLibre CircleLayer (non-deterministic) ──
-      sourceLabel = 'query';
       const bbox: [number, number, number, number] = [0, width, height, 0];
 
       // Query the invisible CircleLayer for ALL sector lights in loaded tiles.
@@ -1833,8 +1826,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const lightsLayerIds = chartScaleSources.map(s => `${s.sourceId}-lights-query`);
       const result = await mapRef.current.queryRenderedFeaturesInRect(bbox, ['has', 'SECTR1'], lightsLayerIds);
       const rawFeatures = result?.features ?? result ?? [];
-      rawCount = rawFeatures.length;
-
       // Accumulate: add newly found sector lights to persistent cache.
       // queryRenderedFeaturesInRect is non-deterministic — it misses features on
       // some calls. By accumulating, once we find a light it stays stable.
@@ -1873,8 +1864,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }
       }
     }
-
-    const t1 = Date.now();
 
     // Generate arc + sector leg geometries using screen-calibrated dp-to-degrees.
     // Per S-52 §3.1.5: sector legs at fixed 25mm screen size (~60dp).
@@ -1934,9 +1923,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         properties: { COLOUR: light.colour, _type: 'arc' },
       });
     }
-
-    const t2 = Date.now();
-    console.log(`[ARC] #${callNum} z=${zoom.toFixed(1)} src=${sourceLabel} find=${t1-t0}ms gen=${t2-t1}ms raw=${rawCount} cached=${cache.size} arcs=${arcFeatures.length}`);
 
     setSectorArcFeatures({ type: 'FeatureCollection', features: arcFeatures });
   };
@@ -2652,17 +2638,28 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     ['>=', ['floor', ['zoom']], ['floor', ['-', 28 - scaminOffset, ['/', ['ln', ['to-number', ['get', 'SCAMIN']]], ['ln', 2]]]]]
   ], [scaminOffset]);
 
-  // Background fills (DEPARE, LNDARE) from different chart scales have different
-  // geometry that can't be deduplicated. Without exclusive zoom ranges, overlapping
-  // fills from multiple scales create visible chart boundaries.
-  // This filter gives each scale an exclusive zoom band so only ONE scale's
-  // background fills render at any given zoom level. Static — no deps.
+  // Background fills (DEPARE, LNDARE) use overlapping zoom bands that match each
+  // scale's native tippecanoe zoom range. Where multiple scales overlap, the
+  // last-rendered polygon wins (higher scales appear later from tile-join merge order).
+  // Gaps are filled by lower-scale data; higher-scale data takes visual priority.
   const bgFillScaleFilter: any[] = useMemo(() => ['any',
     ['!', ['has', '_scaleNum']],  // Features without scale pass through
-    ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 7]],    // US1-2: z0-6
-    ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 7], ['<', ['zoom'], 11]],  // US3: z7-10
-    ['all', ['==', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 11], ['<', ['zoom'], 14]], // US4: z11-13
-    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 14]],  // US5+: z14+
+    ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 11]],   // US1-2: z0-10 (native max)
+    ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 4]],   // US3: z4+ (native range z4-13)
+    ['all', ['==', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 6]],   // US4: z6+ (native range z6-15)
+    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 6]],   // US5+: z6+ (native range z6/8-15)
+  ], []);
+
+  // Line features (DEPCNT) need EXCLUSIVE zoom bands — overlapping lines from
+  // multiple scales create visual noise (unlike fills which occlude). Shift the
+  // US3→US4 boundary from z11 down to z8 so US4 contours fill the gap where
+  // US3 coverage is absent (e.g. Cook Inlet at z8-10).
+  const contourScaleFilter: any[] = useMemo(() => ['any',
+    ['!', ['has', '_scaleNum']],
+    ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 7]],                      // US1-2: z0-6
+    ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 7], ['<', ['zoom'], 8]],  // US3: z7
+    ['all', ['==', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 8], ['<', ['zoom'], 14]], // US4: z8-13
+    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 14]],                     // US5+: z14+
   ], []);
 
   // ─── renderChartLayers: split into sub-group functions ──────────────
@@ -2894,7 +2891,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-tsslpt-line`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 148], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 148], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
           lineColor: s52Colors.TSSLPT,
           lineWidth: 1.5,
@@ -2979,6 +2976,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           visibility: showLandRegions ? 'visible' : 'none',
         }}
       />,
+
+      /* Debug: Scale coverage heatmap — DEPARE colored by _scaleNum, no bgFillScaleFilter */
+      ...(showScaleDebug ? [
+        <MapLibre.FillLayer
+          key={`${p}-scale-debug`}
+          id={`${p}-scale-debug`}
+          sourceLayerID="charts"
+          minZoomLevel={0}
+          filter={['==', ['get', 'OBJL'], 42]}
+          style={{
+            fillColor: ['match', ['get', '_scaleNum'],
+              1, '#ff0000', 2, '#ff8800', 3, '#ffff00',
+              4, '#00ff00', 5, '#00aaff', 6, '#8800ff',
+              '#888888'],
+            fillOpacity: 0.4,
+            visibility: 'visible',
+          }}
+        />,
+      ] : []),
 
     ];
   };
@@ -3211,7 +3227,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-ponton-line`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 95], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
           lineColor: s52Colors.CHBLK,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 1, 14, 2],
@@ -3256,13 +3272,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       /* S-52 LAYER ORDER: Line Features               */
       /* ============================================== */
 
-      /* DEPCNT - Depth Contours Halo (SCAMIN-filtered, scale-exclusive) */
+      /* DEPCNT - Depth Contours Halo (SCAMIN-filtered, exclusive scale bands) */
       <MapLibre.LineLayer
         key={`${p}-depcnt-halo`}
         id={`${p}-depcnt-halo`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, contourScaleFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledDepthContourLineHaloWidth,
@@ -3271,13 +3287,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
-      /* DEPCNT - Depth Contours (SCAMIN-filtered, scale-exclusive) */
+      /* DEPCNT - Depth Contours (SCAMIN-filtered, exclusive scale bands) */
       <MapLibre.LineLayer
         key={`${p}-depcnt`}
         id={`${p}-depcnt`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, contourScaleFilter]}
         style={{
           lineColor: s52Colors.CHGRD,
           lineWidth: scaledDepthContourLineWidth,
@@ -3320,7 +3336,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-navlne`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 85], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 85], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
           lineColor: s52Colors.NAVLN,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
@@ -3335,7 +3351,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-rectrc`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 109], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 109], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
           lineColor: s52Colors.RECTR,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
@@ -3350,7 +3366,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-tselne`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 145], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 145], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
           lineColor: s52Colors.TSELN,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1.5, 12, 3],
@@ -3381,6 +3397,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all',
           ['any', ['==', ['get', 'OBJL'], 22], ['==', ['get', 'OBJL'], 21]],
+          ['==', ['geometry-type'], 'LineString'],
           scaminFilter
         ]}
         style={{
@@ -3399,6 +3416,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all',
           ['any', ['==', ['get', 'OBJL'], 22], ['==', ['get', 'OBJL'], 21]],
+          ['==', ['geometry-type'], 'LineString'],
           scaminFilter
         ]}
         style={{
@@ -3416,7 +3434,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-pipsol-halo`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], scaminFilter]}
+        filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledPipelineLineWidth + scaledPipelineLineHalo,
@@ -3431,7 +3449,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-pipsol`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], scaminFilter]}
+        filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
         style={{
           lineColor: s52Colors.PIPLN,
           lineWidth: scaledPipelineLineWidth,
@@ -4145,13 +4163,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
-      /* DEPCNT Labels (scale-exclusive) */
+      /* DEPCNT Labels (exclusive scale bands) */
       <MapLibre.SymbolLayer
         key={`${p}-depcnt-labels`}
         id={`${p}-depcnt-labels`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, contourScaleFilter]}
         style={{
           textField: ['to-string', ['coalesce', ['get', 'VALDCO'], '']],
           textSize: scaledDepthContourFontSize,
@@ -4354,7 +4372,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderFillLayers(source.sourceId);
     return cache;
-  }, [chartScaleSources, scaminFilter, bgFillScaleFilter,
+  }, [chartScaleSources, scaminFilter, bgFillScaleFilter, showScaleDebug,
     showDepthAreas, showLand, showCables, showPipelines,
     showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages, showMarineFarms,
     showSeaAreaNames, showLandRegions,
@@ -4385,7 +4403,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderLineLayers(source.sourceId);
     return cache;
-  }, [chartScaleSources, scaminFilter, bgFillScaleFilter, s52Colors, s52Mode,
+  }, [chartScaleSources, scaminFilter, contourScaleFilter, s52Colors, s52Mode,
     showDepthContours, showLand, showCables, showPipelines,
     scaledDepthContourLineWidth, scaledDepthContourLineHaloWidth,
     scaledDepthContourLineHalo, scaledDepthContourLineOpacity,
@@ -4410,7 +4428,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderSymbolLayers(source.sourceId);
     return cache;
-  }, [chartScaleSources, scaminFilter, bgFillScaleFilter,
+  }, [chartScaleSources, scaminFilter, contourScaleFilter,
     showHazards, showBuoys, showBeacons, showLights, showLandmarks,
     showAnchorBerths, showCables, showPipelines, showDepthContours, showLand,
     showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages, showMarineFarms,
@@ -6695,11 +6713,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 value={debugIsSourceVisible('bathymetry')} 
                 onToggle={() => debugToggleSource('bathymetry')} 
               />
-              <DebugToggle 
-                label="GNIS Place Names" 
-                value={debugIsSourceVisible('gnis')} 
-                onToggle={() => debugToggleSource('gnis')} 
+              <DebugToggle
+                label="GNIS Place Names"
+                value={debugIsSourceVisible('gnis')}
+                onToggle={() => debugToggleSource('gnis')}
                 subtitle={gnisAvailable ? 'Available' : 'Not loaded'}
+              />
+              <DebugToggle
+                label="Scale Coverage Debug"
+                value={showScaleDebug}
+                onToggle={() => setShowScaleDebug(!showScaleDebug)}
+                subtitle="Color-codes DEPARE by chart scale"
               />
             </View>
 
