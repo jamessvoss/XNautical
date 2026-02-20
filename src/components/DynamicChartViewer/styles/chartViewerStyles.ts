@@ -1315,4 +1315,44 @@ export const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#fff',
   },
+
+  // Stop Panning button - floating pill when user has panned away from GPS
+  stopPanningBtn: {
+    position: 'absolute',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    zIndex: 200,
+  },
+  stopPanningText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
+  // Crosshair overlay - centered on screen during panning mode
+  crosshairContainer: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 50,
+  },
+  crosshairH: {
+    position: 'absolute',
+    width: 30,
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+  },
+  crosshairV: {
+    position: 'absolute',
+    width: 1,
+    height: 30,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+  },
 });

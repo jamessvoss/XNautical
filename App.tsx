@@ -1,6 +1,6 @@
 console.log('[App.tsx] Module loading started...');
 
-import React, { useState, useEffect, useRef, useMemo, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View, Text, Platform, ActivityIndicator, TouchableOpacity, AppState, Modal } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +13,7 @@ console.log('[App.tsx] Core imports complete');
 // Platform-specific imports
 import { OverlayProvider, useOverlay } from './src/contexts/OverlayContext';
 import { NavigationProvider, useContextNav } from './src/contexts/NavigationContext';
+import { useDeviceHeading } from './src/hooks/useDeviceHeading';
 import { WaypointProvider } from './src/contexts/WaypointContext';
 import { RouteProvider } from './src/contexts/RouteContext';
 
@@ -211,9 +212,9 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
 // Wrapper components to handle navigation props
 function ViewerTab() {
   const { setShowDownloads } = useOverlay();
-  console.log('[ViewerTab] Rendering...');
+  const onNavigateToDownloads = useCallback(() => setShowDownloads(true), [setShowDownloads]);
   if (!DynamicChartViewer) return null;
-  return <DynamicChartViewer onNavigateToDownloads={() => setShowDownloads(true)} />;
+  return <DynamicChartViewer onNavigateToDownloads={onNavigateToDownloads} />;
 }
 
 function WeatherTab() {
@@ -244,7 +245,18 @@ function MoreTab() {
 
 // Renders overlays outside the navigation hierarchy to avoid MapLibre conflicts
 function OverlayRenderer() {
-  const { compassMode, showGPSPanel, showMorePanel, setShowMorePanel, showDownloads, setShowDownloads, showTideDetails, showCurrentDetails, showNavData, heading, course, gpsData, handleMorePanelClosed } = useOverlay();
+  const { compassMode, showGPSPanel, showMorePanel, setShowMorePanel, showDownloads, setShowDownloads, showTideDetails, showCurrentDetails, showNavData, course, gpsData, handleMorePanelClosed } = useOverlay();
+
+  // Device heading lives HERE (not in OverlayContext) so 60Hz updates only
+  // re-render this overlay tree — not the entire app including MapLibre.
+  const showCompass = compassMode !== 'off';
+  const { heading: fusedHeading } = useDeviceHeading({
+    enabled: showCompass,
+    updateInterval: 16,    // 60Hz
+    lerpFactor: 0.2,       // Smooth but responsive
+  });
+
+  const heading = fusedHeading ?? gpsData?.heading ?? null;
 
   const compassProps = useMemo(() => ({
     heading,
@@ -489,12 +501,15 @@ function AppNavigator() {
   const { setNavigationRef, contextTabName } = useContextNav();
   const { toggleMorePanel } = useOverlay();
   
-  // Store navigation ref for programmatic navigation
+  // Store navigation ref for programmatic navigation.
+  // Run once on mount — NavigationContainer sets the ref synchronously during render,
+  // so it's available by the time this effect runs.
   useEffect(() => {
     if (navigationRef.current) {
       setNavigationRef(navigationRef.current);
     }
-  }, [navigationRef.current, setNavigationRef]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   
   return (
     <NavigationContainer ref={navigationRef}>
@@ -562,9 +577,14 @@ function AppNavigator() {
   );
 }
 
+// TEMP: Tile test screen for debugging — bypasses all app infrastructure
+const TileTestScreen = require('./src/screens/TileTestScreen').default;
+
 // Main App wrapper with ErrorBoundary
 export default function App() {
   console.log('[App] Rendering App component...');
+  // TEMP: uncomment to use test screen instead of full app
+  // return <TileTestScreen />;
   return (
     <ErrorBoundary>
       <AppContent />

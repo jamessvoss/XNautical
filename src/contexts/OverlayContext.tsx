@@ -1,16 +1,16 @@
 /**
  * Overlay Context - Manages compass and GPS panel state
- * 
+ *
  * This context allows the overlays to be rendered outside the MapLibre
  * view hierarchy to avoid native view conflicts on Android.
- * 
- * Compass heading now uses sensor fusion via useDeviceHeading hook
- * for butter-smooth 60Hz updates.
+ *
+ * IMPORTANT: Device heading (useDeviceHeading) lives in OverlayRenderer
+ * (App.tsx), NOT here. Putting 60Hz heading updates in the context value
+ * caused cascading re-renders of DynamicChartViewer and MapLibre snap-back.
  */
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
 import { GPSData } from '../hooks/useGPS';
-import { useDeviceHeading } from '../hooks/useDeviceHeading';
 import { CompassMode, getNextCompassMode } from '../utils/compassUtils';
 
 interface OverlayState {
@@ -27,9 +27,6 @@ interface OverlayState {
   heading: number | null;
   course: number | null;
   gpsData: GPSData | null;
-  // Heading sensor status
-  headingAccuracy: 'high' | 'medium' | 'low' | 'unknown';
-  headingSensorAvailable: boolean;
 }
 
 interface OverlayContextType extends OverlayState {
@@ -78,8 +75,6 @@ const OverlayContext = createContext<OverlayContextType>({
   heading: null,
   course: null,
   gpsData: null,
-  headingAccuracy: 'unknown',
-  headingSensorAvailable: false,
   setCompassMode: () => {},
   cycleCompassMode: () => {},
   setShowCompass: () => {},
@@ -105,14 +100,28 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
   const [showCurrentDetails, setShowCurrentDetails] = useState(false);
   const [showDebugMap, setShowDebugMap] = useState(false);
   const [showNavData, setShowNavData] = useState(false);
-  const [gpsData, setGPSData] = useState<GPSData>(defaultGPSData);
+  // GPS data stored in a REF, not state.  Updates arrive ~every second from
+  // the useGPS hook in DynamicChartViewer.  Using state here would cause the
+  // entire OverlayContext value to change on every GPS tick, triggering
+  // cascading re-renders of AppNavigator, ViewerTab, DynamicChartViewer, and
+  // every other context consumer — a severe performance issue that can make
+  // MapLibre lose gesture state and cause map snap-back.
+  //
+  // With a ref the context value stays stable.  Components that render GPS
+  // data (GPSInfoModal, compass overlays) will pick up the latest ref value
+  // whenever they re-render for other reasons.  The compass overlays already
+  // re-render at 60 Hz via the separate fusedHeading state.
+  const gpsDataRef = useRef<GPSData>(defaultGPSData);
 
   // Derived boolean for backward compat
   const showCompass = compassMode !== 'off';
 
   // Convenience: cycle through compass modes
   const cycleCompassMode = useCallback(() => {
-    setCompassMode(prev => getNextCompassMode(prev));
+    setCompassMode(prev => {
+      const next = getNextCompassMode(prev);
+      return next;
+    });
   }, []);
 
   // Legacy setter: maps boolean to mode
@@ -147,20 +156,8 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Use sensor fusion for smooth compass heading
-  // Only enable when compass is visible to save battery
-  const { 
-    heading: fusedHeading, 
-    accuracy: headingAccuracy,
-    isAvailable: headingSensorAvailable,
-  } = useDeviceHeading({
-    enabled: showCompass,
-    updateInterval: 16,    // 60Hz
-    lerpFactor: 0.2,       // Smooth but responsive
-  });
-
   const updateGPSData = useCallback((data: GPSData) => {
-    setGPSData(data);
+    gpsDataRef.current = data;
   }, []);
 
   const value: OverlayContextType = useMemo(() => ({
@@ -173,12 +170,13 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     showCurrentDetails,
     showDebugMap,
     showNavData,
-    // Use fused heading from sensor fusion when available, fall back to GPS data
-    heading: fusedHeading ?? gpsData.heading,
-    course: gpsData.course,
-    gpsData,
-    headingAccuracy,
-    headingSensorAvailable,
+    // heading from GPS ref (not fusedHeading) — stable, no 60Hz re-renders.
+    // Fused heading for compass overlays lives in OverlayRenderer (App.tsx).
+    heading: gpsDataRef.current.heading,
+    course: gpsDataRef.current.course,
+    // gpsData from ref — reads latest value at memo-creation time.
+    // Does NOT cause re-renders on GPS updates (that's the point).
+    gpsData: gpsDataRef.current,
     setCompassMode,
     cycleCompassMode,
     setShowCompass,
@@ -203,10 +201,9 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     showCurrentDetails,
     showDebugMap,
     showNavData,
-    fusedHeading,
-    gpsData,
-    headingAccuracy,
-    headingSensorAvailable,
+    // gpsData intentionally excluded — stored in ref to avoid cascade re-renders
+    // fusedHeading moved to OverlayRenderer — 60Hz updates through context caused
+    // cascading re-renders of DynamicChartViewer (same issue as GPS data, see above)
     setCompassMode,
     cycleCompassMode,
     setShowCompass,
@@ -222,6 +219,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     setShowNavData,
     updateGPSData,
   ]);
+
 
   return (
     <OverlayContext.Provider value={value}>

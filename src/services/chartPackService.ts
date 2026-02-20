@@ -219,13 +219,10 @@ export async function getDistrict(districtId: string): Promise<District | null> 
       const encodedPath = encodeURIComponent(metadataPath);
       const metadataUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
       
-      console.log(`[ChartPackService] Fetching metadata from: ${metadataUrl}`);
       const response = await fetch(metadataUrl);
-      
+
       if (response.ok) {
         const metadata = await response.json();
-        console.log(`[ChartPackService] Loaded pre-generated metadata for ${districtId} with ${metadata.downloadPacks?.length || 0} packs`);
-        console.log(`[ChartPackService] Metadata object:`, JSON.stringify(metadata.metadata, null, 2));
         
         // Fetch basic district info from Firestore for non-download fields
         const districtRef = doc(firestore, 'districts', districtId);
@@ -244,15 +241,12 @@ export async function getDistrict(districtId: string): Promise<District | null> 
           us1ChartBounds: districtData.us1ChartBounds,
           metadata: metadata.metadata, // Include metadata for buoy/zone counts and prediction sizes
         };
-        console.log(`[ChartPackService] Returning district with metadata:`, result.metadata ? 'YES' : 'NO');
-        console.log(`[ChartPackService] Metadata details:`, result.metadata);
         return result;
       } else {
-        console.log(`[ChartPackService] Metadata fetch returned ${response.status}, falling back to Firestore`);
+        console.warn(`[ChartPackService] Metadata fetch returned ${response.status}, falling back to Firestore`);
       }
     } catch (metadataError) {
-      console.log(`[ChartPackService] Error loading metadata for ${districtId}:`, metadataError);
-      console.log(`[ChartPackService] Falling back to Firestore`);
+      console.warn(`[ChartPackService] Error loading metadata, falling back to Firestore:`, metadataError);
     }
     
     // Fallback: Load from Firestore
@@ -301,7 +295,6 @@ export async function getAvailableDistricts(): Promise<{ id: string; name: strin
 /**
  * District prefix mapping.
  * Maps Firestore district IDs to local filename prefixes for chart files.
- * Alaska uses 'alaska' for backward compatibility; others use their district ID.
  */
 const DISTRICT_PREFIXES: Record<string, string> = {
   '01cgd': 'd01',
@@ -312,7 +305,7 @@ const DISTRICT_PREFIXES: Record<string, string> = {
   '11cgd': 'd11',
   '13cgd': 'd13',
   '14cgd': 'd14',
-  '17cgd': 'alaska', // legacy naming
+  '17cgd': 'd17',
 };
 
 /**
@@ -334,15 +327,15 @@ const GNIS_FILENAMES: Record<string, string> = {
  * Basemap filename mapping per district.
  */
 const BASEMAP_FILENAMES: Record<string, string> = {
-  '01cgd': 'basemap_ne.mbtiles',
-  '05cgd': 'basemap_ma.mbtiles',
-  '07cgd': 'basemap_se.mbtiles',
-  '08cgd': 'basemap_gc.mbtiles',
-  '09cgd': 'basemap_gl.mbtiles',
-  '11cgd': 'basemap_sw.mbtiles',
-  '13cgd': 'basemap_pnw.mbtiles',
-  '14cgd': 'basemap_hi.mbtiles',
-  '17cgd': 'basemap_alaska.mbtiles',
+  '01cgd': 'd01_basemap.mbtiles',
+  '05cgd': 'd05_basemap.mbtiles',
+  '07cgd': 'd07_basemap.mbtiles',
+  '08cgd': 'd08_basemap.mbtiles',
+  '09cgd': 'd09_basemap.mbtiles',
+  '11cgd': 'd11_basemap.mbtiles',
+  '13cgd': 'd13_basemap.mbtiles',
+  '14cgd': 'd14_basemap.mbtiles',
+  '17cgd': 'd17_basemap.mbtiles',
 };
 
 /**
@@ -369,8 +362,9 @@ function getDistrictPrefix(districtId: string): string {
 
 /**
  * Map storage path to local filename.
- * e.g., '17cgd/charts/US4.mbtiles.zip' -> 'alaska_US4.mbtiles'
- * e.g., '11cgd/charts/US4.mbtiles.zip' -> 'd11_US4.mbtiles'
+ * e.g., '17cgd/charts/d17_US4.mbtiles.zip' -> 'd17_US4.mbtiles'
+ * e.g., '07cgd/charts/d07_US4.mbtiles.zip' -> 'd07_US4.mbtiles'
+ * e.g., '07cgd/satellite/d07_satellite_z8.mbtiles.zip' -> 'd07_satellite_z8.mbtiles'
  */
 function getLocalFilename(pack: DistrictDownloadPack, districtId: string): string {
   // Get the base filename from storage path
@@ -380,9 +374,12 @@ function getLocalFilename(pack: DistrictDownloadPack, districtId: string): strin
   
   const prefix = getDistrictPrefix(districtId);
 
-  // Prefix with district name for charts
-  if (pack.type === 'charts' && pack.band) {
-    return `${prefix}_${pack.band}.mbtiles`;
+  // Unified charts pack (no band) or per-scale charts
+  if (pack.type === 'charts') {
+    if (pack.band) {
+      return `${prefix}_${pack.band}.mbtiles`;
+    }
+    return `${prefix}_charts.mbtiles`;
   }
   
   // GNIS files - use canonical filename (content is identical nationwide)
@@ -395,15 +392,14 @@ function getLocalFilename(pack: DistrictDownloadPack, districtId: string): strin
     return BASEMAP_FILENAMES[districtId] || baseFilename;
   }
   
-  // Ocean and terrain files - prefix with district for multi-region coexistence
-  // e.g., alaska_ocean_z0-5.mbtiles, d07_terrain_z8.mbtiles
-  if (pack.type === 'ocean' || pack.type === 'terrain') {
-    return `${prefix}_${baseFilename}`;
-  }
-  
-  // Satellite files - prefix with district for multi-region coexistence
-  // e.g., alaska_satellite_z0-5.mbtiles, d07_satellite_z8.mbtiles
-  if (pack.type === 'satellite') {
+  // Ocean, terrain, and satellite files - prefix with district for multi-region coexistence
+  // e.g., d17_ocean.mbtiles, d07_terrain.mbtiles, d07_satellite_z8.mbtiles
+  // Guard against double-prefixing: if the blob name already starts with the prefix
+  // (e.g., storagePath contains "d07_ocean.mbtiles.zip"), don't add it again.
+  if (pack.type === 'ocean' || pack.type === 'terrain' || pack.type === 'satellite') {
+    if (baseFilename.startsWith(`${prefix}_`)) {
+      return baseFilename;
+    }
     return `${prefix}_${baseFilename}`;
   }
   
@@ -413,14 +409,18 @@ function getLocalFilename(pack: DistrictDownloadPack, districtId: string): strin
 
 /**
  * Download a pack from Firebase Storage and extract it.
+ * When downloading multiple packs in a batch, pass skipManifest=true and call
+ * generateManifest() once after all packs are done.
  */
 export async function downloadPack(
   pack: DistrictDownloadPack,
   districtId: string,
-  onProgress?: (status: PackDownloadStatus) => void
+  onProgress?: (status: PackDownloadStatus) => void,
+  skipManifest: boolean = false,
 ): Promise<boolean> {
   const { storage } = await import('../config/firebase');
   const { ref, getDownloadURL } = await import('firebase/storage');
+  const { downloadManager } = await import('./downloadManager');
   
   const mbtilesDir = await getMBTilesDir();
   const localFilename = getLocalFilename(pack, districtId);
@@ -432,9 +432,6 @@ export async function downloadPack(
   console.log(`[ChartPackService] Will save to ${finalPath}`);
   
   try {
-    // Track download start time for speed calculations
-    const downloadStartTime = Date.now();
-    
     // Update status: downloading
     onProgress?.({
       packId: pack.id,
@@ -448,39 +445,35 @@ export async function downloadPack(
     const storageRef = ref(storage, pack.storagePath);
     const downloadUrl = await getDownloadURL(storageRef);
     
-    // Download the zip file
-    const downloadResumable = FileSystem.createDownloadResumable(
-      downloadUrl,
-      compressedPath,
-      {},
-      (downloadProgress) => {
-        const { totalBytesWritten, totalBytesExpectedToWrite } = downloadProgress;
-        if (totalBytesExpectedToWrite > 0) {
-          const percent = Math.round((totalBytesWritten / totalBytesExpectedToWrite) * 100);
-          
-          // Calculate download speed and ETA
-          const elapsedMs = Date.now() - downloadStartTime;
-          const elapsedSeconds = elapsedMs / 1000;
-          const speedBps = elapsedSeconds > 0 ? totalBytesWritten / elapsedSeconds : 0;
-          const remainingBytes = totalBytesExpectedToWrite - totalBytesWritten;
-          const etaSeconds = speedBps > 0 ? remainingBytes / speedBps : undefined;
-          
-          onProgress?.({
-            packId: pack.id,
-            status: 'downloading',
-            progress: percent,
-            bytesDownloaded: totalBytesWritten,
-            totalBytes: totalBytesExpectedToWrite,
-            speedBps,
-            etaSeconds,
-          });
-        }
-      }
-    );
+    // Start download through DownloadManager
+    const downloadId = await downloadManager.startDownload({
+      type: 'chart',
+      districtId,
+      packId: pack.id,
+      url: downloadUrl,
+      destination: compressedPath,
+      totalBytes: pack.sizeBytes,
+    });
     
-    const result = await downloadResumable.downloadAsync();
-    if (!result) {
-      throw new Error('Download failed - no result returned');
+    // Subscribe to progress updates
+    const unsubscribe = downloadManager.subscribeToProgress(downloadId, (progress) => {
+      onProgress?.({
+        packId: pack.id,
+        status: progress.status as any,
+        progress: progress.percent,
+        bytesDownloaded: progress.bytesDownloaded,
+        totalBytes: progress.totalBytes,
+        speedBps: progress.speedBps,
+        etaSeconds: progress.etaSeconds,
+        error: progress.error,
+      });
+    });
+    
+    // Wait for download to complete
+    try {
+      await downloadManager.waitForCompletion(downloadId);
+    } finally {
+      unsubscribe();
     }
     
     // Update status: extracting
@@ -499,21 +492,41 @@ export async function downloadPack(
     }
     
     console.log(`[ChartPackService] Extracting ${compressedPath} to ${mbtilesDir}...`);
-    
+
+    // Snapshot files before extraction so we can detect what was added
+    const filesBefore = new Set(await FileSystem.readDirectoryAsync(mbtilesDir));
+
     // Extract the zip file
     await unzip(compressedPath, mbtilesDir);
-    
+
     // Clean up compressed file
     await FileSystem.deleteAsync(compressedPath, { idempotent: true });
-    
-    // Verify extraction
+
+    // Verify extraction — if the expected file doesn't exist, the zip may
+    // have contained a differently-named file (e.g., gnis_names_ak.mbtiles
+    // instead of gnis_names.mbtiles). Find the new file and rename it.
+    // For shared files like GNIS, always overwrite the canonical file with
+    // the latest download so multi-region installs stay current.
     const fileInfo = await FileSystem.getInfoAsync(finalPath);
-    if (!fileInfo.exists) {
-      // The zip might have extracted with a different name, check for it
-      console.warn(`[ChartPackService] Expected file not found: ${finalPath}`);
-      // List directory to see what was extracted
-      const files = await FileSystem.readDirectoryAsync(mbtilesDir);
-      console.log(`[ChartPackService] Files in directory: ${files.join(', ')}`);
+    const filesAfter = await FileSystem.readDirectoryAsync(mbtilesDir);
+    const newFiles = filesAfter.filter(f => !filesBefore.has(f) && f.endsWith('.mbtiles'));
+
+    if (!fileInfo.exists && newFiles.length === 1) {
+      // Expected file missing — rename the extracted file to the canonical name
+      const extractedPath = `${mbtilesDir}${newFiles[0]}`;
+      console.log(`[ChartPackService] Renaming ${newFiles[0]} -> ${localFilename}`);
+      await FileSystem.moveAsync({ from: extractedPath, to: finalPath });
+    } else if (fileInfo.exists && newFiles.length === 1 && newFiles[0] !== localFilename) {
+      // Expected file exists but zip contained a differently-named file.
+      // Replace the old file with the new one (e.g., updating GNIS from a
+      // newer region download).
+      const extractedPath = `${mbtilesDir}${newFiles[0]}`;
+      console.log(`[ChartPackService] Replacing ${localFilename} with ${newFiles[0]}`);
+      await FileSystem.deleteAsync(finalPath, { idempotent: true });
+      await FileSystem.moveAsync({ from: extractedPath, to: finalPath });
+    } else if (!fileInfo.exists && newFiles.length !== 1) {
+      console.warn(`[ChartPackService] Expected ${localFilename} not found after extraction`);
+      console.log(`[ChartPackService] New files: ${newFiles.join(', ')}`);
     }
     
     // Update status: completed
@@ -528,7 +541,8 @@ export async function downloadPack(
     console.log(`[ChartPackService] Successfully downloaded and extracted ${pack.id}`);
     
     // Regenerate manifest.json so the native tile server can find the chart packs
-    if (pack.type === 'charts') {
+    // Skip when caller will batch-regenerate after all packs are done.
+    if (pack.type === 'charts' && !skipManifest) {
       await generateManifest();
     }
     
@@ -574,8 +588,12 @@ export async function getInstalledPackIds(districtId: string): Promise<string[]>
     const installedPackIds: string[] = [];
     
     for (const file of mbtilesFiles) {
-      // Check for chart files (e.g., alaska_US4.mbtiles -> charts-US4)
-      if (file.startsWith(`${prefix}_US`)) {
+      // Check for unified charts file (e.g., d07_charts.mbtiles -> charts)
+      if (file === `${prefix}_charts.mbtiles`) {
+        installedPackIds.push('charts');
+      }
+      // Check for per-scale chart files (e.g., d17_US4.mbtiles -> charts-US4)
+      else if (file.startsWith(`${prefix}_US`)) {
         const band = file.replace(`${prefix}_`, '').replace('.mbtiles', '');
         installedPackIds.push(`charts-${band}`);
       }
@@ -596,15 +614,21 @@ export async function getInstalledPackIds(districtId: string): Promise<string[]>
         const zoomPart = file.replace(`${prefix}_satellite_`, '').replace('.mbtiles', '');
         installedPackIds.push(`satellite-${zoomPart}`);
       }
-      // Check for ocean files: {prefix}_ocean_z*.mbtiles -> ocean-z*
+      // Check for ocean files: {prefix}_ocean_z*.mbtiles -> ocean-z* OR {prefix}_ocean.mbtiles -> ocean
       else if (file.startsWith(`${prefix}_ocean_z`) && file.endsWith('.mbtiles')) {
         const zoomPart = file.replace(`${prefix}_ocean_`, '').replace('.mbtiles', '');
         installedPackIds.push(`ocean-${zoomPart}`);
       }
-      // Check for terrain files: {prefix}_terrain_z*.mbtiles -> terrain-z*
+      else if (file === `${prefix}_ocean.mbtiles`) {
+        installedPackIds.push('ocean');
+      }
+      // Check for terrain files: {prefix}_terrain_z*.mbtiles -> terrain-z* OR {prefix}_terrain.mbtiles -> terrain
       else if (file.startsWith(`${prefix}_terrain_z`) && file.endsWith('.mbtiles')) {
         const zoomPart = file.replace(`${prefix}_terrain_`, '').replace('.mbtiles', '');
         installedPackIds.push(`terrain-${zoomPart}`);
+      }
+      else if (file === `${prefix}_terrain.mbtiles`) {
+        installedPackIds.push('terrain');
       }
     }
     
@@ -657,7 +681,7 @@ export async function deletePack(
  * Without this file, composite tile requests (/tiles/{z}/{x}/{y}.pbf) return nothing.
  * 
  * This function scans the mbtiles directory for ALL installed districts' chart packs
- * (e.g., alaska_US1.mbtiles, d07_US1.mbtiles) and includes them all in the manifest
+ * (e.g., d17_US1.mbtiles, d07_US1.mbtiles) and includes them all in the manifest
  * with per-district bounds. This enables multi-region support where the tile server
  * serves tiles from whichever region covers the current viewport.
  */
@@ -678,9 +702,9 @@ export async function generateManifest(): Promise<void> {
       'US1': { minZoom: 0, maxZoom: 7 },
       'US2': { minZoom: 4, maxZoom: 10 },
       'US3': { minZoom: 7, maxZoom: 13 },
-      'US4': { minZoom: 10, maxZoom: 16 },
-      'US5': { minZoom: 12, maxZoom: 19 },
-      'US6': { minZoom: 14, maxZoom: 22 },
+      'US4': { minZoom: 10, maxZoom: 15 },
+      'US5': { minZoom: 12, maxZoom: 15 },
+      'US6': { minZoom: 14, maxZoom: 15 },
     };
     
     const packs: Array<{
@@ -694,20 +718,40 @@ export async function generateManifest(): Promise<void> {
     // Scan for chart packs from ALL known districts
     for (const [districtId, prefix] of Object.entries(DISTRICT_PREFIXES)) {
       const bounds = DISTRICT_BOUNDS[districtId] || { south: -90, west: -180, north: 90, east: 180 };
-      
+
+      // Check for unified charts file first: {prefix}_charts.mbtiles
+      const unifiedFile = `${prefix}_charts.mbtiles`;
+      if (files.includes(unifiedFile)) {
+        const filePath = `${mbtilesDir}${unifiedFile}`;
+        const fileInfo = await FileSystem.getInfoAsync(filePath);
+        const fileSize = fileInfo.exists && fileInfo.size ? fileInfo.size : 0;
+
+        packs.push({
+          id: `${prefix}_charts`,
+          bounds,
+          minZoom: 0,
+          maxZoom: 15,
+          fileSize,
+        });
+
+        console.log(`[ChartPackService] Manifest pack: ${prefix}_charts (${districtId}/unified) z0-15, ${(fileSize / 1024 / 1024).toFixed(1)} MB`);
+        continue; // Skip per-scale scanning for this district
+      }
+
+      // Fall back to per-scale chart files
       for (const file of files) {
         // Match chart pack files: {prefix}_US1.mbtiles, {prefix}_US2.mbtiles, etc.
         if (file.startsWith(`${prefix}_US`) && file.endsWith('.mbtiles')) {
           const band = file.replace(`${prefix}_`, '').replace('.mbtiles', ''); // e.g., "US1"
-          const packId = `${prefix}_${band}`; // e.g., "alaska_US1" or "d07_US1"
-          
+          const packId = `${prefix}_${band}`; // e.g., "d17_US1" or "d07_US1"
+
           // Get file size
           const filePath = `${mbtilesDir}${file}`;
           const fileInfo = await FileSystem.getInfoAsync(filePath);
           const fileSize = fileInfo.exists && fileInfo.size ? fileInfo.size : 0;
-          
-          const zoomRange = scaleZoomRanges[band] || { minZoom: 0, maxZoom: 22 };
-          
+
+          const zoomRange = scaleZoomRanges[band] || { minZoom: 0, maxZoom: 15 };
+
           packs.push({
             id: packId,
             bounds,
@@ -715,7 +759,7 @@ export async function generateManifest(): Promise<void> {
             maxZoom: zoomRange.maxZoom,
             fileSize,
           });
-          
+
           console.log(`[ChartPackService] Manifest pack: ${packId} (${districtId}/${band}) z${zoomRange.minZoom}-${zoomRange.maxZoom}, ${(fileSize / 1024 / 1024).toFixed(1)} MB`);
         }
       }
@@ -781,16 +825,18 @@ export function getDistrictFilePatterns(districtId: string): {
   return {
     prefix,
     patterns: [
-      // Chart packs: alaska_US1.mbtiles, d07_US1.mbtiles, etc.
+      // Unified chart pack: d07_charts.mbtiles
+      (f: string) => f === `${prefix}_charts.mbtiles`,
+      // Per-scale chart packs: d17_US1.mbtiles, d07_US1.mbtiles, etc.
       (f: string) => f.startsWith(`${prefix}_US`) && f.endsWith('.mbtiles'),
-      // Basemap: basemap_alaska.mbtiles, basemap_se.mbtiles, etc.
+      // Basemap: d17_basemap.mbtiles, d07_basemap.mbtiles, etc.
       (f: string) => expectedBasemap ? f === expectedBasemap : false,
-      // Satellite: alaska_satellite_z0-5.mbtiles, d07_satellite_z8.mbtiles, etc.
+      // Satellite: d17_satellite_z0-5.mbtiles, d07_satellite_z8.mbtiles, etc.
       (f: string) => f.startsWith(`${prefix}_satellite_`) && f.endsWith('.mbtiles'),
-      // Ocean: alaska_ocean_z0-5.mbtiles, etc.
-      (f: string) => f.startsWith(`${prefix}_ocean_`) && f.endsWith('.mbtiles'),
-      // Terrain: alaska_terrain_z8.mbtiles, etc.
-      (f: string) => f.startsWith(`${prefix}_terrain_`) && f.endsWith('.mbtiles'),
+      // Ocean: d07_ocean.mbtiles or d07_ocean_z0-5.mbtiles
+      (f: string) => f.startsWith(`${prefix}_ocean`) && f.endsWith('.mbtiles'),
+      // Terrain: d07_terrain.mbtiles or d07_terrain_z8.mbtiles
+      (f: string) => f.startsWith(`${prefix}_terrain`) && f.endsWith('.mbtiles'),
     ],
   };
 }
@@ -813,6 +859,26 @@ export async function deleteRegion(
   otherInstalledDistrictIds: string[] = []
 ): Promise<{ deletedFiles: number; freedBytes: number }> {
   console.log(`[ChartPackService] Deleting all data for district ${districtId}...`);
+  
+  // STEP 1: Close all open MBTiles databases
+  console.log('[ChartPackService] Closing all MBTiles databases...');
+  try {
+    const { closeAllDatabases } = await import('./mbtilesReader');
+    await closeAllDatabases();
+    console.log('[ChartPackService] All MBTiles databases closed');
+  } catch (error) {
+    console.error('[ChartPackService] Error closing MBTiles databases:', error);
+  }
+  
+  // STEP 2: Close prediction databases for this district
+  console.log(`[ChartPackService] Closing prediction databases for ${districtId}...`);
+  try {
+    const { closePredictionDatabases } = await import('./stationService');
+    await closePredictionDatabases(districtId);
+    console.log(`[ChartPackService] Prediction databases closed for ${districtId}`);
+  } catch (error) {
+    console.error(`[ChartPackService] Error closing prediction databases:`, error);
+  }
   
   let deletedFiles = 0;
   let freedBytes = 0;
@@ -852,6 +918,19 @@ export async function deleteRegion(
           console.log('[ChartPackService] Deleted gnis_names.mbtiles (no other districts installed)');
         }
       }
+      
+      // STEP 3: Verify deletion
+      console.log('[ChartPackService] Verifying deletion...');
+      const remainingFiles = await FileSystem.readDirectoryAsync(mbtilesDir);
+      const leftover = remainingFiles.filter(file => 
+        patterns.some(pattern => pattern(file))
+      );
+      
+      if (leftover.length > 0) {
+        console.warn(`[ChartPackService] Warning: ${leftover.length} files could not be deleted:`, leftover);
+      } else {
+        console.log('[ChartPackService] All district files successfully deleted');
+      }
     }
     
     // Delete per-district prediction databases
@@ -874,14 +953,34 @@ export async function deleteRegion(
       }
     }
     
-    // Regenerate manifest.json for remaining districts
+    // STEP 4: Invalidate station cache (stations from deleted district must be removed)
+    try {
+      const { clearStationCache } = await import('./stationService');
+      clearStationCache();
+      console.log(`[ChartPackService] Station cache invalidated after deleting ${districtId}`);
+    } catch (error) {
+      console.error('[ChartPackService] Error invalidating station cache:', error);
+    }
+
+    // STEP 5: Regenerate manifest.json for remaining districts
+    console.log('[ChartPackService] Regenerating manifest.json...');
     await generateManifest();
+    console.log('[ChartPackService] Manifest regenerated');
     
     console.log(`[ChartPackService] Region ${districtId} deleted: ${deletedFiles} files, ${(freedBytes / 1024 / 1024).toFixed(1)} MB freed`);
     
     return { deletedFiles, freedBytes };
   } catch (error) {
     console.error(`[ChartPackService] Error deleting region ${districtId}:`, error);
+    
+    // Still try to regenerate manifest even if deletion had errors
+    try {
+      console.log('[ChartPackService] Attempting to regenerate manifest after error...');
+      await generateManifest();
+    } catch (manifestError) {
+      console.error('[ChartPackService] Failed to regenerate manifest:', manifestError);
+    }
+    
     return { deletedFiles, freedBytes };
   }
 }

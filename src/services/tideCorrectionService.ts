@@ -92,14 +92,14 @@ class TideCorrectionService {
         return;
       }
 
-      // Get today's date in YYYY-MM-DD format
+      // Get today's date in YYYY-MM-DD format (local timezone, matching NOAA prediction dates)
       const now = new Date();
-      const today = now.toISOString().split('T')[0];
-      
+      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
       // Also get tomorrow's date in case we need events that span into tomorrow
       const tomorrow = new Date(now);
       tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+      const tomorrowStr = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
 
       // Get tide predictions for today and tomorrow
       console.log('[TideCorrectionService] Fetching predictions for station:', station.id, 'dates:', today, '-', tomorrowStr);

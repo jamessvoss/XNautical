@@ -7,13 +7,14 @@
  * - Forecasts are stored under districts/{districtId}/marine-forecasts
  * 
  * Offline support:
- * - Zone boundaries cached in AsyncStorage per district
+ * - Zone boundaries cached as JSON files per district (too large for AsyncStorage)
  * - Forecasts require online access (live data)
  */
 
 import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 import { firestore } from '../config/firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system/legacy';
 
 export interface MarineZone {
   id: string;
@@ -51,15 +52,19 @@ export interface MarineForecast {
   zoneName: string;
   advisory: string;
   synopsis: string;
-  forecast: ForecastPeriod[];
+  periods: ForecastPeriod[];
   nwsUpdated: string;
   updatedAt: any;
   districtId?: string;
 }
 
-// AsyncStorage keys
-const MARINE_ZONES_KEY = (districtId: string) => `@XNautical:marineZones:${districtId}`;
+// Zone geometry stored as files (too large for AsyncStorage on Android)
+const MARINE_ZONES_FILE = (districtId: string) =>
+  `${FileSystem.documentDirectory}marine-zones-${districtId}.json`;
+// Small metadata stays in AsyncStorage
 const MARINE_ZONES_DOWNLOADED_KEY = (districtId: string) => `@XNautical:marineZonesDownloaded:${districtId}`;
+// Legacy key — used for migration only
+const LEGACY_ZONES_KEY = (districtId: string) => `@XNautical:marineZones:${districtId}`;
 
 // Cache for zone data (per district) - in-memory
 const zonesCache: Record<string, MarineZone[]> = {};
@@ -102,55 +107,62 @@ export async function getMarineZones(districtId: string): Promise<MarineZone[]> 
     return zonesCache[districtId];
   }
   
-  // Try loading from AsyncStorage (offline support)
+  // Try loading from file (offline support)
   try {
-    const cachedData = await AsyncStorage.getItem(MARINE_ZONES_KEY(districtId));
-    if (cachedData) {
-      const zones: MarineZone[] = JSON.parse(cachedData);
-      console.log(`[Marine] Loaded ${zones.length} zones from AsyncStorage for ${districtId}`);
-      
-      // Update in-memory cache
+    const filePath = MARINE_ZONES_FILE(districtId);
+    const fileInfo = await FileSystem.getInfoAsync(filePath);
+    if (fileInfo.exists) {
+      const data = await FileSystem.readAsStringAsync(filePath);
+      const zones: MarineZone[] = JSON.parse(data);
+      console.log(`[Marine] Loaded ${zones.length} zones from file for ${districtId}`);
       zonesCache[districtId] = zones;
       zonesCacheTime[districtId] = Date.now();
-      
       return zones;
     }
   } catch (error) {
-    console.warn(`[Marine] Error loading zones from AsyncStorage for ${districtId}:`, error);
+    console.warn(`[Marine] Error loading zones from file for ${districtId}:`, error);
   }
   
   // Fetch from Firestore if not cached
   try {
     const zonesRef = collection(firestore, 'districts', districtId, 'marine-zones');
     const snapshot = await getDocs(zonesRef);
-    
-    const zones = snapshot.docs.map(doc => {
-      const data = doc.data();
-      // Parse geometry from JSON string
-      const geometry = JSON.parse(data.geometryJson);
-      
-      return {
-        id: data.id,
-        name: data.name,
-        wfo: data.wfo,
+
+    const zones: MarineZone[] = [];
+    for (const d of snapshot.docs) {
+      const data = d.data();
+      let geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon | null = null;
+      if (data.geometryJson) {
+        try {
+          geometry = JSON.parse(data.geometryJson);
+        } catch {
+          console.warn(`[Marine] Invalid geometryJson for zone ${d.id} in ${districtId}`);
+          continue;
+        }
+      }
+      if (!geometry) continue;
+      zones.push({
+        id: data.id || d.id,
+        name: data.name || d.id,
+        wfo: data.wfo || '',
         centroid: data.centroid,
         geometry,
-        districtId: districtId
-      };
-    });
-    
+        districtId: districtId,
+      });
+    }
+
     console.log(`[Marine] Fetched ${zones.length} zones from Firestore for ${districtId}`);
     
     // Update both caches
     zonesCache[districtId] = zones;
     zonesCacheTime[districtId] = Date.now();
     
-    // Save to AsyncStorage for offline access
+    // Save to file for offline access
     try {
-      await AsyncStorage.setItem(MARINE_ZONES_KEY(districtId), JSON.stringify(zones));
-      console.log(`[Marine] Saved ${zones.length} zones to AsyncStorage for ${districtId}`);
-    } catch (storageError) {
-      console.warn(`[Marine] Could not save zones to AsyncStorage:`, storageError);
+      await FileSystem.writeAsStringAsync(MARINE_ZONES_FILE(districtId), JSON.stringify(zones));
+      console.log(`[Marine] Saved ${zones.length} zones to file for ${districtId}`);
+    } catch (fileError) {
+      console.warn(`[Marine] Could not save zones to file:`, fileError);
     }
     
     return zones;
@@ -175,14 +187,21 @@ export async function getMarineZone(districtId: string, zoneId: string): Promise
     }
     
     const data = docSnap.data();
-    const geometry = JSON.parse(data.geometryJson);
-    
+    let geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon | null = null;
+    if (data.geometryJson) {
+      try {
+        geometry = JSON.parse(data.geometryJson);
+      } catch {
+        console.warn(`[Marine] Invalid geometryJson for zone ${zoneId} in ${districtId}`);
+      }
+    }
+
     return {
-      id: data.id,
-      name: data.name,
-      wfo: data.wfo,
+      id: data.id || zoneId,
+      name: data.name || zoneId,
+      wfo: data.wfo || '',
       centroid: data.centroid,
-      geometry,
+      geometry: geometry!,
       districtId: districtId
     };
   } catch (error) {
@@ -268,7 +287,7 @@ export async function downloadMarineZones(
 
     if (snapshot.empty) {
       // No zones for this district - still mark as downloaded (empty)
-      await AsyncStorage.setItem(MARINE_ZONES_KEY(districtId), JSON.stringify([]));
+      await FileSystem.writeAsStringAsync(MARINE_ZONES_FILE(districtId), JSON.stringify([]));
       await AsyncStorage.setItem(MARINE_ZONES_DOWNLOADED_KEY(districtId), JSON.stringify({
         downloadedAt: new Date().toISOString(),
         zoneCount: 0,
@@ -279,25 +298,33 @@ export async function downloadMarineZones(
 
     onProgress?.(`Processing ${snapshot.size} marine zones...`, 40);
 
-    const zones = snapshot.docs.map(doc => {
-      const data = doc.data();
-      // Parse geometry from JSON string
-      const geometry = JSON.parse(data.geometryJson);
-      
-      return {
-        id: data.id,
-        name: data.name,
-        wfo: data.wfo,
+    const zones: MarineZone[] = [];
+    for (const d of snapshot.docs) {
+      const data = d.data();
+      let geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon | null = null;
+      if (data.geometryJson) {
+        try {
+          geometry = JSON.parse(data.geometryJson);
+        } catch {
+          console.warn(`[Marine] Invalid geometryJson for zone ${d.id} in ${districtId}, skipping`);
+          continue;
+        }
+      }
+      if (!geometry) continue;
+      zones.push({
+        id: data.id || d.id,
+        name: data.name || d.id,
+        wfo: data.wfo || '',
         centroid: data.centroid,
         geometry,
-        districtId: districtId
-      };
-    });
+        districtId: districtId,
+      });
+    }
 
     onProgress?.(`Caching ${zones.length} marine zone boundaries...`, 70);
 
-    // Cache to AsyncStorage
-    await AsyncStorage.setItem(MARINE_ZONES_KEY(districtId), JSON.stringify(zones));
+    // Cache to file (too large for AsyncStorage on Android)
+    await FileSystem.writeAsStringAsync(MARINE_ZONES_FILE(districtId), JSON.stringify(zones));
     await AsyncStorage.setItem(MARINE_ZONES_DOWNLOADED_KEY(districtId), JSON.stringify({
       downloadedAt: new Date().toISOString(),
       zoneCount: zones.length,
@@ -333,13 +360,15 @@ export async function areMarineZonesDownloaded(districtId: string): Promise<bool
  */
 export async function clearMarineZones(districtId: string): Promise<void> {
   try {
-    await AsyncStorage.removeItem(MARINE_ZONES_KEY(districtId));
+    await FileSystem.deleteAsync(MARINE_ZONES_FILE(districtId), { idempotent: true });
     await AsyncStorage.removeItem(MARINE_ZONES_DOWNLOADED_KEY(districtId));
-    
+    // Clean up legacy AsyncStorage key if present
+    await AsyncStorage.removeItem(LEGACY_ZONES_KEY(districtId)).catch(() => {});
+
     // Clear in-memory cache
     delete zonesCache[districtId];
     delete zonesCacheTime[districtId];
-    
+
     console.log(`[Marine] Cleared marine zones for ${districtId}`);
   } catch (error) {
     console.error(`[Marine] Error clearing zones for ${districtId}:`, error);

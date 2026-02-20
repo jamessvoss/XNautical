@@ -138,8 +138,9 @@ export async function calculateTideStationState(
     // Determine rising/falling
     // Look at events around current time
     const currentTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const todayDateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const todayEvents = predictions
-      .filter((p: any) => p.date === now.toISOString().split('T')[0])
+      .filter((p: any) => p.date === todayDateStr)
       .map((p: any) => ({ time: p.time, height: p.height, type: p.type as 'H' | 'L' }));
     
     const direction = getTideState(todayEvents, currentTimeStr) || 'rising';

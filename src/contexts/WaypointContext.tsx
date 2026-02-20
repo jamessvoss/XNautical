@@ -6,7 +6,7 @@
  * provides CRUD operations, and manages creation/edit modal state.
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo, ReactNode } from 'react';
 import { Platform } from 'react-native';
 import { Waypoint, WaypointCategory, WaypointCreateData, WaypointPhoto } from '../types/waypoint';
 import * as waypointService from '../services/waypointService';
@@ -297,25 +297,32 @@ export function WaypointProvider({ children }: WaypointProviderProps) {
     return waypointPhotoService.takePhoto(waypointId);
   }, []);
 
+
+  const value: WaypointContextType = useMemo(() => ({
+    waypoints,
+    loading,
+    addWaypoint,
+    updateWaypoint: updateWaypointFn,
+    deleteWaypoint: deleteWaypointFn,
+    deleteWaypoints: deleteWaypointsFn,
+    showCreationModal,
+    openCreationModal,
+    openEditModal,
+    closeCreationModal,
+    pendingCoordinate,
+    editingWaypoint,
+    pickPhotoForWaypoint,
+    takePhotoForWaypoint,
+  }), [
+    waypoints, loading,
+    addWaypoint, updateWaypointFn, deleteWaypointFn, deleteWaypointsFn,
+    showCreationModal, openCreationModal, openEditModal, closeCreationModal,
+    pendingCoordinate, editingWaypoint,
+    pickPhotoForWaypoint, takePhotoForWaypoint,
+  ]);
+
   return (
-    <WaypointContext.Provider
-      value={{
-        waypoints,
-        loading,
-        addWaypoint,
-        updateWaypoint: updateWaypointFn,
-        deleteWaypoint: deleteWaypointFn,
-        deleteWaypoints: deleteWaypointsFn,
-        showCreationModal,
-        openCreationModal,
-        openEditModal,
-        closeCreationModal,
-        pendingCoordinate,
-        editingWaypoint,
-        pickPhotoForWaypoint,
-        takePhotoForWaypoint,
-      }}
-    >
+    <WaypointContext.Provider value={value}>
       {children}
     </WaypointContext.Provider>
   );

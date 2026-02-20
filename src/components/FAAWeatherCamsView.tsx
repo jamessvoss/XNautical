@@ -3,7 +3,7 @@
  * Displays FAA weather cameras for Alaska
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { View, StyleSheet, TouchableOpacity, Text, ActivityIndicator } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,6 +20,7 @@ const FAA_WEATHERCAMS_URL = 'https://weathercams.faa.gov/map/-150.0,61.2,5';
 const FAAWeatherCamsView = ({ visible, onClose, embedded = false }: Props) => {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
+  const initialLoadDone = useRef(false);
 
   if (!visible) return null;
 
@@ -52,8 +53,10 @@ const FAAWeatherCamsView = ({ visible, onClose, embedded = false }: Props) => {
       <WebView
         source={{ uri: FAA_WEATHERCAMS_URL }}
         style={styles.webview}
-        onLoadStart={() => setLoading(true)}
-        onLoadEnd={() => setLoading(false)}
+        onLoadEnd={() => {
+          setLoading(false);
+          initialLoadDone.current = true;
+        }}
         javaScriptEnabled={true}
         domStorageEnabled={true}
       />

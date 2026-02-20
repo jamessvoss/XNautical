@@ -132,6 +132,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   orientationMode: 'north-up',
   depthUnits: 'meters',
   tideCorrectedSoundings: false,
+  chartDetail: 'max',
 };
 
 export function useDisplaySettings() {

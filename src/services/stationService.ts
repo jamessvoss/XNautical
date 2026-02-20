@@ -1,24 +1,26 @@
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { app } from '../config/firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import { unzip } from 'react-native-zip-archive';
 import * as SQLite from 'expo-sqlite';
-
-// Initialize Firebase Functions
-const functions = getFunctions(app);
-
-console.log('Using Cloud Function for station locations (single optimized call)');
-
-const STORAGE_KEY_TIDE_STATIONS = '@XNautical:tideStations';
-const STORAGE_KEY_CURRENT_STATIONS = '@XNautical:currentStations';
-const STORAGE_KEY_STATIONS_TIMESTAMP = '@XNautical:stationsTimestamp';
 
 // Prediction storage keys
 const STORAGE_KEY_TIDE_PREDICTIONS = '@XNautical:tidePredictions';
 const STORAGE_KEY_CURRENT_PREDICTIONS = '@XNautical:currentPredictions';
 const STORAGE_KEY_PREDICTIONS_TIMESTAMP = '@XNautical:predictionsTimestamp';
 const STORAGE_KEY_PREDICTIONS_STATS = '@XNautical:predictionsStats';
+
+/**
+ * Format a Date as YYYY-MM-DD in the device's local timezone.
+ * NOAA predictions are stored in station-local time, so we must use
+ * local dates (not UTC) when querying. toISOString() returns UTC which
+ * can be off by a day near midnight.
+ */
+function formatLocalDate(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 export interface TideEvent {
   time: string;      // "HH:MM"
@@ -53,8 +55,11 @@ export interface CurrentStation {
 
 let cachedTideStations: TideStation[] | null = null;
 let cachedCurrentStations: CurrentStation[] | null = null;
-let fetchPromise: Promise<void> | null = null;
-let loadedFromStorage = false;
+let loadPromise: Promise<void> | null = null;
+
+// Reverse indexes: stationId → districtId (populated by loadStationsFromDatabases)
+const tideStationDistrictMap: Map<string, string> = new Map();
+const currentStationDistrictMap: Map<string, string> = new Map();
 
 // In-memory cache for predictions (loaded from AsyncStorage)
 let cachedTidePredictions: Record<string, Record<string, TideEvent[]>> = {};
@@ -62,121 +67,87 @@ let cachedCurrentPredictions: Record<string, Record<string, any>> = {};
 let predictionsLoaded = false;
 
 /**
- * Load stations from AsyncStorage
- * This is called on app startup and when returning from prediction downloads
+ * Load station metadata from all installed per-district prediction SQLite databases.
+ * Each prediction DB (tides_{districtId}.db, currents_{districtId}.db) contains a
+ * `stations` table with id, name, lat, lng, type/bin. This replaces the old
+ * AsyncStorage cache and Cloud Function call — stations are now sourced directly
+ * from the already-downloaded prediction databases.
  */
-export async function loadFromStorage(): Promise<void> {
-  if (loadedFromStorage) return;
-  
-  try {
-    console.log('Loading stations from AsyncStorage...');
-    const [tidesJson, currentsJson, timestamp] = await Promise.all([
-      AsyncStorage.getItem(STORAGE_KEY_TIDE_STATIONS),
-      AsyncStorage.getItem(STORAGE_KEY_CURRENT_STATIONS),
-      AsyncStorage.getItem(STORAGE_KEY_STATIONS_TIMESTAMP),
-    ]);
-    
-    if (tidesJson && currentsJson) {
-      cachedTideStations = JSON.parse(tidesJson);
-      cachedCurrentStations = JSON.parse(currentsJson);
-      console.log(`Loaded ${cachedTideStations?.length || 0} tide stations and ${cachedCurrentStations?.length || 0} current stations from storage`);
-      
-      if (timestamp) {
-        const age = Date.now() - parseInt(timestamp);
-        console.log(`Station data is ${Math.round(age / 1000 / 60 / 60)} hours old`);
-      }
-    } else {
-      console.log('No stations found in storage');
-    }
-  } catch (error) {
-    console.error('Error loading stations from storage:', error);
-  } finally {
-    loadedFromStorage = true;
-  }
-}
-
-/**
- * Save stations to AsyncStorage
- */
-async function saveToStorage(): Promise<void> {
-  if (!cachedTideStations || !cachedCurrentStations) return;
-  
-  try {
-    console.log('Saving stations to AsyncStorage...');
-    await Promise.all([
-      AsyncStorage.setItem(STORAGE_KEY_TIDE_STATIONS, JSON.stringify(cachedTideStations)),
-      AsyncStorage.setItem(STORAGE_KEY_CURRENT_STATIONS, JSON.stringify(cachedCurrentStations)),
-      AsyncStorage.setItem(STORAGE_KEY_STATIONS_TIMESTAMP, Date.now().toString()),
-    ]);
-    console.log(`Saved ${cachedTideStations.length} tide stations and ${cachedCurrentStations.length} current stations to storage`);
-  } catch (error) {
-    console.error('Error saving stations to storage:', error);
-  }
-}
-
-/**
- * Internal function to fetch both tide and current stations from Cloud Function
- * This is called by both fetchTideStations and fetchCurrentStations to ensure
- * they share the same data and only make one Cloud Function call
- */
-async function fetchAllStations(): Promise<void> {
-  // First, try loading from storage
-  await loadFromStorage();
-  
-  // If already in memory cache, return immediately
+export async function loadStationsFromDatabases(): Promise<void> {
+  // If already loaded and cached, return immediately
   if (cachedTideStations && cachedCurrentStations) {
-    return Promise.resolve();
+    return;
   }
 
-  // If already fetching, wait for that to complete
-  if (fetchPromise) {
-    return fetchPromise;
+  // If another call is already loading, wait for it
+  if (loadPromise) {
+    return loadPromise;
   }
 
-  // Create the fetch promise
-  fetchPromise = (async () => {
+  loadPromise = (async () => {
     try {
-      console.log('Calling getStationLocations Cloud Function...');
-      const getLocations = httpsCallable(functions, 'getStationLocations');
-      const result = await getLocations({});
-      const data = result.data as any;
-      
-      console.log(`Received ${data.tideStations.length} tide stations and ${data.currentStations.length} current stations from Cloud Function`);
-      
-      // Cache tide stations
-      cachedTideStations = data.tideStations.map((station: any) => ({
-        id: station.id,
-        name: station.name,
-        lat: station.lat,
-        lng: station.lng,
-        type: station.type,
-        predictions: undefined,
-      }));
-      
-      // Cache current stations
-      cachedCurrentStations = data.currentStations.map((station: any) => ({
-        id: station.id,
-        name: station.name,
-        lat: station.lat,
-        lng: station.lng,
-        bin: station.bin,
-        predictions: undefined,
-      }));
-      
-      console.log(`Cached ${cachedTideStations?.length || 0} tide stations and ${cachedCurrentStations?.length || 0} current stations in memory`);
-      
-      // Save to AsyncStorage for persistence
-      await saveToStorage();
+      console.log('[STATIONS] Loading stations from prediction databases...');
+      const districts = await findInstalledPredictionDistricts();
+
+      if (districts.length === 0) {
+        console.log('[STATIONS] No prediction databases found');
+        cachedTideStations = [];
+        cachedCurrentStations = [];
+        return;
+      }
+
+      const allTideStations: TideStation[] = [];
+      const allCurrentStations: CurrentStation[] = [];
+
+      for (const districtId of districts) {
+        try {
+          const tideDb = await openTideDatabase(districtId);
+          // Schema: stations(id, name, lat, lng) — no type column
+          const tideRows = await tideDb.getAllAsync<{ id: string; name: string; lat: number; lng: number }>(
+            'SELECT id, name, lat, lng FROM stations'
+          );
+          for (const r of tideRows) {
+            allTideStations.push({
+              id: r.id, name: r.name, lat: r.lat, lng: r.lng,
+              type: 'S', // Default — DB doesn't store reference/subordinate type
+            });
+            tideStationDistrictMap.set(r.id, districtId);
+          }
+        } catch (error) {
+          console.warn(`[STATIONS] Could not load tide stations from ${districtId}:`, error);
+        }
+
+        try {
+          const currentDb = await openCurrentDatabase(districtId);
+          // Schema: stations(id, name, lat, lng, noaa_type, weak_and_variable) — no bin column
+          const currentRows = await currentDb.getAllAsync<{ id: string; name: string; lat: number; lng: number }>(
+            'SELECT id, name, lat, lng FROM stations'
+          );
+          for (const r of currentRows) {
+            allCurrentStations.push({
+              id: r.id, name: r.name, lat: r.lat, lng: r.lng,
+              bin: 1, // Default — DB doesn't store bin depth
+            });
+            currentStationDistrictMap.set(r.id, districtId);
+          }
+        } catch (error) {
+          console.warn(`[STATIONS] Could not load current stations from ${districtId}:`, error);
+        }
+      }
+
+      cachedTideStations = allTideStations;
+      cachedCurrentStations = allCurrentStations;
+      console.log(`[STATIONS] Loaded ${allTideStations.length} tide stations and ${allCurrentStations.length} current stations from ${districts.length} districts`);
     } catch (error) {
-      console.error('Error fetching station locations:', error);
-      console.error('Error details:', JSON.stringify(error, null, 2));
-      throw error;
+      console.error('[STATIONS] Error loading stations from databases:', error);
+      cachedTideStations = [];
+      cachedCurrentStations = [];
     } finally {
-      fetchPromise = null;
+      loadPromise = null;
     }
   })();
 
-  return fetchPromise;
+  return loadPromise;
 }
 
 /**
@@ -194,20 +165,18 @@ export function getCachedCurrentStations(): CurrentStation[] {
 }
 
 /**
- * Fetch all tide and current station locations from Cloud Function
- * Single optimized call returns both collections
+ * Get all tide station locations (loads from SQLite if not cached)
  */
 export async function fetchTideStations(includePredictions: boolean = false): Promise<TideStation[]> {
-  await fetchAllStations();
+  await loadStationsFromDatabases();
   return cachedTideStations || [];
 }
 
 /**
- * Fetch all current station locations from Cloud Function
- * Single optimized call returns both collections
+ * Get all current station locations (loads from SQLite if not cached)
  */
 export async function fetchCurrentStations(includePredictions: boolean = false): Promise<CurrentStation[]> {
-  await fetchAllStations();
+  await loadStationsFromDatabases();
   return cachedCurrentStations || [];
 }
 
@@ -215,19 +184,11 @@ export async function fetchCurrentStations(includePredictions: boolean = false):
  * Clear cached stations (useful for testing/refresh)
  */
 export function clearStationCache() {
-  console.log('Clearing station cache from memory and storage...');
+  console.log('[STATIONS] Clearing station cache from memory...');
   cachedTideStations = null;
   cachedCurrentStations = null;
-  loadedFromStorage = false;
-  
-  // Also clear from AsyncStorage
-  AsyncStorage.multiRemove([
-    STORAGE_KEY_TIDE_STATIONS,
-    STORAGE_KEY_CURRENT_STATIONS,
-    STORAGE_KEY_STATIONS_TIMESTAMP,
-  ]).catch(error => {
-    console.error('Error clearing station cache from storage:', error);
-  });
+  tideStationDistrictMap.clear();
+  currentStationDistrictMap.clear();
 }
 
 /**
@@ -446,36 +407,45 @@ export async function getPredictionDatabaseMetadata(districtId: string = '17cgd'
 async function downloadAndExtractDatabase(
   storagePath: string,
   localDbName: string,
+  districtId: string,
   onProgress?: (percent: number) => void
 ): Promise<{ success: boolean; size: number; error?: string }> {
   const { storage } = await import('../config/firebase');
   const { ref, getDownloadURL } = await import('firebase/storage');
+  const { downloadManager } = await import('./downloadManager');
   
   const compressedPath = `${FileSystem.cacheDirectory}${localDbName}.zip`;
   const dbPath = `${FileSystem.documentDirectory}${localDbName}`;
   
   try {
-    // Get download URL
+    // Get download URL and file size
     const storageRef = ref(storage, storagePath);
     const downloadUrl = await getDownloadURL(storageRef);
     
-    // Download
-    const downloadResumable = FileSystem.createDownloadResumable(
-      downloadUrl,
-      compressedPath,
-      {},
-      (downloadProgress) => {
-        const { totalBytesWritten, totalBytesExpectedToWrite } = downloadProgress;
-        if (totalBytesExpectedToWrite > 0) {
-          const percent = Math.round((totalBytesWritten / totalBytesExpectedToWrite) * 100);
-          onProgress?.(percent);
-        }
-      }
-    );
+    // Get actual file size from Firebase Storage metadata
+    const { getMetadata } = await import('firebase/storage');
+    const metadata = await getMetadata(storageRef);
+    const fileSize = metadata.size || 50 * 1024 * 1024; // Default 50MB estimate
     
-    const result = await downloadResumable.downloadAsync();
-    if (!result) {
-      throw new Error('Download failed - no result returned');
+    // Start download through DownloadManager
+    const downloadId = await downloadManager.startDownload({
+      type: 'prediction',
+      districtId,
+      url: downloadUrl,
+      destination: compressedPath,
+      totalBytes: fileSize,
+    });
+    
+    // Subscribe to progress updates
+    const unsubscribe = downloadManager.subscribeToProgress(downloadId, (progress) => {
+      onProgress?.(progress.percent);
+    });
+    
+    // Wait for download to complete
+    try {
+      await downloadManager.waitForCompletion(downloadId);
+    } finally {
+      unsubscribe();
     }
     
     // Notify extraction starting
@@ -529,26 +499,33 @@ export async function downloadAllPredictions(
     };
     
     onProgress?.('Downloading prediction databases...', 10);
-    
-    // Download both databases in parallel using district-specific paths and filenames
-    const [tidesResult, currentsResult] = await Promise.all([
-      downloadAndExtractDatabase(
-        `${districtId}/predictions/tides_${districtId}.db.zip`,
-        `tides_${districtId}.db`,
-        (p) => { tidesProgress = p; updateProgress(); }
-      ),
-      downloadAndExtractDatabase(
-        `${districtId}/predictions/currents_${districtId}.db.zip`,
-        `currents_${districtId}.db`,
-        (p) => { currentsProgress = p; updateProgress(); }
-      ),
-    ]);
-    
-    // Check results
+
+    // Download sequentially so a failure doesn't leave partial state.
+    // If tides fails, we don't download currents. If currents fails, we
+    // clean up the tides DB so we never have a half-populated district.
+    const tidesResult = await downloadAndExtractDatabase(
+      `${districtId}/predictions/tides_${districtId}.db.zip`,
+      `tides_${districtId}.db`,
+      districtId,
+      (p) => { tidesProgress = p; updateProgress(); }
+    );
+
     if (!tidesResult.success) {
       throw new Error(`Tides download failed: ${tidesResult.error}`);
     }
+
+    const currentsResult = await downloadAndExtractDatabase(
+      `${districtId}/predictions/currents_${districtId}.db.zip`,
+      `currents_${districtId}.db`,
+      districtId,
+      (p) => { currentsProgress = p; updateProgress(); }
+    );
+
     if (!currentsResult.success) {
+      // Clean up the successfully downloaded tides DB so we don't leave partial state
+      const tidesPath = `${FileSystem.documentDirectory}tides_${districtId}.db`;
+      await FileSystem.deleteAsync(tidesPath, { idempotent: true }).catch(() => {});
+      console.warn(`[PREDICTIONS] Cleaned up tides DB after currents download failed`);
       throw new Error(`Currents download failed: ${currentsResult.error}`);
     }
     
@@ -574,14 +551,17 @@ export async function downloadAllPredictions(
     
     predictionsLoaded = true;
     
-    // Fetch station metadata now that predictions are downloaded
+    // Load station metadata from the newly downloaded prediction databases
     onProgress?.('Loading station locations...', 95);
     try {
-      await fetchAllStations();
-      console.log('[PREDICTIONS] Station metadata loaded successfully');
+      // Clear existing cache so loadStationsFromDatabases() re-scans all districts
+      cachedTideStations = null;
+      cachedCurrentStations = null;
+      await loadStationsFromDatabases();
+      console.log('[PREDICTIONS] Station metadata loaded from prediction databases');
     } catch (error) {
       console.warn('[PREDICTIONS] Failed to load station metadata:', error);
-      // Don't fail the whole download if station metadata fetch fails
+      // Don't fail the whole download if station metadata loading fails
     }
     
     const totalTime = Date.now() - startTime;
@@ -713,6 +693,46 @@ export async function arePredictionsDownloaded(districtId: string = '17cgd'): Pr
   } catch (error) {
     console.error('[PREDICTIONS] Error checking if downloaded:', error);
     return false;
+  }
+}
+
+/**
+ * Close prediction database connections for a specific district without deleting files.
+ * Used before deleting region files to release file locks.
+ */
+export async function closePredictionDatabases(districtId: string): Promise<void> {
+  console.log(`[StationService] Closing prediction databases for ${districtId}...`);
+  
+  try {
+    // Close tide database connection
+    const tideConn = tideDbMap.get(districtId);
+    if (tideConn) {
+      await tideConn.closeAsync();
+      tideDbMap.delete(districtId);
+      console.log(`[StationService] Closed tides database for ${districtId}`);
+    }
+    
+    // Close currents database connection
+    const currentConn = currentDbMap.get(districtId);
+    if (currentConn) {
+      await currentConn.closeAsync();
+      currentDbMap.delete(districtId);
+      console.log(`[StationService] Closed currents database for ${districtId}`);
+    }
+    
+    // Clear cached predictions for this district
+    Object.keys(cachedTidePredictions).forEach(key => {
+      if (key.startsWith(`${districtId}:`)) {
+        delete cachedTidePredictions[key];
+      }
+    });
+    Object.keys(cachedCurrentPredictions).forEach(key => {
+      if (key.startsWith(`${districtId}:`)) {
+        delete cachedCurrentPredictions[key];
+      }
+    });
+  } catch (error) {
+    console.error(`[StationService] Error closing databases for ${districtId}:`, error);
   }
 }
 
@@ -1017,12 +1037,23 @@ async function findInstalledPredictionDistricts(): Promise<string[]> {
 }
 
 /**
- * Open a tide database by trying all installed districts until we find the station.
- * Returns the database and districtId, or null if not found.
+ * Find the tide database containing a station. Uses the reverse index for O(1) lookup,
+ * falling back to a full scan if the index isn't populated yet.
  */
 async function findTideDatabaseForStation(stationId: string): Promise<{ db: SQLite.SQLiteDatabase; districtId: string } | null> {
+  // Fast path: use reverse index
+  const knownDistrict = tideStationDistrictMap.get(stationId);
+  if (knownDistrict) {
+    try {
+      const database = await openTideDatabase(knownDistrict);
+      return { db: database, districtId: knownDistrict };
+    } catch (error) {
+      console.warn(`[PREDICTIONS] Reverse index hit for ${stationId} → ${knownDistrict} but open failed:`, error);
+    }
+  }
+
+  // Slow path: scan all districts
   const districts = await findInstalledPredictionDistricts();
-  
   for (const districtId of districts) {
     try {
       const database = await openTideDatabase(districtId);
@@ -1031,24 +1062,36 @@ async function findTideDatabaseForStation(stationId: string): Promise<{ db: SQLi
         [stationId]
       );
       if (station) {
+        tideStationDistrictMap.set(stationId, districtId);
         return { db: database, districtId };
       }
     } catch (error) {
-      // Database might not have stations table or other issue - skip
+      console.warn(`[PREDICTIONS] Error scanning ${districtId} for tide station ${stationId}:`, error);
       continue;
     }
   }
-  
+  console.warn(`[PREDICTIONS] Tide station ${stationId} not found in any of ${districts.length} districts: [${districts.join(', ')}]`);
   return null;
 }
 
 /**
- * Open a current database by trying all installed districts until we find the station.
- * Returns the database and districtId, or null if not found.
+ * Find the current database containing a station. Uses the reverse index for O(1) lookup,
+ * falling back to a full scan if the index isn't populated yet.
  */
 async function findCurrentDatabaseForStation(stationId: string): Promise<{ db: SQLite.SQLiteDatabase; districtId: string } | null> {
+  // Fast path: use reverse index
+  const knownDistrict = currentStationDistrictMap.get(stationId);
+  if (knownDistrict) {
+    try {
+      const database = await openCurrentDatabase(knownDistrict);
+      return { db: database, districtId: knownDistrict };
+    } catch (error) {
+      console.warn(`[PREDICTIONS] Reverse index hit for ${stationId} → ${knownDistrict} but open failed:`, error);
+    }
+  }
+
+  // Slow path: scan all districts
   const districts = await findInstalledPredictionDistricts();
-  
   for (const districtId of districts) {
     try {
       const database = await openCurrentDatabase(districtId);
@@ -1057,14 +1100,15 @@ async function findCurrentDatabaseForStation(stationId: string): Promise<{ db: S
         [stationId]
       );
       if (station) {
+        currentStationDistrictMap.set(stationId, districtId);
         return { db: database, districtId };
       }
     } catch (error) {
-      // Database might not have stations table or other issue - skip
+      console.warn(`[PREDICTIONS] Error scanning ${districtId} for current station ${stationId}:`, error);
       continue;
     }
   }
-  
+  console.warn(`[PREDICTIONS] Current station ${stationId} not found in any of ${districts.length} districts: [${districts.join(', ')}]`);
   return null;
 }
 
@@ -1171,29 +1215,64 @@ export async function getStationPredictionsForRange(
       : await findCurrentDatabaseForStation(stationId);
     
     if (!result) {
-      // Station not found in any installed database - return empty silently
+      console.warn(`[PREDICTIONS] Station ${stationId} (${stationType}) not found in any installed database`);
       return [];
     }
-    
-    const { db: database } = result;
-    const startDateStr = startDate.toISOString().split('T')[0];
-    const endDateStr = endDate.toISOString().split('T')[0];
-    
+
+    const { db: database, districtId } = result;
+    const startDateStr = formatLocalDate(startDate);
+    const endDateStr = formatLocalDate(endDate);
+
     const tableName = stationType === 'tide' ? 'tide_predictions' : 'current_predictions';
-    
-    return await database.getAllAsync(
-      `SELECT * FROM ${tableName} 
-       WHERE station_id = ? AND date >= ? AND date <= ? 
+
+    const rows = await database.getAllAsync(
+      `SELECT * FROM ${tableName}
+       WHERE station_id = ? AND date >= ? AND date <= ?
        ORDER BY date, time`,
       [stationId, startDateStr, endDateStr]
     );
+
+    if (rows.length === 0) {
+      // Diagnostic: check what's actually in the database for this station
+      const totalCount = await database.getFirstAsync<{ cnt: number }>(
+        `SELECT COUNT(*) as cnt FROM ${tableName} WHERE station_id = ?`,
+        [stationId]
+      );
+      const cnt = totalCount?.cnt ?? 0;
+      if (cnt > 0) {
+        // Has data but not for our date range - sample actual dates to diagnose
+        const sampleDates = await database.getAllAsync<{ date: string; cnt: number }>(
+          `SELECT date, COUNT(*) as cnt FROM ${tableName} WHERE station_id = ? GROUP BY date ORDER BY date LIMIT 5`,
+          [stationId]
+        );
+        const dateRange = await database.getFirstAsync<{ minDate: string; maxDate: string }>(
+          `SELECT MIN(date) as minDate, MAX(date) as maxDate FROM ${tableName} WHERE station_id = ?`,
+          [stationId]
+        );
+        const distinctDays = await database.getFirstAsync<{ cnt: number }>(
+          `SELECT COUNT(DISTINCT date) as cnt FROM ${tableName} WHERE station_id = ?`,
+          [stationId]
+        );
+        const sampleStr = sampleDates.map(s => `${s.date}(${s.cnt})`).join(', ');
+        console.warn(
+          `[PREDICTIONS] 0 results for ${stationId} in ${districtId} (${stationType}), ` +
+          `queried ${startDateStr}..${endDateStr}. ` +
+          `DB has ${cnt} predictions across ${distinctDays?.cnt ?? '?'} days ` +
+          `(${dateRange?.minDate ?? '?'} to ${dateRange?.maxDate ?? '?'}). ` +
+          `Sample dates: ${sampleStr}`
+        );
+      }
+      // Skip logging for stations with 0 total predictions (expected for empty/failed stations)
+    }
+
+    return rows;
   } catch (error: any) {
     // Check if this is a "shared object released" error (stale connection after hot reload)
-    if (error?.message?.includes('shared object') || 
+    if (error?.message?.includes('shared object') ||
         error?.message?.includes('already released') ||
         error?.message?.includes('Cannot convert provided JavaScriptObject')) {
       console.warn('[PREDICTIONS] Detected stale connection, resetting and retrying...');
-      
+
       // Reset all connections for this type
       if (stationType === 'tide') {
         tideDbMap.clear();
@@ -1202,17 +1281,17 @@ export async function getStationPredictionsForRange(
         currentDbMap.clear();
         currentDbPromiseMap.clear();
       }
-      
+
       // Retry once with fresh connections
       try {
         const result = stationType === 'tide'
           ? await findTideDatabaseForStation(stationId)
           : await findCurrentDatabaseForStation(stationId);
-        
+
         if (!result) return [];
-        
-        const startDateStr = startDate.toISOString().split('T')[0];
-        const endDateStr = endDate.toISOString().split('T')[0];
+
+        const startDateStr = formatLocalDate(startDate);
+        const endDateStr = formatLocalDate(endDate);
         const tableName = stationType === 'tide' ? 'tide_predictions' : 'current_predictions';
         
         return await result.db.getAllAsync(
@@ -1259,9 +1338,9 @@ export async function getStationPredictions(stationId: string, stationType: 'tid
       throw new Error(`Station ${stationId} not found`);
     }
     
-    // Get today's date
+    // Get today's date in local timezone (predictions are stored in station-local time)
     const today = new Date();
-    const dateStr = today.toISOString().split('T')[0]; // YYYY-MM-DD
+    const dateStr = formatLocalDate(today);
     
     let predictions = [];
     
@@ -1322,14 +1401,14 @@ export async function getStationPredictions(stationId: string, stationType: 'tid
         }
         
         const today = new Date();
-        const dateStr = today.toISOString().split('T')[0];
+        const dateStr = formatLocalDate(today);
         const tableName = stationType === 'tide' ? 'tide_predictions' : 'current_predictions';
-        
+
         const predictions = await retryResult.db.getAllAsync(
           `SELECT * FROM ${tableName} WHERE station_id = ? AND date = ? ORDER BY time`,
           [stationId, dateStr]
         );
-        
+
         return {
           station,
           predictions,

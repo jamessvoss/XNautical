@@ -5,7 +5,7 @@
  * The context tab changes its name and content based on selections from the More menu.
  */
 
-import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, ReactNode } from 'react';
 
 // Available views that can be shown in the context tab
 export type ContextView = 'stats' | 'scratchpad' | 'waypoints' | 'gpssensors' | 'boatperformance' | 'settings';
@@ -65,17 +65,19 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     }
   }, [navigationRef]);
   
-  console.log('[NavigationProvider] Rendering provider...');
+  // Memoize the context value to prevent unnecessary re-renders of consumers.
+  // Without this, every NavigationProvider render creates a new value object,
+  // causing ALL useContextNav() consumers (AppNavigator, etc.) to re-render.
+  const value = useMemo(() => ({
+    contextTabName,
+    contextTabView,
+    setContextView,
+    navigationRef,
+    setNavigationRef,
+  }), [contextTabName, contextTabView, setContextView, navigationRef, setNavigationRef]);
+
   return (
-    <NavigationContext.Provider
-      value={{
-        contextTabName,
-        contextTabView,
-        setContextView,
-        navigationRef,
-        setNavigationRef,
-      }}
-    >
+    <NavigationContext.Provider value={value}>
       {children}
     </NavigationContext.Provider>
   );

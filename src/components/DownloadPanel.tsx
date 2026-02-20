@@ -54,7 +54,6 @@ interface Props {
   region: Region | null;
   onBack: () => void;
   selectedOptionalMaps?: Set<string>;
-  autoStartDownload?: boolean;  // Auto-start download when panel opens
 }
 
 interface DownloadCategory {
@@ -72,7 +71,7 @@ interface DownloadCategory {
 // Component
 // ============================================
 
-export default function DownloadPanel({ region, onBack, selectedOptionalMaps, autoStartDownload }: Props) {
+export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: Props) {
   console.log('[DownloadPanel] Component rendering, region:', region?.firestoreId);
   
   const [loading, setLoading] = useState(true);
@@ -148,17 +147,6 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps, au
     }
   }, [region]);
 
-  // Auto-start download if requested
-  useEffect(() => {
-    if (autoStartDownload && !loading && districtData && !downloadingAll) {
-      console.log('[DownloadPanel] Auto-starting download...');
-      // Small delay to ensure UI is ready
-      setTimeout(() => {
-        executeDownloadAll();
-      }, 500);
-    }
-  }, [autoStartDownload, loading, districtData, downloadingAll]);
-
   const loadData = async () => {
     if (!region) return;
     try {
@@ -212,15 +200,16 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps, au
     const packs = districtData.downloadPacks;
     const cats: DownloadCategory[] = [];
 
-    // Charts (US1-US6) - grouped as one required package
+    // Charts - unified single pack or per-scale packs
     const chartPacks = packs.filter(p => p.type === 'charts');
     if (chartPacks.length > 0) {
       const totalSize = chartPacks.reduce((sum, p) => sum + (p.sizeBytes * DECOMPRESSION_RATIO), 0);
       const allInstalled = chartPacks.every(p => installedPackIds.includes(p.id));
+      const isUnified = chartPacks.length === 1 && !chartPacks[0].band;
       cats.push({
         id: 'charts',
-        label: 'Charts (US1-US6)',
-        description: `${chartPacks.length} scale packs`,
+        label: isUnified ? 'Navigation Charts' : 'Charts (US1-US6)',
+        description: isUnified ? 'All chart scales (Overview through Berthing)' : `${chartPacks.length} scale packs`,
         icon: 'map',
         sizeBytes: totalSize,
         required: true,
@@ -590,7 +579,7 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps, au
           continue;
         }
 
-        // Download all packs in this category
+        // Download all packs in this category (skip per-pack manifest, batch at end)
         for (const pack of category.packs) {
           if (installedPackIds.includes(pack.id)) continue;
 
@@ -598,7 +587,8 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps, au
           const success = await chartPackService.downloadPack(
             pack,
             firestoreId,
-            (status) => setPackDownloadStatus(status)
+            (status) => setPackDownloadStatus(status),
+            true, // skipManifest — we'll regenerate once after all packs
           );
 
           if (success) {
@@ -607,6 +597,9 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps, au
           setPackDownloadStatus(null);
         }
       }
+
+      // Regenerate manifest once for all downloaded chart packs
+      await chartPackService.generateManifest();
 
       // Refresh installed state
       const installed = await chartPackService.getInstalledPackIds(firestoreId);
@@ -621,15 +614,15 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps, au
       // Register this district in the region registry
       const { registerDistrict } = await import('../services/regionRegistryService');
       await registerDistrict(firestoreId, {
-        hasCharts: installed.some(id => id.startsWith('charts-')),
+        hasCharts: installed.includes('charts') || installed.some(id => id.startsWith('charts-')),
         hasPredictions: predDownloaded,
         hasBuoys: buoysDl,
         hasMarineZones: marineZonesDl,
         hasSatellite: installed.some(id => id.startsWith('satellite-')),
         hasBasemap: installed.includes('basemap'),
         hasGnis: installed.includes('gnis'),
-        hasOcean: installed.some(id => id.startsWith('ocean-')),
-        hasTerrain: installed.some(id => id.startsWith('terrain-')),
+        hasOcean: installed.some(id => id === 'ocean' || id.startsWith('ocean-') || id.includes('_ocean')),
+        hasTerrain: installed.some(id => id === 'terrain' || id.startsWith('terrain-') || id.includes('_terrain')),
       });
 
       Alert.alert('Complete', 'All data downloaded successfully.');
@@ -697,12 +690,12 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps, au
             // Register/update district in region registry
             const { registerDistrict } = await import('../services/regionRegistryService');
             await registerDistrict(firestoreId, {
-              hasCharts: installed.some(id => id.startsWith('charts-')),
+              hasCharts: installed.includes('charts') || installed.some(id => id.startsWith('charts-')),
               hasSatellite: installed.some(id => id.startsWith('satellite-')),
               hasBasemap: installed.includes('basemap'),
               hasGnis: installed.includes('gnis'),
-              hasOcean: installed.some(id => id.startsWith('ocean-')),
-              hasTerrain: installed.some(id => id.startsWith('terrain-')),
+              hasOcean: installed.some(id => id === 'ocean' || id.startsWith('ocean-') || id.includes('_ocean')),
+              hasTerrain: installed.some(id => id === 'terrain' || id.startsWith('terrain-') || id.includes('_terrain')),
             });
           },
         },
@@ -965,7 +958,8 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps, au
               const freedMB = result.freedBytes / 1024 / 1024;
               Alert.alert(
                 'Region Deleted',
-                `Deleted ${result.deletedFiles} files and freed ${freedMB >= 1024 ? `${(freedMB / 1024).toFixed(1)} GB` : `${freedMB.toFixed(0)} MB`} of storage.`
+                `Deleted ${result.deletedFiles} files and freed ${freedMB >= 1024 ? `${(freedMB / 1024).toFixed(1)} GB` : `${freedMB.toFixed(0)} MB`} of storage.`,
+                [{ text: 'OK', onPress: () => onBack() }]
               );
             } catch (error: any) {
               Alert.alert('Error', error.message || 'Delete failed');

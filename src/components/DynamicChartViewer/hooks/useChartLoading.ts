@@ -61,6 +61,9 @@ export function useChartLoading(
   // GNIS state (owned here since it's discovered during scanning)
   const [gnisAvailable, setGnisAvailableLocal] = useState(false);
 
+  // Chart center derived from manifest bounds
+  const [chartCenter, setChartCenter] = useState<[number, number] | null>(null);
+
   // Cache buster
   const [cacheBuster, setCacheBuster] = useState(0);
 
@@ -81,37 +84,39 @@ export function useChartLoading(
   // Chart max zoom helper
   const getChartMaxZoom = useCallback((chartId: string): number => {
     const match = chartId.match(/^US(\d)/);
-    if (!match) return 18;
+    if (!match) return 15;
     const scaleNum = parseInt(match[1], 10);
     switch (scaleNum) {
       case 1: return 8;
-      case 2: return 12;
+      case 2: return 10;
       case 3: return 13;
-      case 4: return 16;
-      case 5: return 18;
-      default: return 18;
+      case 4: return 15;
+      case 5: return 15;
+      default: return 15;
     }
   }, []);
 
   const maxAvailableZoom = useMemo(() => {
-    if (mbtilesCharts.length === 0) return 18;
+    if (mbtilesCharts.length === 0) return 15;
     return mbtilesCharts.reduce((max, chart) => {
       return Math.max(max, getChartMaxZoom(chart.chartId));
     }, 0);
   }, [mbtilesCharts, getChartMaxZoom]);
 
-  const effectiveMaxZoom = limitZoomToCharts ? maxAvailableZoom : 22;
+  const effectiveMaxZoom = limitZoomToCharts ? maxAvailableZoom : 15;
 
   // Check if chart is visible at zoom
   const isChartVisibleAtZoom = useCallback((chartId: string, zoom: number): boolean => {
     const match = chartId.match(/US(\d)/);
     if (!match) return true;
     const scale = parseInt(match[1], 10);
+    // Matches tile server getScaleForZoom():
+    // US1: z0-4, US2: z5-7, US3: z8-11, US4: z12+, US5/US6: z14+
     switch (scale) {
-      case 1: return zoom <= 10;
-      case 2: return zoom >= 6 && zoom <= 12;
-      case 3: return zoom >= 8 && zoom <= 15;
-      case 4: return zoom >= 11;
+      case 1: return zoom <= 6;
+      case 2: return zoom >= 3 && zoom <= 10;
+      case 3: return zoom >= 6 && zoom <= 14;
+      case 4: return zoom >= 10;
       case 5: return zoom >= 13;
       default: return zoom >= 15;
     }
@@ -165,7 +170,7 @@ export function useChartLoading(
 
       // === PHASE 2: Load manifest.json ===
       performanceTracker.startPhase(StartupPhase.MANIFEST_LOAD);
-      let manifest: { packs?: { id: string; minZoom: number; maxZoom: number; fileSize?: number }[]; basePacks?: { id: string }[] } | null = null;
+      let manifest: { packs?: { id: string; minZoom: number; maxZoom: number; fileSize?: number; bounds?: { south: number; west: number; north: number; east: number } }[]; basePacks?: { id: string }[] } | null = null;
       let chartPacks: string[] = [];
 
       try {
@@ -177,6 +182,15 @@ export function useChartLoading(
           chartPacks = (manifest?.packs || []).map(p => p.id);
           logger.info(LogCategory.CHARTS, `Loaded manifest.json with ${chartPacks.length} chart packs`);
           logger.setStartupParam('manifestLoaded', true);
+
+          // Derive initial center from the first pack's bounds
+          const firstBounds = (manifest?.packs || []).find(p => p.bounds)?.bounds;
+          if (firstBounds) {
+            const centerLng = (firstBounds.west + firstBounds.east) / 2;
+            const centerLat = (firstBounds.south + firstBounds.north) / 2;
+            setChartCenter([centerLng, centerLat]);
+            logger.debug(LogCategory.CHARTS, `Chart center from manifest: [${centerLng.toFixed(2)}, ${centerLat.toFixed(2)}]`);
+          }
         } else {
           logger.info(LogCategory.CHARTS, 'No manifest.json found - will scan directory');
           logger.setStartupParam('manifestLoaded', false);
@@ -194,13 +208,19 @@ export function useChartLoading(
 
       const scanTileSets = (filesInDir: string[], tileType: string): TileSet[] => {
         const sets: TileSet[] = [];
-        const pattern = new RegExp(`(?:^|_)${tileType}_z(\\d+)(?:-(\\d+))?\\.mbtiles$`);
+        // Match zoom-suffixed files: e.g., d07_ocean_z0-5.mbtiles
+        const zoomPattern = new RegExp(`(?:^|_)${tileType}_z(\\d+)(?:-(\\d+))?\\.mbtiles$`);
+        // Match single files without zoom suffix: e.g., d07_ocean.mbtiles
+        const singlePattern = new RegExp(`(?:^|_)${tileType}\\.mbtiles$`);
         for (const filename of filesInDir) {
-          const match = filename.match(pattern);
-          if (match) {
-            const minZoom = parseInt(match[1], 10);
-            const maxZoom = match[2] ? parseInt(match[2], 10) : minZoom;
+          const zoomMatch = filename.match(zoomPattern);
+          if (zoomMatch) {
+            const minZoom = parseInt(zoomMatch[1], 10);
+            const maxZoom = zoomMatch[2] ? parseInt(zoomMatch[2], 10) : minZoom;
             sets.push({ id: filename.replace('.mbtiles', ''), minZoom, maxZoom });
+          } else if (filename.match(singlePattern)) {
+            // Single file without zoom suffix — covers all zoom levels
+            sets.push({ id: filename.replace('.mbtiles', ''), minZoom: 0, maxZoom: 15 });
           }
         }
         return sets.sort((a, b) => a.minZoom - b.minZoom);
@@ -376,11 +396,22 @@ export function useChartLoading(
             try {
               const healthResp = await fetch(`${serverUrl}/health`);
               console.log(`[TILE-DIAG] Health check: ${healthResp.status}`);
-              const tileResp = await fetch(`${serverUrl}/tiles/5/2/9.pbf`);
-              console.log(`[TILE-DIAG] Tile response: status=${tileResp.status}, size=${tileResp.headers.get('content-length') || 'unknown'}`);
               const tileJsonResp = await fetch(`${serverUrl}/tiles.json`);
               const tileJson = await tileJsonResp.json();
-              console.log(`[TILE-DIAG] TileJSON: minzoom=${tileJson.minzoom}, maxzoom=${tileJson.maxzoom}`);
+              console.log(`[TILE-DIAG] TileJSON: minzoom=${tileJson.minzoom}, maxzoom=${tileJson.maxzoom}, bounds=${JSON.stringify(tileJson.bounds)}`);
+              // Test tile from center of actual chart bounds
+              if (tileJson.bounds && tileJson.bounds.length === 4) {
+                const [bW, bS, bE, bN] = tileJson.bounds;
+                const cLng = (bW + bE) / 2;
+                const cLat = (bS + bN) / 2;
+                const tZ = 5;
+                const n = Math.pow(2, tZ);
+                const tX = Math.floor((cLng + 180) / 360 * n);
+                const latRad = cLat * Math.PI / 180;
+                const tY = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
+                const tileResp = await fetch(`${serverUrl}/tiles/${tZ}/${tX}/${tY}.pbf`);
+                console.log(`[TILE-DIAG] Tile ${tZ}/${tX}/${tY}: status=${tileResp.status}, size=${tileResp.headers.get('content-length') || 'unknown'}`);
+              }
             } catch (diagErr) {
               console.error(`[TILE-DIAG] Connectivity test FAILED:`, diagErr);
             }
@@ -601,6 +632,7 @@ export function useChartLoading(
     limitZoomToCharts,
     getChartMaxZoom,
     isChartVisibleAtZoom,
+    chartCenter,
     loadCharts,
   };
 }

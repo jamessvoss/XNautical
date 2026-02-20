@@ -63,6 +63,16 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     private final ConcurrentHashMap<String, RegionInfo> regionIndex = new ConcurrentHashMap<>();
     private boolean regionIndexLoaded = false;
     private static final String OVERVIEW_REGION = "alaska_overview";
+
+    // Scale band index: maps "US1" -> ["alaska_US1", "d07_US1"], etc.
+    // Built during manifest loading, used for multi-district per-scale pack lookup.
+    private final ConcurrentHashMap<String, List<String>> scalePackIndex = new ConcurrentHashMap<>();
+    private boolean hasPerScalePacks = false;
+
+    // Unified chart packs: maps district prefix -> pack ID (e.g., "d07" -> "d07_charts")
+    // When present, a single pack covers all zoom levels (z0-18) with deduplicated features.
+    private final ConcurrentHashMap<String, String> unifiedChartPacks = new ConcurrentHashMap<>();
+    private boolean hasUnifiedPacks = false;
     
     // Zoom thresholds for tiered loading (base values for "low" detail)
     private static final int OVERVIEW_ONLY_MAX_ZOOM = 7;      // z0-7: only overview
@@ -663,14 +673,62 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
             }
             
             regionIndexLoaded = true;
+
+            // Detect unified chart packs (e.g., "d07_charts", "alaska_charts")
+            unifiedChartPacks.clear();
+            hasUnifiedPacks = false;
+            for (String pid : regionIndex.keySet()) {
+                if (pid.endsWith("_charts")) {
+                    String prefix = pid.substring(0, pid.length() - "_charts".length());
+                    unifiedChartPacks.put(prefix, pid);
+                    hasUnifiedPacks = true;
+                }
+            }
+            if (hasUnifiedPacks) {
+                Log.i(TAG, "[MANIFEST] Unified chart packs detected:");
+                for (Map.Entry<String, String> entry : unifiedChartPacks.entrySet()) {
+                    RegionInfo info = regionIndex.get(entry.getValue());
+                    Log.i(TAG, "[MANIFEST]   " + entry.getKey() + " -> " + entry.getValue() +
+                        " z" + (info != null ? info.minZoom : "?") + "-" + (info != null ? info.maxZoom : "?"));
+                }
+            }
+
+            // Build scale band index for multi-district per-scale pack lookup
+            scalePackIndex.clear();
+            hasPerScalePacks = false;
+            if (!hasUnifiedPacks) {
+                // Only build per-scale index if no unified packs found
+                String[] scaleBands = {"US1", "US2", "US3", "US4", "US5", "US6"};
+                for (String band : scaleBands) {
+                    List<String> packIdsForBand = new ArrayList<>();
+                    for (String pid : regionIndex.keySet()) {
+                        if (pid.endsWith("_" + band)) {
+                            packIdsForBand.add(pid);
+                        }
+                    }
+                    if (!packIdsForBand.isEmpty()) {
+                        scalePackIndex.put(band, packIdsForBand);
+                        hasPerScalePacks = true;
+                    }
+                }
+                if (hasPerScalePacks) {
+                    Log.i(TAG, "[MANIFEST] Per-scale packs detected:");
+                    for (String band : scaleBands) {
+                        List<String> pids = scalePackIndex.get(band);
+                        if (pids != null) {
+                            Log.i(TAG, "[MANIFEST]   " + band + ": " + pids);
+                        }
+                    }
+                }
+            }
+
             Log.i(TAG, "[MANIFEST] ════════════════════════════════════════════════════");
             Log.i(TAG, "[MANIFEST] Pack manifest loaded successfully!");
             Log.i(TAG, "[MANIFEST]   Total packs in manifest: " + totalInIndex);
             Log.i(TAG, "[MANIFEST]   Loaded (have mbtiles): " + loadedCount);
             Log.i(TAG, "[MANIFEST]   Missing (no mbtiles): " + missingCount);
-            Log.i(TAG, "[MANIFEST]   Tiered loading: z0-" + OVERVIEW_ONLY_MAX_ZOOM + " overview only, " +
-                "z" + (OVERVIEW_ONLY_MAX_ZOOM + 1) + "-" + OVERVIEW_TRANSITION_MAX_ZOOM + " mixed, " +
-                "z" + (OVERVIEW_TRANSITION_MAX_ZOOM + 1) + "+ regional only");
+            Log.i(TAG, "[MANIFEST]   Unified packs: " + hasUnifiedPacks);
+            Log.i(TAG, "[MANIFEST]   Per-scale packs: " + hasPerScalePacks);
             Log.i(TAG, "[MANIFEST] ════════════════════════════════════════════════════");
             
         } catch (Exception e) {
@@ -749,104 +807,139 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
     private List<String> findRegionsForTile(int z, int x, int y, int detailOffset) {
         double[] bounds = tileToBounds(z, x, y);
         double west = bounds[0], south = bounds[1], east = bounds[2], north = bounds[3];
-        
+
         List<String> packIds = new ArrayList<>();
-        
-        // Check if we have per-scale packs (new architecture)
-        boolean hasPerScalePacks = regionIndex.containsKey("alaska_US1") || 
-                                   regionIndex.containsKey("alaska_US2") ||
-                                   regionIndex.containsKey("alaska_US3");
-        
-        if (hasPerScalePacks) {
-            // NEW ARCHITECTURE: Per-scale packs
-            // At z14+, combine US5 and US6 for maximum detail
-            // US5 (harbor) provides broader coverage, US6 (berthing) adds fine detail
-            if (z >= 14) {
-                // Try to add both US5 and US6 (additive)
-                // Note: We skip isVisibleAtZoom() here because we're explicitly overriding
-                // the pack's minZoom metadata - we WANT to show these at lower zooms
-                RegionInfo us5Pack = regionIndex.get("alaska_US5");
-                RegionInfo us6Pack = regionIndex.get("alaska_US6");
-                
-                // Add US5 first (broader coverage, drawn first/below)
-                // Only check bounds intersection, not zoom visibility
-                if (us5Pack != null && us5Pack.intersectsTileBounds(west, south, east, north)) {
-                    packIds.add("alaska_US5");
-                }
-                
-                // Add US6 on top (finer detail)
-                if (us6Pack != null && us6Pack.intersectsTileBounds(west, south, east, north)) {
-                    packIds.add("alaska_US6");
-                }
-                
-                if (!packIds.isEmpty()) {
-                    Log.d(TAG, "[SCALE] z" + z + " → COMBINED US5+US6: " + packIds);
-                    return packIds;
-                }
-                
-                // Fallback to US4 if neither US5 nor US6 cover this tile location
-                RegionInfo us4Pack = regionIndex.get("alaska_US4");
-                if (us4Pack != null && us4Pack.intersectsTileBounds(west, south, east, north)) {
-                    packIds.add("alaska_US4");
-                    Log.d(TAG, "[SCALE] z" + z + " → fallback to US4 (no US5/US6 coverage)");
-                    return packIds;
+
+        // UNIFIED ARCHITECTURE: Single deduplicated pack per district (z0-18)
+        if (hasUnifiedPacks) {
+            for (String packId : unifiedChartPacks.values()) {
+                RegionInfo info = regionIndex.get(packId);
+                if (info != null && info.intersectsTileBounds(west, south, east, north)) {
+                    packIds.add(packId);
                 }
             }
-            
-            // Standard single-scale selection for lower zoom levels
-            String targetScale = getScaleForZoom(z, detailOffset);
-            String targetPackId = "alaska_" + targetScale;
-            
-            // Check if target pack exists and covers this tile
-            RegionInfo targetPack = regionIndex.get(targetPackId);
-            if (targetPack != null && targetPack.isVisibleAtZoom(z) && 
-                targetPack.intersectsTileBounds(west, south, east, north)) {
-                packIds.add(targetPackId);
-                Log.d(TAG, "[SCALE] z" + z + " (detail=" + detailOffset + ") → " + targetScale + " (" + targetPackId + ")");
-            } else {
-                // Fallback: try adjacent scales
-                String[] fallbackScales = getFallbackScales(targetScale);
-                for (String scale : fallbackScales) {
-                    String packId = "alaska_" + scale;
-                    RegionInfo pack = regionIndex.get(packId);
-                    if (pack != null && pack.isVisibleAtZoom(z) && 
-                        pack.intersectsTileBounds(west, south, east, north)) {
-                        packIds.add(packId);
-                        Log.d(TAG, "[SCALE] z" + z + " → fallback to " + scale);
-                        break;
+            return packIds;
+        }
+
+        if (hasPerScalePacks) {
+            // NEW ARCHITECTURE: Per-scale packs (works with any district prefix)
+            // At z14+, combine US5 and US6 for maximum detail
+            if (z >= 14) {
+                // Try to add both US5 and US6 (additive) from any district
+                String us5Pack = findPackForScale("US5", z, west, south, east, north, true);
+                String us6Pack = findPackForScale("US6", z, west, south, east, north, true);
+
+                if (us5Pack != null) packIds.add(us5Pack);
+                if (us6Pack != null) packIds.add(us6Pack);
+
+                if (!packIds.isEmpty()) {
+                    return packIds;
+                }
+
+                // Fallback to US4, then US3, US2, US1
+                String[] fallbacks = {"US4", "US3", "US2", "US1"};
+                for (String scale : fallbacks) {
+                    String pack = findPackForScale(scale, z, west, south, east, north, true);
+                    if (pack != null) {
+                        packIds.add(pack);
+                        return packIds;
                     }
                 }
             }
-            
+
+            // Standard single-scale selection for lower zoom levels
+            // Try MORE DETAILED scales first, then the primary, then less detailed.
+            // This ensures near-shore areas covered by US4/US5 approach charts get
+            // their detailed contours/soundings even when US2 has a tile with only
+            // sparse open-ocean data at the same location.
+            String targetScale = getScaleForZoom(z, detailOffset);
+            String targetPack = findPackForScale(targetScale, z, west, south, east, north, false);
+
+            // Add more-detailed fallback packs BEFORE the primary
+            String[] fallbackScales = getFallbackScales(targetScale);
+            for (String scale : fallbackScales) {
+                if (scaleNumber(scale) > scaleNumber(targetScale)) {
+                    String pack = findPackForScale(scale, z, west, south, east, north, true);
+                    if (pack != null) {
+                        packIds.add(pack);
+                    }
+                }
+            }
+
+            // Then the primary pack
+            if (targetPack != null && !packIds.contains(targetPack)) {
+                packIds.add(targetPack);
+            }
+
+            // Then less-detailed fallback packs
+            for (String scale : fallbackScales) {
+                if (scaleNumber(scale) < scaleNumber(targetScale)) {
+                    String pack = findPackForScale(scale, z, west, south, east, north, true);
+                    if (pack != null && !packIds.contains(pack)) {
+                        packIds.add(pack);
+                    }
+                }
+            }
+
             return packIds;
         }
-        
+
         // LEGACY ARCHITECTURE: Tiered packs (alaska_overview, alaska_coastal, alaska_detail)
-        // Fall back to original behavior
         return findRegionsForTileLegacy(z, x, y, detailOffset, bounds);
+    }
+
+    /**
+     * Find the best pack for a given scale band that covers the tile location.
+     * Searches across all districts (e.g., alaska_US3, d07_US3, d01_US3).
+     *
+     * @param scaleBand Scale band (e.g., "US3")
+     * @param z Zoom level
+     * @param west Tile west bound
+     * @param south Tile south bound
+     * @param east Tile east bound
+     * @param north Tile north bound
+     * @param skipZoomCheck If true, skip isVisibleAtZoom (used for z14+ US5/US6 override)
+     * @return Pack ID or null if no pack covers this tile
+     */
+    private String findPackForScale(String scaleBand, int z, double west, double south, double east, double north, boolean skipZoomCheck) {
+        List<String> packs = scalePackIndex.get(scaleBand);
+        if (packs == null) return null;
+
+        for (String packId : packs) {
+            RegionInfo info = regionIndex.get(packId);
+            if (info == null) continue;
+            if (!skipZoomCheck && !info.isVisibleAtZoom(z)) continue;
+            if (info.intersectsTileBounds(west, south, east, north)) {
+                return packId;
+            }
+        }
+        return null;
     }
     
     /**
      * Determine which chart scale to display at a given zoom level.
-     * 
+     *
      * Fixed zoom to scale mapping (NOT affected by detail setting):
-     *   z0-7:   US1 (overview)
-     *   z8-9:   US2 (general)
+     *   z0-4:   US1 (overview)
+     *   z5-9:   US2 (general) — starts early to show more soundings/contours
      *   z10-11: US3 (coastal)
      *   z12+:   US4 (approach) - unless in US5+US6 combine range
-     * 
+     *
      * The detail setting (L/M/H) ONLY affects when US5+US6 combine:
      *   Low    (detailOffset=0): US5+US6 combined at z16+
      *   Medium (detailOffset=2): US5+US6 combined at z14+
      *   High   (detailOffset=4): US5+US6 combined at z12+
-     * 
+     *
      * This method is only called when NOT in the combine range,
      * so it returns US4 for any z12+ that reaches here.
      */
     private String getScaleForZoom(int z, int detailOffset) {
         // US1-US3 at fixed thresholds (detail setting does NOT affect these)
-        if (z <= 7)  return "US1";
-        if (z <= 9)  return "US2";
+        // US2 general charts have sparse near-shore data; US3 coastal charts
+        // cover shoreline areas with contours and soundings. Transition at z8
+        // so coastal features appear when the view is ~10-20nm wide.
+        if (z <= 4)  return "US1";
+        if (z <= 7)  return "US2";
         if (z <= 11) return "US3";
         // z12+ returns US4 (US5+US6 handled by combine logic before this is called)
         return "US4";
@@ -856,17 +949,35 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
      * Get fallback scales to try if primary scale has no data
      */
     private String[] getFallbackScales(String primary) {
+        // Cascade toward more detailed scales first (more likely to have near-shore data),
+        // then less detailed. This ensures near-shore areas covered only by approach/harbor
+        // charts (US4/US5) get served even when the primary scale has no tile there.
         switch (primary) {
-            case "US1": return new String[]{"US2"};
-            case "US2": return new String[]{"US1", "US3"};
-            case "US3": return new String[]{"US2", "US4"};
-            case "US4": return new String[]{"US3", "US5"};
-            case "US5": return new String[]{"US4", "US6"};
-            case "US6": return new String[]{"US5"};
+            case "US1": return new String[]{"US2", "US3", "US4"};
+            case "US2": return new String[]{"US3", "US4", "US1"};
+            case "US3": return new String[]{"US4", "US2", "US5"};
+            case "US4": return new String[]{"US3", "US5", "US2"};
+            case "US5": return new String[]{"US4", "US6", "US3"};
+            case "US6": return new String[]{"US5", "US4"};
             default: return new String[]{};
         }
     }
     
+    /**
+     * Convert scale band name to numeric detail level (higher = more detailed)
+     */
+    private int scaleNumber(String scale) {
+        switch (scale) {
+            case "US1": return 1;
+            case "US2": return 2;
+            case "US3": return 3;
+            case "US4": return 4;
+            case "US5": return 5;
+            case "US6": return 6;
+            default: return 0;
+        }
+    }
+
     /**
      * Legacy tiered loading for old-style packs (alaska_overview, alaska_coastal, alaska_detail)
      */

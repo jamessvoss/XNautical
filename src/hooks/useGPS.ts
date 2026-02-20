@@ -1,12 +1,20 @@
 /**
  * useGPS Hook - Manages GPS location tracking
- * 
+ *
  * Provides:
  * - Current position (lat/lon)
  * - Speed (from GPS)
  * - Course Over Ground (COG) - direction of travel
  * - Accuracy
- * 
+ *
+ * GPS data is stored in a ref (gpsDataRef) for real-time reads without
+ * triggering React re-renders. A separate gpsData state is synced every
+ * 2 seconds for display components that need to re-render (nav bar, etc.).
+ *
+ * This two-tier approach prevents GPS updates (~1-2/sec) from re-rendering
+ * the heavy DynamicChartViewer component, which caused MapLibre to reset
+ * zoom gestures mid-animation.
+ *
  * NOTE: Device heading (compass) is now handled by useDeviceHeading hook
  * which uses sensor fusion for smoother updates.
  */
@@ -19,21 +27,21 @@ export interface GPSData {
   latitude: number | null;
   longitude: number | null;
   altitude: number | null;
-  
+
   // Movement
   speed: number | null;        // m/s from GPS
   speedKnots: number | null;   // converted to knots
   course: number | null;       // Course Over Ground (COG) - direction of travel
-  
+
   // Device orientation (now managed externally by useDeviceHeading)
   heading: number | null;      // Kept for backwards compatibility
-  
+
   // Accuracy
   accuracy: number | null;     // meters
-  
+
   // Timestamp
   timestamp: number | null;
-  
+
   // Status
   isTracking: boolean;
   hasPermission: boolean;
@@ -48,42 +56,69 @@ interface UseGPSOptions {
 
 const MS_TO_KNOTS = 1.94384;
 
+const INITIAL_GPS_DATA: GPSData = {
+  latitude: null,
+  longitude: null,
+  altitude: null,
+  speed: null,
+  speedKnots: null,
+  course: null,
+  heading: null,
+  accuracy: null,
+  timestamp: null,
+  isTracking: false,
+  hasPermission: false,
+  error: null,
+};
+
+// How often to sync ref → state for display updates (ms).
+// Kept slow to avoid interrupting MapLibre gestures with re-renders.
+const DISPLAY_SYNC_INTERVAL = 2000;
+
 export function useGPS(options: UseGPSOptions = {}) {
   const {
     distanceInterval = 5,      // Update every 5 meters
     timeInterval = 1000,       // Or every 1 second
   } = options;
 
-  const [gpsData, setGpsData] = useState<GPSData>({
-    latitude: null,
-    longitude: null,
-    altitude: null,
-    speed: null,
-    speedKnots: null,
-    course: null,
-    heading: null,  // Now set externally
-    accuracy: null,
-    timestamp: null,
-    isTracking: false,
-    hasPermission: false,
-    error: null,
-  });
+  // Primary store — always up-to-date, never triggers re-renders.
+  // Consumers that need the latest GPS data without re-rendering (e.g.
+  // Camera centerCoordinate, overlay context) should read gpsDataRef.current.
+  const gpsDataRef = useRef<GPSData>({ ...INITIAL_GPS_DATA });
+
+  // Display-only state — synced from ref on a slow timer.
+  // Only used by components that need to re-render on GPS changes
+  // (nav bar speed/heading, GPS marker position).
+  const [gpsData, setGpsData] = useState<GPSData>({ ...INITIAL_GPS_DATA });
 
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
   const previousPosition = useRef<{ lat: number; lon: number; time: number } | null>(null);
   const lastPositionUpdate = useRef<{ lat: number; lon: number } | null>(null);
-  const MIN_POSITION_CHANGE_M = 1; // Minimum meters change to trigger position update
+  const MIN_POSITION_CHANGE_M = 1;
+
+  // Sync ref → state on a slow timer for display updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setGpsData({ ...gpsDataRef.current });
+    }, DISPLAY_SYNC_INTERVAL);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Helper: update the ref (no re-render)
+  const updateRef = useCallback((updater: (prev: GPSData) => GPSData) => {
+    gpsDataRef.current = updater(gpsDataRef.current);
+  }, []);
 
   // Calculate bearing between two points (for COG when GPS doesn't provide it)
   const calculateBearing = useCallback((lat1: number, lon1: number, lat2: number, lon2: number): number => {
     const dLon = (lon2 - lon1) * Math.PI / 180;
     const lat1Rad = lat1 * Math.PI / 180;
     const lat2Rad = lat2 * Math.PI / 180;
-    
+
     const y = Math.sin(dLon) * Math.cos(lat2Rad);
-    const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) - 
+    const x = Math.cos(lat1Rad) * Math.sin(lat2Rad) -
               Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon);
-    
+
     let bearing = Math.atan2(y, x) * 180 / Math.PI;
     return (bearing + 360) % 360;
   }, []);
@@ -104,9 +139,9 @@ export function useGPS(options: UseGPSOptions = {}) {
   const requestPermissions = useCallback(async (): Promise<boolean> => {
     try {
       const { status: foregroundStatus } = await Location.requestForegroundPermissionsAsync();
-      
+
       if (foregroundStatus !== 'granted') {
-        setGpsData(prev => ({
+        updateRef(prev => ({
           ...prev,
           hasPermission: false,
           error: 'Location permission denied',
@@ -114,29 +149,29 @@ export function useGPS(options: UseGPSOptions = {}) {
         return false;
       }
 
-      setGpsData(prev => ({
+      updateRef(prev => ({
         ...prev,
         hasPermission: true,
         error: null,
       }));
       return true;
     } catch (error) {
-      setGpsData(prev => ({
+      updateRef(prev => ({
         ...prev,
         hasPermission: false,
         error: 'Failed to request location permissions',
       }));
       return false;
     }
-  }, []);
+  }, [updateRef]);
 
   // Update heading from external source (useDeviceHeading)
   const updateHeading = useCallback((heading: number | null) => {
-    setGpsData(prev => ({
+    updateRef(prev => ({
       ...prev,
       heading,
     }));
-  }, []);
+  }, [updateRef]);
 
   // Start tracking
   const startTracking = useCallback(async () => {
@@ -155,7 +190,7 @@ export function useGPS(options: UseGPSOptions = {}) {
           const { latitude, longitude, altitude, speed, heading, accuracy } = location.coords;
           const timestamp = location.timestamp;
 
-          // Check if position changed enough to warrant an update
+          // Track whether position changed enough for COG calculation
           let positionChanged = true;
           if (lastPositionUpdate.current) {
             const distance = calculateDistance(
@@ -167,15 +202,12 @@ export function useGPS(options: UseGPSOptions = {}) {
             positionChanged = distance >= MIN_POSITION_CHANGE_M;
           }
 
-          // Skip update if position hasn't changed significantly
-          if (!positionChanged) return;
-
           // Calculate COG from movement if not provided by GPS
           let course = heading;
           if (course === null || course === -1) {
-            if (previousPosition.current) {
+            if (positionChanged && previousPosition.current) {
               const timeDiff = timestamp - previousPosition.current.time;
-              if (timeDiff > 0 && timeDiff < 10000) { // Within 10 seconds
+              if (timeDiff > 0 && timeDiff < 10000) {
                 course = calculateBearing(
                   previousPosition.current.lat,
                   previousPosition.current.lon,
@@ -187,17 +219,23 @@ export function useGPS(options: UseGPSOptions = {}) {
           }
 
           // Update previous position for COG calculation
-          previousPosition.current = { lat: latitude, lon: longitude, time: timestamp };
-          lastPositionUpdate.current = { lat: latitude, lon: longitude };
+          if (positionChanged) {
+            previousPosition.current = { lat: latitude, lon: longitude, time: timestamp };
+            lastPositionUpdate.current = { lat: latitude, lon: longitude };
+          }
 
-          setGpsData(prev => ({
+          const speedVal = speed ?? null;
+          const courseVal = course ?? null;
+
+          // Update ref immediately — no React re-render
+          updateRef(prev => ({
             ...prev,
             latitude,
             longitude,
             altitude,
-            speed: speed ?? null,
-            speedKnots: speed !== null ? speed * MS_TO_KNOTS : null,
-            course: course ?? null,
+            speed: speedVal,
+            speedKnots: speedVal !== null ? speedVal * MS_TO_KNOTS : null,
+            course: courseVal,
             accuracy,
             timestamp,
             isTracking: true,
@@ -206,15 +244,18 @@ export function useGPS(options: UseGPSOptions = {}) {
         }
       );
 
-      setGpsData(prev => ({ ...prev, isTracking: true }));
+      updateRef(prev => ({ ...prev, isTracking: true }));
+      // Immediate sync so UI shows tracking started
+      setGpsData({ ...gpsDataRef.current });
     } catch (error) {
-      setGpsData(prev => ({
+      updateRef(prev => ({
         ...prev,
         isTracking: false,
         error: 'Failed to start location tracking',
       }));
+      setGpsData({ ...gpsDataRef.current });
     }
-  }, [requestPermissions, distanceInterval, timeInterval, calculateBearing, calculateDistance]);
+  }, [requestPermissions, distanceInterval, timeInterval, calculateBearing, calculateDistance, updateRef]);
 
   // Stop tracking
   const stopTracking = useCallback(() => {
@@ -225,20 +266,21 @@ export function useGPS(options: UseGPSOptions = {}) {
     previousPosition.current = null;
     lastPositionUpdate.current = null;
 
-    setGpsData(prev => ({
+    updateRef(prev => ({
       ...prev,
       isTracking: false,
     }));
-  }, []);
+    setGpsData({ ...gpsDataRef.current });
+  }, [updateRef]);
 
   // Toggle tracking
   const toggleTracking = useCallback(() => {
-    if (gpsData.isTracking) {
+    if (gpsDataRef.current.isTracking) {
       stopTracking();
     } else {
       startTracking();
     }
-  }, [gpsData.isTracking, startTracking, stopTracking]);
+  }, [startTracking, stopTracking]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -250,12 +292,13 @@ export function useGPS(options: UseGPSOptions = {}) {
   }, []);
 
   return {
-    gpsData,
+    gpsData,        // Display state — synced every 2s, safe for rendering
+    gpsDataRef,     // Live ref — always current, no re-renders
     startTracking,
     stopTracking,
     toggleTracking,
     requestPermissions,
-    updateHeading,  // Allow external heading updates
+    updateHeading,
   };
 }
 

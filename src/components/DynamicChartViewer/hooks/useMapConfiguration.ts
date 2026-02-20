@@ -20,10 +20,13 @@ export function useMapConfiguration() {
   const [uiTheme, setUITheme] = useState(themeService.getUITheme('dusk'));
 
   // Map style options
-  const [mapStyle, setMapStyleInternal] = useState<MapStyleOption>('satellite');
+  const [mapStyle, setMapStyleInternal] = useState<MapStyleOption>('dark');
+
+  // ECDIS chart color mode (independent of base map style)
+  const [ecdisColors, setEcdisColors] = useState(false);
 
   // Which styles use the vector basemap tiles
-  const VECTOR_BASEMAP_STYLES: MapStyleOption[] = ['light', 'dark', 'ecdis', 'street'];
+  const VECTOR_BASEMAP_STYLES: MapStyleOption[] = ['light', 'dark', 'street'];
   const isVectorStyle = VECTOR_BASEMAP_STYLES.includes(mapStyle);
 
   // Local basemap availability
@@ -166,25 +169,6 @@ export function useMapConfiguration() {
         waterText: '#4a6a8a', landcoverOpacity: 0.4, buildingOpacity: 0.5,
         parkOpacity: 0.3, roadNightDim: 0.6,
       },
-      ecdis: {
-        bg: s52Colors.LANDA, water: s52Colors.WATRW, waterway: s52Colors.WATRW,
-        ice: s52Mode === 'day' ? '#ffffff' : s52Mode === 'dusk' ? '#404050' : '#202028',
-        grass: s52Mode === 'day' ? '#d8e8c8' : s52Mode === 'dusk' ? '#2a3a28' : '#181c18',
-        wood: s52Mode === 'day' ? '#c5ddb0' : s52Mode === 'dusk' ? '#283820' : '#141c14',
-        wetland: s52Mode === 'day' ? '#d0e8d8' : s52Mode === 'dusk' ? '#203830' : '#101814',
-        residential: s52Colors.CHBRN, industrial: s52Colors.CHBRN,
-        park: s52Mode === 'day' ? '#c8e6c9' : s52Mode === 'dusk' ? '#203828' : '#101810',
-        building: s52Colors.CHBRN,
-        road: s52Colors.ROADF, roadCasing: s52Colors.ROADC,
-        text: s52Colors.CHBLK,
-        textHalo: s52Mode === 'day' ? '#FFFFFF' : s52Colors.LANDA,
-        grid: s52Colors.CHGRD,
-        waterText: s52Mode === 'day' ? '#5d8cae' : s52Mode === 'dusk' ? '#6080a0' : '#304050',
-        landcoverOpacity: s52Mode === 'day' ? 0.6 : s52Mode === 'dusk' ? 0.3 : 0.1,
-        buildingOpacity: s52Mode === 'day' ? 0.8 : s52Mode === 'dusk' ? 0.4 : 0.15,
-        parkOpacity: s52Mode === 'day' ? 0.4 : s52Mode === 'dusk' ? 0.2 : 0.08,
-        roadNightDim: s52Mode === 'night' ? 0.3 : s52Mode === 'dusk' ? 0.7 : 1,
-      },
       street: {
         bg: '#f5f5f0', water: '#aadaff', waterway: '#aadaff', ice: '#f0f0f0',
         grass: '#f5f5f0',         // Almost white - matches background
@@ -201,11 +185,11 @@ export function useMapConfiguration() {
         roadNightDim: 1,
       },
     };
-    if (mapStyle === 'light' || mapStyle === 'dark' || mapStyle === 'ecdis' || mapStyle === 'street') {
+    if (mapStyle === 'light' || mapStyle === 'dark' || mapStyle === 'street') {
       return palettes[mapStyle];
     }
-    return palettes.light; // fallback
-  }, [mapStyle, s52Colors, s52Mode]);
+    return palettes.light; // fallback for satellite, ocean, terrain, etc.
+  }, [mapStyle]);
 
   // MapLibre background styles per mode
   const mapStyleUrls = useMemo<Record<MapStyleOption, object>>(() => ({
@@ -360,6 +344,8 @@ export function useMapConfiguration() {
     mapStyle,
     setMapStyle,
     isVectorStyle,
+    ecdisColors,
+    setEcdisColors,
     glyphsUrl,
     basemapPalette,
     mapStyleUrls,
@@ -384,6 +370,7 @@ export function useMapConfiguration() {
     setShowDebug,
     debugDiagnostics,
     debugHiddenSources,
+    setDebugHiddenSources,
     debugIsSourceVisible,
     debugToggleSource,
     createRunDiagnostics,

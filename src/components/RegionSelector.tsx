@@ -36,6 +36,7 @@ import * as chartPackService from '../services/chartPackService';
 import { getInstalledDistricts, type InstalledDistrictRecord } from '../services/regionRegistryService';
 import type { District } from '../types/chartPack';
 import DownloadPanel from './DownloadPanel';
+import DownloadProgressView from './DownloadProgressView';
 
 // ============================================
 // Types
@@ -108,19 +109,15 @@ export default function RegionSelector({ visible, onClose }: Props) {
   useEffect(() => {
     const fetchStorageInfo = async () => {
       try {
-        console.log('[RegionSelector] Fetching storage info...');
         const [freeSpace, totalSpace] = await Promise.all([
           FileSystem.getFreeDiskStorageAsync(),
           FileSystem.getTotalDiskCapacityAsync(),
         ]);
-        
-        console.log('[RegionSelector] Storage raw values:', { freeSpace, totalSpace });
-        
+
         const totalGB = totalSpace / 1024 / 1024 / 1024;
         const availableGB = freeSpace / 1024 / 1024 / 1024;
         const usedGB = totalGB - availableGB;
-        
-        console.log('[RegionSelector] Storage calculated:', { totalGB, usedGB, availableGB });
+
         setStorageInfo({ totalGB, usedGB, availableGB });
       } catch (error) {
         console.error('[RegionSelector] Error fetching storage info:', error);
@@ -171,7 +168,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
           
           // Priority 1: Use Firestore regionBoundary if available
           if (district?.regionBoundary) {
-            console.log(`[RegionSelector] Using Firestore regionBoundary for ${selectedRegion.id}:`, district.regionBoundary);
             setRegionBoundary(district.regionBoundary);
           } 
           // Priority 2: Compute from US1 chart bounds (with antimeridian filtering)
@@ -186,19 +182,16 @@ export default function RegionSelector({ visible, onClose }: Props) {
                 if (b.east > e) e = b.east;
                 if (b.north > n) n = b.north;
               }
-              console.log(`[RegionSelector] Computed boundary for ${selectedRegion.id} from ${usableCharts.length} western-hemisphere charts:`, { west: w, south: s, east: e, north: n });
               setRegionBoundary({ west: w, south: s, east: e, north: n });
             } else {
               // All charts cross antimeridian - use static mapBounds
               const [west, south, east, north] = selectedRegion.mapBounds;
-              console.log(`[RegionSelector] No usable charts for ${selectedRegion.id}, using static mapBounds:`, { west, south, east, north });
               setRegionBoundary({ west, south, east, north });
             }
           } 
           // Priority 3: Always fall back to static mapBounds
           else {
             const [west, south, east, north] = selectedRegion.mapBounds;
-            console.log(`[RegionSelector] No district data for ${selectedRegion.id}, using static mapBounds:`, { west, south, east, north });
             setRegionBoundary({ west, south, east, north });
           }
         }
@@ -207,7 +200,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
         console.error('[RegionSelector] Error loading district:', error);
         if (!cancelled) {
           const [west, south, east, north] = selectedRegion.mapBounds;
-          console.log(`[RegionSelector] Error fallback for ${selectedRegion.id}, using static mapBounds:`, { west, south, east, north });
           setRegionBoundary({ west, south, east, north });
         }
       }
@@ -217,25 +209,20 @@ export default function RegionSelector({ visible, onClose }: Props) {
 
   // Fly to region AFTER boundary data is loaded
   useEffect(() => {
-    console.log('[RegionSelector] Camera useEffect triggered - selectedRegionId:', selectedRegionId, 'regionBoundary:', regionBoundary);
     if (selectedRegionId && regionBoundary) {
-      console.log(`[RegionSelector] Flying to region ${selectedRegionId} with bounds:`, regionBoundary);
-      
       const { west, south, east, north } = regionBoundary;
-      
+
       // Calculate extents of the boundary
       const lngExtent = east - west;
       const latExtent = north - south;
-      
+
       // Add 25% buffer on each side
       const lngBuf = lngExtent * 0.25;
       const latBuf = latExtent * 0.25;
-      
+
       const ne = [Math.min(east + lngBuf, 180), Math.min(north + latBuf, 90)];
       const sw = [Math.max(west - lngBuf, -180), Math.max(south - latBuf, -90)];
-      
-      console.log(`[RegionSelector] Calling fitBounds with NE:`, ne, 'SW:', sw);
-      
+
       // Apply buffer to create zoomed out view
       cameraRef.current?.fitBounds(
         ne,
@@ -243,15 +230,12 @@ export default function RegionSelector({ visible, onClose }: Props) {
         [40, 40, 40, 40],  // Minimal padding since buffer handles zoom
         1200
       );
-    } else {
-      console.log('[RegionSelector] NOT flying - missing:', selectedRegionId ? 'regionBoundary' : 'selectedRegionId');
     }
   }, [selectedRegionId, regionBoundary]);
 
   // Resolved boundary: regionBoundary is always set by the useEffect above
   // (either from Firestore, computed from charts, or fallback to static mapBounds)
   const resolvedBoundary = useMemo(() => {
-    console.log('[RegionSelector] resolvedBoundary computed:', regionBoundary);
     return regionBoundary;
   }, [regionBoundary]);
 
@@ -316,8 +300,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
     if (boundary) {
       const { west, south, east, north } = boundary;
       
-      console.log(`[RegionSelector] flyToRegion(${regionId}) called with boundary:`, boundary);
-      
       // Calculate extents of the boundary
       const lngExtent = east - west;
       const latExtent = north - south;
@@ -329,8 +311,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
       const ne = [Math.min(east + lngBuf, 180), Math.min(north + latBuf, 90)];
       const sw = [Math.max(west - lngBuf, -180), Math.max(south - latBuf, -90)];
       
-      console.log(`[RegionSelector] Calling fitBounds with NE:`, ne, 'SW:', sw);
-      
       // Apply buffer to create zoomed out view
       cameraRef.current?.fitBounds(
         ne,
@@ -338,8 +318,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
         [40, 40, 40, 40],  // Minimal padding since buffer handles zoom
         1200
       );
-    } else {
-      console.log(`[RegionSelector] flyToRegion(${regionId}) - no boundary available!`);
     }
   }, [resolvedBoundary]);
 
@@ -506,10 +484,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
   const renderInfoOverlay = () => {
     if (!selectedRegion || state === 'downloading') return null;
 
-    console.log(`[RegionSelector] renderInfoOverlay - districtData:`, districtData);
-    console.log(`[RegionSelector] renderInfoOverlay - metadata:`, districtData?.metadata);
-    console.log(`[RegionSelector] renderInfoOverlay - selectedResolution:`, selectedResolution);
-
     const isReady = selectedRegion.status === 'converted';
     
     // === REQUIRED ITEMS ===
@@ -520,7 +494,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
       const chartPacks = districtData.downloadPacks.filter(p => p.type === 'charts');
       if (chartPacks.length > 0) {
         chartsMB = chartPacks.reduce((sum, p) => sum + p.sizeBytes, 0) / 1024 / 1024;
-        console.log(`[RegionSelector] Charts: ${chartsMB.toFixed(1)} MB from ${chartPacks.length} packs`);
       }
     }
     
@@ -530,7 +503,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
       const gnisPack = districtData.downloadPacks.find(p => p.type === 'gnis');
       if (gnisPack) {
         gnisMB = gnisPack.sizeBytes / 1024 / 1024;
-        console.log(`[RegionSelector] GNIS: ${gnisMB.toFixed(1)} MB`);
       }
     }
     
@@ -539,7 +511,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
     if (districtData?.metadata?.predictionSizeMB?.tides) {
       const compressedMB = districtData.metadata.predictionSizeMB.tides;
       tidesMB = compressedMB * 2; // Estimate uncompressed
-      console.log(`[RegionSelector] Tides: ${tidesMB.toFixed(1)} MB (uncompressed from ${compressedMB} MB compressed)`);
     }
     
     // 4. Currents (uncompressed size estimate: compressed * 2)
@@ -547,21 +518,18 @@ export default function RegionSelector({ visible, onClose }: Props) {
     if (districtData?.metadata?.predictionSizeMB?.currents) {
       const compressedMB = districtData.metadata.predictionSizeMB.currents;
       currentsMB = compressedMB * 2; // Estimate uncompressed
-      console.log(`[RegionSelector] Currents: ${currentsMB.toFixed(1)} MB (uncompressed from ${compressedMB} MB compressed)`);
     }
     
     // 5. Buoys metadata (rough estimate: count * 5KB)
     let buoysMB = 1; // Fallback estimate
     if (districtData?.metadata?.buoyCount) {
       buoysMB = (districtData.metadata.buoyCount * 5 * 1024) / 1024 / 1024;
-      console.log(`[RegionSelector] Buoys: ${buoysMB.toFixed(1)} MB for ${districtData.metadata.buoyCount} buoys`);
     }
     
     // 6. Marine Zones metadata (rough estimate: count * 20KB)
     let marineZonesMB = 0.5; // Fallback estimate
     if (districtData?.metadata?.marineZoneCount) {
       marineZonesMB = (districtData.metadata.marineZoneCount * 20 * 1024) / 1024 / 1024;
-      console.log(`[RegionSelector] Marine Zones: ${marineZonesMB.toFixed(1)} MB for ${districtData.metadata.marineZoneCount} zones`);
     }
     
     const requiredMB = chartsMB + gnisMB + tidesMB + currentsMB + buoysMB + marineZonesMB;
@@ -578,8 +546,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
         if (selectedResolution === 'high') maxZoom = 12;
         if (selectedResolution === 'ultra') maxZoom = 14;
         
-        console.log(`[RegionSelector] Filtering satellite packs for ${selectedResolution} (z0-${maxZoom})`);
-        
         const satPacks = districtData.downloadPacks.filter(p => {
           if (p.type !== 'satellite') return false;
           const zoomMatch = p.id.match(/z(\d+)(?:[-_](\d+))?/);
@@ -591,14 +557,12 @@ export default function RegionSelector({ visible, onClose }: Props) {
         
         if (satPacks.length > 0) {
           satMB = satPacks.reduce((sum, p) => sum + p.sizeBytes, 0) / 1024 / 1024;
-          console.log(`[RegionSelector] Satellite: ${satMB.toFixed(1)} MB from ${satPacks.length} packs`);
         }
       } else {
         // Fall back to estimates for pending regions
         const satOption = SATELLITE_OPTIONS.find(o => o.resolution === selectedResolution);
         if (satOption) {
           satMB = satOption.estimatedSizeMB;
-          console.log(`[RegionSelector] Satellite (estimate): ${satMB.toFixed(1)} MB for ${selectedResolution}`);
         }
       }
     }
@@ -609,28 +573,20 @@ export default function RegionSelector({ visible, onClose }: Props) {
       OPTIONAL_MAP_OPTIONS.filter(opt => selectedOptionalMaps.has(opt.id)).forEach(opt => {
         const pack = districtData.downloadPacks.find(p => p.type === opt.id);
         if (pack) {
-          const sizeMB = pack.sizeBytes / 1024 / 1024;
-          optionalMapsMB += sizeMB;
-          console.log(`[RegionSelector] Optional map ${opt.label}: ${sizeMB.toFixed(1)} MB (real data)`);
+          optionalMapsMB += pack.sizeBytes / 1024 / 1024;
         } else {
           optionalMapsMB += opt.estimatedSizeMB;
-          console.log(`[RegionSelector] Optional map ${opt.label}: ${opt.estimatedSizeMB.toFixed(1)} MB (estimate - pack not found)`);
         }
       });
     } else {
-      // Fallback to estimates if no downloadPacks data
       OPTIONAL_MAP_OPTIONS.filter(opt => selectedOptionalMaps.has(opt.id)).forEach(opt => {
         optionalMapsMB += opt.estimatedSizeMB;
-        console.log(`[RegionSelector] Optional map ${opt.label}: ${opt.estimatedSizeMB.toFixed(1)} MB (estimate - no district data)`);
       });
     }
     
     const optionalMB = satMB + optionalMapsMB;
     const totalMB = requiredMB + optionalMB;
     
-    console.log(`[RegionSelector] Total: Required=${requiredMB.toFixed(1)} Optional=${optionalMB.toFixed(1)} Total=${totalMB.toFixed(1)}`);
-    console.log(`[RegionSelector] renderInfoOverlay - storageInfo:`, storageInfo);
-
     return (
       <View style={styles.infoOverlay} pointerEvents="none">
         <View style={[styles.infoColorBar, { backgroundColor: selectedRegion.color }]} />
@@ -684,9 +640,6 @@ export default function RegionSelector({ visible, onClose }: Props) {
               const pack = districtData.downloadPacks.find(p => p.type === opt.id);
               if (pack) {
                 optMapMB = pack.sizeBytes / 1024 / 1024;
-                console.log(`[RegionSelector] ${opt.label}: ${optMapMB.toFixed(1)} MB (real data)`);
-              } else {
-                console.log(`[RegionSelector] ${opt.label}: ${optMapMB.toFixed(1)} MB (estimate - pack not found)`);
               }
             }
             
@@ -739,13 +692,9 @@ export default function RegionSelector({ visible, onClose }: Props) {
   const renderOptionalDownloadsPicker = () => {
     if (state === 'downloading' || !selectedRegion) return null;
 
-    console.log('[RegionSelector] renderOptionalDownloadsPicker - districtData available?', !!districtData);
-    console.log('[RegionSelector] renderOptionalDownloadsPicker - downloadPacks count:', districtData?.downloadPacks?.length || 0);
-
     // Calculate real satellite sizes for each resolution option
     const getSatelliteSizeForResolution = (resolution: SatelliteResolution): number => {
       if (resolution === 'none' || !districtData?.downloadPacks) {
-        console.log(`[RegionSelector] Satellite ${resolution}: no data available, returning 0`);
         return 0;
       }
       
@@ -762,14 +711,9 @@ export default function RegionSelector({ visible, onClose }: Props) {
         return zStart <= maxZoom;
       });
       
-      if (satPacks.length === 0) {
-        console.log(`[RegionSelector] Satellite ${resolution} (z0-${maxZoom}): no packs found`);
-        return 0;
-      }
-      
-      const sizeMB = satPacks.reduce((sum, p) => sum + p.sizeBytes, 0) / 1024 / 1024;
-      console.log(`[RegionSelector] Satellite ${resolution} (z0-${maxZoom}): ${sizeMB.toFixed(1)} MB from ${satPacks.length} packs`);
-      return sizeMB;
+      if (satPacks.length === 0) return 0;
+
+      return satPacks.reduce((sum, p) => sum + p.sizeBytes, 0) / 1024 / 1024;
     };
 
     return (
@@ -1057,11 +1001,12 @@ export default function RegionSelector({ visible, onClose }: Props) {
     if (state === 'downloading' && selectedRegion) {
       return (
         <View style={{ flex: 1, paddingBottom: Math.max(insets.bottom, 8) }}>
-          <DownloadPanel
+          <DownloadProgressView
             region={selectedRegion}
-            onBack={handleBackFromDownload}
+            selectedResolution={selectedResolution}
             selectedOptionalMaps={selectedOptionalMaps}
-            autoStartDownload={true}
+            onComplete={() => setState('info')}
+            onCancel={() => setState('info')}
           />
         </View>
       );

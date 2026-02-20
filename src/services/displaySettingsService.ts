@@ -144,6 +144,10 @@ export interface DisplaySettings {
   orientationMode: 'north-up' | 'head-up' | 'course-up';
   depthUnits: 'meters' | 'feet' | 'fathoms';
   tideCorrectedSoundings: boolean;
+
+  // Chart detail level - SCAMIN offset for feature visibility
+  // Controls how many zoom levels earlier features appear relative to their S-57 SCAMIN value
+  chartDetail: 'low' | 'medium' | 'high' | 'ultra' | 'max';
 }
 
 const DEFAULT_SETTINGS: DisplaySettings = {
@@ -170,14 +174,14 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   bridgeLineScale: 1.0,
   mooringLineScale: 1.0,
   shorelineConstructionLineScale: 1.0,
-  // Line halos (0 = no halo, 1.0 = default halo) - temporarily disabled to debug crash
-  depthContourLineHaloScale: 0,
-  coastlineHaloScale: 0,
-  cableLineHaloScale: 0,
-  pipelineLineHaloScale: 0,
-  bridgeLineHaloScale: 0,
-  mooringLineHaloScale: 0,
-  shorelineConstructionHaloScale: 0,
+  // Line halos (0 = no halo, 1.0 = default halo)
+  depthContourLineHaloScale: 1.0,
+  coastlineHaloScale: 1.0,
+  cableLineHaloScale: 1.0,
+  pipelineLineHaloScale: 1.0,
+  bridgeLineHaloScale: 1.0,
+  mooringLineHaloScale: 1.0,
+  shorelineConstructionHaloScale: 1.0,
   // Line opacities
   depthContourLineOpacityScale: 1.0,
   coastlineOpacityScale: 1.0,
@@ -267,7 +271,8 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   dayNightMode: 'dusk',  // S-52 default - dark background suitable for day and twilight
   orientationMode: 'north-up',
   depthUnits: 'meters',
-  tideCorrectedSoundings: false,
+  tideCorrectedSoundings: true,
+  chartDetail: 'max',  // Default: +4 offset, maximum detail — all features visible at earliest zoom levels
 };
 
 // In-memory cache

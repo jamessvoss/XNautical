@@ -6,7 +6,7 @@
  * and handles active navigation state.
  */
 
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo, ReactNode } from 'react';
 import { Platform } from 'react-native';
 import { Route, RouteCreateData, RoutePoint, Position, ActiveNavigation, DEFAULT_CRUISING_SPEED, DEFAULT_ARRIVAL_RADIUS } from '../types/route';
 import * as routeService from '../services/routeService';
@@ -137,8 +137,8 @@ export function RouteProvider({ children }: RouteProviderProps) {
   const userIdRef = useRef<string | null>(null);
   const cruisingSpeedRef = useRef<number>(DEFAULT_CRUISING_SPEED);
 
-  // All routes (cloud + local)
-  const allRoutes = [...cloudRoutes, ...localRoutes];
+  // All routes (cloud + local) — memoized to keep a stable array reference
+  const allRoutes = useMemo(() => [...cloudRoutes, ...localRoutes], [cloudRoutes, localRoutes]);
 
   // Set up Firestore listener for cloud routes
   useEffect(() => {
@@ -581,7 +581,7 @@ export function RouteProvider({ children }: RouteProviderProps) {
     setShowRoutesModal(false);
   }, []);
 
-  const value: RouteContextType = {
+  const value: RouteContextType = useMemo(() => ({
     cloudRoutes,
     localRoutes,
     allRoutes,
@@ -609,7 +609,17 @@ export function RouteProvider({ children }: RouteProviderProps) {
     showRoutesModal,
     openRoutesModal,
     closeRoutesModal,
-  };
+  }), [
+    cloudRoutes, localRoutes, allRoutes, loading,
+    createRoute, updateRoute, deleteRoute, duplicateRoute,
+    activeRoute, startNewRoute, loadRoute,
+    updateActiveRouteMetadata, addPointToActiveRoute,
+    removePointFromActiveRoute, updatePointInActiveRoute,
+    reorderActiveRoutePoints, saveActiveRoute, clearActiveRoute,
+    navigation, startNavigation, stopNavigation,
+    advanceToNextPoint, skipToPoint, updateNavigationSettings,
+    showRoutesModal, openRoutesModal, closeRoutesModal,
+  ]);
 
   return <RouteContext.Provider value={value}>{children}</RouteContext.Provider>;
 }

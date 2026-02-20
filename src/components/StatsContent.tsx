@@ -13,18 +13,29 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
+  TouchableOpacity,
+  Alert,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import { getAuth } from '@react-native-firebase/auth';
 import * as chartCacheService from '../services/chartCacheService';
 import { formatBytes } from '../services/chartService';
 import * as themeService from '../services/themeService';
 import type { UITheme } from '../services/themeService';
-import { 
+import {
   arePredictionsDownloaded,
   getPredictionDatabaseStats,
+  clearPredictions,
+  downloadAllPredictions,
+  clearStationCache,
 } from '../services/stationService';
 import type { PredictionDatabaseStats } from '../services/stationService';
+import { getInstalledDistrictIds, getInstalledDistrict } from '../services/regionRegistryService';
+import { areBuoysDownloaded } from '../services/buoyService';
+import { areMarineZonesDownloaded } from '../services/marineZoneService';
+import { getRegionByFirestoreId } from '../config/regionData';
+import RegionManageModal from './RegionManageModal';
 
 export default function StatsContent() {
   console.log('[StatsContent] Initializing...');
@@ -40,6 +51,17 @@ export default function StatsContent() {
   // Database stats
   const [dbStats, setDbStats] = useState<PredictionDatabaseStats | null>(null);
   const [predictionsDownloaded, setPredictionsDownloaded] = useState(false);
+  
+  // District info
+  const [installedDistricts, setInstalledDistricts] = useState<string[]>([]);
+  const [districtInfo, setDistrictInfo] = useState<any[]>([]);
+
+  // Prediction refresh
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState<string>('');
+
+  // Region management modal
+  const [manageDistrictId, setManageDistrictId] = useState<string | null>(null);
   
   // Theme state
   const [uiTheme, setUITheme] = useState<UITheme>(themeService.getUITheme());
@@ -86,6 +108,29 @@ export default function StatsContent() {
     try {
       setLoading(true);
       
+      // Get installed districts
+      console.log('[StatsContent] Getting installed districts...');
+      const districts = await getInstalledDistrictIds();
+      setInstalledDistricts(districts);
+      
+      // Get detailed info for each district
+      const districtDetails = await Promise.all(
+        districts.map(async (districtId) => {
+          const record = await getInstalledDistrict(districtId);
+          const hasBuoys = await areBuoysDownloaded(districtId);
+          const hasMarineZones = await areMarineZonesDownloaded(districtId);
+          const hasPredictions = await arePredictionsDownloaded(districtId);
+          return {
+            id: districtId,
+            record,
+            hasBuoys,
+            hasMarineZones,
+            hasPredictions,
+          };
+        })
+      );
+      setDistrictInfo(districtDetails);
+      
       // Get MBTiles data
       console.log('[StatsContent] Getting MBTiles cache size...');
       const mbtilesSize = await chartCacheService.getMBTilesCacheSize();
@@ -95,19 +140,28 @@ export default function StatsContent() {
       setMbtilesSize(mbtilesSize);
       setMbtilesCount(mbtilesIds.length);
       
-      // Get prediction database sizes
+      // Get prediction database sizes (for any district)
       console.log('[StatsContent] Getting prediction database sizes...');
-      const tidesPath = `${FileSystem.documentDirectory}tides.db`;
-      const currentsPath = `${FileSystem.documentDirectory}currents.db`;
+      const dbFiles = await FileSystem.readDirectoryAsync(FileSystem.documentDirectory || '');
+      let totalTidesSize = 0;
+      let totalCurrentsSize = 0;
       
-      const [tidesInfo, currentsInfo] = await Promise.all([
-        FileSystem.getInfoAsync(tidesPath),
-        FileSystem.getInfoAsync(currentsPath),
-      ]);
-      console.log('[StatsContent] Database info retrieved');
+      for (const file of dbFiles) {
+        if (file.endsWith('.db')) {
+          const filePath = `${FileSystem.documentDirectory}${file}`;
+          const fileInfo = await FileSystem.getInfoAsync(filePath);
+          if (fileInfo.exists && 'size' in fileInfo) {
+            if (file.includes('tides')) {
+              totalTidesSize += fileInfo.size;
+            } else if (file.includes('currents')) {
+              totalCurrentsSize += fileInfo.size;
+            }
+          }
+        }
+      }
       
-      setTidesDbSize(tidesInfo.exists && 'size' in tidesInfo ? tidesInfo.size : 0);
-      setCurrentsDbSize(currentsInfo.exists && 'size' in currentsInfo ? currentsInfo.size : 0);
+      setTidesDbSize(totalTidesSize);
+      setCurrentsDbSize(totalCurrentsSize);
       
       // Get available device storage
       console.log('[StatsContent] Getting free disk space...');
@@ -120,17 +174,19 @@ export default function StatsContent() {
         setAvailableStorage(0);
       }
       
-      // Check if predictions are downloaded and get stats
+      // Check if predictions are downloaded and get stats (for first district)
       console.log('[StatsContent] Checking predictions status...');
-      const downloaded = await arePredictionsDownloaded();
-      console.log('[StatsContent] Predictions downloaded:', downloaded);
-      setPredictionsDownloaded(downloaded);
-      
-      if (downloaded) {
-        console.log('[StatsContent] Getting database stats...');
-        const databaseStats = await getPredictionDatabaseStats();
-        console.log('[StatsContent] Database stats retrieved');
-        setDbStats(databaseStats);
+      if (districts.length > 0) {
+        const downloaded = await arePredictionsDownloaded(districts[0]);
+        console.log('[StatsContent] Predictions downloaded:', downloaded);
+        setPredictionsDownloaded(downloaded);
+        
+        if (downloaded) {
+          console.log('[StatsContent] Getting database stats...');
+          const databaseStats = await getPredictionDatabaseStats(districts[0]);
+          console.log('[StatsContent] Database stats retrieved');
+          setDbStats(databaseStats);
+        }
       }
       console.log('[StatsContent] loadStats() completed successfully');
     } catch (error) {
@@ -138,6 +194,59 @@ export default function StatsContent() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleRefreshPredictions = () => {
+    if (installedDistricts.length === 0) {
+      Alert.alert('No Regions', 'No regions are installed. Download a region first.');
+      return;
+    }
+
+    Alert.alert(
+      'Refresh Predictions',
+      'This will re-download tide and current prediction data for all installed regions.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Refresh',
+          onPress: async () => {
+            setRefreshing(true);
+            setRefreshProgress('Preparing...');
+            try {
+              for (const districtId of installedDistricts) {
+                const region = getRegionByFirestoreId(districtId);
+                const name = region?.name || districtId;
+
+                setRefreshProgress(`Clearing ${name}...`);
+                await clearPredictions(districtId);
+
+                const result = await downloadAllPredictions(
+                  (message, _percent) => {
+                    setRefreshProgress(`${name}: ${message}`);
+                  },
+                  districtId
+                );
+
+                if (!result.success) {
+                  throw new Error(`Failed for ${name}: ${result.error}`);
+                }
+              }
+
+              clearStationCache();
+              setRefreshProgress('');
+              await loadStats();
+              Alert.alert('Success', 'Prediction data has been refreshed.');
+            } catch (error: any) {
+              console.error('[StatsContent] Refresh predictions error:', error);
+              Alert.alert('Error', error.message || 'Failed to refresh predictions.');
+            } finally {
+              setRefreshing(false);
+              setRefreshProgress('');
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Format date from YYYY-MM-DD to MM/DD/YY
@@ -177,9 +286,95 @@ export default function StatsContent() {
         </View>
       </View>
 
+      {/* Installed Regions Section */}
+      <View style={styles.section}>
+        <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Installed Regions</Text>
+        <View style={[styles.card, themedStyles.card]}>
+          {installedDistricts.length === 0 ? (
+            <View style={styles.row}>
+              <Text style={[styles.label, themedStyles.label]}>No regions downloaded</Text>
+            </View>
+          ) : (
+            installedDistricts.map((districtId, index) => {
+              const info = districtInfo.find(d => d.id === districtId);
+              const region = getRegionByFirestoreId(districtId);
+              const displayName = region?.name || districtId;
+              const isLast = index === installedDistricts.length - 1;
+              return (
+                <TouchableOpacity
+                  key={districtId}
+                  style={[styles.row, isLast && { borderBottomWidth: 0 }]}
+                  onPress={() => setManageDistrictId(districtId)}
+                  activeOpacity={0.6}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.label, themedStyles.label]}>{displayName}</Text>
+                    {info && info.record && (
+                      <Text style={[styles.valueSmall, themedStyles.valueSmall, { textAlign: 'left', marginTop: 4 }]}>
+                        {[
+                          info.record.hasCharts && 'Charts',
+                          info.record.hasSatellite && 'Satellite',
+                          info.record.hasBasemap && 'Basemap',
+                          info.record.hasGnis && 'GNIS',
+                          info.record.hasOcean && 'Ocean',
+                          info.record.hasTerrain && 'Terrain',
+                          info.hasPredictions && 'Predictions',
+                          info.hasBuoys && 'Buoys',
+                          info.hasMarineZones && 'Marine Zones',
+                        ].filter(Boolean).join(' \u2022 ')}
+                      </Text>
+                    )}
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="rgba(255, 255, 255, 0.4)" />
+                </TouchableOpacity>
+              );
+            })
+          )}
+        </View>
+      </View>
+
+      {/* Map Layers Section */}
+      <View style={styles.section}>
+        <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Available Map Layers</Text>
+        <View style={[styles.card, themedStyles.card]}>
+          <View style={[styles.row, themedStyles.row]}>
+            <Text style={[styles.label, themedStyles.label]}>Basemap Styles</Text>
+            <Text style={[styles.valueSmall, themedStyles.valueSmall]}>Light, Dark, Street, ECDIS</Text>
+          </View>
+          <View style={[styles.row, themedStyles.row]}>
+            <Text style={[styles.label, themedStyles.label]}>Imagery</Text>
+            <Text style={[styles.valueSmall, themedStyles.valueSmall]}>Satellite, Ocean, Terrain</Text>
+          </View>
+          <View style={[styles.row, themedStyles.row]}>
+            <Text style={[styles.label, themedStyles.label]}>Chart Scales</Text>
+            <Text style={[styles.valueSmall, themedStyles.valueSmall]}>US1-US6 (1:3M to 1:50k)</Text>
+          </View>
+          <View style={[styles.row, themedStyles.row]}>
+            <Text style={[styles.label, themedStyles.label]}>Display Modes</Text>
+            <Text style={[styles.valueSmall, themedStyles.valueSmall]}>Day, Dusk, Night</Text>
+          </View>
+          <View style={[styles.row, { borderBottomWidth: 0 }]}>
+            <Text style={[styles.label, themedStyles.label]}>Satellite Resolutions</Text>
+            <Text style={[styles.valueSmall, themedStyles.valueSmall]}>None, Low, Med, High, Ultra</Text>
+          </View>
+        </View>
+      </View>
+
       {/* Tides & Currents Section */}
       <View style={styles.section}>
-        <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Tides & Currents</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle, { marginBottom: 0 }]}>Tides & Currents</Text>
+          {refreshing ? (
+            <ActivityIndicator size="small" color="rgba(255, 255, 255, 0.6)" />
+          ) : (
+            <TouchableOpacity onPress={handleRefreshPredictions} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Ionicons name="refresh-outline" size={18} color="rgba(255, 255, 255, 0.6)" />
+            </TouchableOpacity>
+          )}
+        </View>
+        {refreshing && refreshProgress ? (
+          <Text style={styles.refreshProgress}>{refreshProgress}</Text>
+        ) : null}
         <View style={[styles.card, themedStyles.card]}>
           {/* Tide Stations */}
           <View style={[styles.row, themedStyles.row]}>
@@ -233,21 +428,21 @@ export default function StatsContent() {
         <View style={[styles.card, themedStyles.card]}>
           {/* Charts */}
           <View style={[styles.row, themedStyles.row]}>
-            <Text style={[styles.label, themedStyles.label]}>Charts (MBTiles)</Text>
+            <Text style={[styles.label, themedStyles.label]}>MBTiles Files</Text>
             <Text style={[styles.value, themedStyles.value]}>
               {mbtilesCount > 0 ? `${mbtilesCount} files` : 'None'}
             </Text>
           </View>
           {mbtilesSize > 0 && (
             <View style={[styles.row, themedStyles.row]}>
-              <Text style={[styles.labelIndent, themedStyles.label]}>Size</Text>
+              <Text style={[styles.labelIndent, themedStyles.label]}>Charts, Satellite, Basemaps</Text>
               <Text style={[styles.value, themedStyles.value]}>{formatBytes(mbtilesSize)}</Text>
             </View>
           )}
           
           {/* Tide Predictions */}
           <View style={[styles.row, themedStyles.row]}>
-            <Text style={[styles.label, themedStyles.label]}>Tide Database</Text>
+            <Text style={[styles.label, themedStyles.label]}>Tide Databases</Text>
             <Text style={[styles.value, themedStyles.value]}>
               {tidesDbSize > 0 ? formatBytes(tidesDbSize) : 'Not downloaded'}
             </Text>
@@ -255,7 +450,7 @@ export default function StatsContent() {
           
           {/* Current Predictions */}
           <View style={[styles.row, themedStyles.row]}>
-            <Text style={[styles.label, themedStyles.label]}>Current Database</Text>
+            <Text style={[styles.label, themedStyles.label]}>Current Databases</Text>
             <Text style={[styles.value, themedStyles.value]}>
               {currentsDbSize > 0 ? formatBytes(currentsDbSize) : 'Not downloaded'}
             </Text>
@@ -288,18 +483,36 @@ export default function StatsContent() {
             <Text style={[styles.value, themedStyles.value]}>1.0.0</Text>
           </View>
           <View style={[styles.row, themedStyles.row]}>
-            <Text style={[styles.label, themedStyles.label]}>Data Source</Text>
-            <Text style={[styles.value, themedStyles.value]}>NOAA ENC</Text>
+            <Text style={[styles.label, themedStyles.label]}>Chart Format</Text>
+            <Text style={[styles.value, themedStyles.value]}>NOAA S-57 ENC</Text>
+          </View>
+          <View style={[styles.row, themedStyles.row]}>
+            <Text style={[styles.label, themedStyles.label]}>Symbology</Text>
+            <Text style={[styles.value, themedStyles.value]}>IHO S-52</Text>
           </View>
           <View style={[styles.row, { borderBottomWidth: 0 }]}>
-            <Text style={[styles.label, themedStyles.label]}>Region</Text>
-            <Text style={[styles.value, themedStyles.value]}>Alaska (17 CGD)</Text>
+            <Text style={[styles.label, themedStyles.label]}>Coverage</Text>
+            <Text style={[styles.value, themedStyles.value]}>All US Waters (9 Districts)</Text>
           </View>
         </View>
       </View>
 
       {/* Bottom padding */}
       <View style={{ height: 40 }} />
+
+      {/* Region Management Modal */}
+      {manageDistrictId && (
+        <RegionManageModal
+          visible={!!manageDistrictId}
+          districtId={manageDistrictId}
+          onClose={(refreshNeeded) => {
+            setManageDistrictId(null);
+            if (refreshNeeded) {
+              loadStats();
+            }
+          }}
+        />
+      )}
     </ScrollView>
   );
 }
@@ -329,6 +542,17 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  refreshProgress: {
+    fontSize: 12,
+    color: 'rgba(79, 195, 247, 0.8)',
+    marginBottom: 8,
   },
   card: {
     backgroundColor: 'rgba(255, 255, 255, 0.08)',

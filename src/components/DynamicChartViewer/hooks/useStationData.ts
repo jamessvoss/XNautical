@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { getCachedTideStations, getCachedCurrentStations, loadFromStorage, TideStation, CurrentStation } from '../../../services/stationService';
+import { getCachedTideStations, getCachedCurrentStations, loadStationsFromDatabases, clearStationCache, TideStation, CurrentStation } from '../../../services/stationService';
 import { calculateAllStationStates, createIconNameMap } from '../../../services/stationStateService';
 import { getCachedBuoyCatalog, getBuoy, BuoySummary, Buoy } from '../../../services/buoyService';
 import { logger, LogCategory } from '../../../services/loggingService';
@@ -77,12 +77,12 @@ export function useStationData() {
     }
   };
 
-  // Load tide and current stations from AsyncStorage on startup
+  // Load tide and current stations from prediction databases on startup
   useEffect(() => {
     const loadStations = async () => {
       try {
-        console.log('[MAP] Loading stations from AsyncStorage (if available)...');
-        await loadFromStorage();
+        console.log('[MAP] Loading stations from prediction databases...');
+        await loadStationsFromDatabases();
 
         const tides = getCachedTideStations();
         const currents = getCachedCurrentStations();
@@ -94,7 +94,7 @@ export function useStationData() {
           return;
         }
 
-        console.log(`[MAP] Loaded ${tides.length} tide stations and ${currents.length} current stations from AsyncStorage`);
+        console.log(`[MAP] Loaded ${tides.length} tide stations and ${currents.length} current stations from prediction databases`);
 
         const filteredCurrents = filterHighestBinCurrents(currents);
 
@@ -195,7 +195,8 @@ export function useStationData() {
 
   /** Reload stations (called from focus effect when predictions change). */
   const reloadStations = async () => {
-    await loadFromStorage();
+    clearStationCache();
+    await loadStationsFromDatabases();
     const tides = getCachedTideStations();
     const currents = getCachedCurrentStations();
 

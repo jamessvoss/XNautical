@@ -7,7 +7,7 @@
  * - Live Buoy Data (Buoys) - Map with markers
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -18,7 +18,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import MapView, { Marker, Polygon, Region } from 'react-native-maps';
+import MapLibre from '@maplibre/maplibre-react-native';
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -71,19 +71,24 @@ const SIDEBAR_OPTIONS: SidebarOption[] = [
   { id: 'buoys', label: 'Buoys', icon: '📡' },
 ];
 
-// Alaska initial region
-const INITIAL_REGION: Region = {
-  latitude: 61.2,
-  longitude: -149.9,
-  latitudeDelta: 15,
-  longitudeDelta: 15,
-};
+// Initial camera position — centered on SE US/Caribbean (07cgd)
+const INITIAL_CENTER: [number, number] = [-78.0, 27.0]; // [lon, lat]
+const INITIAL_ZOOM = 4;
+
+// Minimal MapLibre style - dark ocean blue background
+const MAP_STYLE = JSON.stringify({
+  version: 8,
+  glyphs: 'http://127.0.0.1:8765/fonts/{fontstack}/{range}.pbf',
+  sources: {},
+  layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a3a5c' } }],
+});
 
 export default function WeatherScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const [activeView, setActiveView] = useState<WeatherView>('zones');
   const [isConnected, setIsConnected] = useState<boolean>(true);
+  const cameraRef = useRef<any>(null);
 
   // Subscribe to network connectivity changes
   useEffect(() => {
@@ -94,9 +99,9 @@ export default function WeatherScreen() {
   }, []);
   
   // TODO: Determine current district from map viewport or installed districts
-  // For now, default to Alaska (17cgd) where marine zone data exists.
+  // For now, default to Southeast (07cgd) — the currently downloaded region.
   // Multi-region support: this should eventually iterate or auto-detect.
-  const [currentDistrict] = useState<string>('17cgd');
+  const [currentDistrict] = useState<string>('07cgd');
   
   // Marine zones state
   const [zones, setZones] = useState<MarineZone[]>([]);
@@ -112,9 +117,6 @@ export default function WeatherScreen() {
   const [buoyDetail, setBuoyDetail] = useState<Buoy | null>(null);
   const [loadingBuoyDetail, setLoadingBuoyDetail] = useState(false);
   
-  // Map region state
-  const [region, setRegion] = useState<Region>(INITIAL_REGION);
-
   // Load zones with full geometry on mount
   useEffect(() => {
     loadZones();
@@ -131,7 +133,8 @@ export default function WeatherScreen() {
     setLoadingZones(true);
     try {
       await waitForAuth();
-      const zoneList = await getMarineZones(currentDistrict); // Get full geometry for map
+      const zoneList = await getMarineZones(currentDistrict);
+      console.log(`[Weather] Loaded ${zoneList.length} zones for ${currentDistrict}`);
       setZones(zoneList);
     } catch (error) {
       console.error('Error loading marine zones:', error);
@@ -177,23 +180,86 @@ export default function WeatherScreen() {
     setLoadingBuoyDetail(false);
   };
 
-  // Convert GeoJSON coordinates to react-native-maps format
-  const getPolygonCoords = (geometry: any) => {
-    if (!geometry) return [];
+  // Validate a polygon ring has at least 4 coordinate positions (GeoJSON requirement)
+  const isValidRing = (ring: number[][]) => ring && ring.length >= 4;
+
+  // Clean geometry to remove degenerate rings that MapLibre rejects
+  const cleanGeometry = (geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon): GeoJSON.Polygon | GeoJSON.MultiPolygon | null => {
     if (geometry.type === 'Polygon') {
-      return geometry.coordinates[0].map((coord: number[]) => ({
-        latitude: coord[1],
-        longitude: coord[0],
-      }));
+      const validRings = geometry.coordinates.filter(isValidRing);
+      if (validRings.length === 0) return null;
+      return { type: 'Polygon', coordinates: validRings };
     } else if (geometry.type === 'MultiPolygon') {
-      // For MultiPolygon, return the first polygon (largest)
-      return geometry.coordinates[0][0].map((coord: number[]) => ({
-        latitude: coord[1],
-        longitude: coord[0],
-      }));
+      const validPolygons = geometry.coordinates
+        .map(polygon => polygon.filter(isValidRing))
+        .filter(polygon => polygon.length > 0);
+      if (validPolygons.length === 0) return null;
+      return { type: 'MultiPolygon', coordinates: validPolygons };
     }
-    return [];
+    return null;
   };
+
+  // Build GeoJSON FeatureCollection for zone polygons
+  const zonesGeoJson = useMemo<GeoJSON.FeatureCollection>(() => {
+    const features: GeoJSON.Feature[] = [];
+    for (const z of zones) {
+      if (!z.geometry) continue;
+      const cleaned = cleanGeometry(z.geometry);
+      if (!cleaned) continue;
+      features.push({
+        type: 'Feature',
+        properties: { id: z.id, name: z.name },
+        geometry: cleaned,
+      });
+    }
+    return { type: 'FeatureCollection', features };
+  }, [zones]);
+
+  // Build GeoJSON FeatureCollection for zone label points (centroids)
+  const labelsGeoJson = useMemo<GeoJSON.FeatureCollection>(() => ({
+    type: 'FeatureCollection',
+    features: zones
+      .filter(z => z.centroid?.lat && z.centroid?.lon)
+      .map(z => ({
+        type: 'Feature' as const,
+        properties: { id: z.id, shortId: z.id.replace(/^[A-Z]+/, '') },
+        geometry: {
+          type: 'Point' as const,
+          coordinates: [z.centroid.lon, z.centroid.lat],
+        },
+      })),
+  }), [zones]);
+
+  // Build GeoJSON FeatureCollection for buoy points
+  const buoysGeoJson = useMemo<GeoJSON.FeatureCollection>(() => ({
+    type: 'FeatureCollection',
+    features: buoys.map(b => ({
+      type: 'Feature' as const,
+      properties: { id: b.id },
+      geometry: {
+        type: 'Point' as const,
+        coordinates: [b.longitude, b.latitude],
+      },
+    })),
+  }), [buoys]);
+
+  // Handle zone polygon press from ShapeSource
+  const handleShapePress = useCallback((event: any) => {
+    const feature = event?.features?.[0];
+    if (feature?.properties?.id) {
+      const zone = zones.find(z => z.id === feature.properties.id);
+      if (zone) handleZonePress(zone);
+    }
+  }, [zones, handleZonePress]);
+
+  // Handle buoy marker press from ShapeSource
+  const handleBuoyShapePress = useCallback((event: any) => {
+    const feature = event?.features?.[0];
+    if (feature?.properties?.id) {
+      const buoy = buoys.find(b => b.id === feature.properties.id);
+      if (buoy) handleBuoyPress(buoy);
+    }
+  }, [buoys, handleBuoyPress]);
 
   // Render marine zones map view
   const renderZonesView = () => (
@@ -204,69 +270,81 @@ export default function WeatherScreen() {
           <Text style={styles.loadingText}>Loading zones...</Text>
         </View>
       )}
-      
-      <MapView
-        style={styles.map}
-        initialRegion={INITIAL_REGION}
-        region={region}
-        onRegionChangeComplete={setRegion}
-        mapType="terrain"
-        showsUserLocation={true}
-        showsMyLocationButton={true}
-      >
-        {/* Marine Zone Polygons */}
-        {zones.map((zone) => {
-          const isSelected = selectedZone?.id === zone.id;
-          const coords = getPolygonCoords(zone.geometry);
-          if (coords.length === 0) return null;
-          
-          return (
-            <Polygon
-              key={zone.id}
-              coordinates={coords}
-              strokeColor={isSelected ? '#1E88E5' : '#2196F3'}
-              strokeWidth={isSelected ? 3 : 2}
-              fillColor={isSelected ? 'rgba(30, 136, 229, 0.35)' : 'rgba(33, 150, 243, 0.2)'}
-              tappable={true}
-              onPress={() => handleZonePress(zone)}
-            />
-          );
-        })}
 
-        {/* Marine Zone Labels (centroids) */}
-        {zones.map((zone) => {
-          if (!zone.centroid?.lat || !zone.centroid?.lon) return null;
-          
-          // Extract just the number portion (e.g., "722" from "PKZ722")
-          const shortId = zone.id.replace(/^[A-Z]+/, '');
-          
-          return (
-            <Marker
-              key={`zone-label-${zone.id}`}
-              coordinate={{
-                latitude: zone.centroid.lat,
-                longitude: zone.centroid.lon,
+      <MapLibre.MapView
+        style={styles.map}
+        styleJSON={MAP_STYLE}
+        logoEnabled={false}
+        attributionEnabled={false}
+        scaleBarEnabled={false}
+      >
+        <MapLibre.Camera
+          ref={cameraRef}
+          defaultSettings={{
+            centerCoordinate: INITIAL_CENTER,
+            zoomLevel: INITIAL_ZOOM,
+          }}
+        />
+
+        {/* Marine Zone Polygons */}
+        {zonesGeoJson.features.length > 0 && (
+          <MapLibre.ShapeSource
+            id="marine-zones"
+            shape={zonesGeoJson}
+            onPress={handleShapePress}
+          >
+            <MapLibre.FillLayer
+              id="zones-fill"
+              style={{
+                fillColor: [
+                  'case',
+                  ['==', ['get', 'id'], selectedZone?.id || ''],
+                  'rgba(30, 136, 229, 0.35)',
+                  'rgba(33, 150, 243, 0.2)',
+                ],
+                fillAntialias: true,
               }}
-              onPress={() => handleZonePress(zone)}
-              anchor={{ x: 0.5, y: 0.5 }}
-            >
-              <View 
-                style={{ 
-                  backgroundColor: '#1565C0', 
-                  borderRadius: 3, 
-                  paddingHorizontal: 4, 
-                  paddingVertical: 2,
-                  borderWidth: 1,
-                  borderColor: '#0D47A1',
-                }}
-                collapsable={false}
-              >
-                <Text style={{ color: '#FFFFFF', fontSize: 9, fontWeight: '700' }}>{shortId}</Text>
-              </View>
-            </Marker>
-          );
-        })}
-      </MapView>
+            />
+            <MapLibre.LineLayer
+              id="zones-line"
+              style={{
+                lineColor: [
+                  'case',
+                  ['==', ['get', 'id'], selectedZone?.id || ''],
+                  '#1E88E5',
+                  '#2196F3',
+                ],
+                lineWidth: [
+                  'case',
+                  ['==', ['get', 'id'], selectedZone?.id || ''],
+                  3,
+                  2,
+                ],
+              }}
+            />
+          </MapLibre.ShapeSource>
+        )}
+
+        {/* Marine Zone Labels (centroids) — rendered as native SymbolLayer */}
+        {labelsGeoJson.features.length > 0 && (
+          <MapLibre.ShapeSource id="zone-labels" shape={labelsGeoJson}>
+            <MapLibre.SymbolLayer
+              id="zone-labels-text"
+              style={{
+                textField: ['get', 'shortId'],
+                textSize: 11,
+                textFont: ['Noto Sans Bold'],
+                textColor: '#FFFFFF',
+                textHaloColor: '#1565C0',
+                textHaloWidth: 2,
+                textAllowOverlap: false,
+                textIgnorePlacement: false,
+                textPadding: 4,
+              }}
+            />
+          </MapLibre.ShapeSource>
+        )}
+      </MapLibre.MapView>
 
       {/* Zone Detail Panel */}
       {selectedZone && (
@@ -303,7 +381,7 @@ export default function WeatherScreen() {
                 {zoneForecast.synopsis && (
                   <Text style={styles.synopsisText}>{zoneForecast.synopsis}</Text>
                 )}
-                {zoneForecast.forecast?.map((period, idx) => (
+                {(zoneForecast.periods || (zoneForecast as any).forecast)?.map((period: any, idx: number) => (
                   <View key={idx} style={styles.forecastPeriod}>
                     <Text style={styles.periodName}>{period.name}:</Text>
                     <Text style={styles.periodForecast}>{period.detailedForecast}</Text>
@@ -333,30 +411,44 @@ export default function WeatherScreen() {
           <Text style={styles.loadingText}>Loading buoys...</Text>
         </View>
       )}
-      
-      <MapView
+
+      <MapLibre.MapView
         style={styles.map}
-        initialRegion={INITIAL_REGION}
-        region={region}
-        onRegionChangeComplete={setRegion}
-        mapType="terrain"
-        showsUserLocation={true}
-        showsMyLocationButton={true}
+        styleJSON={MAP_STYLE}
+        logoEnabled={false}
+        attributionEnabled={false}
+        scaleBarEnabled={false}
       >
-        {/* Buoy Markers */}
-        {buoys.map((buoy) => (
-          <Marker
-            key={buoy.id}
-            coordinate={{
-              latitude: buoy.latitude,
-              longitude: buoy.longitude,
-            }}
-            onPress={() => handleBuoyPress(buoy)}
-            anchor={{ x: 0.5, y: 0.5 }}
-            image={require('../../assets/symbols/Custom Symbols/LiveBuoy-lg.png')}
-          />
-        ))}
-      </MapView>
+        <MapLibre.Camera
+          defaultSettings={{
+            centerCoordinate: INITIAL_CENTER,
+            zoomLevel: INITIAL_ZOOM,
+          }}
+        />
+
+        {/* Buoy icon registration */}
+        <MapLibre.Images
+          images={{ buoyIcon: require('../../assets/symbols/Custom Symbols/LiveBuoy-lg.png') }}
+        />
+
+        {/* Buoy Markers — native SymbolLayer */}
+        {buoysGeoJson.features.length > 0 && (
+          <MapLibre.ShapeSource
+            id="buoy-markers"
+            shape={buoysGeoJson}
+            onPress={handleBuoyShapePress}
+          >
+            <MapLibre.SymbolLayer
+              id="buoy-icons"
+              style={{
+                iconImage: 'buoyIcon',
+                iconSize: 0.5,
+                iconAllowOverlap: true,
+              }}
+            />
+          </MapLibre.ShapeSource>
+        )}
+      </MapLibre.MapView>
 
       {/* Buoy Detail Modal - matches map page */}
       <BuoyDetailModal

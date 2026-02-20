@@ -116,6 +116,8 @@ export function useDeviceHeading(options: UseDeviceHeadingOptions = {}) {
   const subscriptionRef = useRef<{ remove: () => void } | null>(null);
   const isFirstReadingRef = useRef(true);
 
+
+
   // Check availability on mount
   useEffect(() => {
     let mounted = true;
@@ -168,6 +170,7 @@ export function useDeviceHeading(options: UseDeviceHeadingOptions = {}) {
       }
 
       smoothedHeadingRef.current = smoothedHeading;
+
 
       // Update state (this triggers re-render in consuming component)
       setHeadingData(prev => ({
