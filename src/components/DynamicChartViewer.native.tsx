@@ -929,6 +929,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // child VectorSource registration and prevents tiles from loading.
   // Instead, we let MapView use its default style and cover it with a BackgroundLayer.
   const mapBackgroundColor = useMemo(() => {
+    // ECDIS mode: white background — standard ECDIS deep water default.
+    // Areas without chart coverage appear as white (deep water), matching
+    // the traditional IHO ECDIS day-mode presentation.
+    if (ecdisColors) return '#FFFFFF';
     // Background colors are fixed per imagery choice — they must match the
     // basemap palette (light text on dark bg, dark text on light bg).
     // Chart *feature* colors (depth areas, land, etc.) change with display mode
@@ -942,7 +946,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       terrain: '#dfe6e9',
     };
     return styles[mapStyle] || '#1a1a2e';
-  }, [mapStyle]);
+  }, [mapStyle, ecdisColors]);
 
   // Memoize composite tile URL to prevent constant VectorSource re-renders
   const compositeTileUrl = useMemo(() => {
@@ -2650,11 +2654,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 6]],   // US5+: z6+ (native range z6/8-15)
   ], []);
 
-  // Line features (DEPCNT) use the same overlapping bands as fills. Where both
-  // a lower-scale and higher-scale contour exist, dedup has already resolved them
-  // to the same geometry — drawing both just redraws the same line (barely visible).
-  // The alternative (exclusive bands) causes fragmentation where higher-scale
-  // charts have incomplete coverage (e.g. Cook Inlet US4 gaps at z8+).
+  // Line features (DEPCNT) use overlapping bands. The compose_job clips
+  // lower-scale contours out of higher-scale M_COVR coverage areas, so the
+  // tile data has no cross-scale geometry overlap — overlapping display bands
+  // are safe (no double-contours) and ensure contour continuity at all zooms.
   const contourScaleFilter: any[] = useMemo(() => ['any',
     ['!', ['has', '_scaleNum']],
     ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 11]],   // US1-2: z0-10 (native max)
@@ -2692,10 +2695,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 5, s52Colors.DEPMD,
                 10, s52Colors.DEPDW,
               ],
-          fillOpacity: mapStyle === 'satellite'
-            ? (ecdisColors ? 0.7 : scaledDepthAreaOpacitySatellite)
-            : scaledDepthAreaOpacity,
-          visibility: (showDepthAreas && (mapStyle !== 'satellite' || ecdisColors)) ? 'visible' : 'none',
+          fillOpacity: ecdisColors ? 1 : (mapStyle === 'satellite' ? scaledDepthAreaOpacitySatellite : scaledDepthAreaOpacity),
+          visibility: (ecdisColors || (showDepthAreas && mapStyle !== 'satellite')) ? 'visible' : 'none',
         }}
       />,
 
@@ -2716,7 +2717,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             16, 1.0 * displaySettings.depthContourLineScale,
           ],
           lineOpacity: 0.4 * scaledDepthContourLineOpacity,
-          visibility: (showDepthAreas && (mapStyle !== 'satellite' || ecdisColors)) ? 'visible' : 'none',
+          visibility: (showDepthAreas && showDepthContours && (ecdisColors || mapStyle !== 'satellite')) ? 'visible' : 'none',
         }}
       />,
 
@@ -2728,10 +2729,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         filter={['all', ['==', ['get', 'OBJL'], 71], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.LANDA,
-          fillOpacity: mapStyle === 'satellite'
-            ? (ecdisColors ? 0.8 : 0.2)
-            : 1,
-          visibility: (showLand && (mapStyle !== 'satellite' || ecdisColors)) ? 'visible' : 'none',
+          fillOpacity: ecdisColors ? 1 : (mapStyle === 'satellite' ? 0.2 : 1),
+          visibility: (ecdisColors || (showLand && mapStyle !== 'satellite')) ? 'visible' : 'none',
         }}
       />,
 
@@ -2749,6 +2748,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           fillColor: s52Colors.DRGARE,
           fillOpacity: scaledDredgedAreaOpacity,
+          visibility: showDepthAreas ? 'visible' : 'none',
         }}
       />,
 
@@ -2762,6 +2762,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           fillColor: s52Colors.FAIRWY,
           fillOpacity: scaledFairwayOpacity,
+          visibility: showRestrictedAreas ? 'visible' : 'none',
         }}
       />,
 
@@ -2883,6 +2884,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           fillColor: s52Colors.TSSLPT,
           fillOpacity: 0.1,
+          visibility: showRestrictedAreas ? 'visible' : 'none',
         }}
       />,
 
@@ -2898,6 +2900,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           lineWidth: 1.5,
           lineOpacity: 0.6,
           lineDasharray: [4, 4],
+          visibility: showRestrictedAreas ? 'visible' : 'none',
         }}
       />,
 
@@ -2911,6 +2914,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           fillColor: s52Colors.DEPVS,
           fillOpacity: 0.6,
+          visibility: showDepthAreas ? 'visible' : 'none',
         }}
       />,
 
@@ -3314,6 +3318,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledCoastlineHaloWidth,
           lineOpacity: scaledCoastlineHalo > 0 ? scaledCoastlineOpacity * 0.8 : 0,
+          visibility: showCoastline ? 'visible' : 'none',
         }}
       />,
 
@@ -3328,6 +3333,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           lineColor: s52Colors.CSTLN,
           lineWidth: scaledCoastlineLineWidth,
           lineOpacity: scaledCoastlineOpacity,
+          visibility: showCoastline ? 'visible' : 'none',
         }}
       />,
 
@@ -4216,6 +4222,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           lineColor: s52Colors.DRGOL,
           lineWidth: 1.5,
           lineDasharray: [4, 2],
+          visibility: showDepthAreas ? 'visible' : 'none',
         }}
       />,
 
@@ -4230,6 +4237,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           lineColor: s52Colors.FWYOL,
           lineWidth: 2,
           lineDasharray: [8, 4],
+          visibility: showRestrictedAreas ? 'visible' : 'none',
         }}
       />,
 
@@ -4374,7 +4382,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     for (const source of chartScaleSources) cache[source.sourceId] = renderFillLayers(source.sourceId);
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, showScaleDebug,
-    showDepthAreas, showLand, showCables, showPipelines,
+    showDepthAreas, showDepthContours, showLand, showCables, showPipelines,
     showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages, showMarineFarms,
     showSeaAreaNames, showLandRegions,
     mapStyle, ecdisColors, s52Colors, displaySettings.depthContourLineScale,
@@ -4405,7 +4413,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     for (const source of chartScaleSources) cache[source.sourceId] = renderLineLayers(source.sourceId);
     return cache;
   }, [chartScaleSources, scaminFilter, contourScaleFilter, s52Colors, s52Mode,
-    showDepthContours, showLand, showCables, showPipelines,
+    showDepthContours, showCoastline, showLand, showCables, showPipelines,
     scaledDepthContourLineWidth, scaledDepthContourLineHaloWidth,
     scaledDepthContourLineHalo, scaledDepthContourLineOpacity,
     scaledCoastlineLineWidth, scaledCoastlineHaloWidth, scaledCoastlineHalo, scaledCoastlineOpacity,
@@ -4567,7 +4575,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Satellite Imagery - renders at very bottom when available */}
         {/* Each satellite_z*.mbtiles file is loaded as a separate source with its zoom range */}
         {tileServerReady && satelliteTileSets.length > 0 && satelliteTileSets.map((tileSet) => {
-          const satelliteVisible = (mapStyle === 'satellite' && debugIsSourceVisible('satellite')) ? 1 : 0;
+          const satelliteVisible = (mapStyle === 'satellite' && !ecdisColors && debugIsSourceVisible('satellite')) ? 1 : 0;
           // Log satellite visibility during style switch
           if (styleSwitchStartRef.current > 0 && mapStyle === 'satellite' && tileSet.minZoom === 0) {
           }
@@ -4699,13 +4707,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         <MapLibre.ShapeSource id="sector-arcs-source" shape={sectorArcFeatures}>
           <MapLibre.LineLayer id="sector-arcs-outline" style={{
             lineColor: s52Colors.CHBLK, lineWidth: 5, lineOpacity: 0.8,
-            visibility: showLights && sectorArcFeatures.features.length > 0 ? 'visible' : 'none',
+            visibility: showSectors && sectorArcFeatures.features.length > 0 ? 'visible' : 'none',
           }} />
           <MapLibre.LineLayer id="sector-arcs-fill" style={{
             lineColor: ['match', ['get', 'COLOUR'],
               1, s52Colors.LITYW, 3, s52Colors.LITRD, 4, s52Colors.LITGN, 6, s52Colors.CHCOR, s52Colors.LITYW],
             lineWidth: 3, lineOpacity: 1.0,
-            visibility: showLights && sectorArcFeatures.features.length > 0 ? 'visible' : 'none',
+            visibility: showSectors && sectorArcFeatures.features.length > 0 ? 'visible' : 'none',
           }} />
         </MapLibre.ShapeSource>
 
@@ -4714,7 +4722,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Uses a separate VectorSource so these land-context features appear */}
         {/* on top of the opaque chart fills (DEPARE, LNDARE)                 */}
         {/* ================================================================== */}
-        {tileServerReady && hasLocalBasemap && isVectorStyle && debugIsSourceVisible('basemap') && (() => {
+        {tileServerReady && hasLocalBasemap && (isVectorStyle || ecdisColors) && debugIsSourceVisible('basemap') && (() => {
           const p = basemapPalette;
           const vis = 'visible';
           const basemapTileUrl = basemapTileSets.length > 0

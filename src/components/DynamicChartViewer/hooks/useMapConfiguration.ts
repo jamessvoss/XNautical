@@ -173,6 +173,7 @@ export function useMapConfiguration() {
   );
 
   // Basemap color palettes per vector style
+  // ECDIS mode forces light palette (dark text on white background)
   const basemapPalette = useMemo(() => {
     const palettes = {
       light: {
@@ -196,24 +197,26 @@ export function useMapConfiguration() {
       street: {
         bg: '#f5f5f0', water: '#aadaff', waterway: '#aadaff', ice: '#f0f0f0',
         grass: '#f5f5f0',         // Almost white - matches background
-        wood: '#f5f5f0',          // Almost white - matches background  
+        wood: '#f5f5f0',          // Almost white - matches background
         wetland: '#f5f5f0',       // Almost white - matches background
-        residential: '#f5f5f0', industrial: '#f0f0ec', 
+        residential: '#f5f5f0', industrial: '#f0f0ec',
         park: '#e8f5e8',          // Extremely subtle hint of green - like Google Maps
         building: '#e8e8e8', road: '#ffffff', roadCasing: '#d0d0d0',
         text: '#333333', textHalo: '#ffffff', grid: '#d8d8d8',
-        waterText: '#5d8cae', 
+        waterText: '#5d8cae',
         landcoverOpacity: 0.15,   // Extremely low - almost invisible
         buildingOpacity: 0.9,     // Buildings more visible
         parkOpacity: 0.1,         // Barely there - like Google Maps
         roadNightDim: 1,
       },
     };
+    // ECDIS forces light palette for correct contrast on white background
+    if (ecdisColors) return palettes.light;
     if (mapStyle === 'light' || mapStyle === 'dark' || mapStyle === 'street') {
       return palettes[mapStyle];
     }
     return palettes.light; // fallback for satellite, ocean, terrain, etc.
-  }, [mapStyle]);
+  }, [mapStyle, ecdisColors]);
 
   // MapLibre background styles per mode — fixed per imagery, not display mode
   const mapStyleUrls = useMemo<Record<MapStyleOption, object>>(() => ({

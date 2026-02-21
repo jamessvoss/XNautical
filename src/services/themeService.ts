@@ -267,12 +267,12 @@ const S52_COLOR_TABLES: Record<S52DisplayMode, Record<S52ColorToken, string>> = 
 
   // DUSK mode - black backgrounds, usable day or twilight
   dusk: {
-    // Depth zones (dark backgrounds)
-    DEPDW: '#1A1A2E',   // Deep water - very dark blue-gray
-    DEPMD: '#2A3A4E',   // Medium deep - dark blue
-    DEPMS: '#3A4A5E',   // Medium shallow - medium dark blue
-    DEPVS: '#4A5A6E',   // Very shallow - lighter dark blue
-    DEPIT: '#3A4A3E',   // Intertidal - dark green-gray
+    // Depth zones — visible blue gradient on dark background
+    DEPDW: '#1E2640',   // Deep water - dark navy (distinct from bg #1A1A2E)
+    DEPMD: '#253458',   // Medium deep - dark blue
+    DEPMS: '#304570',   // Medium shallow - medium blue
+    DEPVS: '#3B5888',   // Very shallow - steel blue
+    DEPIT: '#2A4A38',   // Intertidal - dark teal-green
     // Land
     LANDA: '#2A2820',   // Land - dark brown
     LANDF: '#3A3828',   // Land features - slightly lighter
@@ -362,7 +362,7 @@ const S52_COLOR_TABLES: Record<S52DisplayMode, Record<S52ColorToken, string>> = 
     PILPT: '#808080',   // Pile point - lighter
     RSCST: '#FF6060',   // Rescue station - bright red
     // Halos
-    HLCLR: '#1A1A2E',   // Halo - deep water bg (matches dusk background)
+    HLCLR: '#1E2640',   // Halo - deep water bg (matches dusk DEPDW)
     // Outlines
     LNDOL: '#8A7050',   // Land outline
     DRGOL: '#5090B0',   // Dredged outline
@@ -800,30 +800,34 @@ const ECDIS_OVERRIDES: Record<S52DisplayMode, Partial<Record<S52ColorToken, stri
     LANDA: '#F0E9D2',   // Land - warm cream
   },
   dusk: {
-    DEPIT: '#2A3A20',   // Intertidal - dark green
-    DEPVS: '#1A2A3A',   // Very shallow - dark blue
-    DEPMS: '#203848',   // Medium shallow
-    DEPMD: '#284060',   // Medium deep
-    DEPDW: '#1A1A2E',   // Deep water - dark bg
-    LANDA: '#3A3428',   // Land - warm dark
+    DEPIT: '#4A6848',   // Intertidal - muted green
+    DEPVS: '#5A80A0',   // Very shallow - visible blue
+    DEPMS: '#4A6888',   // Medium shallow - medium blue
+    DEPMD: '#3A5070',   // Medium deep - darker blue
+    DEPDW: '#2A3048',   // Deep water - dark blue-gray (distinct from bg #1a1a2e)
+    LANDA: '#7A6A50',   // Land - warm tan (clearly distinct from water)
   },
   night: {
-    DEPIT: '#141810',   // Intertidal - very dim green
-    DEPVS: '#0C1018',   // Very shallow - very dim blue
-    DEPMS: '#101820',   // Medium shallow
-    DEPMD: '#142030',   // Medium deep
-    DEPDW: '#0A0A10',   // Deep water - near black
-    LANDA: '#181410',   // Land - very dim warm
+    DEPIT: '#283820',   // Intertidal - dim green
+    DEPVS: '#304858',   // Very shallow - dim blue
+    DEPMS: '#283848',   // Medium shallow
+    DEPMD: '#202838',   // Medium deep
+    DEPDW: '#151820',   // Deep water - very dark blue (still distinct from bg #0A0A10)
+    LANDA: '#3A3028',   // Land - dim warm (distinct from water)
   },
 };
 
 /**
  * Get S-52 color table with ECDIS overrides applied.
  * Use this when the ECDIS toggle is on.
+ *
+ * Always returns DAY color base + DAY ECDIS overrides regardless of current
+ * display mode. This produces the traditional ECDIS appearance: white deep
+ * water, graduated blue depth zones, black text, cream land — matching the
+ * IHO S-52 day-mode ECDIS standard that mariners expect.
  */
-export function getS52ColorTableWithECDIS(mode?: S52DisplayMode): Record<S52ColorToken, string> {
-  const effectiveMode = mode ?? currentMode;
-  return { ...S52_COLOR_TABLES[effectiveMode], ...ECDIS_OVERRIDES[effectiveMode] };
+export function getS52ColorTableWithECDIS(_mode?: S52DisplayMode): Record<S52ColorToken, string> {
+  return { ...S52_COLOR_TABLES.day, ...ECDIS_OVERRIDES.day };
 }
 
 /**
