@@ -404,10 +404,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Memoized scaled line widths
   const scaledDepthContourLineWidth = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    4, 1.5 * displaySettings.depthContourLineScale,
-    8, 2.0 * displaySettings.depthContourLineScale,
-    12, 2.5 * displaySettings.depthContourLineScale,
-    16, 3.0 * displaySettings.depthContourLineScale,
+    4, 0.3 * displaySettings.depthContourLineScale,
+    8, 0.5 * displaySettings.depthContourLineScale,
+    12, 0.8 * displaySettings.depthContourLineScale,
+    16, 1.2 * displaySettings.depthContourLineScale,
   ], [displaySettings.depthContourLineScale]);
 
   const scaledCoastlineLineWidth = useMemo(() => [
@@ -508,10 +508,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Halo widths for interpolated line widths (depth contours, coastline)
   const scaledDepthContourLineHaloWidth = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    4, (1.5 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
-    8, (2.0 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
-    12, (2.5 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
-    16, (3.0 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    4, (0.3 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    8, (0.5 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    12, (0.8 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    16, (1.2 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
   ], [displaySettings.depthContourLineScale, scaledDepthContourLineHalo]);
 
   const scaledCoastlineHaloWidth = useMemo(() => [

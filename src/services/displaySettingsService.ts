@@ -170,7 +170,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   seaAreaNamesFontScale: 1.5,
   seabedNamesFontScale: 1.5,
   // Text halo/stroke
-  soundingsHaloScale: 1.0,
+  soundingsHaloScale: 0.1,
   gnisHaloScale: 1.0,
   depthContourLabelHaloScale: 1.0,
   chartLabelsHaloScale: 1.0,

@@ -584,14 +584,7 @@ export function formatSeabedInfo(properties: Record<string, unknown>): Record<st
  */
 export function formatCableInfo(properties: Record<string, unknown>): Record<string, string> {
   const formatted: Record<string, string> = {};
-  
-  // Type
-  formatted['Type'] = 'Submarine Cable';
-  
-  // Name
-  const objnam = properties.OBJNAM as string | undefined;
-  if (objnam) formatted['Name'] = objnam;
-  
+
   // Category of cable
   const catcbl = properties.CATCBL as string | undefined;
   if (catcbl) {
@@ -605,25 +598,115 @@ export function formatCableInfo(properties: Record<string, unknown>): Record<str
     };
     formatted['Category'] = categories[catcbl] || `Code ${catcbl}`;
   }
-  
+
+  // Name
+  const objnam = properties.OBJNAM as string | undefined;
+  if (objnam) formatted['Name'] = objnam;
+
+  // Source chart
+  const chartId = (properties._chartId || properties.CHART_ID) as string | undefined;
+  if (chartId) {
+    // Parse scale from chart ID prefix (US1-US6)
+    const scaleMatch = chartId.match(/^US(\d)/);
+    const scaleNames: Record<string, string> = {
+      '1': 'Overview', '2': 'General', '3': 'Coastal',
+      '4': 'Approach', '5': 'Harbour', '6': 'Berthing',
+    };
+    const scaleName = scaleMatch ? ` (${scaleNames[scaleMatch[1]] || `Scale ${scaleMatch[1]}`})` : '';
+    formatted['Source Chart'] = `${chartId}${scaleName}`;
+  }
+
+  // Scale number
+  const scaleNum = properties._scaleNum as number | undefined;
+  if (scaleNum !== undefined) {
+    formatted['Chart Scale'] = `US${scaleNum}`;
+  }
+
+  // SCAMIN — scale minimum (visibility threshold)
+  const scamin = properties.SCAMIN as string | number | undefined;
+  if (scamin !== undefined && scamin !== '') {
+    const scaminVal = Number(scamin);
+    if (!isNaN(scaminVal) && scaminVal > 0) {
+      // Convert SCAMIN to approximate zoom level: z ≈ 28 - log2(SCAMIN)
+      const approxZoom = (28 - Math.log2(scaminVal)).toFixed(1);
+      formatted['SCAMIN'] = `1:${scaminVal.toLocaleString()} (visible from ~z${approxZoom})`;
+    }
+  }
+
   // Restrictions
   const restrn = safeParseArray(properties.RESTRN);
   if (restrn.length > 0) {
     const restrictions = restrn.map(r => RESTRICTION_CODES[r] || `Code ${r}`).join(', ');
     formatted['Restrictions'] = restrictions;
   }
-  
+
+  // Condition (CONDTN)
+  const condtn = properties.CONDTN as string | number | undefined;
+  if (condtn !== undefined && condtn !== '') {
+    const conditions: Record<string, string> = {
+      '1': 'Under construction', '2': 'Ruined', '3': 'Under reclamation',
+      '4': 'Wingless', '5': 'Planned construction',
+    };
+    formatted['Condition'] = conditions[String(condtn)] || `Code ${condtn}`;
+  }
+
   // Buried depth
   const burdep = properties.BURDEP as number | undefined;
   if (burdep !== undefined) {
     formatted['Buried Depth'] = `${burdep}m`;
   }
-  
+
   // Vertical clearance
   const verclr = properties.VERCLR as number | undefined;
   if (verclr !== undefined) {
     formatted['Vertical Clearance'] = `${verclr}m`;
   }
-  
+
+  // Status
+  const status = properties.STATUS as string | number | undefined;
+  if (status !== undefined && status !== '') {
+    const statuses: Record<string, string> = {
+      '1': 'Permanent', '2': 'Occasional', '4': 'Not in use',
+      '5': 'Periodic/intermittent', '7': 'Temporary',
+      '8': 'Private', '11': 'On position', '12': 'Disused',
+      '15': 'Watched', '16': 'Un-watched',
+    };
+    formatted['Status'] = statuses[String(status)] || `Code ${status}`;
+  }
+
+  // Source data date (SORDAT)
+  const sordat = properties.SORDAT as string | undefined;
+  if (sordat) {
+    // Format YYYYMMDD as YYYY-MM-DD
+    const dateStr = sordat.length === 8
+      ? `${sordat.slice(0, 4)}-${sordat.slice(4, 6)}-${sordat.slice(6, 8)}`
+      : sordat;
+    formatted['Source Date'] = dateStr;
+  }
+
+  // Source indication (SORIND) — often contains report/chart reference
+  const sorind = properties.SORIND as string | undefined;
+  if (sorind) {
+    formatted['Source'] = sorind;
+  }
+
+  // Information (INFORM)
+  const inform = properties.INFORM as string | undefined;
+  if (inform) {
+    formatted['Info'] = inform;
+  }
+
+  // Text description (TXTDSC)
+  const txtdsc = properties.TXTDSC as string | undefined;
+  if (txtdsc) {
+    formatted['Description'] = txtdsc;
+  }
+
+  // Record ID (RCID) — chart-internal identifier
+  const rcid = properties.RCID as number | undefined;
+  if (rcid !== undefined) {
+    formatted['Record ID'] = `${rcid}`;
+  }
+
   return formatted;
 }
