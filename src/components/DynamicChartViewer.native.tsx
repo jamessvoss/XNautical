@@ -2251,8 +2251,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           const objl = f.properties?.OBJL;
           if (!objl) return false;
           
-          // ALWAYS exclude soundings (OBJL 129) - too numerous and obvious
-          if (objl === 129) return false;
+          // Soundings tappable for debugging _scaleNum
+          // if (objl === 129) return false;
           
           // ALWAYS exclude depth contours (OBJL 43) - not useful for identification
           if (objl === 43) return false;
