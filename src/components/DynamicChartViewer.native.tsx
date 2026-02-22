@@ -2532,11 +2532,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // cluttering the display when detailed charts are available.
   // Hard ceiling per scale matches SCALE_ZOOM_RANGES from the compose pipeline.
   const pointScaleFilter: any[] = useMemo(() => ['any',
-    ['!', ['has', '_scaleNum']],                                       // No scale → pass through
-    ['all', ['==', ['get', '_scaleNum'], 1], ['<=', ['zoom'], 8]],     // US1: z0-8
-    ['all', ['==', ['get', '_scaleNum'], 2], ['<=', ['zoom'], 10]],    // US2: z0-10
-    ['all', ['==', ['get', '_scaleNum'], 3], ['<=', ['zoom'], 13]],    // US3: z4-13
-    ['all', ['>=', ['get', '_scaleNum'], 4]],                          // US4+: no ceiling
+    ['!', ['has', '_scaleNum']],                                                          // No scale → pass through
+    ['all', ['==', ['get', '_scaleNum'], 1], ['<=', ['zoom'], 8]],                        // US1: z0-8
+    ['all', ['==', ['get', '_scaleNum'], 2], ['<=', ['zoom'], 10]],                       // US2: z0-10
+    ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 4], ['<=', ['zoom'], 13]],  // US3: z4-13
+    ['all', ['>=', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 6]],                        // US4+: z6+
   ], []);
 
   // ─── renderChartLayers: split into sub-group functions ──────────────
