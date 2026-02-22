@@ -601,14 +601,14 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
       // Regenerate manifest once for all downloaded chart packs
       await chartPackService.generateManifest();
 
-      // Fetch pre-computed sector lights for reliable arc rendering
+      // Fetch points.mbtiles (all point features: soundings, lights, buoys, etc.)
       try {
-        const slCount = await chartPackService.fetchSectorLights(firestoreId);
-        if (slCount > 0) {
-          console.log(`[DownloadPanel] Fetched ${slCount} sector lights for ${firestoreId}`);
+        const success = await chartPackService.fetchPoints(firestoreId);
+        if (success) {
+          console.log(`[DownloadPanel] Fetched points.mbtiles for ${firestoreId}`);
         }
-      } catch (slErr) {
-        console.warn('[DownloadPanel] Sector lights fetch failed (non-critical):', slErr);
+      } catch (ptErr) {
+        console.warn('[DownloadPanel] Points fetch failed (non-critical):', ptErr);
       }
 
       // Refresh installed state

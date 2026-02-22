@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 
 import sqlite3
 
+from osgeo import ogr
 from google.cloud import storage, firestore
 
 # Setup logging
@@ -53,14 +54,48 @@ DISTRICT_PREFIXES = {
 }
 
 # Zoom ranges per scale number (matching convert.py get_tippecanoe_settings)
+# These define the TILE GENERATION range (tippecanoe -Z/-z) per scale.
+# Individual feature visibility within this range is controlled by per-feature
+# tippecanoe.minzoom derived from S-57 SCAMIN values.
 SCALE_ZOOM_RANGES = {
     1: (0, 8),
     2: (0, 10),
     3: (4, 13),
     4: (6, 15),
-    5: (8, 15),
+    5: (6, 15),
     6: (6, 15),
 }
+
+# SCAMIN offset for converting S-57 SCAMIN to tippecanoe minzoom.
+# 0 = exact SCAMIN threshold (matches app's chartDetail=medium).
+# Increase to include features at lower zooms (headroom for chartDetail).
+SCAMIN_HEADROOM = 0
+
+# S-57 Group 1 "skin of earth" features + depth contours — SCAMIN must NOT
+# restrict their visibility. Group 1 features define the fundamental land/water
+# boundary; DEPCNT is included because depth contours are safety-critical and
+# should be visible whenever the scale band's tiles exist (matching how
+# commercial chart plotters always show contours for situational awareness).
+# These always use the scale band's native zoom range, never SCAMIN-derived minzoom.
+SKIN_OF_EARTH_OBJLS = {30, 42, 43, 69, 71}  # COALNE, DEPARE, DEPCNT, LAKARE, LNDARE
+
+
+def scamin_to_minzoom(scamin_val, native_lo: int) -> int:
+    """Convert S-57 SCAMIN to a tippecanoe minzoom level.
+
+    Uses the same formula as the app: zoom = 28 - log2(SCAMIN) - offset.
+    Falls back to native_lo if SCAMIN is missing or invalid.
+    """
+    if not scamin_val:
+        return native_lo
+    try:
+        scamin = float(scamin_val)
+        if scamin <= 0:
+            return native_lo
+        z = 28 - SCAMIN_HEADROOM - math.log2(scamin)
+        return max(native_lo, int(z))
+    except (ValueError, TypeError):
+        return native_lo
 
 # Category 1: Fixed physical objects — deduplicate, keep highest _scaleNum
 # All codes are verified against actual binary OBJL values in S-57 .000 files
@@ -112,18 +147,22 @@ DEDUP_ZONE_OBJLS = {
 # Category 3: Hydrographic/geographic features — deduplicate, keep highest _scaleNum
 # These features exist on multiple overlapping charts and cause visual doubling
 # (overlapping contour lines, duplicate soundings, doubled coastlines)
-# NOTE: SOUNDG (129) intentionally excluded — soundings are dense survey points,
-# not true cross-scale duplicates. The 4-decimal coordinate rounding in dedup_key()
-# (~11m precision) collapses nearby-but-distinct soundings, losing 40-60% of data.
 DEDUP_HYDRO_OBJLS = {
     43,   # DEPCNT — depth contours
     42,   # DEPARE — depth areas
     30,   # COALNE — coastline
     71,   # LNDARE — land areas
+    129,  # SOUNDG — depth soundings (cross-scale dedup, uses 5-decimal precision)
 }
 
 # All OBJL codes that should be deduplicated
 ALL_DEDUP_OBJLS = DEDUP_POINT_OBJLS | DEDUP_LINE_OBJLS | DEDUP_ZONE_OBJLS | DEDUP_HYDRO_OBJLS
+
+# All Point geometry features are extracted to a standalone points.mbtiles file.
+# Only Point geometry instances are extracted — Line/Polygon instances of the same
+# OBJL (e.g. MORFAC, HULKES, PONTON) stay in per-scale tiles.
+# MBTiles (memory-mapped SQLite) replaces the old nav-aids.json GeoJSON sidecar
+# which caused OOM on mobile when parsed into JS objects.
 
 # M_COVR (302) features are NOT deduplicated — each chart has its own coverage polygon.
 # They pass through to tiles as-is (the TypeScript parser includes them, unlike GDAL).
@@ -262,29 +301,42 @@ def validate_upload(bucket, storage_path, expected_size, label, logger):
 def dedup_key(feature: dict) -> str:
     """Generate a deduplication key for a feature.
 
-    Points: "{OBJL}:{OBJNAM}:{round(lon,4)}:{round(lat,4)}" or without OBJNAM
-    Lines/Polygons: "{OBJL}:{OBJNAM}:{hash(sorted_rounded_coords)}" or without OBJNAM
+    Precision strategy — dedup needs to be coarser than storage (7 decimals)
+    to catch the same feature appearing across chart scales with slightly
+    different coordinates (different surveys/generalization shift by meters).
+
+    Named features (OBJNAM): OBJL + name already identifies the feature,
+      so coordinates use 4 decimals (~11m at equator, ~5.5m at 60°N) to
+      catch cross-scale duplicates even when coords differ by several meters.
+    Unnamed points: 5 decimals (~1.1m at equator, ~0.55m at 60°N) balances
+      catching duplicates vs preserving distinct nearby features.
+    Soundings (OBJL 129): 5 decimals (~1.1m) matches survey resolution.
+    Lines/Polygons: 5 decimals for coordinate hashing.
     """
     props = feature.get('properties', {})
     objl = props.get('OBJL', 0)
     objnam = props.get('OBJNAM')
-    geom = feature.get('geometry', {})
+    geom = feature.get('geometry') or {}
     geom_type = geom.get('type', '')
 
     if geom_type == 'Point':
         coords = geom.get('coordinates', [0, 0])
-        lon = round(coords[0], 4)
-        lat = round(coords[1], 4)
         if objnam:
+            # Named features: name + OBJL is strong identity, use looser coords
+            lon = round(coords[0], 4)
+            lat = round(coords[1], 4)
             return f"{objl}:{objnam}:{lon}:{lat}"
-        return f"{objl}:{lon}:{lat}"
+        else:
+            # Unnamed points (including soundings): tighter precision
+            lon = round(coords[0], 5)
+            lat = round(coords[1], 5)
+            return f"{objl}:{lon}:{lat}"
 
     else:
         # Lines, Polygons, MultiLineString, MultiPolygon
         coords = geom.get('coordinates', [])
-        # Flatten and round all coordinate pairs for hashing
         flat = _flatten_coords(coords)
-        rounded = tuple((round(c[0], 4), round(c[1], 4)) for c in flat)
+        rounded = tuple((round(c[0], 5), round(c[1], 5)) for c in flat)
         coord_hash = hashlib.md5(str(sorted(rounded)).encode()).hexdigest()[:12]
         if objnam:
             return f"{objl}:{objnam}:{coord_hash}"
@@ -306,6 +358,98 @@ def _flatten_coords(coords):
     for item in coords:
         result.extend(_flatten_coords(item))
     return result
+
+
+# OBJLs whose geometries should be clipped against higher-scale M_COVR coverage
+# during compose (cascading: each scale clipped only against the next scale up).
+# Where a higher-scale chart provides M_COVR coverage, it is the authoritative
+# source for ALL features in that area. Lower-scale features must be removed to
+# prevent cross-scale duplicates (e.g. same rock at different positions, same
+# contour at different depths, same area with different boundaries).
+# This is the S-57 intended use of M_COVR — it defines chart authority boundaries.
+#
+# M_COVR authority clipping — ONLY skin-of-earth and hydrographic features
+# where cross-scale overlap causes visual problems (seams, doubled contours,
+# duplicate soundings, doubled coastlines).
+# Point features (rocks, wrecks, buoys, lights, beacons, etc.) must NOT be
+# clipped — they rely on dedup only. If dedup doesn't catch them (different
+# coords across scales), both versions should remain because we can't know
+# if the higher-scale chart actually surveyed that specific feature.
+MCOVR_CLIP_OBJLS = {
+    42,   # DEPARE — depth areas (seams at scale boundaries)
+    43,   # DEPCNT — depth contours (doubled lines)
+    30,   # COALNE — coastline (doubled coastlines)
+    71,   # LNDARE — land areas (overlapping polygons)
+    129,  # SOUNDG — soundings (duplicate depth values)
+}
+
+
+def build_coverage_index(local_paths):
+    """Stream all chart GeoJSON and collect M_COVR (OBJL=302) polygons per scale.
+
+    Returns {scale_num: OGR Geometry} where each geometry is the union of all
+    M_COVR polygons for that scale.
+    """
+    coverage_by_scale = defaultdict(list)
+
+    for path in local_paths:
+        with open(path, 'r', encoding='utf-8') as f:
+            collection = json.load(f)
+        for feature in collection.get('features', []):
+            props = feature.get('properties', {})
+            if props.get('OBJL') != M_COVR_OBJL:
+                continue
+            geom = feature.get('geometry')
+            if not geom or geom.get('type') is None:
+                continue
+            scale_num = props.get('_scaleNum', 0)
+            if scale_num == 0:
+                continue
+            ogr_geom = ogr.CreateGeometryFromJson(json.dumps(geom))
+            if ogr_geom and not ogr_geom.IsEmpty():
+                coverage_by_scale[scale_num].append(ogr_geom)
+
+    # Union all polygons per scale (with validity checks)
+    coverage_union = {}
+    for sn, geoms in coverage_by_scale.items():
+        union = geoms[0].Clone()
+        if not union.IsValid():
+            union = union.MakeValid()
+        for g in geoms[1:]:
+            if not g.IsValid():
+                g = g.MakeValid()
+            union = union.Union(g)
+        if not union.IsValid():
+            union = union.MakeValid()
+        coverage_union[sn] = union
+
+    return coverage_union
+
+
+def build_higher_scale_coverage(coverage_union):
+    """For each scale N, get M_COVR from the next scale up (N+1) only.
+
+    Cascading per-scale-pair clipping: each scale is only clipped against the
+    immediately next higher scale, not the union of all higher scales. This
+    prevents zoom gaps — e.g. US3 clipped by US4 (whose tiles overlap at z6),
+    US4 clipped by US5 (whose tiles overlap at z6), rather than US3 clipped
+    by a union of US4+US5+US6 which could remove contours at zooms where only
+    the distant higher scale exists but hasn't started generating tiles yet.
+
+    Returns {scale_num: OGR Geometry} only for scales that have a next-higher
+    scale with coverage.
+    """
+    sorted_scales = sorted(coverage_union.keys())
+    higher_coverage = {}
+
+    for i, sn in enumerate(sorted_scales):
+        # Find the next scale up that has coverage
+        next_higher = [s for s in sorted_scales if s > sn]
+        if not next_higher:
+            continue
+        higher_coverage[sn] = coverage_union[next_higher[0]].Clone()
+
+    return higher_coverage
 
 
 class TreeMerger:
@@ -581,6 +725,67 @@ def tippecanoe_worker():
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
+class FeatureTracer:
+    """Traces specific features through every compose pipeline decision.
+
+    Activated by TRACE_FEATURES env var. Accepts a JSON list of matchers, e.g.:
+      [{"OBJNAM": "Portland Head Light"}, {"OBJL": 75, "LNAM": "US123456"}]
+    or a simple comma-separated OBJNAM list:
+      "Portland Head Light,Boston Light"
+
+    Logs every decision point: found in source, dedup result, M_COVR clip
+    result, minzoom assignment, final scale file written.
+    """
+
+    def __init__(self):
+        self.matchers = []
+        self.log_lines = []
+        raw = os.environ.get('TRACE_FEATURES', '')
+        if not raw:
+            return
+        try:
+            self.matchers = json.loads(raw)
+        except json.JSONDecodeError:
+            # Treat as comma-separated OBJNAM list
+            self.matchers = [{'OBJNAM': name.strip()} for name in raw.split(',') if name.strip()]
+        if self.matchers:
+            logger.info(f'TRACE: Tracking {len(self.matchers)} feature matcher(s): {self.matchers}')
+
+    @property
+    def active(self):
+        return bool(self.matchers)
+
+    def matches(self, feature: dict) -> str | None:
+        """Check if feature matches any tracer. Returns matcher description or None."""
+        props = feature.get('properties', {})
+        for m in self.matchers:
+            if all(props.get(k) == v for k, v in m.items()):
+                return str(m)
+        return None
+
+    def log(self, matcher: str, stage: str, detail: str, feature: dict = None):
+        """Log a trace event."""
+        coords = ''
+        if feature:
+            geom = feature.get('geometry') or {}
+            if geom.get('type') == 'Point':
+                c = geom.get('coordinates', [])
+                if len(c) >= 2:
+                    coords = f' @ ({c[1]:.7f}, {c[0]:.7f})'
+        msg = f'TRACE [{matcher}] {stage}: {detail}{coords}'
+        logger.info(msg)
+        self.log_lines.append(msg)
+
+    def summary(self):
+        """Log all trace events as a summary block."""
+        if not self.log_lines:
+            return
+        logger.info('=== FEATURE TRACE SUMMARY ===')
+        for line in self.log_lines:
+            logger.info(f'  {line}')
+        logger.info(f'=== END TRACE ({len(self.log_lines)} events) ===')
+
+
 def main():
     """Main entry point for compose job."""
     start_time = datetime.now(timezone.utc)
@@ -598,6 +803,9 @@ def main():
 
     logger.info(f'=== Starting compose job for {district_label} (prefix: {district_prefix}) ===')
     logger.info(f'Bucket: {bucket_name}')
+
+    # Feature tracing (activated by TRACE_FEATURES env var)
+    tracer = FeatureTracer()
 
     # Initialize clients
     storage_client = storage.Client()
@@ -633,9 +841,8 @@ def main():
 
         blobs = list(bucket.list_blobs(prefix=cache_prefix))
 
-        # Filter for .geojson and .sector-lights.json files, apply manifest filtering
+        # Filter for .geojson files, apply manifest filtering
         geojson_blobs = []
-        sector_lights_blobs = []
         for b in blobs:
             # Extract chart ID from path: {district}/chart-geojson/{chartId}/{filename}
             parts = b.name[len(cache_prefix):].split('/')
@@ -646,8 +853,6 @@ def main():
                 continue
             if b.name.endswith('.geojson'):
                 geojson_blobs.append((b, f'{chart_id}.geojson'))
-            elif b.name.endswith('.sector-lights.json'):
-                sector_lights_blobs.append((b, f'{chart_id}.sector-lights.json'))
 
         logger.info(f'Found {len(geojson_blobs)} GeoJSON files in chart-geojson cache')
 
@@ -683,37 +888,6 @@ def main():
             sys.exit(1)
         logger.info(f'Gate 2 passed: {len(local_paths)} files validated')
 
-        # ─── Download and aggregate sector-lights sidecar files ───
-        all_sector_lights = []
-        if sector_lights_blobs:
-            logger.info(f'Downloading {len(sector_lights_blobs)} sector-lights sidecar files...')
-            sector_dir = os.path.join(work_dir, 'sector-lights')
-            os.makedirs(sector_dir, exist_ok=True)
-
-            def _download_sector_blob(args):
-                blob, filename = args
-                local_path = os.path.join(sector_dir, filename)
-                blob.download_to_filename(local_path)
-                return local_path
-
-            sl_workers = min(16, len(sector_lights_blobs))
-            sl_paths = []
-            with ThreadPoolExecutor(max_workers=sl_workers) as pool:
-                sl_paths = list(pool.map(_download_sector_blob, sector_lights_blobs))
-
-            # Aggregate all per-chart sector lights into a single list
-            for sl_path in sl_paths:
-                try:
-                    with open(sl_path, 'r') as f:
-                        lights = json.load(f)
-                    if isinstance(lights, list):
-                        all_sector_lights.extend(lights)
-                except Exception as e:
-                    logger.warning(f'Failed to load sector-lights: {sl_path}: {e}')
-
-            logger.info(f'Aggregated {len(all_sector_lights)} sector lights from '
-                       f'{len(sector_lights_blobs)} charts')
-
         # ─── Pass 1: Build dedup index (streaming, one chart at a time) ───
         # Instead of loading all charts into memory (~2.2GB for large districts),
         # we stream through files twice: once to build the dedup index, once to write.
@@ -725,6 +899,7 @@ def main():
 
         dedup_index = {}       # key -> (chart_id, feat_idx, scale_num)
         key_scales = defaultdict(set)
+        point_best_scamin = {}  # key -> best (most permissive / largest) SCAMIN for all Point features
         total_features_input = 0
         features_per_chart = {}
 
@@ -741,17 +916,58 @@ def main():
                 objl = props.get('OBJL', 0)
                 scale_num = props.get('_scaleNum', 0)
 
+                # Trace: log feature found in source
+                if tracer.active:
+                    tmatch = tracer.matches(feature)
+                    if tmatch:
+                        tracer.log(tmatch, 'FOUND', f'chart={chart_id} idx={feat_idx} OBJL={objl} US{scale_num} SCAMIN={props.get("SCAMIN")}', feature)
+
+                # Track best SCAMIN for ALL Point features (for points.mbtiles extraction)
+                geom = feature.get('geometry') or {}
+                geom_type = geom.get('type', '')
+                if geom_type == 'Point':
+                    key = dedup_key(feature)
+                    try:
+                        scamin_val = float(props.get('SCAMIN', 0) or 0)
+                    except (ValueError, TypeError):
+                        scamin_val = 0
+                    prev = point_best_scamin.get(key, 0)
+                    if scamin_val > prev:
+                        point_best_scamin[key] = scamin_val
+
                 if objl in ALL_DEDUP_OBJLS:
                     key = dedup_key(feature)
                     key_scales[key].add(scale_num)
                     existing = dedup_index.get(key)
                     if existing is None or existing[2] < scale_num:
+                        if tracer.active:
+                            tmatch = tracer.matches(feature)
+                            if tmatch:
+                                if existing:
+                                    tracer.log(tmatch, 'DEDUP-REPLACE', f'replaces chart={existing[0]} idx={existing[1]} US{existing[2]} (higher scale wins)', feature)
+                                else:
+                                    tracer.log(tmatch, 'DEDUP-NEW', f'key={key}', feature)
                         dedup_index[key] = (chart_id, feat_idx, scale_num)
 
         dedup_duration = (datetime.now(timezone.utc) - dedup_start).total_seconds()
         logger.info(f'Pass 1 complete: {len(dedup_index):,d} unique dedup keys from '
                    f'{num_charts} charts, {total_features_input:,d} features '
                    f'in {dedup_duration:.1f}s')
+
+        # ─── Build M_COVR coverage index for contour clipping ───
+        logger.info('Building M_COVR coverage index for contour clipping...')
+        coverage_start = datetime.now(timezone.utc)
+        coverage_union = build_coverage_index(sorted_paths)
+        higher_coverage = build_higher_scale_coverage(coverage_union)
+        coverage_duration = (datetime.now(timezone.utc) - coverage_start).total_seconds()
+        logger.info(f'M_COVR coverage: {len(coverage_union)} scales indexed, '
+                   f'{len(higher_coverage)} scales have higher-scale clip masks '
+                   f'({coverage_duration:.1f}s)')
+        for sn in sorted(coverage_union.keys()):
+            area_deg2 = coverage_union[sn].GetArea()
+            has_clip = sn in higher_coverage
+            logger.info(f'  US{sn}: {area_deg2:.2f} deg² coverage'
+                       f'{", has clip mask" if has_clip else ""}')
 
         # ─── Pass 2: Write per-scale GeoJSON (streaming, one chart at a time) ───
         # Re-read each chart from disk and write deduplicated features with buffering.
@@ -762,6 +978,10 @@ def main():
         total_features_output = 0
         duplicates_removed = 0
         dedup_by_category = {'physicalObjects': 0, 'regulatoryZones': 0, 'hydrographicFeatures': 0}
+        contours_clipped = 0   # fully removed by M_COVR clipping
+        contours_trimmed = 0   # partially clipped by M_COVR
+        points_extracted = []    # All Point features for points.mbtiles
+        points_seen = set()      # Track keys already added to avoid duplicates
         scale_feature_counts = defaultdict(int)
 
         # Per-scale newline-delimited GeoJSON files. Features may be written
@@ -811,6 +1031,10 @@ def main():
                     key = dedup_key(feature)
                     winner = dedup_index.get(key)
                     if winner and (winner[0] != chart_id or winner[1] != idx):
+                        if tracer.active:
+                            tmatch = tracer.matches(feature)
+                            if tmatch:
+                                tracer.log(tmatch, 'DEDUP-SKIP', f'chart={chart_id} lost to winner chart={winner[0]} US{winner[2]} key={key}', feature)
                         duplicates_removed += 1
                         if objl in DEDUP_POINT_OBJLS | DEDUP_LINE_OBJLS:
                             dedup_by_category['physicalObjects'] += 1
@@ -824,6 +1048,81 @@ def main():
                 geom = feature.get('geometry')
                 if not geom or geom.get('type') is None:
                     continue
+
+                # ── Point extraction: divert ALL Point features to points.mbtiles ──
+                # Every Point geometry feature goes to a single points.mbtiles,
+                # served as its own VectorSource. One copy per feature, SCAMIN drives
+                # visibility, tippecanoe handles spatial indexing natively.
+                # Line/Polygon instances of the same OBJL stay in per-scale tiles.
+                geom_type = geom.get('type', '')
+                if geom_type == 'Point':
+                    key = dedup_key(feature)
+                    if key not in points_seen:
+                        points_seen.add(key)
+                        # Apply the most permissive SCAMIN from all copies
+                        best_scamin = point_best_scamin.get(key, 0)
+                        # Strip metadata properties not needed for rendering
+                        stripped = {k: v for k, v in props.items()
+                                    if k not in ('RCID', 'PRIM', 'GRUP', 'SORDAT', 'SORIND',
+                                                 'CHART_ID', '_chartId', '_scaleNum', 'OBJL_NAME')}
+                        point_feature = {
+                            'type': 'Feature',
+                            'geometry': geom,
+                            'properties': stripped,
+                        }
+                        if best_scamin > 0:
+                            point_feature['properties']['SCAMIN'] = best_scamin
+                        # Set tippecanoe minzoom from SCAMIN
+                        scamin_minz = scamin_to_minzoom(best_scamin if best_scamin > 0 else None, 0)
+                        point_feature['tippecanoe'] = {
+                            'minzoom': scamin_minz,
+                            'layer': 'points',
+                        }
+                        points_extracted.append(point_feature)
+                        if tracer.active:
+                            tmatch = tracer.matches(feature)
+                            if tmatch:
+                                tracer.log(tmatch, 'POINT-EXTRACT', f'→ points.mbtiles SCAMIN={best_scamin} minzoom={scamin_minz} (chart={chart_id})', feature)
+                    total_features_output += 1
+                    scale_feature_counts[scale_num] += 1
+                    continue
+
+                # M_COVR authority clipping: remove/trim lower-scale features
+                # where higher-scale charts provide coverage
+                if objl in MCOVR_CLIP_OBJLS and scale_num in higher_coverage:
+                    try:
+                        ogr_line = ogr.CreateGeometryFromJson(json.dumps(geom))
+                        if ogr_line and not ogr_line.IsEmpty():
+                            clip_mask = higher_coverage[scale_num]
+                            if clip_mask.Contains(ogr_line):
+                                if tracer.active:
+                                    tmatch = tracer.matches(feature)
+                                    if tmatch:
+                                        tracer.log(tmatch, 'MCOVR-CLIPPED', f'entirely within higher-scale coverage, removed (chart={chart_id} US{scale_num})', feature)
+                                contours_clipped += 1
+                                continue
+                            if clip_mask.Intersects(ogr_line):
+                                clipped = ogr_line.Difference(clip_mask)
+                                if clipped and not clipped.IsEmpty():
+                                    if not clipped.IsValid():
+                                        clipped = clipped.MakeValid()
+                                    clipped_json = json.loads(clipped.ExportToJson())
+                                    if tracer.active:
+                                        tmatch = tracer.matches(feature)
+                                        if tmatch:
+                                            tracer.log(tmatch, 'MCOVR-TRIMMED', f'partially clipped by higher-scale coverage (chart={chart_id} US{scale_num})', feature)
+                                    feature['geometry'] = clipped_json
+                                    geom = clipped_json
+                                    contours_trimmed += 1
+                                else:
+                                    if tracer.active:
+                                        tmatch = tracer.matches(feature)
+                                        if tmatch:
+                                            tracer.log(tmatch, 'MCOVR-CLIPPED', f'Difference produced empty geometry, removed (chart={chart_id} US{scale_num})', feature)
+                                    contours_clipped += 1
+                                    continue
+                    except Exception as e:
+                        logger.warning(f'M_COVR clip error for OBJL {objl} in {chart_id}: {e}')
 
                 # Fix layer name if present (allow 'charts' and 'arcs')
                 existing_tippecanoe = feature.get('tippecanoe')
@@ -875,7 +1174,15 @@ def main():
                         desired_minz = min(SCALE_ZOOM_RANGES.get(s, (0, 15))[0] for s in partition_scales)
                         desired_maxz = max(SCALE_ZOOM_RANGES.get(s, (0, 15))[1] for s in partition_scales)
 
+                    # Apply SCAMIN-derived minzoom — ensures partitioned
+                    # copies don't appear at zooms below their SCAMIN threshold.
+                    # Skip for group 1 (skin of earth) features which must always be visible.
+                    if objl not in SKIN_OF_EARTH_OBJLS:
+                        scamin_minz = scamin_to_minzoom(props.get('SCAMIN'), desired_minz)
+                        desired_minz = max(desired_minz, scamin_minz)
+
                     # Write a copy to each owning scale's file with its zoom slice
+                    wrote_any = False
                     for sn, (oz_min, oz_max) in ownership.items():
                         clamped_min = max(oz_min, desired_minz)
                         clamped_max = min(oz_max, desired_maxz)
@@ -894,21 +1201,50 @@ def main():
                         line = json.dumps(feature_copy, separators=(',', ':')) + '\n'
                         buffer_feature(sn, line)
                         scale_counts[sn] += 1
+                        wrote_any = True
+                        if tracer.active:
+                            tmatch = tracer.matches(feature)
+                            if tmatch:
+                                tracer.log(tmatch, 'WRITE-PARTITIONED', f'→ US{sn} z{clamped_min}-{clamped_max} (chart={chart_id})', feature)
+
+                    if tracer.active and not wrote_any:
+                        tmatch = tracer.matches(feature)
+                        if tmatch:
+                            tracer.log(tmatch, 'WRITE-SKIPPED', f'partitioned but no valid zoom slice (desired z{desired_minz}-{desired_maxz}, chart={chart_id})', feature)
 
                     scale_feature_counts[scale_num] += 1
                     total_features_output += 1
                 else:
-                    # Single-scale feature: write to native scale with native zoom range
+                    # Single-scale feature: write to native scale file.
+                    # minzoom derived from feature's SCAMIN (per-chart compilation
+                    # scale), maxzoom from the scale band's native range.
+                    # Group 1 (skin of earth) features skip SCAMIN — always use native range.
+                    scamin_minz = native_lo if objl in SKIN_OF_EARTH_OBJLS else scamin_to_minzoom(props.get('SCAMIN'), native_lo)
+
                     if not existing_tippecanoe:
                         feature['tippecanoe'] = {
-                            'minzoom': native_lo,
+                            'minzoom': scamin_minz,
                             'maxzoom': native_hi,
                             'layer': 'charts',
                         }
-                    elif 'layer' not in existing_tippecanoe:
-                        existing_tippecanoe['layer'] = 'charts'
+                    else:
+                        if 'layer' not in existing_tippecanoe:
+                            existing_tippecanoe['layer'] = 'charts'
+                        # Preserve pre-existing minzoom (e.g. nav aids forced to z0)
+                        # but use SCAMIN-derived zoom for features that only have 'layer'
+                        if 'minzoom' not in existing_tippecanoe:
+                            existing_tippecanoe['minzoom'] = scamin_minz
+                        if 'maxzoom' not in existing_tippecanoe:
+                            existing_tippecanoe['maxzoom'] = native_hi
 
                     sn = scale_num if scale_num in scale_geojson else 1
+                    final_minz = feature.get('tippecanoe', {}).get('minzoom', scamin_minz)
+                    final_maxz = feature.get('tippecanoe', {}).get('maxzoom', native_hi)
+                    if tracer.active:
+                        tmatch = tracer.matches(feature)
+                        if tmatch:
+                            skin = 'SKIN_OF_EARTH' if objl in SKIN_OF_EARTH_OBJLS else f'SCAMIN={props.get("SCAMIN")}'
+                            tracer.log(tmatch, 'WRITE-SINGLE', f'→ US{sn} z{final_minz}-{final_maxz} ({skin}, chart={chart_id})', feature)
                     line = json.dumps(feature, separators=(',', ':')) + '\n'
                     buffer_feature(sn, line)
                     scale_counts[sn] += 1
@@ -937,6 +1273,96 @@ def main():
                            f'{sz:.1f} MB, z{native_lo}-{native_hi}')
         logger.info(f'GeoJSON write complete: {total_features_output:,d} features '
                    f'({duplicates_removed:,d} duplicates removed) in {write_duration:.1f}s')
+        if contours_clipped or contours_trimmed:
+            logger.info(f'Contour clipping: {contours_clipped} fully removed, '
+                       f'{contours_trimmed} partially trimmed')
+        logger.info(f'Points extracted: {len(points_extracted):,d} Point features for points.mbtiles')
+
+        # ─── Write points.geojson and run tippecanoe → points.mbtiles ───
+        points_count = len(points_extracted)
+        points_storage_path = ''
+        if points_extracted:
+            points_geojson_path = os.path.join(output_dir, 'points.geojson')
+            points_mbtiles_path = os.path.join(output_dir, 'points.mbtiles')
+
+            # Write as newline-delimited GeoJSON (tippecanoe auto-detects)
+            with open(points_geojson_path, 'w') as f:
+                for pf in points_extracted:
+                    f.write(json.dumps(pf, separators=(',', ':')) + '\n')
+
+            points_geojson_mb = os.path.getsize(points_geojson_path) / 1024 / 1024
+            logger.info(f'Wrote points.geojson: {points_count:,d} features '
+                       f'({points_geojson_mb:.1f} MB)')
+
+            # Free the in-memory list before tippecanoe
+            del points_extracted
+            del points_seen
+
+            # Run tippecanoe to produce points.mbtiles
+            tippecanoe_points_cmd = [
+                'tippecanoe', '-o', points_mbtiles_path,
+                '-Z', '0', '-z', '15',
+                '-r1',
+                '--no-feature-limit',
+                '--no-tile-size-limit',
+                '--no-line-simplification',
+                '-l', 'points',
+                '--force',
+                points_geojson_path,
+            ]
+            logger.info(f'Running tippecanoe for points.mbtiles: {" ".join(tippecanoe_points_cmd)}')
+            proc = subprocess.run(tippecanoe_points_cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                logger.error(f'tippecanoe (points) failed: {proc.stderr[:500]}')
+                sys.exit(1)
+
+            # Check for skipped tiles
+            skipped = [l for l in proc.stderr.splitlines() if 'Skipping this tile' in l]
+            if skipped:
+                logger.error(f'tippecanoe (points) DROPPED {len(skipped)} TILES!')
+                sys.exit(1)
+
+            points_mbtiles_mb = os.path.getsize(points_mbtiles_path) / 1024 / 1024
+            logger.info(f'points.mbtiles: {points_mbtiles_mb:.1f} MB')
+
+            # Validate points.mbtiles
+            error = validate_mbtiles(points_mbtiles_path, 'points.mbtiles', logger)
+            if error:
+                logger.error(f'points.mbtiles validation FAILED: {error}')
+                sys.exit(1)
+
+            # Upload points.mbtiles (raw + zip in parallel)
+            points_storage_path = f'{district_label}/charts/points.mbtiles'
+            points_zip_path = os.path.join(output_dir, 'points.mbtiles.zip')
+            points_zip_storage_path = f'{district_label}/charts/points.mbtiles.zip'
+
+            def _upload_points_raw():
+                blob = bucket.blob(points_storage_path)
+                blob.upload_from_filename(points_mbtiles_path, timeout=600)
+                logger.info(f'  Uploaded points.mbtiles: {points_mbtiles_mb:.1f} MB -> {points_storage_path}')
+
+            def _upload_points_zip():
+                with zipfile.ZipFile(points_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(points_mbtiles_path, 'points.mbtiles')
+                zip_blob = bucket.blob(points_zip_storage_path)
+                zip_blob.upload_from_filename(points_zip_path, timeout=600)
+                sz = os.path.getsize(points_zip_path) / 1024 / 1024
+                logger.info(f'  Uploaded points.mbtiles.zip: {sz:.1f} MB -> {points_zip_storage_path}')
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                pool.submit(_upload_points_raw)
+                pool.submit(_upload_points_zip)
+
+            # Free from tmpfs
+            os.remove(points_geojson_path)
+            os.remove(points_mbtiles_path)
+            if os.path.exists(points_zip_path):
+                os.remove(points_zip_path)
+
+            logger.info(f'Uploaded points.mbtiles: {points_count:,d} features')
+        else:
+            del points_extracted
+            del points_seen
 
         # Free per-chart GeoJSON from tmpfs — no longer needed after Pass 2
         geojson_freed = sum(os.path.getsize(p) for p in local_paths) / 1024 / 1024
@@ -1214,20 +1640,6 @@ def main():
             sys.exit(1)
         logger.info('Gate 5 passed')
 
-        # ─── Upload unified sector-lights.json ───
-        sector_lights_count = 0
-        if all_sector_lights:
-            sl_output_path = os.path.join(output_dir, 'sector-lights.json')
-            with open(sl_output_path, 'w') as f:
-                json.dump(all_sector_lights, f)
-            sl_storage_path = f'{district_label}/charts/sector-lights.json'
-            sl_blob = bucket.blob(sl_storage_path)
-            sl_blob.upload_from_filename(sl_output_path, timeout=120)
-            sector_lights_count = len(all_sector_lights)
-            sl_size_kb = os.path.getsize(sl_output_path) / 1024
-            logger.info(f'Uploaded sector-lights.json: {sector_lights_count} lights '
-                       f'({sl_size_kb:.1f} KB) -> {sl_storage_path}')
-
         # Read bounds from MBTiles metadata
         bounds = None
         try:
@@ -1271,9 +1683,9 @@ def main():
         }
         if bounds:
             chart_data['bounds'] = bounds
-        if sector_lights_count > 0:
-            chart_data['sectorLightsCount'] = sector_lights_count
-            chart_data['sectorLightsPath'] = f'{district_label}/charts/sector-lights.json'
+        if points_count > 0:
+            chart_data['pointsCount'] = points_count
+            chart_data['pointsPath'] = points_storage_path
 
         doc_ref = db.collection('districts').document(district_label)
         doc_ref.set({'chartData': chart_data}, merge=True)
@@ -1285,6 +1697,9 @@ def main():
                    f'dedup={dedup_duration:.0f}s, '
                    f'write={write_duration:.0f}s, tippecanoe={tippecanoe_duration:.0f}s, '
                    f'upload={upload_duration:.0f}s')
+
+        # Print feature trace summary
+        tracer.summary()
 
         # ─── Trigger metadata regeneration ───
         # Regenerate download-metadata.json so the app sees the correct file sizes

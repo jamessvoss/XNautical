@@ -16,17 +16,24 @@ export interface DisplaySettings {
   depthContourFontScale: number;
   chartLabelsFontScale: number;
   
+  seaAreaNamesFontScale: number;
+  seabedNamesFontScale: number;
+
   // Text halo/stroke width multipliers (1.0 = default)
   soundingsHaloScale: number;
   gnisHaloScale: number;
   depthContourLabelHaloScale: number;
   chartLabelsHaloScale: number;
+  seaAreaNamesHaloScale: number;
+  seabedNamesHaloScale: number;
   
   // Text opacity multipliers (1.0 = default)
   soundingsOpacityScale: number;
   gnisOpacityScale: number;
   depthContourLabelOpacityScale: number;
   chartLabelsOpacityScale: number;
+  seaAreaNamesOpacityScale: number;
+  seabedNamesOpacityScale: number;
   
   // Line width multipliers (1.0 = default)
   depthContourLineScale: number;
@@ -160,16 +167,22 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   gnisFontScale: 1.5,
   depthContourFontScale: 1.5,
   chartLabelsFontScale: 1.5,
+  seaAreaNamesFontScale: 1.5,
+  seabedNamesFontScale: 1.5,
   // Text halo/stroke
   soundingsHaloScale: 1.0,
   gnisHaloScale: 1.0,
   depthContourLabelHaloScale: 1.0,
   chartLabelsHaloScale: 1.0,
+  seaAreaNamesHaloScale: 1.0,
+  seabedNamesHaloScale: 1.0,
   // Text opacities
   soundingsOpacityScale: 1.0,
   gnisOpacityScale: 1.0,
   depthContourLabelOpacityScale: 1.0,
   chartLabelsOpacityScale: 1.0,
+  seaAreaNamesOpacityScale: 1.0,
+  seabedNamesOpacityScale: 1.0,
   // Line widths
   depthContourLineScale: 1.0,
   coastlineLineScale: 1.0,

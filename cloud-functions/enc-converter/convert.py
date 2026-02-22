@@ -61,23 +61,25 @@ def generate_arc_geometry(center_lon: float, center_lat: float,
     # Adjust for longitude at this latitude
     lat_rad = math.radians(center_lat)
     lon_scale = math.cos(lat_rad)
-    
+    if abs(lon_scale) < 1e-10:
+        lon_scale = 1e-10
+
     # Convert "bearing towards light" to "bearing from light" by adding 180°
     # This gives us the direction the light shines
     start = (start_bearing + 180) % 360
     end = (end_bearing + 180) % 360
-    
+
     # S-57 specifies the sector spans CLOCKWISE from SECTR1 to SECTR2
     # After 180° conversion, we still go clockwise from start to end
     arc_span = (end - start) % 360
-    
-    # Handle edge case: if computed span is 0 but bearings differ, it's a full 360° arc
-    if arc_span == 0 and start_bearing != end_bearing:
+
+    # Handle edge case: if computed span is ~0 but bearings differ, it's a full 360° arc
+    if abs(arc_span) < 1e-6 and abs(start_bearing - end_bearing) > 1e-6:
         arc_span = 360
-    
-    # Skip generating very small arcs (< 1°) - likely data errors
-    if arc_span < 1:
-        arc_span = 1
+
+    # Clamp very small arcs to 0.1° minimum to avoid degenerate geometry
+    if arc_span < 0.1:
+        arc_span = 0.1
     
     # Adjust number of points based on arc span for smooth rendering
     # More points for larger arcs, minimum 8 for small arcs
@@ -127,11 +129,11 @@ def _ogr_feature_to_geojson(feature, layer_name: str) -> dict:
     # Export geometry to GeoJSON dict
     geom_json = json.loads(geom.ExportToJson())
 
-    # Round coordinates to 6 decimal places (matching -lco COORDINATE_PRECISION=6)
+    # Round coordinates to 7 decimal places (~1.1cm precision at equator)
     def round_coords(obj):
         if isinstance(obj, list):
             if obj and isinstance(obj[0], (int, float)):
-                return [round(v, 6) for v in obj]
+                return [round(v, 7) for v in obj]
             return [round_coords(item) for item in obj]
         return obj
 
@@ -359,7 +361,7 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str):
                         if len(coord) >= 3:
                             point_props = {
                                 'OBJL': 129,
-                                'DEPTH': coord[2],
+                                'DEPTH': round(coord[2], 2),
                                 'CHART_ID': chart_id,
                                 '_chartId': chart_id,
                                 '_scaleNum': scale_num,
@@ -377,7 +379,7 @@ def convert_s57_to_geojson(s57_path: str, output_dir: str):
                             }
                             all_features.append(point_feature)
                 elif geom['type'] == 'Point' and len(coords) >= 3:
-                    feature['properties']['DEPTH'] = coords[2]
+                    feature['properties']['DEPTH'] = round(coords[2], 2)
                     feature['geometry']['coordinates'] = [coords[0], coords[1]]
                     all_features.append(feature)
                 else:
@@ -418,7 +420,7 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
     - US2: General charts - z0-10 (full coverage)
     - US3: Coastal charts - z4-13 (extended 4 zooms earlier from z8)
     - US4: Approach charts - z6-15 (extended 4 zooms earlier from z10)
-    - US5: Harbor charts - z8-15 (extended 4 zooms earlier from z12)
+    - US5: Harbor charts - z6-15 (extended to match US4/US6 for contour continuity)
     - US6: Berthing charts - z6-15 (extended from z14 for early detail visibility)
     
     The extended min zoom allows the app to offer low/medium/high detail settings
@@ -473,8 +475,8 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
         ])
     
     elif chart_id.startswith('US5'):
-        # Harbor charts: z8-15 (extended from z12 for detail level options)
-        return (15, 8, [
+        # Harbor charts: z6-15 (matches US4/US6 for contour continuity)
+        return (15, 6, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',
@@ -496,7 +498,7 @@ def get_tippecanoe_settings(chart_id: str) -> tuple:
     else:
         # Default: assume high-detail chart (US5 settings)
         print(f"Warning: Unknown chart scale for {chart_id}, using US5 settings")
-        return (15, 8, [
+        return (15, 6, [
             '--no-feature-limit',
             '--no-tile-size-limit',
             '--no-line-simplification',

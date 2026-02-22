@@ -97,6 +97,35 @@ def update_status(db, district_label: str, status: dict):
 
 
 # ============================================================================
+# Pipeline validation helpers
+# ============================================================================
+
+def validate_geojson_cache(bucket, district_label, chart_ids, logger):
+    """Verify every chart ID has a non-empty GeoJSON blob in Storage."""
+    valid_ids = set()
+    problems = []
+
+    def _check(chart_id):
+        blob_path = f'{district_label}/chart-geojson/{chart_id}/{chart_id}.geojson'
+        blob = bucket.blob(blob_path)
+        if not blob.exists():
+            return (chart_id, 'missing')
+        blob.reload()
+        if (blob.size or 0) == 0:
+            return (chart_id, 'empty')
+        return (chart_id, None)
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        for chart_id, problem in pool.map(_check, sorted(chart_ids)):
+            if problem:
+                problems.append({'chartId': chart_id, 'reason': problem})
+            else:
+                valid_ids.add(chart_id)
+
+    return valid_ids, problems
+
+
+# ============================================================================
 # Helper functions for parallel batch processing
 # ============================================================================
 
@@ -1123,6 +1152,7 @@ def convert_district_parallel():
     district_id = str(data.get('districtId', '')).zfill(2)
     batch_size = int(data.get('batchSize', 40))
     max_parallel = int(data.get('maxParallel', 80))
+    trace_features = data.get('traceFeatures', '')  # Pass to compose job
 
     # Allow districtLabel override for testing (e.g. "017cgd_test")
     district_label = data.get('districtLabel')
@@ -1375,6 +1405,18 @@ def convert_district_parallel():
         logger.info(f'Total charts for compose: {len(completed_charts)} '
                    f'({len(completed_charts) - len(charts_already_cached)} converted + {len(charts_already_cached)} cached)')
 
+        # Gate 1: Verify GeoJSON cache integrity before writing manifest
+        logger.info('Gate 1: Verifying GeoJSON cache integrity...')
+        valid_chart_ids, geojson_problems = validate_geojson_cache(
+            bucket, district_label, completed_charts, logger)
+        if geojson_problems:
+            for p in geojson_problems:
+                logger.warning(f"  GeoJSON problem: {p['chartId']} - {p['reason']}")
+            completed_charts = valid_chart_ids
+        if not completed_charts:
+            raise RuntimeError('Gate 1 FAILED: No valid GeoJSON files in cache')
+        logger.info(f'Gate 1 passed: {len(completed_charts)} charts verified')
+
         # Write chart manifest for compose job (prevents stale cache inclusion)
         manifest = {'chartIds': sorted(list(completed_charts))}
         bucket.blob(f'{district_label}/chart-geojson/_manifest.json').upload_from_string(
@@ -1426,6 +1468,8 @@ def convert_district_parallel():
                                 run_v2.EnvVar(name='JOB_TYPE', value='compose'),
                                 run_v2.EnvVar(name='METADATA_GENERATOR_URL',
                                               value=os.environ.get('METADATA_GENERATOR_URL', '')),
+                                run_v2.EnvVar(name='TRACE_FEATURES',
+                                              value=json.dumps(trace_features) if isinstance(trace_features, list) else str(trace_features)),
                             ],
                         )
                     ],

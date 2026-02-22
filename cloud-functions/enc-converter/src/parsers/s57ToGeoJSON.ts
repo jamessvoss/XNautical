@@ -99,10 +99,19 @@ export function getDatasetBounds(dataset: S57Dataset): [number, number, number, 
   let found = false;
 
   for (const [, node] of dataset.isolatedNodes) {
-    if (node.lon < minLon) minLon = node.lon;
-    if (node.lon > maxLon) maxLon = node.lon;
-    if (node.lat < minLat) minLat = node.lat;
-    if (node.lat > maxLat) maxLat = node.lat;
+    if (node.soundings) {
+      for (const s of node.soundings) {
+        if (s.lon < minLon) minLon = s.lon;
+        if (s.lon > maxLon) maxLon = s.lon;
+        if (s.lat < minLat) minLat = s.lat;
+        if (s.lat > maxLat) maxLat = s.lat;
+      }
+    } else {
+      if (node.lon < minLon) minLon = node.lon;
+      if (node.lon > maxLon) maxLon = node.lon;
+      if (node.lat < minLat) minLat = node.lat;
+      if (node.lat > maxLat) maxLat = node.lat;
+    }
     found = true;
   }
   for (const [, node] of dataset.connectedNodes) {
@@ -160,7 +169,12 @@ function resolvePointGeometry(
     if (ref.rcnm === RCNM.VI) {
       const node = dataset.isolatedNodes.get(ref.rcid);
       if (node) {
-        if (node.depth !== undefined) {
+        // SOUNDG nodes may have multiple 3D coordinates packed in SG3D
+        if (node.soundings) {
+          for (const s of node.soundings) {
+            points.push([s.lon, s.lat, s.depth]);
+          }
+        } else if (node.depth !== undefined) {
           points.push([node.lon, node.lat, node.depth]);
         } else {
           points.push([node.lon, node.lat]);

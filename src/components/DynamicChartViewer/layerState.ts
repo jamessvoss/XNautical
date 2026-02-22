@@ -26,6 +26,7 @@ export const initialLayerVisibility: LayerVisibility = {
   anchorages: true,
   anchorBerths: true,
   marineFarms: true,
+  trafficRoutes: true,
   // Additional layers
   bridges: true,
   buildings: true,

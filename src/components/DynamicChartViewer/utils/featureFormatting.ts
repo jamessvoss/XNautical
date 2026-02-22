@@ -38,9 +38,13 @@ export function formatFeatureProperties(feature: FeatureInfo, depthUnit: 'meters
   const props = feature.properties;
   const formatted: Record<string, string> = {};
 
-  // Add tap coordinates if available
+  // Show feature's actual coordinates (from tile geometry) for precision verification
+  if (props._featureCoordinates) {
+    formatted['Feature Position'] = String(props._featureCoordinates);
+  }
+  // Also show tap location for reference
   if (props._tapCoordinates) {
-    formatted['Location'] = String(props._tapCoordinates);
+    formatted['Tap Location'] = String(props._tapCoordinates);
   }
 
   // Add object name if available

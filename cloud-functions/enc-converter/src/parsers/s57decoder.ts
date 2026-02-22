@@ -383,11 +383,15 @@ function processNodeRecord(
       }
     } else if (field.tag === 'SG3D') {
       // 3D coordinate: YCOO, XCOO, VE3D (depth)
+      // SOUNDG features pack multiple sounding points into one SG3D field
       const coords = parseSG3D(field.data, dataset.dspm.comf, dataset.dspm.somf);
       if (coords.length > 0) {
         node.lat = coords[0].lat;
         node.lon = coords[0].lon;
         node.depth = coords[0].depth;
+        if (coords.length > 1) {
+          node.soundings = coords;
+        }
       }
     }
   }

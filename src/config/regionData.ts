@@ -233,6 +233,22 @@ export const REGIONS: Region[] = [
       { name: 'US1GC09M', west: -98.4375, south: 16.636192, east: -75.9375, north: 34.307144 },
     ],
   },
+  {
+    id: 'arctic_test',
+    name: 'Arctic (Test)',
+    formerDistrict: '17',
+    formerDistrictLabel: '17 CGD Test',
+    firestoreId: '017cgd-test',
+    description: 'South-Central Alaska (US2PACZS subset)',
+    center: [60.0, -148.8],
+    color: '#14b8a6',
+    status: 'converted',
+    mapBounds: [-154, 57, -144, 63],
+    estimatedChartSizeMB: 987,
+    us1Charts: [
+      { name: 'US1GLBDC', west: -153.6, south: 38.4, east: -134.4, north: 62.4 },
+    ],
+  },
 ];
 
 // ============================================

@@ -195,8 +195,10 @@ export interface S57Node {
   lat: number;
   /** Longitude in decimal degrees */
   lon: number;
-  /** Depth/height value (for 3D soundings) */
+  /** Depth/height value (for 3D soundings — first coordinate) */
   depth?: number;
+  /** All sounding coordinates when SG3D contains multiple points */
+  soundings?: Array<{ lat: number; lon: number; depth: number }>;
 }
 
 /**

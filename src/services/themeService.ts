@@ -267,12 +267,12 @@ const S52_COLOR_TABLES: Record<S52DisplayMode, Record<S52ColorToken, string>> = 
 
   // DUSK mode - black backgrounds, usable day or twilight
   dusk: {
-    // Depth zones — visible blue gradient on dark background
-    DEPDW: '#1E2640',   // Deep water - dark navy (distinct from bg #1A1A2E)
-    DEPMD: '#253458',   // Medium deep - dark blue
-    DEPMS: '#304570',   // Medium shallow - medium blue
-    DEPVS: '#3B5888',   // Very shallow - steel blue
-    DEPIT: '#2A4A38',   // Intertidal - dark teal-green
+    // Depth zones — visible blue gradient on dark background (#1a1a2e)
+    DEPDW: '#253050',   // Deep water - dark blue (clearly above bg)
+    DEPMD: '#304068',   // Medium deep - medium-dark blue
+    DEPMS: '#3C5580',   // Medium shallow - medium blue
+    DEPVS: '#4A6A98',   // Very shallow - steel blue
+    DEPIT: '#3A5A48',   // Intertidal - teal-green
     // Land
     LANDA: '#2A2820',   // Land - dark brown
     LANDF: '#3A3828',   // Land features - slightly lighter
@@ -362,7 +362,7 @@ const S52_COLOR_TABLES: Record<S52DisplayMode, Record<S52ColorToken, string>> = 
     PILPT: '#808080',   // Pile point - lighter
     RSCST: '#FF6060',   // Rescue station - bright red
     // Halos
-    HLCLR: '#1E2640',   // Halo - deep water bg (matches dusk DEPDW)
+    HLCLR: '#253050',   // Halo - deep water bg (matches dusk DEPDW)
     // Outlines
     LNDOL: '#8A7050',   // Land outline
     DRGOL: '#5090B0',   // Dredged outline
@@ -388,12 +388,12 @@ const S52_COLOR_TABLES: Record<S52DisplayMode, Record<S52ColorToken, string>> = 
   // NIGHT mode - very dim, preserves night vision
   // Per S-52: maximum luminance of area color is 1.3 cd/sq.m
   night: {
-    // Depth zones (very dark, minimal luminance)
-    DEPDW: '#0A0A10',   // Deep water - near black
-    DEPMD: '#101018',   // Medium deep
-    DEPMS: '#181820',   // Medium shallow
-    DEPVS: '#202028',   // Very shallow
-    DEPIT: '#181818',   // Intertidal
+    // Depth zones (dim but distinguishable gradient)
+    DEPDW: '#121828',   // Deep water - very dark blue
+    DEPMD: '#182038',   // Medium deep - dark blue
+    DEPMS: '#202840',   // Medium shallow - slightly lighter
+    DEPVS: '#283248',   // Very shallow - dim steel blue
+    DEPIT: '#1C2818',   // Intertidal - dim green
     // Land
     LANDA: '#141410',   // Land - very dark
     LANDF: '#1C1C14',   // Land features

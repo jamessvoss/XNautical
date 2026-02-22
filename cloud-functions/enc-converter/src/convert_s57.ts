@@ -66,7 +66,7 @@ interface SectorLight {
 // ─── Coordinate rounding ──────────────────────────────────────────────────
 
 function roundCoord(v: number): number {
-  return Math.round(v * 1e6) / 1e6;
+  return Math.round(v * 1e7) / 1e7;
 }
 
 function roundCoordinates(geom: any): any {

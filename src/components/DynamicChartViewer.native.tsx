@@ -189,6 +189,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     anchorages: showAnchorages,
     anchorBerths: showAnchorBerths,
     marineFarms: showMarineFarms,
+    trafficRoutes: showTrafficRoutes,
     // New infrastructure layers
     bridges: showBridges,
     buildings: showBuildings,
@@ -366,18 +367,51 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     [displaySettings.gnisOpacityScale]
   );
 
-  const scaledDepthContourLabelOpacity = useMemo(() => 
+  const scaledDepthContourLabelOpacity = useMemo(() =>
     Math.min(1, Math.max(0, displaySettings.depthContourLabelOpacityScale)),
     [displaySettings.depthContourLabelOpacityScale]
+  );
+
+  // Memoized scaled Sea Area Names text settings
+  const scaledSeaAreaNamesFontSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, Math.round(10 * displaySettings.seaAreaNamesFontScale),
+    12, Math.round(14 * displaySettings.seaAreaNamesFontScale),
+  ], [displaySettings.seaAreaNamesFontScale]);
+
+  const scaledSeaAreaNamesHalo = useMemo(() =>
+    1.5 * displaySettings.seaAreaNamesHaloScale,
+    [displaySettings.seaAreaNamesHaloScale]
+  );
+
+  const scaledSeaAreaNamesOpacity = useMemo(() =>
+    Math.min(1, Math.max(0, displaySettings.seaAreaNamesOpacityScale)),
+    [displaySettings.seaAreaNamesOpacityScale]
+  );
+
+  // Memoized scaled Seabed Names text settings
+  const scaledSeabedNamesFontSize = useMemo(() =>
+    Math.round(10 * displaySettings.seabedNamesFontScale),
+    [displaySettings.seabedNamesFontScale]
+  );
+
+  const scaledSeabedNamesHalo = useMemo(() =>
+    1.5 * displaySettings.seabedNamesHaloScale,
+    [displaySettings.seabedNamesHaloScale]
+  );
+
+  const scaledSeabedNamesOpacity = useMemo(() =>
+    Math.min(1, Math.max(0, displaySettings.seabedNamesOpacityScale)),
+    [displaySettings.seabedNamesOpacityScale]
   );
 
   // Memoized scaled line widths
   const scaledDepthContourLineWidth = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    4, 0.5 * displaySettings.depthContourLineScale,
-    8, 0.8 * displaySettings.depthContourLineScale,
-    12, 1.5 * displaySettings.depthContourLineScale,
-    16, 2.0 * displaySettings.depthContourLineScale,
+    4, 1.5 * displaySettings.depthContourLineScale,
+    8, 2.0 * displaySettings.depthContourLineScale,
+    12, 2.5 * displaySettings.depthContourLineScale,
+    16, 3.0 * displaySettings.depthContourLineScale,
   ], [displaySettings.depthContourLineScale]);
 
   const scaledCoastlineLineWidth = useMemo(() => [
@@ -478,10 +512,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Halo widths for interpolated line widths (depth contours, coastline)
   const scaledDepthContourLineHaloWidth = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    4, (0.5 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
-    8, (0.8 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
-    12, (1.5 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
-    16, (2.0 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    4, (1.5 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    8, (2.0 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    12, (2.5 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
+    16, (3.0 * displaySettings.depthContourLineScale) + scaledDepthContourLineHalo,
   ], [displaySettings.depthContourLineScale, scaledDepthContourLineHalo]);
 
   const scaledCoastlineHaloWidth = useMemo(() => [
@@ -876,9 +910,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const sectorLightCacheRef = useRef<Map<string, {
     lon: number; lat: number; sectr1: number; sectr2: number; colour: number; scamin: number;
   }>>(new Map());
-  // Pre-computed sector lights loaded from sidecar JSON (generated during conversion).
-  // When available, this eliminates the need for queryRenderedFeaturesInRect entirely.
-  const sectorLightIndexRef = useRef<chartPackService.SectorLight[] | null>(null);
+  // Points VectorSource tile URL — set during chart loading when points-*.mbtiles is found.
+  // All point features (soundings, nav-aids, hazards) served from a single MBTiles file.
+  const [pointsTileUrl, setPointsTileUrl] = useState<string | null>(null);
 
   // Lazy-load: only render VectorSources whose zoom range overlaps current zoom (with buffer)
   // Use integer zoom so fractional changes during pan don't trigger recalculation
@@ -1695,14 +1729,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             setChartScaleSources(scaleSources);
             logger.info(LogCategory.CHARTS, `Chart rendering: ${scaleSources.length} source(s)`);
 
-            // Load pre-computed sector lights from sidecar JSON (non-blocking).
-            // This eliminates unreliable queryRenderedFeaturesInRect for arc rendering.
-            chartPackService.loadLocalSectorLights().then(lights => {
-              if (lights.length > 0) {
-                sectorLightIndexRef.current = lights;
-                logger.info(LogCategory.CHARTS, `Loaded ${lights.length} pre-computed sector lights`);
-              }
-            }).catch(() => {});
+            // Detect points MBTiles (all point features: soundings, nav-aids, hazards).
+            // Served as a VectorSource — no JSON parsing, no ShapeSource, no JS bridge overhead.
+            const pointsPack = loadedMbtiles.find(m => m.chartId.startsWith('points-'));
+            if (pointsPack) {
+              setPointsTileUrl(`${serverUrl}/tiles/${pointsPack.chartId}/{z}/{x}/{y}.pbf`);
+              logger.info(LogCategory.CHARTS, `Points VectorSource: ${pointsPack.chartId}`);
+            }
 
             const chartSummary = `${loadedMbtiles.length} charts (${scaleSources.length} source${scaleSources.length === 1 ? '' : 's'})`;
             setDebugInfo(`Server: ${serverUrl}\nCharts: ${chartSummary}\nMode: Multi-source\nDir: ${mbtilesDir}`);
@@ -1806,66 +1839,48 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
     const cache = sectorLightCacheRef.current;
 
-    if (sectorLightIndexRef.current) {
-      // ── FAST PATH: Use pre-computed sector light index from sidecar JSON ──
-      // No native bridge calls needed. Just filter the in-memory array by viewport + SCAMIN.
-      const index = sectorLightIndexRef.current;
-      cache.clear();
-      for (const light of index) {
-        if (light.lon < viewWest - padLon || light.lon > viewEast + padLon ||
-            light.lat < viewSouth - padLat || light.lat > viewNorth + padLat) continue;
-        const key = `${light.lon.toFixed(5)},${light.lat.toFixed(5)},${light.sectr1},${light.sectr2}`;
-        const existing = cache.get(key);
-        if (!existing || existing.scamin < light.scamin) {
-          cache.set(key, light);
+    // Query rendered LIGHTS from points VectorSource for sector arcs.
+    // queryRenderedFeaturesInRect on local tiles is fast (no network).
+    // Only returns features passing the layer's SCAMIN filter — no JS filtering needed.
+    if (pointsTileUrl) {
+      try {
+        const features = await mapRef.current.queryRenderedFeaturesInRect(
+          [0, 0, width, height],
+          undefined,
+          ['pt-lights']
+        );
+
+        cache.clear();
+        for (const f of features) {
+          const props = f.properties;
+          if (!props?.SECTR1 || !props?.SECTR2) continue;
+          const coords = f.geometry?.coordinates;
+          if (!coords) continue;
+
+          const lon = coords[0];
+          const lat = coords[1];
+          if (lon < viewWest - padLon || lon > viewEast + padLon ||
+              lat < viewSouth - padLat || lat > viewNorth + padLat) continue;
+
+          const sectr1 = parseFloat(String(props.SECTR1));
+          const sectr2 = parseFloat(String(props.SECTR2));
+          if (isNaN(sectr1) || isNaN(sectr2)) continue;
+
+          const scamin = parseFloat(String(props.SCAMIN));
+          const key = `${lon.toFixed(5)},${lat.toFixed(5)},${sectr1},${sectr2}`;
+
+          const existing = cache.get(key);
+          if (!existing || existing.scamin < (isNaN(scamin) ? Infinity : scamin)) {
+            cache.set(key, {
+              lon, lat,
+              sectr1, sectr2,
+              colour: typeof props.COLOUR === 'number' ? props.COLOUR : parseInt(String(props.COLOUR)) || 1,
+              scamin: isNaN(scamin) ? Infinity : scamin,
+            });
+          }
         }
-      }
-    } else {
-      // ── FALLBACK: Query MapLibre CircleLayer (non-deterministic) ──
-      const bbox: [number, number, number, number] = [0, width, height, 0];
-
-      // Query the invisible CircleLayer for ALL sector lights in loaded tiles.
-      // The CircleLayer has NO scaminFilter — all LIGHTS with SECTR1 in loaded
-      // tiles are always rendered and queryable. SCAMIN is filtered in JS below.
-      const lightsLayerIds = chartScaleSources.map(s => `${s.sourceId}-lights-query`);
-      const result = await mapRef.current.queryRenderedFeaturesInRect(bbox, ['has', 'SECTR1'], lightsLayerIds);
-      const rawFeatures = result?.features ?? result ?? [];
-      // Accumulate: add newly found sector lights to persistent cache.
-      // queryRenderedFeaturesInRect is non-deterministic — it misses features on
-      // some calls. By accumulating, once we find a light it stays stable.
-      for (const f of rawFeatures) {
-        const props = f.properties;
-        if (!props?.SECTR1 || !props?.SECTR2) continue;
-        const coords = f.geometry?.coordinates;
-        if (!coords || f.geometry?.type !== 'Point') continue;
-
-        const sectr1 = parseFloat(String(props.SECTR1));
-        const sectr2 = parseFloat(String(props.SECTR2));
-        if (isNaN(sectr1) || isNaN(sectr2)) continue;
-
-        const scamin = parseFloat(String(props.SCAMIN));
-        const key = `${coords[0].toFixed(5)},${coords[1].toFixed(5)},${sectr1},${sectr2}`;
-
-        // Keep the copy with the LARGEST SCAMIN (most permissive — visible at lowest zoom)
-        const existing = cache.get(key);
-        if (!existing || (isNaN(existing.scamin) ? 0 : existing.scamin) < (isNaN(scamin) ? Infinity : scamin)) {
-          cache.set(key, {
-            lon: coords[0], lat: coords[1],
-            sectr1, sectr2,
-            colour: typeof props.COLOUR === 'number' ? props.COLOUR : parseInt(String(props.COLOUR)) || 1,
-            scamin: isNaN(scamin) ? Infinity : scamin,
-          });
-        }
-      }
-
-      // Prune lights that are far outside the current viewport (3x screen padding).
-      const pruneLon = dpToDegreesLon * width * 3 / TARGET_ARC_PIXELS;
-      const pruneLat = dpToDegreesLat * height * 3 / TARGET_ARC_PIXELS;
-      for (const [key, light] of cache) {
-        if (light.lon < lng - pruneLon || light.lon > lng + pruneLon ||
-            light.lat < lat - pruneLat || light.lat > lat + pruneLat) {
-          cache.delete(key);
-        }
+      } catch {
+        // Query failed — keep existing cache entries
       }
     }
 
@@ -2367,6 +2382,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         43: false,
         // Coastline
         30: showCoastline,
+        // Traffic routes (Fairways, TSS lanes)
+        51: showTrafficRoutes, 148: showTrafficRoutes,
         // Restricted areas
         112: showRestrictedAreas,
         // Caution areas
@@ -2441,11 +2458,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         for (const [, feature] of featuresByType) {
           const props = feature.properties || {};
           const layer = getLayerName(props);
+          // Extract feature's actual coordinates from geometry (not tap location)
+          const geom = feature.geometry;
+          let featureCoords = '';
+          if (geom?.type === 'Point' && geom.coordinates) {
+            const [fLon, fLat] = geom.coordinates;
+            featureCoords = `${Number(fLat).toFixed(7)}°, ${Number(fLon).toFixed(7)}°`;
+          }
           uniqueFeatures.push({
             type: LAYER_DISPLAY_NAMES[layer] || layer,
             properties: {
               ...props,
               _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
+              ...(featureCoords ? { _featureCoordinates: featureCoords } : {}),
             },
           });
         }
@@ -2504,7 +2529,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [queryableLayerIds, showLights, showBuoys, showBeacons, showHazards, showLandmarks,
       showSoundings, showCables, showPipelines, showDepthContours, showCoastline,
       showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
-      showMarineFarms, showSeabed, showBridges, showBuildings, showMoorings,
+      showMarineFarms, showTrafficRoutes, showSeabed, showBridges, showBuildings, showMoorings,
       showShorelineConstruction, showDepthAreas, showLand]);
 
   // Handle map long press - create a waypoint or add to route depending on mode
@@ -2639,7 +2664,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Extracted as a top-level memo so sub-group caches can depend on it independently.
   const scaminFilter: any[] = useMemo(() => ['any',
     ['!', ['has', 'SCAMIN']],
-    ['>=', ['floor', ['zoom']], ['floor', ['-', 28 - scaminOffset, ['/', ['ln', ['to-number', ['get', 'SCAMIN']]], ['ln', 2]]]]]
+    ['>=', ['zoom'], ['-', 28 - scaminOffset, ['/', ['ln', ['to-number', ['get', 'SCAMIN']]], ['ln', 2]]]]
   ], [scaminOffset]);
 
   // Background fills (DEPARE, LNDARE) use overlapping zoom bands that match each
@@ -2651,19 +2676,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 11]],   // US1-2: z0-10 (native max)
     ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 4]],   // US3: z4+ (native range z4-13)
     ['all', ['==', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 6]],   // US4: z6+ (native range z6-15)
-    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 6]],   // US5+: z6+ (native range z6/8-15)
+    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 6]],   // US5+: z6+ (native range z6-15)
   ], []);
 
   // Line features (DEPCNT) use overlapping bands. The compose_job clips
-  // lower-scale contours out of higher-scale M_COVR coverage areas, so the
-  // tile data has no cross-scale geometry overlap — overlapping display bands
-  // are safe (no double-contours) and ensure contour continuity at all zooms.
+  // lower-scale contours against the next-higher scale's M_COVR coverage
+  // (cascading per-scale-pair), so the tile data has no cross-scale geometry
+  // overlap — overlapping display bands are safe (no double-contours) and
+  // ensure contour continuity at all zooms.
   const contourScaleFilter: any[] = useMemo(() => ['any',
     ['!', ['has', '_scaleNum']],
     ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 11]],   // US1-2: z0-10 (native max)
     ['all', ['==', ['get', '_scaleNum'], 3], ['>=', ['zoom'], 4]],   // US3: z4+ (native range z4-13)
     ['all', ['==', ['get', '_scaleNum'], 4], ['>=', ['zoom'], 6]],   // US4: z6+ (native range z6-15)
-    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 6]],   // US5+: z6+ (native range z6/8-15)
+    ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 6]],   // US5+: z6+ (native range z6-15)
   ], []);
 
   // ─── renderChartLayers: split into sub-group functions ──────────────
@@ -2684,11 +2710,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-depare`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 42], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 42], bgFillScaleFilter]}
         style={{
           fillColor: [
                 'step',
-                ['coalesce', ['get', 'DRVAL1'], 0],
+                ['to-number', ['coalesce', ['get', 'DRVAL1'], 0]],
                 s52Colors.DEPIT,
                 0, s52Colors.DEPVS,
                 2, s52Colors.DEPMS,
@@ -2696,28 +2722,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 10, s52Colors.DEPDW,
               ],
           fillOpacity: ecdisColors ? 1 : (mapStyle === 'satellite' ? scaledDepthAreaOpacitySatellite : scaledDepthAreaOpacity),
-          visibility: (ecdisColors || (showDepthAreas && mapStyle !== 'satellite')) ? 'visible' : 'none',
+          visibility: (ecdisColors || showDepthAreas) ? 'visible' : 'none',
         }}
       />,
 
-      /* DEPARE - Depth Area Outlines */
+      /* DEPARE - Depth Area Outlines (depth transition edges act as contour lines) */
       <MapLibre.LineLayer
         key={`${p}-depare-outline`}
         id={`${p}-depare-outline`}
         sourceLayerID="charts"
-        minZoomLevel={8}
-        filter={['all', ['==', ['get', 'OBJL'], 42], scaminFilter, bgFillScaleFilter]}
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 42], bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CHGRD,
-          lineWidth: [
-            'interpolate', ['linear'], ['zoom'],
-            4, 0.3 * displaySettings.depthContourLineScale,
-            8, 0.5 * displaySettings.depthContourLineScale,
-            12, 0.8 * displaySettings.depthContourLineScale,
-            16, 1.0 * displaySettings.depthContourLineScale,
-          ],
-          lineOpacity: 0.4 * scaledDepthContourLineOpacity,
-          visibility: (showDepthAreas && showDepthContours && (ecdisColors || mapStyle !== 'satellite')) ? 'visible' : 'none',
+          lineWidth: 0.5,
+          lineOpacity: 0.5,
+          visibility: (showDepthContours || ecdisColors) ? 'visible' : 'none',
         }}
       />,
 
@@ -2726,11 +2746,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-lndare`}
         id={`${p}-lndare`}
         sourceLayerID="charts"
-        filter={['all', ['==', ['get', 'OBJL'], 71], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 71], bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.LANDA,
           fillOpacity: ecdisColors ? 1 : (mapStyle === 'satellite' ? 0.2 : 1),
-          visibility: (ecdisColors || (showLand && mapStyle !== 'satellite')) ? 'visible' : 'none',
+          visibility: (ecdisColors || showLand) ? 'visible' : 'none',
         }}
       />,
 
@@ -2762,7 +2782,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           fillColor: s52Colors.FAIRWY,
           fillOpacity: scaledFairwayOpacity,
-          visibility: showRestrictedAreas ? 'visible' : 'none',
+          visibility: showTrafficRoutes ? 'visible' : 'none',
         }}
       />,
 
@@ -2884,7 +2904,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           fillColor: s52Colors.TSSLPT,
           fillOpacity: 0.1,
-          visibility: showRestrictedAreas ? 'visible' : 'none',
+          visibility: showTrafficRoutes ? 'visible' : 'none',
         }}
       />,
 
@@ -2900,7 +2920,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           lineWidth: 1.5,
           lineOpacity: 0.6,
           lineDasharray: [4, 4],
-          visibility: showRestrictedAreas ? 'visible' : 'none',
+          visibility: showTrafficRoutes ? 'visible' : 'none',
         }}
       />,
 
@@ -2943,560 +2963,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
-      /* SEAARE - Sea Area (named water bodies) */
-      <MapLibre.SymbolLayer
-        key={`${p}-seaare`}
-        id={`${p}-seaare`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 119], ['has', 'OBJNAM'], scaminFilter]}
-        style={{
-          textField: ['get', 'OBJNAM'],
-          textSize: ['interpolate', ['linear'], ['zoom'], 8, 10, 12, 14],
-          textColor: s52Colors.SENAM,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: 1.5,
-          textFont: ['Noto Sans Italic'],
-          textAllowOverlap: false,
-          symbolSpacing: 500,
-          visibility: showSeaAreaNames ? 'visible' : 'none',
-        }}
-      />,
-
-      /* LNDRGN - Land Region names */
-      <MapLibre.SymbolLayer
-        key={`${p}-lndrgn`}
-        id={`${p}-lndrgn`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 73], ['has', 'OBJNAM'], scaminFilter]}
-        style={{
-          textField: ['get', 'OBJNAM'],
-          textSize: 11,
-          textColor: s52Colors.LRGNT,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: 1.5,
-          textFont: ['Noto Sans Regular'],
-          textAllowOverlap: false,
-          visibility: showLandRegions ? 'visible' : 'none',
-        }}
-      />,
-
-      /* Debug: Scale coverage heatmap — DEPARE colored by _scaleNum, no bgFillScaleFilter */
-      ...(showScaleDebug ? [
-        <MapLibre.FillLayer
-          key={`${p}-scale-debug`}
-          id={`${p}-scale-debug`}
-          sourceLayerID="charts"
-          minZoomLevel={0}
-          filter={['==', ['get', 'OBJL'], 42]}
-          style={{
-            fillColor: ['match', ['get', '_scaleNum'],
-              1, '#ff0000', 2, '#ff8800', 3, '#ffff00',
-              4, '#00ff00', 5, '#00aaff', 6, '#8800ff',
-              '#888888'],
-            fillOpacity: 0.4,
-            visibility: 'visible',
-          }}
-        />,
-      ] : []),
-
-    ];
-  };
-
-  // SUB-GROUP 2: Structures & construction — bridges, buildings, moorings, shoreline construction, etc.
-  const renderStructureLayers = (prefix: string) => {
-    const p = prefix;
-    return [
       /* ============================================== */
-      /* S-52 LAYER ORDER: Structures & Construction    */
+      /* S-52 LAYER ORDER: Area Outlines (on top of fills, below structures/symbols) */
       /* ============================================== */
-
-      /* BRIDGE - Bridges (lines) Halo */
-      <MapLibre.LineLayer
-        key={`${p}-bridge-halo`}
-        id={`${p}-bridge-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.HLCLR,
-          lineWidth: scaledBridgeLineWidth + scaledBridgeLineHalo,
-          lineOpacity: scaledBridgeLineHalo > 0 ? scaledBridgeOpacity * 0.8 : 0,
-          visibility: showBridges ? 'visible' : 'none',
-        }}
-      />,
-
-      /* BRIDGE - Bridges (lines) */
-      <MapLibre.LineLayer
-        key={`${p}-bridge`}
-        id={`${p}-bridge`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.BRGLN,
-          lineWidth: scaledBridgeLineWidth,
-          lineOpacity: scaledBridgeOpacity,
-          visibility: showBridges ? 'visible' : 'none',
-        }}
-      />,
-
-      /* BRIDGE - Bridges (polygon fill) */
-      <MapLibre.FillLayer
-        key={`${p}-bridge-fill`}
-        id={`${p}-bridge-fill`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
-        style={{
-          fillColor: s52Colors.BRGFL,
-          fillOpacity: 0.6,
-          visibility: showBridges ? 'visible' : 'none',
-        }}
-      />,
-
-      /* BUISGL - Buildings */
-      <MapLibre.FillLayer
-        key={`${p}-buisgl`}
-        id={`${p}-buisgl`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 12], scaminFilter]}
-        style={{
-          fillColor: s52Colors.BUIFL,
-          fillOpacity: 0.4,
-          visibility: showBuildings ? 'visible' : 'none',
-        }}
-      />,
-
-      /* MORFAC - Mooring Facilities (point) */
-      <MapLibre.SymbolLayer
-        key={`${p}-morfac`}
-        id={`${p}-morfac`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: 'mooring-buoy',
-          iconSize: scaledMooringIconSize,
-          iconOpacity: scaledMooringSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showMoorings ? 'visible' : 'none',
-        }}
-      />,
-
-      /* MORFAC - Mooring Facilities (lines) Halo */
-      <MapLibre.LineLayer
-        key={`${p}-morfac-line-halo`}
-        id={`${p}-morfac-line-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.HLCLR,
-          lineWidth: scaledMooringLineHaloWidth,
-          lineOpacity: scaledMooringLineHalo > 0 ? scaledMooringOpacity * 0.8 : 0,
-          visibility: showMoorings ? 'visible' : 'none',
-        }}
-      />,
-
-      /* MORFAC - Mooring Facilities (lines) */
-      <MapLibre.LineLayer
-        key={`${p}-morfac-line`}
-        id={`${p}-morfac-line`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.MORLN,
-          lineWidth: scaledMooringLineWidth,
-          lineOpacity: scaledMooringOpacity,
-          visibility: showMoorings ? 'visible' : 'none',
-        }}
-      />,
-
-      /* MORFAC - Mooring Facilities (polygon) */
-      <MapLibre.FillLayer
-        key={`${p}-morfac-fill`}
-        id={`${p}-morfac-fill`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
-        style={{
-          fillColor: s52Colors.MORLN,
-          fillOpacity: 0.4,
-          visibility: showMoorings ? 'visible' : 'none',
-        }}
-      />,
-
-      /* SLCONS - Shoreline Construction Halo */
-      <MapLibre.LineLayer
-        key={`${p}-slcons-halo`}
-        id={`${p}-slcons-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.HLCLR,
-          lineWidth: scaledShorelineConstructionHaloWidth,
-          lineOpacity: scaledShorelineConstructionHalo > 0 ? scaledShorelineConstructionOpacity * 0.8 : 0,
-          visibility: showShorelineConstruction ? 'visible' : 'none',
-        }}
-      />,
-
-      /* SLCONS - Shoreline Construction */
-      <MapLibre.LineLayer
-        key={`${p}-slcons`}
-        id={`${p}-slcons`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.SLCLN,
-          lineWidth: scaledShorelineConstructionLineWidth,
-          lineOpacity: scaledShorelineConstructionOpacity,
-          visibility: showShorelineConstruction ? 'visible' : 'none',
-        }}
-      />,
-
-      /* SLCONS - Shoreline Construction (points) */
-      <MapLibre.CircleLayer
-        key={`${p}-slcons-point`}
-        id={`${p}-slcons-point`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          circleColor: s52Colors.SLCLN,
-          circleRadius: ['interpolate', ['linear'], ['zoom'], 12, 3, 14, 4, 18, 6],
-          circleStrokeColor: s52Colors.HLCLR,
-          circleStrokeWidth: 1,
-          visibility: showShorelineConstruction ? 'visible' : 'none',
-        }}
-      />,
-
-      /* SLCONS - Shoreline Construction (polygon) */
-      <MapLibre.FillLayer
-        key={`${p}-slcons-fill`}
-        id={`${p}-slcons-fill`}
-        sourceLayerID="charts"
-        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
-        style={{
-          fillColor: s52Colors.SLCFL,
-          fillOpacity: 0.5,
-          visibility: showShorelineConstruction ? 'visible' : 'none',
-        }}
-      />,
-
-      /* CAUSWY - Causeways */
-      <MapLibre.LineLayer
-        key={`${p}-causwy-line`}
-        id={`${p}-causwy-line`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.CSWYL,
-          lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4],
-          lineOpacity: 0.8,
-        }}
-      />,
-      <MapLibre.FillLayer
-        key={`${p}-causwy-fill`}
-        id={`${p}-causwy-fill`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
-        style={{
-          fillColor: s52Colors.BRGFL,
-          fillOpacity: 0.5,
-        }}
-      />,
-
-      /* PONTON - Pontoon */
-      <MapLibre.FillLayer
-        key={`${p}-ponton-fill`}
-        id={`${p}-ponton-fill`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
-        style={{
-          fillColor: s52Colors.PONTN,
-          fillOpacity: 0.5,
-        }}
-      />,
-      <MapLibre.LineLayer
-        key={`${p}-ponton-line`}
-        id={`${p}-ponton-line`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.CHBLK,
-          lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 1, 14, 2],
-          lineOpacity: 0.8,
-        }}
-      />,
-
-      /* HULKES - Hulks */
-      <MapLibre.FillLayer
-        key={`${p}-hulkes-fill`}
-        id={`${p}-hulkes-fill`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
-        style={{
-          fillColor: s52Colors.HULKS,
-          fillOpacity: 0.5,
-        }}
-      />,
-      <MapLibre.CircleLayer
-        key={`${p}-hulkes-point`}
-        id={`${p}-hulkes-point`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          circleColor: s52Colors.HULKS,
-          circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 5],
-          circleStrokeColor: s52Colors.CHBLK,
-          circleStrokeWidth: 1,
-        }}
-      />,
-
-    ];
-  };
-
-  // SUB-GROUP 3: Line features — depth contours, coastline, cables, pipelines, navigation lines
-  const renderLineLayers = (prefix: string) => {
-    const p = prefix;
-    return [
-      /* ============================================== */
-      /* S-52 LAYER ORDER: Line Features               */
-      /* ============================================== */
-
-      /* DEPCNT - Depth Contours Halo (SCAMIN-filtered, exclusive scale bands) */
-      <MapLibre.LineLayer
-        key={`${p}-depcnt-halo`}
-        id={`${p}-depcnt-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, contourScaleFilter]}
-        style={{
-          lineColor: s52Colors.HLCLR,
-          lineWidth: scaledDepthContourLineHaloWidth,
-          lineOpacity: scaledDepthContourLineHalo > 0 ? 0.5 * scaledDepthContourLineOpacity : 0,
-          visibility: showDepthContours ? 'visible' : 'none',
-        }}
-      />,
-
-      /* DEPCNT - Depth Contours (SCAMIN-filtered, exclusive scale bands) */
-      <MapLibre.LineLayer
-        key={`${p}-depcnt`}
-        id={`${p}-depcnt`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, contourScaleFilter]}
-        style={{
-          lineColor: s52Colors.CHGRD,
-          lineWidth: scaledDepthContourLineWidth,
-          lineOpacity: 0.7 * scaledDepthContourLineOpacity,
-          visibility: showDepthContours ? 'visible' : 'none',
-        }}
-      />,
-
-      /* COALNE - Coastline Halo */
-      <MapLibre.LineLayer
-        key={`${p}-coalne-halo`}
-        id={`${p}-coalne-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={6}
-        filter={['==', ['get', 'OBJL'], 30]}
-        style={{
-          lineColor: s52Colors.HLCLR,
-          lineWidth: scaledCoastlineHaloWidth,
-          lineOpacity: scaledCoastlineHalo > 0 ? scaledCoastlineOpacity * 0.8 : 0,
-          visibility: showCoastline ? 'visible' : 'none',
-        }}
-      />,
-
-      /* COALNE - Coastline */
-      <MapLibre.LineLayer
-        key={`${p}-coalne`}
-        id={`${p}-coalne`}
-        sourceLayerID="charts"
-        minZoomLevel={2}
-        filter={['==', ['get', 'OBJL'], 30]}
-        style={{
-          lineColor: s52Colors.CSTLN,
-          lineWidth: scaledCoastlineLineWidth,
-          lineOpacity: scaledCoastlineOpacity,
-          visibility: showCoastline ? 'visible' : 'none',
-        }}
-      />,
-
-      /* NAVLNE - Navigation Lines */
-      <MapLibre.LineLayer
-        key={`${p}-navlne`}
-        id={`${p}-navlne`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 85], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.NAVLN,
-          lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
-          lineOpacity: 0.8,
-          lineDasharray: [6, 3],
-        }}
-      />,
-
-      /* RECTRC - Recommended Tracks */
-      <MapLibre.LineLayer
-        key={`${p}-rectrc`}
-        id={`${p}-rectrc`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 109], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.RECTR,
-          lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
-          lineOpacity: 0.7,
-          lineDasharray: [8, 4],
-        }}
-      />,
-
-      /* TSELNE - Traffic Separation Lines */
-      <MapLibre.LineLayer
-        key={`${p}-tselne`}
-        id={`${p}-tselne`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 145], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.TSELN,
-          lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1.5, 12, 3],
-          lineOpacity: 0.8,
-        }}
-      />,
-
-      /* LNDELV - Land Elevation Contours */
-      <MapLibre.LineLayer
-        key={`${p}-lndelv`}
-        id={`${p}-lndelv`}
-        sourceLayerID="charts"
-        minZoomLevel={8}
-        filter={['all', ['==', ['get', 'OBJL'], 72], scaminFilter]}
-        style={{
-          lineColor: s52Colors.LDELV,
-          lineWidth: 0.5,
-          lineOpacity: 0.4,
-          visibility: showLand ? 'visible' : 'none',
-        }}
-      />,
-
-      /* CBLSUB/CBLOHD - Cables Halo */
-      <MapLibre.LineLayer
-        key={`${p}-cables-halo`}
-        id={`${p}-cables-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={6}
-        filter={['all',
-          ['any', ['==', ['get', 'OBJL'], 22], ['==', ['get', 'OBJL'], 21]],
-          ['==', ['geometry-type'], 'LineString'],
-          scaminFilter
-        ]}
-        style={{
-          lineColor: s52Colors.HLCLR,
-          lineWidth: scaledCableLineWidth + scaledCableLineHalo,
-          lineOpacity: scaledCableLineHalo > 0 ? scaledCableLineOpacity * 0.8 : 0,
-          visibility: showCables ? 'visible' : 'none',
-        }}
-      />,
-
-      /* CBLSUB/CBLOHD - Cables */
-      <MapLibre.LineLayer
-        key={`${p}-cables`}
-        id={`${p}-cables`}
-        sourceLayerID="charts"
-        minZoomLevel={6}
-        filter={['all',
-          ['any', ['==', ['get', 'OBJL'], 22], ['==', ['get', 'OBJL'], 21]],
-          ['==', ['geometry-type'], 'LineString'],
-          scaminFilter
-        ]}
-        style={{
-          lineColor: s52Colors.CABLN,
-          lineWidth: scaledCableLineWidth,
-          lineDasharray: [3, 2],
-          lineOpacity: scaledCableLineOpacity,
-          visibility: showCables ? 'visible' : 'none',
-        }}
-      />,
-
-      /* PIPSOL - Pipelines Halo */
-      <MapLibre.LineLayer
-        key={`${p}-pipsol-halo`}
-        id={`${p}-pipsol-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={6}
-        filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.HLCLR,
-          lineWidth: scaledPipelineLineWidth + scaledPipelineLineHalo,
-          lineOpacity: scaledPipelineLineHalo > 0 ? scaledPipelineLineOpacity * 0.8 : 0,
-          visibility: showPipelines ? 'visible' : 'none',
-        }}
-      />,
-
-      /* PIPSOL - Pipelines */
-      <MapLibre.LineLayer
-        key={`${p}-pipsol`}
-        id={`${p}-pipsol`}
-        sourceLayerID="charts"
-        minZoomLevel={6}
-        filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
-        style={{
-          lineColor: s52Colors.PIPLN,
-          lineWidth: scaledPipelineLineWidth,
-          lineDasharray: [5, 3],
-          lineOpacity: scaledPipelineLineOpacity,
-          visibility: showPipelines ? 'visible' : 'none',
-        }}
-      />,
-
-    ];
-  };
-
-  // SUB-GROUP 4: Soundings & seabed — depth soundings, seabed composition
-  const renderSoundingLayers = (prefix: string) => {
-    const p = prefix;
-    return [
-      /* ============================================== */
-      /* S-52 LAYER ORDER: Soundings & Seabed          */
-      /* ============================================== */
-
-      /* SOUNDG - Soundings (SCAMIN-filtered) */
-      <MapLibre.SymbolLayer
-        key={`${p}-soundg`}
-        id={`${p}-soundg`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 129], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          textField: depthTextFieldExpression,
-          textSize: scaledSoundingsFontSize,
-          textColor: displaySettings.tideCorrectedSoundings ? s52Colors.LITGN : s52Colors.SNDCR,
-          textHaloColor: displaySettings.tideCorrectedSoundings ? s52Colors.CHBLK : s52Colors.HLCLR,
-          textHaloWidth: displaySettings.tideCorrectedSoundings ? scaledSoundingsHalo * 1.5 : scaledSoundingsHalo,
-          textOpacity: scaledSoundingsOpacity,
-          textAllowOverlap: true,
-          textIgnorePlacement: true,
-          textPadding: 0,
-          visibility: showSoundings ? 'visible' : 'none',
-        }}
-      />,
 
       /* SBDARE - Seabed area fills (Polygons) */
       <MapLibre.FillLayer
@@ -3535,667 +3004,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           visibility: showSeabed ? 'visible' : 'none',
         }}
       />,
-
-      /* SBDARE - Seabed composition labels (Points) */
-      <MapLibre.SymbolLayer
-        key={`${p}-sbdare`}
-        id={`${p}-sbdare`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all',
-          ['in', ['get', 'OBJL'], ['literal', [114, 121]]],
-          ['==', ['geometry-type'], 'Point'],
-          ['has', 'NATSUR'],
-          scaminFilter
-        ]}
-        style={{
-          textField: [
-            'case',
-            ['in', '11', ['to-string', ['get', 'NATSUR']]], 'Co',
-            ['in', '14', ['to-string', ['get', 'NATSUR']]], 'Sh',
-            ['==', ['get', 'NATSUR'], '1'], 'M',
-            ['==', ['get', 'NATSUR'], '2'], 'Cy',
-            ['==', ['get', 'NATSUR'], '3'], 'Si',
-            ['==', ['get', 'NATSUR'], '4'], 'S',
-            ['==', ['get', 'NATSUR'], '5'], 'St',
-            ['==', ['get', 'NATSUR'], '6'], 'G',
-            ['==', ['get', 'NATSUR'], '7'], 'P',
-            ['==', ['get', 'NATSUR'], '8'], 'Cb',
-            ['==', ['get', 'NATSUR'], '9'], 'R',
-            '',
-          ],
-          textSize: 10,
-          textColor: s52Colors.SBDTX,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: 1.5,
-          textFont: ['Noto Sans Italic'],
-          textAllowOverlap: true,
-          textIgnorePlacement: true,
-          visibility: showSeabed ? 'visible' : 'none',
-        }}
-      />,
-
-    ];
-  };
-
-  // SUB-GROUP 5: Symbols, labels & outlines — hazards, nav aids, landmarks, labels, area outlines
-  const renderSymbolLayers = (prefix: string) => {
-    const p = prefix;
-    return [
-      /* ============================================== */
-      /* S-52 LAYER ORDER: Hazards (Safety Critical)   */
-      /* ============================================== */
-
-      /* UWTROC - Underwater Rocks */
-      <MapLibre.SymbolLayer
-        key={`${p}-uwtroc`}
-        id={`${p}-uwtroc`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 153], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: [
-            'case',
-            ['==', ['coalesce', ['get', 'WATLEV'], 3], 2], 'rock-above-water',
-            ['==', ['coalesce', ['get', 'WATLEV'], 3], 3], 'rock-submerged',
-            ['==', ['coalesce', ['get', 'WATLEV'], 3], 4], 'rock-uncovers',
-            ['==', ['coalesce', ['get', 'WATLEV'], 3], 5], 'rock-awash',
-            'rock-submerged',
-          ],
-          iconSize: scaledRockIconSize,
-          iconOpacity: scaledRockSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showHazards ? 'visible' : 'none',
-        }}
-      />,
-
-      /* WRECKS - Wrecks */
-      <MapLibre.SymbolLayer
-        key={`${p}-wrecks`}
-        id={`${p}-wrecks`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 159], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: [
-            'match',
-            ['get', 'CATWRK'],
-            1, 'wreck-danger',
-            2, 'wreck-submerged',
-            3, 'wreck-hull',
-            4, 'wreck-safe',
-            5, 'wreck-uncovers',
-            'wreck-submerged',
-          ],
-          iconSize: scaledWreckIconSize,
-          iconOpacity: scaledWreckSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showHazards ? 'visible' : 'none',
-        }}
-      />,
-
-      /* OBSTRN - Obstructions */
-      <MapLibre.SymbolLayer
-        key={`${p}-obstrn`}
-        id={`${p}-obstrn`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 86], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: 'obstruction',
-          iconSize: scaledHazardIconSize,
-          iconOpacity: scaledHazardSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showHazards ? 'visible' : 'none',
-        }}
-      />,
-
-      /* WATTUR halo - Water Turbulence */
-      <MapLibre.SymbolLayer
-        key={`${p}-wattur-halo`}
-        id={`${p}-wattur-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 156], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: 'tide-rips-halo',
-          iconSize: scaledTideRipsHaloSize,
-          iconOpacity: scaledTideRipsSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showHazards ? 'visible' : 'none',
-        }}
-      />,
-
-      /* WATTUR - Water Turbulence */
-      <MapLibre.SymbolLayer
-        key={`${p}-wattur`}
-        id={`${p}-wattur`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 156], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: 'tide-rips',
-          iconSize: scaledTideRipsIconSize,
-          iconOpacity: scaledTideRipsSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showHazards ? 'visible' : 'none',
-        }}
-      />,
-
-      /* DAYMAR - Daymarks */
-      <MapLibre.SymbolLayer
-        key={`${p}-daymar`}
-        id={`${p}-daymar`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 39], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: 'beacon-generic',
-          iconSize: scaledBeaconIconSize,
-          iconOpacity: scaledBeaconSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showBeacons ? 'visible' : 'none',
-        }}
-      />,
-
-      /* TOPMAR - Topmarks */
-      <MapLibre.SymbolLayer
-        key={`${p}-topmar`}
-        id={`${p}-topmar`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 144], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: 'beacon-generic',
-          iconSize: scaledBeaconIconSize,
-          iconOpacity: scaledBeaconSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showBeacons ? 'visible' : 'none',
-        }}
-      />,
-
-      /* FOGSIG - Fog Signals */
-      <MapLibre.CircleLayer
-        key={`${p}-fogsig`}
-        id={`${p}-fogsig`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 58], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          circleColor: s52Colors.FOGSN,
-          circleRadius: ['interpolate', ['linear'], ['zoom'], 8, 3, 14, 5],
-          circleStrokeColor: s52Colors.HLCLR,
-          circleStrokeWidth: 1,
-          circleOpacity: 0.8,
-        }}
-      />,
-
-      /* PILPNT - Pile/Pile Point */
-      <MapLibre.CircleLayer
-        key={`${p}-pilpnt`}
-        id={`${p}-pilpnt`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 90], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          circleColor: s52Colors.PILPT,
-          circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4],
-          circleStrokeColor: s52Colors.CHBLK,
-          circleStrokeWidth: 1,
-        }}
-      />,
-
-      /* RSCSTA - Rescue Station */
-      <MapLibre.CircleLayer
-        key={`${p}-rscsta`}
-        id={`${p}-rscsta`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 111], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          circleColor: s52Colors.RSCST,
-          circleRadius: ['interpolate', ['linear'], ['zoom'], 8, 4, 14, 6],
-          circleStrokeColor: s52Colors.HLCLR,
-          circleStrokeWidth: 2,
-        }}
-      />,
-
-      /* ============================================== */
-      /* S-52 LAYER ORDER: Aids to Navigation (AtoN)   */
-      /* ============================================== */
-
-      /* Buoy halos */
-      <MapLibre.SymbolLayer
-        key={`${p}-buoys-halo`}
-        id={`${p}-buoys-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all',
-          ['any',
-            ['==', ['get', 'OBJL'], 17],
-            ['==', ['get', 'OBJL'], 14],
-            ['==', ['get', 'OBJL'], 18],
-            ['==', ['get', 'OBJL'], 19],
-            ['==', ['get', 'OBJL'], 16],
-            ['==', ['get', 'OBJL'], 15]
-          ],
-          scaminFilter
-        ]}
-        style={{
-          iconImage: [
-            'match',
-            ['get', 'BOYSHP'],
-            1, 'buoy-conical-halo',
-            2, 'buoy-can-halo',
-            3, 'buoy-spherical-halo',
-            4, 'buoy-pillar-halo',
-            5, 'buoy-spar-halo',
-            6, 'buoy-barrel-halo',
-            7, 'buoy-super-halo',
-            'buoy-pillar-halo',
-          ],
-          iconSize: scaledBuoyHaloSize,
-          iconOpacity: scaledBuoySymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showBuoys ? 'visible' : 'none',
-        }}
-      />,
-
-      /* Buoys - BOYLAT, BOYCAR, etc. */
-      <MapLibre.SymbolLayer
-        key={`${p}-buoys`}
-        id={`${p}-buoys`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all',
-          ['any',
-            ['==', ['get', 'OBJL'], 17],
-            ['==', ['get', 'OBJL'], 14],
-            ['==', ['get', 'OBJL'], 18],
-            ['==', ['get', 'OBJL'], 19],
-            ['==', ['get', 'OBJL'], 16],
-            ['==', ['get', 'OBJL'], 15]
-          ],
-          scaminFilter
-        ]}
-        style={{
-          iconImage: [
-            'match',
-            ['get', 'BOYSHP'],
-            1, 'buoy-conical',
-            2, 'buoy-can',
-            3, 'buoy-spherical',
-            4, 'buoy-pillar',
-            5, 'buoy-spar',
-            6, 'buoy-barrel',
-            7, 'buoy-super',
-            'buoy-pillar',
-          ],
-          iconSize: scaledBuoyIconSize,
-          iconOpacity: scaledBuoySymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showBuoys ? 'visible' : 'none',
-        }}
-      />,
-
-      /* Beacon halos */
-      <MapLibre.SymbolLayer
-        key={`${p}-beacons-halo`}
-        id={`${p}-beacons-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all',
-          ['any',
-            ['==', ['get', 'OBJL'], 7],
-            ['==', ['get', 'OBJL'], 5],
-            ['==', ['get', 'OBJL'], 8],
-            ['==', ['get', 'OBJL'], 9],
-            ['==', ['get', 'OBJL'], 6]
-          ],
-          scaminFilter
-        ]}
-        style={{
-          iconImage: [
-            'match',
-            ['get', 'BCNSHP'],
-            1, 'beacon-stake-halo',
-            2, 'beacon-withy-halo',
-            3, 'beacon-tower-halo',
-            4, 'beacon-lattice-halo',
-            5, 'beacon-cairn-halo',
-            'beacon-generic-halo',
-          ],
-          iconSize: scaledBeaconHaloSize,
-          iconOpacity: scaledBeaconSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showBeacons ? 'visible' : 'none',
-        }}
-      />,
-
-      /* Beacons - BCNLAT, BCNCAR, etc. */
-      <MapLibre.SymbolLayer
-        key={`${p}-beacons`}
-        id={`${p}-beacons`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all',
-          ['any',
-            ['==', ['get', 'OBJL'], 7],
-            ['==', ['get', 'OBJL'], 5],
-            ['==', ['get', 'OBJL'], 8],
-            ['==', ['get', 'OBJL'], 9],
-            ['==', ['get', 'OBJL'], 6]
-          ],
-          scaminFilter
-        ]}
-        style={{
-          iconImage: [
-            'match',
-            ['get', 'BCNSHP'],
-            1, 'beacon-stake',
-            2, 'beacon-withy',
-            3, 'beacon-tower',
-            4, 'beacon-lattice',
-            5, 'beacon-cairn',
-            'beacon-generic',
-          ],
-          iconSize: scaledBeaconIconSize,
-          iconOpacity: scaledBeaconSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showBeacons ? 'visible' : 'none',
-        }}
-      />,
-
-      /* LIGHTS - symbols */
-      <MapLibre.SymbolLayer
-        key={`${p}-lights`}
-        id={`${p}-lights`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 75], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: [
-            'match',
-            ['get', 'COLOUR'],
-            1, 'light-white',
-            3, 'light-red',
-            4, 'light-green',
-            'light-major',
-          ],
-          iconSize: scaledLightIconSize,
-          iconOpacity: scaledLightSymbolOpacity,
-          iconRotate: ['coalesce', ['get', '_ORIENT'], 135],
-          iconRotationAlignment: 'map',
-          iconAnchor: 'bottom',
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showLights ? 'visible' : 'none',
-        }}
-      />,
-
-      /* LIGHTS - invisible query layer for sector arc generation.
-         NO scaminFilter here — we need ALL sector lights in loaded tiles to be
-         queryable regardless of zoom, because the same light can appear in
-         multiple chart scales with different SCAMIN values. The detailed-scale
-         copy (with SECTR1/SECTR2) may have a restrictive SCAMIN, while the
-         overview copy (visible at current zoom) may lack sector data.
-         SCAMIN filtering is applied in JavaScript after the query.
-         minZoomLevel=6: below z6 sector arcs are too small to be useful and
-         querying all sector lights in loaded tiles is expensive (2-3 seconds).
-         CircleLayer is used instead of SymbolLayer because symbol placement
-         makes queryRenderedFeaturesInRect return inconsistent results. */
-      <MapLibre.CircleLayer
-        key={`${p}-lights-query`}
-        id={`${p}-lights-query`}
-        sourceLayerID="charts"
-        minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 75], ['has', 'SECTR1'], ['==', ['geometry-type'], 'Point']]}
-        style={{
-          circleRadius: 2,
-          circleOpacity: 0.01,
-          visibility: showLights ? 'visible' : 'none',
-        }}
-      />,
-
-      /* Landmark halos */
-      <MapLibre.SymbolLayer
-        key={`${p}-lndmrk-halo`}
-        id={`${p}-lndmrk-halo`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 74], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: [
-            'match',
-            ['get', 'CATLMK'],
-            3, 'landmark-chimney-halo',
-            5, 'landmark-flagpole-halo',
-            7, 'landmark-mast-halo',
-            9, 'landmark-monument-halo',
-            10, 'landmark-monument-halo',
-            12, 'landmark-monument-halo',
-            13, 'landmark-monument-halo',
-            14, 'landmark-church-halo',
-            17, 'landmark-tower-halo',
-            18, 'landmark-windmill-halo',
-            19, 'landmark-windmill-halo',
-            20, 'landmark-church-halo',
-            28, 'landmark-radio-tower-halo',
-            'landmark-tower-halo',
-          ],
-          iconSize: scaledLandmarkHaloSize,
-          iconOpacity: scaledLandmarkSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showLandmarks ? 'visible' : 'none',
-        }}
-      />,
-
-      /* LNDMRK - Landmarks */
-      <MapLibre.SymbolLayer
-        key={`${p}-lndmrk`}
-        id={`${p}-lndmrk`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 74], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          iconImage: [
-            'match',
-            ['get', 'CATLMK'],
-            3, 'landmark-chimney',
-            5, 'landmark-flagpole',
-            7, 'landmark-mast',
-            9, 'landmark-monument',
-            10, 'landmark-monument',
-            12, 'landmark-monument',
-            13, 'landmark-monument',
-            14, 'landmark-church',
-            17, 'landmark-tower',
-            18, 'landmark-windmill',
-            19, 'landmark-windmill',
-            20, 'landmark-church',
-            28, 'landmark-radio-tower',
-            'landmark-tower',
-          ],
-          iconSize: scaledLandmarkIconSize,
-          iconOpacity: scaledLandmarkSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showLandmarks ? 'visible' : 'none',
-        }}
-      />,
-
-      /* LNDMRK Label */
-      <MapLibre.SymbolLayer
-        key={`${p}-lndmrk-label`}
-        id={`${p}-lndmrk-label`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 74], ['==', ['geometry-type'], 'Point'], scaminFilter]}
-        style={{
-          textField: [
-            'case',
-            ['has', 'OBJNAM'], ['get', 'OBJNAM'],
-            ['==', ['get', 'CATLMK'], 3], 'Chy',
-            ['==', ['get', 'CATLMK'], 7], 'Mast',
-            ['==', ['get', 'CATLMK'], 9], 'Mon',
-            ['==', ['get', 'CATLMK'], 13], 'Statue',
-            ['==', ['get', 'CATLMK'], 14], 'Cross',
-            ['==', ['get', 'CATLMK'], 17], 'Tr',
-            ['==', ['get', 'CATLMK'], 18], 'Windmill',
-            ['==', ['get', 'CATLMK'], 20], 'Spire',
-            '',
-          ],
-          textSize: 10,
-          textColor: s52Colors.CHBLK,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: 1.5,
-          textOffset: [0, 1.3],
-          textAllowOverlap: false,
-          visibility: showLandmarks ? 'visible' : 'none',
-        }}
-      />,
-
-      /* ============================================== */
-      /* S-52 LAYER ORDER: Labels & Text (on top)      */
-      /* ============================================== */
-
-      /* ACHBRT - Anchor Berths */
-      <MapLibre.SymbolLayer
-        key={`${p}-achbrt`}
-        id={`${p}-achbrt`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 3], scaminFilter]}
-        style={{
-          iconImage: 'anchor',
-          iconSize: scaledAnchorIconSize,
-          iconOpacity: scaledAnchorSymbolOpacity,
-          iconAllowOverlap: true,
-          iconIgnorePlacement: true,
-          visibility: showAnchorBerths ? 'visible' : 'none',
-        }}
-      />,
-
-      /* ACHBRT Label */
-      <MapLibre.SymbolLayer
-        key={`${p}-achbrt-label`}
-        id={`${p}-achbrt-label`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 3], scaminFilter]}
-        style={{
-          textField: ['coalesce', ['get', 'OBJNAM'], 'Anchorage'],
-          textSize: 10,
-          textColor: s52Colors.ACHBT,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: 1.5,
-          textOffset: [0, 1.5],
-          textAllowOverlap: false,
-          visibility: showAnchorBerths ? 'visible' : 'none',
-        }}
-      />,
-
-      /* CBLSUB Label */
-      <MapLibre.SymbolLayer
-        key={`${p}-cblsub-label`}
-        id={`${p}-cblsub-label`}
-        sourceLayerID="charts"
-        minZoomLevel={10}
-        filter={['all', ['==', ['get', 'OBJL'], 22], scaminFilter]}
-        style={{
-          textField: 'Cable',
-          textSize: 9,
-          textColor: s52Colors.CBLTX,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: 1.5,
-          symbolPlacement: 'line',
-          symbolSpacing: 400,
-          visibility: showCables ? 'visible' : 'none',
-        }}
-      />,
-
-      /* PIPSOL Label */
-      <MapLibre.SymbolLayer
-        key={`${p}-pipsol-label`}
-        id={`${p}-pipsol-label`}
-        sourceLayerID="charts"
-        minZoomLevel={10}
-        filter={['all', ['in', ['get', 'OBJL'], ['literal', [94, 98]]], scaminFilter]}
-        style={{
-          textField: [
-            'case',
-            ['==', ['get', 'CATPIP'], 1], 'Oil',
-            ['==', ['get', 'CATPIP'], 2], 'Gas',
-            ['==', ['get', 'CATPIP'], 3], 'Water',
-            ['==', ['get', 'CATPIP'], 4], 'Sewer',
-            'Pipe',
-          ],
-          textSize: 9,
-          textColor: s52Colors.PIPTX,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: 1.5,
-          symbolPlacement: 'line',
-          symbolSpacing: 400,
-          visibility: showPipelines ? 'visible' : 'none',
-        }}
-      />,
-
-      /* UWTROC Label */
-      <MapLibre.SymbolLayer
-        key={`${p}-uwtroc-label`}
-        id={`${p}-uwtroc-label`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 153], ['==', ['geometry-type'], 'Point'], ['has', 'VALSOU'], scaminFilter]}
-        style={{
-          textField: ['to-string', ['round', ['get', 'VALSOU']]],
-          textSize: 9,
-          textColor: s52Colors.CHBLK,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: 1.5,
-          textOffset: [0, 1.3],
-          visibility: showHazards ? 'visible' : 'none',
-        }}
-      />,
-
-      /* DEPCNT Labels (exclusive scale bands) */
-      <MapLibre.SymbolLayer
-        key={`${p}-depcnt-labels`}
-        id={`${p}-depcnt-labels`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 43], scaminFilter, contourScaleFilter]}
-        style={{
-          textField: ['to-string', ['coalesce', ['get', 'VALDCO'], '']],
-          textSize: scaledDepthContourFontSize,
-          textColor: s52Colors.DPCTX,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: scaledDepthContourLabelHalo,
-          textOpacity: scaledDepthContourLabelOpacity,
-          symbolPlacement: 'line',
-          symbolSpacing: 300,
-          textFont: ['Noto Sans Regular'],
-          textMaxAngle: 30,
-          textAllowOverlap: false,
-          visibility: showDepthContours ? 'visible' : 'none',
-        }}
-      />,
-
-      /* ============================================== */
-      /* S-52 LAYER ORDER: Area Outlines (top of fills)*/
-      /* ============================================== */
 
       /* LNDARE outline */
       <MapLibre.LineLayer
@@ -4237,7 +3045,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           lineColor: s52Colors.FWYOL,
           lineWidth: 2,
           lineDasharray: [8, 4],
-          visibility: showRestrictedAreas ? 'visible' : 'none',
+          visibility: showTrafficRoutes ? 'visible' : 'none',
         }}
       />,
 
@@ -4358,9 +3166,1243 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
-      /* Light Sector Arcs — now rendered dynamically via ShapeSource (screen-constant per S-52) */
+      /* Debug: Scale coverage heatmap — DEPARE colored by _scaleNum, no bgFillScaleFilter */
+      ...(showScaleDebug ? [
+        <MapLibre.FillLayer
+          key={`${p}-scale-debug`}
+          id={`${p}-scale-debug`}
+          sourceLayerID="charts"
+          minZoomLevel={0}
+          filter={['==', ['get', 'OBJL'], 42]}
+          style={{
+            fillColor: ['match', ['get', '_scaleNum'],
+              1, '#ff0000', 2, '#ff8800', 3, '#ffff00',
+              4, '#00ff00', 5, '#00aaff', 6, '#8800ff',
+              '#888888'],
+            fillOpacity: 0.4,
+            visibility: 'visible',
+          }}
+        />,
+      ] : []),
+
     ];
   };
+
+  // SUB-GROUP 2: Structures & construction — bridges, buildings, moorings, shoreline construction, etc.
+  const renderStructureLayers = (prefix: string) => {
+    const p = prefix;
+    return [
+      /* ============================================== */
+      /* S-52 LAYER ORDER: Structures & Construction    */
+      /* ============================================== */
+
+      /* BRIDGE - Bridges (polygon fill — below lines) */
+      <MapLibre.FillLayer
+        key={`${p}-bridge-fill`}
+        id={`${p}-bridge-fill`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        style={{
+          fillColor: s52Colors.BRGFL,
+          fillOpacity: 0.6,
+          visibility: showBridges ? 'visible' : 'none',
+        }}
+      />,
+
+      /* BRIDGE - Bridges (lines) Halo */
+      <MapLibre.LineLayer
+        key={`${p}-bridge-halo`}
+        id={`${p}-bridge-halo`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.HLCLR,
+          lineWidth: scaledBridgeLineWidth + scaledBridgeLineHalo,
+          lineOpacity: scaledBridgeLineHalo > 0 ? scaledBridgeOpacity * 0.8 : 0,
+          visibility: showBridges ? 'visible' : 'none',
+        }}
+      />,
+
+      /* BRIDGE - Bridges (lines) */
+      <MapLibre.LineLayer
+        key={`${p}-bridge`}
+        id={`${p}-bridge`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.BRGLN,
+          lineWidth: scaledBridgeLineWidth,
+          lineOpacity: scaledBridgeOpacity,
+          visibility: showBridges ? 'visible' : 'none',
+        }}
+      />,
+
+      /* BUISGL - Buildings */
+      <MapLibre.FillLayer
+        key={`${p}-buisgl`}
+        id={`${p}-buisgl`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 12], scaminFilter]}
+        style={{
+          fillColor: s52Colors.BUIFL,
+          fillOpacity: 0.4,
+          visibility: showBuildings ? 'visible' : 'none',
+        }}
+      />,
+
+      /* MORFAC - Mooring Facilities (lines) Halo */
+      <MapLibre.LineLayer
+        key={`${p}-morfac-line-halo`}
+        id={`${p}-morfac-line-halo`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.HLCLR,
+          lineWidth: scaledMooringLineHaloWidth,
+          lineOpacity: scaledMooringLineHalo > 0 ? scaledMooringOpacity * 0.8 : 0,
+          visibility: showMoorings ? 'visible' : 'none',
+        }}
+      />,
+
+      /* MORFAC - Mooring Facilities (lines) */
+      <MapLibre.LineLayer
+        key={`${p}-morfac-line`}
+        id={`${p}-morfac-line`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.MORLN,
+          lineWidth: scaledMooringLineWidth,
+          lineOpacity: scaledMooringOpacity,
+          visibility: showMoorings ? 'visible' : 'none',
+        }}
+      />,
+
+      /* MORFAC - Mooring Facilities (polygon) */
+      <MapLibre.FillLayer
+        key={`${p}-morfac-fill`}
+        id={`${p}-morfac-fill`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        style={{
+          fillColor: s52Colors.MORLN,
+          fillOpacity: 0.4,
+          visibility: showMoorings ? 'visible' : 'none',
+        }}
+      />,
+
+      /* SLCONS - Shoreline Construction Halo */
+      <MapLibre.LineLayer
+        key={`${p}-slcons-halo`}
+        id={`${p}-slcons-halo`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.HLCLR,
+          lineWidth: scaledShorelineConstructionHaloWidth,
+          lineOpacity: scaledShorelineConstructionHalo > 0 ? scaledShorelineConstructionOpacity * 0.8 : 0,
+          visibility: showShorelineConstruction ? 'visible' : 'none',
+        }}
+      />,
+
+      /* SLCONS - Shoreline Construction */
+      <MapLibre.LineLayer
+        key={`${p}-slcons`}
+        id={`${p}-slcons`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.SLCLN,
+          lineWidth: scaledShorelineConstructionLineWidth,
+          lineOpacity: scaledShorelineConstructionOpacity,
+          visibility: showShorelineConstruction ? 'visible' : 'none',
+        }}
+      />,
+
+      /* SLCONS - Shoreline Construction (points) */
+      <MapLibre.CircleLayer
+        key={`${p}-slcons-point`}
+        id={`${p}-slcons-point`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Point'], scaminFilter]}
+        style={{
+          circleColor: s52Colors.SLCLN,
+          circleRadius: ['interpolate', ['linear'], ['zoom'], 12, 3, 14, 4, 18, 6],
+          circleStrokeColor: s52Colors.HLCLR,
+          circleStrokeWidth: 1,
+          visibility: showShorelineConstruction ? 'visible' : 'none',
+        }}
+      />,
+
+      /* SLCONS - Shoreline Construction (polygon) */
+      <MapLibre.FillLayer
+        key={`${p}-slcons-fill`}
+        id={`${p}-slcons-fill`}
+        sourceLayerID="charts"
+        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        style={{
+          fillColor: s52Colors.SLCFL,
+          fillOpacity: 0.5,
+          visibility: showShorelineConstruction ? 'visible' : 'none',
+        }}
+      />,
+
+      /* CAUSWY - Causeways (fill below line) */
+      <MapLibre.FillLayer
+        key={`${p}-causwy-fill`}
+        id={`${p}-causwy-fill`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        style={{
+          fillColor: s52Colors.BRGFL,
+          fillOpacity: 0.5,
+        }}
+      />,
+      <MapLibre.LineLayer
+        key={`${p}-causwy-line`}
+        id={`${p}-causwy-line`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.CSWYL,
+          lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4],
+          lineOpacity: 0.8,
+        }}
+      />,
+
+      /* PONTON - Pontoon */
+      <MapLibre.FillLayer
+        key={`${p}-ponton-fill`}
+        id={`${p}-ponton-fill`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        style={{
+          fillColor: s52Colors.PONTN,
+          fillOpacity: 0.5,
+        }}
+      />,
+      <MapLibre.LineLayer
+        key={`${p}-ponton-line`}
+        id={`${p}-ponton-line`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.CHBLK,
+          lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 1, 14, 2],
+          lineOpacity: 0.8,
+        }}
+      />,
+
+      /* HULKES - Hulks */
+      <MapLibre.FillLayer
+        key={`${p}-hulkes-fill`}
+        id={`${p}-hulkes-fill`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        style={{
+          fillColor: s52Colors.HULKS,
+          fillOpacity: 0.5,
+        }}
+      />,
+      <MapLibre.CircleLayer
+        key={`${p}-hulkes-point`}
+        id={`${p}-hulkes-point`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Point'], scaminFilter]}
+        style={{
+          circleColor: s52Colors.HULKS,
+          circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 5],
+          circleStrokeColor: s52Colors.CHBLK,
+          circleStrokeWidth: 1,
+        }}
+      />,
+
+    ];
+  };
+
+  // SUB-GROUP 3: Line features — depth contours, coastline, cables, pipelines, navigation lines
+  const renderLineLayers = (prefix: string) => {
+    const p = prefix;
+    return [
+      /* ============================================== */
+      /* S-52 LAYER ORDER: Line Features               */
+      /* ============================================== */
+
+      /* DEPCNT - Depth Contours Halo (scale-band filtered, no SCAMIN — contours
+         follow scale band visibility like skin-of-earth features) */
+      <MapLibre.LineLayer
+        key={`${p}-depcnt-halo`}
+        id={`${p}-depcnt-halo`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 43], contourScaleFilter]}
+        style={{
+          lineColor: s52Colors.HLCLR,
+          lineWidth: scaledDepthContourLineHaloWidth,
+          lineOpacity: scaledDepthContourLineHalo > 0 ? 0.5 * scaledDepthContourLineOpacity : 0,
+          visibility: showDepthContours ? 'visible' : 'none',
+        }}
+      />,
+
+      /* DEPCNT - Depth Contours (scale-band filtered, no SCAMIN) */
+      <MapLibre.LineLayer
+        key={`${p}-depcnt`}
+        id={`${p}-depcnt`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 43], contourScaleFilter]}
+        style={{
+          lineColor: s52Colors.CHGRD,
+          lineWidth: scaledDepthContourLineWidth,
+          lineOpacity: 0.7 * scaledDepthContourLineOpacity,
+          visibility: showDepthContours ? 'visible' : 'none',
+        }}
+      />,
+
+      /* COALNE - Coastline Halo */
+      <MapLibre.LineLayer
+        key={`${p}-coalne-halo`}
+        id={`${p}-coalne-halo`}
+        sourceLayerID="charts"
+        minZoomLevel={6}
+        filter={['==', ['get', 'OBJL'], 30]}
+        style={{
+          lineColor: s52Colors.HLCLR,
+          lineWidth: scaledCoastlineHaloWidth,
+          lineOpacity: scaledCoastlineHalo > 0 ? scaledCoastlineOpacity * 0.8 : 0,
+          visibility: showCoastline ? 'visible' : 'none',
+        }}
+      />,
+
+      /* COALNE - Coastline */
+      <MapLibre.LineLayer
+        key={`${p}-coalne`}
+        id={`${p}-coalne`}
+        sourceLayerID="charts"
+        minZoomLevel={2}
+        filter={['==', ['get', 'OBJL'], 30]}
+        style={{
+          lineColor: s52Colors.CSTLN,
+          lineWidth: scaledCoastlineLineWidth,
+          lineOpacity: scaledCoastlineOpacity,
+          visibility: showCoastline ? 'visible' : 'none',
+        }}
+      />,
+
+      /* NAVLNE - Navigation Lines */
+      <MapLibre.LineLayer
+        key={`${p}-navlne`}
+        id={`${p}-navlne`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 85], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.NAVLN,
+          lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
+          lineOpacity: 0.8,
+          lineDasharray: [6, 3],
+        }}
+      />,
+
+      /* RECTRC - Recommended Tracks */
+      <MapLibre.LineLayer
+        key={`${p}-rectrc`}
+        id={`${p}-rectrc`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 109], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.RECTR,
+          lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
+          lineOpacity: 0.7,
+          lineDasharray: [8, 4],
+        }}
+      />,
+
+      /* TSELNE - Traffic Separation Lines */
+      <MapLibre.LineLayer
+        key={`${p}-tselne`}
+        id={`${p}-tselne`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 145], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.TSELN,
+          lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1.5, 12, 3],
+          lineOpacity: 0.8,
+        }}
+      />,
+
+      /* LNDELV - Land Elevation Contours */
+      <MapLibre.LineLayer
+        key={`${p}-lndelv`}
+        id={`${p}-lndelv`}
+        sourceLayerID="charts"
+        minZoomLevel={8}
+        filter={['all', ['==', ['get', 'OBJL'], 72], scaminFilter]}
+        style={{
+          lineColor: s52Colors.LDELV,
+          lineWidth: 0.5,
+          lineOpacity: 0.4,
+          visibility: showLand ? 'visible' : 'none',
+        }}
+      />,
+
+      /* CBLSUB - Submarine Cables Halo */
+      <MapLibre.LineLayer
+        key={`${p}-cblsub-halo`}
+        id={`${p}-cblsub-halo`}
+        sourceLayerID="charts"
+        minZoomLevel={6}
+        filter={['all', ['==', ['get', 'OBJL'], 22], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.HLCLR,
+          lineWidth: scaledCableLineWidth + scaledCableLineHalo,
+          lineOpacity: scaledCableLineHalo > 0 ? scaledCableLineOpacity * 0.8 : 0,
+          visibility: showCables ? 'visible' : 'none',
+        }}
+      />,
+
+      /* CBLSUB - Submarine Cables */
+      <MapLibre.LineLayer
+        key={`${p}-cblsub`}
+        id={`${p}-cblsub`}
+        sourceLayerID="charts"
+        minZoomLevel={6}
+        filter={['all', ['==', ['get', 'OBJL'], 22], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.CABLN,
+          lineWidth: scaledCableLineWidth,
+          lineDasharray: [3, 2],
+          lineOpacity: scaledCableLineOpacity,
+          visibility: showCables ? 'visible' : 'none',
+        }}
+      />,
+
+      /* CBLOHD - Overhead Cables Halo */
+      <MapLibre.LineLayer
+        key={`${p}-cblohd-halo`}
+        id={`${p}-cblohd-halo`}
+        sourceLayerID="charts"
+        minZoomLevel={6}
+        filter={['all', ['==', ['get', 'OBJL'], 21], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.HLCLR,
+          lineWidth: scaledCableLineWidth + scaledCableLineHalo,
+          lineOpacity: scaledCableLineHalo > 0 ? scaledCableLineOpacity * 0.8 : 0,
+          visibility: showCables ? 'visible' : 'none',
+        }}
+      />,
+
+      /* CBLOHD - Overhead Cables */
+      <MapLibre.LineLayer
+        key={`${p}-cblohd`}
+        id={`${p}-cblohd`}
+        sourceLayerID="charts"
+        minZoomLevel={6}
+        filter={['all', ['==', ['get', 'OBJL'], 21], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.CABLN,
+          lineWidth: scaledCableLineWidth,
+          lineDasharray: [8, 4],
+          lineOpacity: scaledCableLineOpacity,
+          visibility: showCables ? 'visible' : 'none',
+        }}
+      />,
+
+      /* PIPSOL - Pipelines Halo */
+      <MapLibre.LineLayer
+        key={`${p}-pipsol-halo`}
+        id={`${p}-pipsol-halo`}
+        sourceLayerID="charts"
+        minZoomLevel={6}
+        filter={['all', ['==', ['get', 'OBJL'], 94], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.HLCLR,
+          lineWidth: scaledPipelineLineWidth + scaledPipelineLineHalo,
+          lineOpacity: scaledPipelineLineHalo > 0 ? scaledPipelineLineOpacity * 0.8 : 0,
+          visibility: showPipelines ? 'visible' : 'none',
+        }}
+      />,
+
+      /* PIPSOL - Pipelines */
+      <MapLibre.LineLayer
+        key={`${p}-pipsol`}
+        id={`${p}-pipsol`}
+        sourceLayerID="charts"
+        minZoomLevel={6}
+        filter={['all', ['==', ['get', 'OBJL'], 94], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        style={{
+          lineColor: s52Colors.PIPLN,
+          lineWidth: scaledPipelineLineWidth,
+          lineDasharray: [5, 3],
+          lineOpacity: scaledPipelineLineOpacity,
+          visibility: showPipelines ? 'visible' : 'none',
+        }}
+      />,
+
+    ];
+  };
+
+  // SUB-GROUP 4: Soundings & seabed — moved to points VectorSource
+  // (SOUNDG, SBDARE point layers now rendered from points.mbtiles)
+  const renderSoundingLayers = (_prefix: string): React.ReactNode[] => [];
+
+  // SUB-GROUP 5: Labels & text that reference tile data (lines, areas)
+  // Point symbol layers (hazards, soundings, nav-aids) have been moved to points VectorSource.
+  const renderSymbolLayers = (prefix: string) => {
+    const p = prefix;
+    return [
+      /* ============================================== */
+      /* Geographic names (above soundings)             */
+      /* ============================================== */
+
+      /* SEAARE - Sea Area (named water bodies) */
+      <MapLibre.SymbolLayer
+        key={`${p}-seaare`}
+        id={`${p}-seaare`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 119], ['has', 'OBJNAM'], scaminFilter]}
+        style={{
+          textField: ['get', 'OBJNAM'],
+          textSize: scaledSeaAreaNamesFontSize,
+          textColor: s52Colors.SENAM,
+          textHaloColor: s52Colors.HLCLR,
+          textHaloWidth: scaledSeaAreaNamesHalo,
+          textOpacity: scaledSeaAreaNamesOpacity,
+          textFont: ['Noto Sans Italic'],
+          textAllowOverlap: false,
+          symbolSpacing: 500,
+          visibility: showSeaAreaNames ? 'visible' : 'none',
+        }}
+      />,
+
+      /* LNDRGN - Land Region names */
+      <MapLibre.SymbolLayer
+        key={`${p}-lndrgn`}
+        id={`${p}-lndrgn`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 73], ['has', 'OBJNAM'], scaminFilter]}
+        style={{
+          textField: ['get', 'OBJNAM'],
+          textSize: 11,
+          textColor: s52Colors.LRGNT,
+          textHaloColor: s52Colors.HLCLR,
+          textHaloWidth: 1.5,
+          textFont: ['Noto Sans Regular'],
+          textAllowOverlap: false,
+          visibility: showLandRegions ? 'visible' : 'none',
+        }}
+      />,
+
+      /* ============================================== */
+      /* S-52 LAYER ORDER: Labels & Text (on top)      */
+      /* ============================================== */
+
+      /* CBLSUB Label */
+      <MapLibre.SymbolLayer
+        key={`${p}-cblsub-label`}
+        id={`${p}-cblsub-label`}
+        sourceLayerID="charts"
+        minZoomLevel={10}
+        filter={['all', ['==', ['get', 'OBJL'], 22], scaminFilter]}
+        style={{
+          textField: 'Cable',
+          textSize: 9,
+          textColor: s52Colors.CBLTX,
+          textHaloColor: s52Colors.HLCLR,
+          textHaloWidth: 1.5,
+          symbolPlacement: 'line',
+          symbolSpacing: 400,
+          visibility: showCables ? 'visible' : 'none',
+        }}
+      />,
+
+      /* PIPSOL Label */
+      <MapLibre.SymbolLayer
+        key={`${p}-pipsol-label`}
+        id={`${p}-pipsol-label`}
+        sourceLayerID="charts"
+        minZoomLevel={10}
+        filter={['all', ['==', ['get', 'OBJL'], 94], scaminFilter]}
+        style={{
+          textField: [
+            'case',
+            ['==', ['get', 'CATPIP'], 1], 'Oil',
+            ['==', ['get', 'CATPIP'], 2], 'Gas',
+            ['==', ['get', 'CATPIP'], 3], 'Water',
+            ['==', ['get', 'CATPIP'], 4], 'Sewer',
+            'Pipe',
+          ],
+          textSize: 9,
+          textColor: s52Colors.PIPTX,
+          textHaloColor: s52Colors.HLCLR,
+          textHaloWidth: 1.5,
+          symbolPlacement: 'line',
+          symbolSpacing: 400,
+          visibility: showPipelines ? 'visible' : 'none',
+        }}
+      />,
+
+      /* DEPCNT Labels (scale-band filtered, no SCAMIN) */
+      <MapLibre.SymbolLayer
+        key={`${p}-depcnt-labels`}
+        id={`${p}-depcnt-labels`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 43], contourScaleFilter]}
+        style={{
+          textField: ['to-string', ['coalesce', ['get', 'VALDCO'], '']],
+          textSize: scaledDepthContourFontSize,
+          textColor: s52Colors.DPCTX,
+          textHaloColor: s52Colors.HLCLR,
+          textHaloWidth: scaledDepthContourLabelHalo,
+          textOpacity: scaledDepthContourLabelOpacity,
+          symbolPlacement: 'line',
+          symbolSpacing: 300,
+          textFont: ['Noto Sans Regular'],
+          textMaxAngle: 30,
+          textAllowOverlap: false,
+          visibility: showDepthContours ? 'visible' : 'none',
+        }}
+      />,
+    ];
+  };
+
+  // ─── POINT LAYERS (VectorSource from points.mbtiles) ──────────────────
+  // All point features: soundings, nav-aids, hazards — rendered from a single
+  // VectorSource backed by points.mbtiles. Each layer uses sourceLayerID="points".
+  const pointLayers = useMemo(() => [
+    /* ============================================== */
+    /* Soundings & Seabed (from points.mbtiles)      */
+    /* ============================================== */
+
+    /* SOUNDG - Soundings (SCAMIN-filtered) */
+    <MapLibre.SymbolLayer
+      key="pt-soundg"
+      id="pt-soundg"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 129], scaminFilter]}
+      style={{
+        textField: depthTextFieldExpression,
+        textSize: scaledSoundingsFontSize,
+        textColor: displaySettings.tideCorrectedSoundings ? s52Colors.LITGN : s52Colors.SNDCR,
+        textHaloColor: displaySettings.tideCorrectedSoundings ? s52Colors.CHBLK : s52Colors.HLCLR,
+        textHaloWidth: displaySettings.tideCorrectedSoundings ? scaledSoundingsHalo * 1.5 : scaledSoundingsHalo,
+        textOpacity: scaledSoundingsOpacity,
+        textAllowOverlap: true,
+        textIgnorePlacement: true,
+        textPadding: 0,
+        visibility: showSoundings ? 'visible' : 'none',
+      }}
+    />,
+
+    /* SBDARE - Seabed composition labels */
+    <MapLibre.SymbolLayer
+      key="pt-sbdare"
+      id="pt-sbdare"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all',
+        ['==', ['get', 'OBJL'], 121],
+        ['has', 'NATSUR'],
+        scaminFilter
+      ]}
+      style={{
+        textField: [
+          'case',
+          ['in', '11', ['to-string', ['get', 'NATSUR']]], 'Co',
+          ['in', '14', ['to-string', ['get', 'NATSUR']]], 'Sh',
+          ['==', ['get', 'NATSUR'], '1'], 'M',
+          ['==', ['get', 'NATSUR'], '2'], 'Cy',
+          ['==', ['get', 'NATSUR'], '3'], 'Si',
+          ['==', ['get', 'NATSUR'], '4'], 'S',
+          ['==', ['get', 'NATSUR'], '5'], 'St',
+          ['==', ['get', 'NATSUR'], '6'], 'G',
+          ['==', ['get', 'NATSUR'], '7'], 'P',
+          ['==', ['get', 'NATSUR'], '8'], 'Cb',
+          ['==', ['get', 'NATSUR'], '9'], 'R',
+          '',
+        ],
+        textSize: scaledSeabedNamesFontSize,
+        textColor: s52Colors.SBDTX,
+        textHaloColor: s52Colors.HLCLR,
+        textHaloWidth: scaledSeabedNamesHalo,
+        textOpacity: scaledSeabedNamesOpacity,
+        textFont: ['Noto Sans Italic'],
+        textAllowOverlap: true,
+        textIgnorePlacement: true,
+        visibility: showSeabed ? 'visible' : 'none',
+      }}
+    />,
+
+    /* ============================================== */
+    /* Hazard point symbols (from points.mbtiles)    */
+    /* ============================================== */
+
+    /* UWTROC - Underwater Rocks */
+    <MapLibre.SymbolLayer
+      key="pt-uwtroc"
+      id="pt-uwtroc"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 153], scaminFilter]}
+      style={{
+        iconImage: [
+          'case',
+          ['==', ['coalesce', ['get', 'WATLEV'], 3], 2], 'rock-above-water',
+          ['==', ['coalesce', ['get', 'WATLEV'], 3], 3], 'rock-submerged',
+          ['==', ['coalesce', ['get', 'WATLEV'], 3], 4], 'rock-uncovers',
+          ['==', ['coalesce', ['get', 'WATLEV'], 3], 5], 'rock-awash',
+          'rock-submerged',
+        ],
+        iconSize: scaledRockIconSize,
+        iconOpacity: scaledRockSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showHazards ? 'visible' : 'none',
+      }}
+    />,
+
+    /* OBSTRN - Obstructions */
+    <MapLibre.SymbolLayer
+      key="pt-obstrn"
+      id="pt-obstrn"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 86], scaminFilter]}
+      style={{
+        iconImage: 'obstruction',
+        iconSize: scaledHazardIconSize,
+        iconOpacity: scaledHazardSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showHazards ? 'visible' : 'none',
+      }}
+    />,
+
+    /* WATTUR halo - Water Turbulence */
+    <MapLibre.SymbolLayer
+      key="pt-wattur-halo"
+      id="pt-wattur-halo"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 156], scaminFilter]}
+      style={{
+        iconImage: 'tide-rips-halo',
+        iconSize: scaledTideRipsHaloSize,
+        iconOpacity: scaledTideRipsSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showHazards ? 'visible' : 'none',
+      }}
+    />,
+
+    /* WATTUR - Water Turbulence */
+    <MapLibre.SymbolLayer
+      key="pt-wattur"
+      id="pt-wattur"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 156], scaminFilter]}
+      style={{
+        iconImage: 'tide-rips',
+        iconSize: scaledTideRipsIconSize,
+        iconOpacity: scaledTideRipsSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showHazards ? 'visible' : 'none',
+      }}
+    />,
+
+    /* UWTROC Label */
+    <MapLibre.SymbolLayer
+      key="pt-uwtroc-label"
+      id="pt-uwtroc-label"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 153], ['has', 'VALSOU'], scaminFilter]}
+      style={{
+        textField: ['to-string', ['round', ['get', 'VALSOU']]],
+        textSize: 9,
+        textColor: s52Colors.CHBLK,
+        textHaloColor: s52Colors.HLCLR,
+        textHaloWidth: 1.5,
+        textOffset: [0, 1.3],
+        visibility: showHazards ? 'visible' : 'none',
+      }}
+    />,
+
+    /* ============================================== */
+    /* Nav-aid symbols (from points.mbtiles)         */
+    /* ============================================== */
+
+    /* MORFAC - Mooring Facilities (point symbol) */
+    <MapLibre.SymbolLayer
+      key="pt-morfac"
+      id="pt-morfac"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 84], scaminFilter]}
+      style={{
+        iconImage: 'mooring-buoy',
+        iconSize: scaledMooringIconSize,
+        iconOpacity: scaledMooringSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showMoorings ? 'visible' : 'none',
+      }}
+    />,
+
+    /* WRECKS - Wrecks */
+    <MapLibre.SymbolLayer
+      key="pt-wrecks"
+      id="pt-wrecks"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 159], scaminFilter]}
+      style={{
+        iconImage: [
+          'match',
+          ['get', 'CATWRK'],
+          1, 'wreck-danger',
+          2, 'wreck-submerged',
+          3, 'wreck-hull',
+          4, 'wreck-safe',
+          5, 'wreck-uncovers',
+          'wreck-submerged',
+        ],
+        iconSize: scaledWreckIconSize,
+        iconOpacity: scaledWreckSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showHazards ? 'visible' : 'none',
+      }}
+    />,
+
+    /* DAYMAR - Daymarks */
+    <MapLibre.SymbolLayer
+      key="pt-daymar"
+      id="pt-daymar"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 39], scaminFilter]}
+      style={{
+        iconImage: 'beacon-generic',
+        iconSize: scaledBeaconIconSize,
+        iconOpacity: scaledBeaconSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showBeacons ? 'visible' : 'none',
+      }}
+    />,
+
+    /* TOPMAR - Topmarks */
+    <MapLibre.SymbolLayer
+      key="pt-topmar"
+      id="pt-topmar"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 144], scaminFilter]}
+      style={{
+        iconImage: 'beacon-generic',
+        iconSize: scaledBeaconIconSize,
+        iconOpacity: scaledBeaconSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showBeacons ? 'visible' : 'none',
+      }}
+    />,
+
+    /* FOGSIG - Fog Signals */
+    <MapLibre.CircleLayer
+      key="pt-fogsig"
+      id="pt-fogsig"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 58], scaminFilter]}
+      style={{
+        circleColor: s52Colors.FOGSN,
+        circleRadius: ['interpolate', ['linear'], ['zoom'], 8, 3, 14, 5],
+        circleStrokeColor: s52Colors.HLCLR,
+        circleStrokeWidth: 1,
+        circleOpacity: 0.8,
+      }}
+    />,
+
+    /* PILPNT - Pile/Pile Point */
+    <MapLibre.CircleLayer
+      key="pt-pilpnt"
+      id="pt-pilpnt"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 90], scaminFilter]}
+      style={{
+        circleColor: s52Colors.PILPT,
+        circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4],
+        circleStrokeColor: s52Colors.CHBLK,
+        circleStrokeWidth: 1,
+      }}
+    />,
+
+    /* RSCSTA - Rescue Station */
+    <MapLibre.CircleLayer
+      key="pt-rscsta"
+      id="pt-rscsta"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 111], scaminFilter]}
+      style={{
+        circleColor: s52Colors.RSCST,
+        circleRadius: ['interpolate', ['linear'], ['zoom'], 8, 4, 14, 6],
+        circleStrokeColor: s52Colors.HLCLR,
+        circleStrokeWidth: 2,
+      }}
+    />,
+
+    /* Buoy halos */
+    <MapLibre.SymbolLayer
+      key="pt-buoys-halo"
+      id="pt-buoys-halo"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all',
+        ['any',
+          ['==', ['get', 'OBJL'], 17],
+          ['==', ['get', 'OBJL'], 14],
+          ['==', ['get', 'OBJL'], 18],
+          ['==', ['get', 'OBJL'], 19],
+          ['==', ['get', 'OBJL'], 16],
+          ['==', ['get', 'OBJL'], 15]
+        ],
+        scaminFilter
+      ]}
+      style={{
+        iconImage: [
+          'match',
+          ['get', 'BOYSHP'],
+          1, 'buoy-conical-halo',
+          2, 'buoy-can-halo',
+          3, 'buoy-spherical-halo',
+          4, 'buoy-pillar-halo',
+          5, 'buoy-spar-halo',
+          6, 'buoy-barrel-halo',
+          7, 'buoy-super-halo',
+          'buoy-pillar-halo',
+        ],
+        iconSize: scaledBuoyHaloSize,
+        iconOpacity: scaledBuoySymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showBuoys ? 'visible' : 'none',
+      }}
+    />,
+
+    /* Buoys - BOYLAT, BOYCAR, etc. */
+    <MapLibre.SymbolLayer
+      key="pt-buoys"
+      id="pt-buoys"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all',
+        ['any',
+          ['==', ['get', 'OBJL'], 17],
+          ['==', ['get', 'OBJL'], 14],
+          ['==', ['get', 'OBJL'], 18],
+          ['==', ['get', 'OBJL'], 19],
+          ['==', ['get', 'OBJL'], 16],
+          ['==', ['get', 'OBJL'], 15]
+        ],
+        scaminFilter
+      ]}
+      style={{
+        iconImage: [
+          'match',
+          ['get', 'BOYSHP'],
+          1, 'buoy-conical',
+          2, 'buoy-can',
+          3, 'buoy-spherical',
+          4, 'buoy-pillar',
+          5, 'buoy-spar',
+          6, 'buoy-barrel',
+          7, 'buoy-super',
+          'buoy-pillar',
+        ],
+        iconSize: scaledBuoyIconSize,
+        iconOpacity: scaledBuoySymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showBuoys ? 'visible' : 'none',
+      }}
+    />,
+
+    /* Beacon halos */
+    <MapLibre.SymbolLayer
+      key="pt-beacons-halo"
+      id="pt-beacons-halo"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all',
+        ['any',
+          ['==', ['get', 'OBJL'], 7],
+          ['==', ['get', 'OBJL'], 5],
+          ['==', ['get', 'OBJL'], 8],
+          ['==', ['get', 'OBJL'], 9],
+          ['==', ['get', 'OBJL'], 6]
+        ],
+        scaminFilter
+      ]}
+      style={{
+        iconImage: [
+          'match',
+          ['get', 'BCNSHP'],
+          1, 'beacon-stake-halo',
+          2, 'beacon-withy-halo',
+          3, 'beacon-tower-halo',
+          4, 'beacon-lattice-halo',
+          5, 'beacon-cairn-halo',
+          'beacon-generic-halo',
+        ],
+        iconSize: scaledBeaconHaloSize,
+        iconOpacity: scaledBeaconSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showBeacons ? 'visible' : 'none',
+      }}
+    />,
+
+    /* Beacons - BCNLAT, BCNCAR, etc. */
+    <MapLibre.SymbolLayer
+      key="pt-beacons"
+      id="pt-beacons"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all',
+        ['any',
+          ['==', ['get', 'OBJL'], 7],
+          ['==', ['get', 'OBJL'], 5],
+          ['==', ['get', 'OBJL'], 8],
+          ['==', ['get', 'OBJL'], 9],
+          ['==', ['get', 'OBJL'], 6]
+        ],
+        scaminFilter
+      ]}
+      style={{
+        iconImage: [
+          'match',
+          ['get', 'BCNSHP'],
+          1, 'beacon-stake',
+          2, 'beacon-withy',
+          3, 'beacon-tower',
+          4, 'beacon-lattice',
+          5, 'beacon-cairn',
+          'beacon-generic',
+        ],
+        iconSize: scaledBeaconIconSize,
+        iconOpacity: scaledBeaconSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showBeacons ? 'visible' : 'none',
+      }}
+    />,
+
+    /* Landmark halos */
+    <MapLibre.SymbolLayer
+      key="pt-lndmrk-halo"
+      id="pt-lndmrk-halo"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 74], scaminFilter]}
+      style={{
+        iconImage: [
+          'match',
+          ['get', 'CATLMK'],
+          3, 'landmark-chimney-halo',
+          5, 'landmark-flagpole-halo',
+          7, 'landmark-mast-halo',
+          9, 'landmark-monument-halo',
+          10, 'landmark-monument-halo',
+          12, 'landmark-monument-halo',
+          13, 'landmark-monument-halo',
+          14, 'landmark-church-halo',
+          17, 'landmark-tower-halo',
+          18, 'landmark-windmill-halo',
+          19, 'landmark-windmill-halo',
+          20, 'landmark-church-halo',
+          28, 'landmark-radio-tower-halo',
+          'landmark-tower-halo',
+        ],
+        iconSize: scaledLandmarkHaloSize,
+        iconOpacity: scaledLandmarkSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showLandmarks ? 'visible' : 'none',
+      }}
+    />,
+
+    /* LNDMRK - Landmarks */
+    <MapLibre.SymbolLayer
+      key="pt-lndmrk"
+      id="pt-lndmrk"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 74], scaminFilter]}
+      style={{
+        iconImage: [
+          'match',
+          ['get', 'CATLMK'],
+          3, 'landmark-chimney',
+          5, 'landmark-flagpole',
+          7, 'landmark-mast',
+          9, 'landmark-monument',
+          10, 'landmark-monument',
+          12, 'landmark-monument',
+          13, 'landmark-monument',
+          14, 'landmark-church',
+          17, 'landmark-tower',
+          18, 'landmark-windmill',
+          19, 'landmark-windmill',
+          20, 'landmark-church',
+          28, 'landmark-radio-tower',
+          'landmark-tower',
+        ],
+        iconSize: scaledLandmarkIconSize,
+        iconOpacity: scaledLandmarkSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showLandmarks ? 'visible' : 'none',
+      }}
+    />,
+
+    /* LNDMRK Label */
+    <MapLibre.SymbolLayer
+      key="pt-lndmrk-label"
+      id="pt-lndmrk-label"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 74], scaminFilter]}
+      style={{
+        textField: [
+          'case',
+          ['has', 'OBJNAM'], ['get', 'OBJNAM'],
+          ['==', ['get', 'CATLMK'], 3], 'Chy',
+          ['==', ['get', 'CATLMK'], 7], 'Mast',
+          ['==', ['get', 'CATLMK'], 9], 'Mon',
+          ['==', ['get', 'CATLMK'], 13], 'Statue',
+          ['==', ['get', 'CATLMK'], 14], 'Cross',
+          ['==', ['get', 'CATLMK'], 17], 'Tr',
+          ['==', ['get', 'CATLMK'], 18], 'Windmill',
+          ['==', ['get', 'CATLMK'], 20], 'Spire',
+          '',
+        ],
+        textSize: 10,
+        textColor: s52Colors.CHBLK,
+        textHaloColor: s52Colors.HLCLR,
+        textHaloWidth: 1.5,
+        textOffset: [0, 1.3],
+        textAllowOverlap: false,
+        visibility: showLandmarks ? 'visible' : 'none',
+      }}
+    />,
+
+    /* LIGHTS - symbols (topmost nav aid per ECDIS display priority) */
+    <MapLibre.SymbolLayer
+      key="pt-lights"
+      id="pt-lights"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 75], scaminFilter]}
+      style={{
+        iconImage: [
+          'match',
+          ['get', 'COLOUR'],
+          1, 'light-white',
+          3, 'light-red',
+          4, 'light-green',
+          'light-major',
+        ],
+        iconSize: scaledLightIconSize,
+        iconOpacity: scaledLightSymbolOpacity,
+        iconRotate: ['coalesce', ['get', '_ORIENT'], 135],
+        iconRotationAlignment: 'map',
+        iconAnchor: 'bottom',
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showLights ? 'visible' : 'none',
+      }}
+    />,
+
+    /* ACHBRT - Anchor Berths */
+    <MapLibre.SymbolLayer
+      key="pt-achbrt"
+      id="pt-achbrt"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 3], scaminFilter]}
+      style={{
+        iconImage: 'anchor',
+        iconSize: scaledAnchorIconSize,
+        iconOpacity: scaledAnchorSymbolOpacity,
+        iconAllowOverlap: true,
+        iconIgnorePlacement: true,
+        visibility: showAnchorBerths ? 'visible' : 'none',
+      }}
+    />,
+
+    /* ACHBRT Label */
+    <MapLibre.SymbolLayer
+      key="pt-achbrt-label"
+      id="pt-achbrt-label"
+      sourceLayerID="points"
+      minZoomLevel={0}
+      filter={['all', ['==', ['get', 'OBJL'], 3], scaminFilter]}
+      style={{
+        textField: ['coalesce', ['get', 'OBJNAM'], 'Anchorage'],
+        textSize: 10,
+        textColor: s52Colors.ACHBT,
+        textHaloColor: s52Colors.HLCLR,
+        textHaloWidth: 1.5,
+        textOffset: [0, 1.5],
+        textAllowOverlap: false,
+        visibility: showAnchorBerths ? 'visible' : 'none',
+      }}
+    />,
+
+  ], [scaminFilter, s52Colors, depthTextFieldExpression,
+    showSoundings, showSeabed, showHazards, showMoorings, showBeacons, showBuoys, showLandmarks, showLights, showAnchorBerths,
+    scaledSoundingsFontSize, scaledSoundingsHalo, scaledSoundingsOpacity,
+    scaledSeabedNamesFontSize, scaledSeabedNamesHalo, scaledSeabedNamesOpacity,
+    scaledRockIconSize, scaledRockSymbolOpacity,
+    scaledHazardIconSize, scaledHazardSymbolOpacity,
+    scaledTideRipsIconSize, scaledTideRipsHaloSize, scaledTideRipsSymbolOpacity,
+    scaledMooringIconSize, scaledMooringSymbolOpacity,
+    scaledWreckIconSize, scaledWreckSymbolOpacity,
+    scaledBeaconIconSize, scaledBeaconHaloSize, scaledBeaconSymbolOpacity,
+    scaledBuoyIconSize, scaledBuoyHaloSize, scaledBuoySymbolOpacity,
+    scaledLightIconSize, scaledLightSymbolOpacity,
+    scaledLandmarkIconSize, scaledLandmarkHaloSize, scaledLandmarkSymbolOpacity,
+    scaledAnchorIconSize, scaledAnchorSymbolOpacity,
+    displaySettings.tideCorrectedSoundings,
+  ]);
 
   // Composition function — calls all sub-groups in order
   const renderChartLayers = (prefix: string) => [
@@ -4383,12 +4425,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, showScaleDebug,
     showDepthAreas, showDepthContours, showLand, showCables, showPipelines,
-    showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages, showMarineFarms,
-    showSeaAreaNames, showLandRegions,
+    showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages, showMarineFarms, showTrafficRoutes,
+    showSeaAreaNames, showLandRegions, showSeabed,
     mapStyle, ecdisColors, s52Colors, displaySettings.depthContourLineScale,
     scaledDepthAreaOpacity, scaledDepthAreaOpacitySatellite, scaledDepthContourLineOpacity,
     scaledDredgedAreaOpacity, scaledFairwayOpacity,
     scaledCableAreaOpacity, scaledPipelineAreaOpacity,
+    scaledCableLineWidth, scaledCableLineOpacity,
+    scaledPipelineLineWidth, scaledPipelineLineOpacity,
     scaledRestrictedAreaOpacity, scaledCautionAreaOpacity,
     scaledMilitaryAreaOpacity, scaledAnchorageOpacity, scaledMarineFarmOpacity,
   ]);
@@ -4401,7 +4445,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [chartScaleSources, scaminFilter, s52Colors,
     showBridges, showBuildings, showMoorings, showShorelineConstruction,
     scaledBridgeLineWidth, scaledBridgeLineHalo, scaledBridgeOpacity,
-    scaledMooringIconSize, scaledMooringSymbolOpacity,
     scaledMooringLineWidth, scaledMooringLineHaloWidth, scaledMooringLineHalo, scaledMooringOpacity,
     scaledShorelineConstructionLineWidth, scaledShorelineConstructionHaloWidth,
     scaledShorelineConstructionHalo, scaledShorelineConstructionOpacity,
@@ -4426,33 +4469,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderSoundingLayers(source.sourceId);
     return cache;
-  }, [chartScaleSources, scaminFilter,
-    showSoundings, showSeabed, depthTextFieldExpression,
-    scaledSoundingsFontSize, scaledSoundingsHalo, scaledSoundingsOpacity,
-    displaySettings.tideCorrectedSoundings,
-  ]);
+  }, [chartScaleSources]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const symbolLayerCache = useMemo(() => {
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderSymbolLayers(source.sourceId);
     return cache;
-  }, [chartScaleSources, scaminFilter, contourScaleFilter,
-    showHazards, showBuoys, showBeacons, showLights, showLandmarks,
-    showAnchorBerths, showCables, showPipelines, showDepthContours, showLand,
-    showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages, showMarineFarms,
-    scaledRockIconSize, scaledRockSymbolOpacity,
-    scaledWreckIconSize, scaledWreckSymbolOpacity,
-    scaledHazardIconSize, scaledHazardSymbolOpacity,
-    scaledTideRipsIconSize, scaledTideRipsHaloSize, scaledTideRipsSymbolOpacity,
-    scaledBeaconIconSize, scaledBeaconHaloSize, scaledBeaconSymbolOpacity,
-    scaledBuoyIconSize, scaledBuoyHaloSize, scaledBuoySymbolOpacity,
-    scaledLightIconSize, scaledLightSymbolOpacity,
-    scaledLandmarkIconSize, scaledLandmarkHaloSize, scaledLandmarkSymbolOpacity,
-    scaledAnchorIconSize, scaledAnchorSymbolOpacity,
+  }, [chartScaleSources, scaminFilter, contourScaleFilter, s52Colors,
+    showCables, showPipelines, showDepthContours,
+    showSeaAreaNames, showLandRegions,
+    scaledSeaAreaNamesFontSize, scaledSeaAreaNamesHalo, scaledSeaAreaNamesOpacity,
     scaledDepthContourFontSize, scaledDepthContourLabelHalo, scaledDepthContourLabelOpacity,
-    scaledCableLineWidth, scaledCableLineOpacity,
-    scaledPipelineLineWidth, scaledPipelineLineOpacity,
   ]);
 
   // Composition: merge sub-group caches into final layer array per source.
@@ -4700,6 +4728,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               {chartLayerCache[source.sourceId]}
             </MapLibre.VectorSource>
           ))
+        )}
+
+        {/* ================================================================== */}
+        {/* POINTS VECTORSOURCE — all point features (soundings, lights,   */}
+        {/* buoys, beacons, wrecks, rocks, etc.) from points.mbtiles.      */}
+        {/* Single VectorSource, SCAMIN-based visibility, native tile IO.  */}
+        {/* ================================================================== */}
+        {pointsTileUrl && (
+          <MapLibre.VectorSource
+            id="points"
+            tileUrlTemplates={[pointsTileUrl]}
+            minZoomLevel={0}
+            maxZoomLevel={15}
+          >
+            {pointLayers}
+          </MapLibre.VectorSource>
         )}
 
         {/* Dynamic sector arcs — screen-constant size per S-52 §3.1.5.
@@ -5379,7 +5423,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       {/* Stop Panning button - appears when user has panned away from GPS */}
       {!followGPS && gpsDataRef.current.latitude !== null && (
         <TouchableOpacity
-          style={[styles.stopPanningBtn, { top: insets.top + 52 }]}
+          style={[styles.stopPanningBtn, { top: insets.top + 80 }]}
           onPress={() => {
             followGPSRef.current = true;
             setFollowGPS(true);
@@ -5678,6 +5722,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.layerToggleRow, showAnchorBerths && styles.layerToggleRowActive]} onPress={() => toggleLayer('anchorBerths')}>
                   <Text style={styles.layerToggleText}>Anchor Berths</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, showTrafficRoutes && styles.layerToggleRowActive]} onPress={() => toggleLayer('trafficRoutes')}>
+                  <Text style={styles.layerToggleText}>Traffic Routes</Text>
                 </TouchableOpacity>
 
                 {/* Hazards & Utilities Section */}

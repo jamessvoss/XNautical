@@ -306,6 +306,7 @@ const DISTRICT_PREFIXES: Record<string, string> = {
   '13cgd': 'd13',
   '14cgd': 'd14',
   '17cgd': 'd17',
+  '017cgd-test': '017-test',
 };
 
 /**
@@ -321,6 +322,7 @@ const GNIS_FILENAMES: Record<string, string> = {
   '13cgd': 'gnis_names_pnw.mbtiles',
   '14cgd': 'gnis_names_hi.mbtiles',
   '17cgd': 'gnis_names_ak.mbtiles',
+  '017cgd-test': 'gnis_names_ak.mbtiles',
 };
 
 /**
@@ -336,6 +338,7 @@ const BASEMAP_FILENAMES: Record<string, string> = {
   '13cgd': 'd13_basemap.mbtiles',
   '14cgd': 'd14_basemap.mbtiles',
   '17cgd': 'd17_basemap.mbtiles',
+  '017cgd-test': 'd17_basemap.mbtiles',
 };
 
 /**
@@ -351,6 +354,7 @@ const DISTRICT_BOUNDS: Record<string, { south: number; west: number; north: numb
   '13cgd': { south: 35.0, west: -127.0, north: 49.5, east: -122.0 },
   '14cgd': { south: 18.0, west: -162.0, north: 23.0, east: -154.0 },
   '17cgd': { south: 51.0, west: -180.0, north: 71.5, east: -130.0 },
+  '017cgd-test': { south: 57.6, west: -153.6, north: 62.4, east: -144.0 },
 };
 
 /**
@@ -697,14 +701,15 @@ export async function generateManifest(): Promise<void> {
     
     const files = await FileSystem.readDirectoryAsync(mbtilesDir);
     
-    // Zoom ranges for each chart scale
+    // Zoom ranges for each chart scale — must match pipeline SCALE_ZOOM_RANGES
+    // in compose_job.py so the app requests tiles at all zooms the pipeline generates.
     const scaleZoomRanges: Record<string, { minZoom: number; maxZoom: number }> = {
-      'US1': { minZoom: 0, maxZoom: 7 },
-      'US2': { minZoom: 4, maxZoom: 10 },
-      'US3': { minZoom: 7, maxZoom: 13 },
-      'US4': { minZoom: 10, maxZoom: 15 },
-      'US5': { minZoom: 12, maxZoom: 15 },
-      'US6': { minZoom: 14, maxZoom: 15 },
+      'US1': { minZoom: 0, maxZoom: 8 },
+      'US2': { minZoom: 0, maxZoom: 10 },
+      'US3': { minZoom: 4, maxZoom: 13 },
+      'US4': { minZoom: 6, maxZoom: 15 },
+      'US5': { minZoom: 6, maxZoom: 15 },
+      'US6': { minZoom: 6, maxZoom: 15 },
     };
     
     const packs: Array<{
@@ -764,7 +769,28 @@ export async function generateManifest(): Promise<void> {
         }
       }
     }
-    
+
+    // Scan for points MBTiles from ALL known districts
+    for (const [districtId, prefix] of Object.entries(DISTRICT_PREFIXES)) {
+      const bounds = DISTRICT_BOUNDS[districtId] || { south: -90, west: -180, north: 90, east: 180 };
+      const pointsFile = `points-${prefix}.mbtiles`;
+      if (files.includes(pointsFile)) {
+        const filePath = `${mbtilesDir}${pointsFile}`;
+        const fileInfo = await FileSystem.getInfoAsync(filePath);
+        const fileSize = fileInfo.exists && fileInfo.size ? fileInfo.size : 0;
+
+        packs.push({
+          id: `points-${prefix}`,
+          bounds,
+          minZoom: 0,
+          maxZoom: 15,
+          fileSize,
+        });
+
+        console.log(`[ChartPackService] Manifest pack: points-${prefix} (${districtId}/points) z0-15, ${(fileSize / 1024 / 1024).toFixed(1)} MB`);
+      }
+    }
+
     // Sort packs by ID for consistency
     packs.sort((a, b) => a.id.localeCompare(b.id));
     
@@ -837,8 +863,11 @@ export function getDistrictFilePatterns(districtId: string): {
       (f: string) => f.startsWith(`${prefix}_ocean`) && f.endsWith('.mbtiles'),
       // Terrain: d07_terrain.mbtiles or d07_terrain_z8.mbtiles
       (f: string) => f.startsWith(`${prefix}_terrain`) && f.endsWith('.mbtiles'),
-      // Sector lights sidecar: sector-lights-07cgd.json
+      // Points: points-d07.mbtiles
+      (f: string) => f === `points-${prefix}.mbtiles`,
+      // Legacy sidecars (for cleanup of old installs)
       (f: string) => f === `sector-lights-${districtId}.json`,
+      (f: string) => f === `nav-aids-${districtId}.json`,
     ],
   };
 }
@@ -987,93 +1016,86 @@ export async function deleteRegion(
   }
 }
 
-// ─── Sector Light Sidecar JSON ──────────────────────────────────────────
-// Pre-computed sector light data eliminates unreliable queryRenderedFeaturesInRect
-// calls for arc rendering. The JSON is generated during chart conversion and
-// uploaded per-district to Firebase Storage.
-
-export interface SectorLight {
-  lon: number;
-  lat: number;
-  sectr1: number;
-  sectr2: number;
-  colour: number;
-  scamin: number;
-  chartId: string;
-}
+// ─── Points MBTiles ─────────────────────────────────────────────────────
+// All Point geometry features (soundings, lights, buoys, beacons, wrecks, rocks,
+// obstructions, landmarks, etc.) are served from a single points.mbtiles file.
+// This replaces the old nav-aids.json (GeoJSON ShapeSource, caused OOM) and
+// sector-lights.json (pre-computed sidecar). MBTiles is memory-mapped SQLite
+// read by MapLibre's native code — no JS bridge, no JSON parsing.
 
 /**
- * Fetch sector-lights.json for a district from Firebase Storage and cache locally.
- * Returns the number of sector lights fetched, or 0 if not available.
+ * Fetch points.mbtiles for a district from Firebase Storage and cache locally.
+ * Downloads the zip, extracts to local mbtiles directory, and registers with tile server.
+ * Returns true on success.
  */
-export async function fetchSectorLights(districtId: string): Promise<number> {
+export async function fetchPoints(districtId: string): Promise<boolean> {
   const mbtilesDir = await getMBTilesDir();
-  const localPath = `${mbtilesDir}sector-lights-${districtId}.json`;
+  const prefix = getDistrictPrefix(districtId);
+  const localFilename = `points-${prefix}.mbtiles`;
+  const finalPath = `${mbtilesDir}${localFilename}`;
+  const zipFilename = `points-${prefix}.mbtiles.zip`;
+  const compressedPath = `${FileSystem.cacheDirectory}${zipFilename}`;
 
   try {
     const bucketName = 'xnautical-8a296.firebasestorage.app';
-    const storagePath = `${districtId}/charts/sector-lights.json`;
+    const storagePath = `${districtId}/charts/points.mbtiles.zip`;
     const encodedPath = encodeURIComponent(storagePath);
     const url = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
 
-    const response = await fetch(url);
-    if (!response.ok) {
-      console.log(`[ChartPackService] No sector-lights.json for ${districtId} (${response.status})`);
-      return 0;
+    console.log(`[ChartPackService] Downloading points.mbtiles for ${districtId}...`);
+    const { downloadAsync } = FileSystem;
+    const result = await downloadAsync(url, compressedPath);
+
+    if (result.status !== 200) {
+      console.log(`[ChartPackService] No points.mbtiles.zip for ${districtId} (${result.status})`);
+      return false;
     }
 
-    const text = await response.text();
-    await FileSystem.writeAsStringAsync(localPath, text);
-    const lights: SectorLight[] = JSON.parse(text);
-    console.log(`[ChartPackService] Cached ${lights.length} sector lights for ${districtId}`);
-    return lights.length;
-  } catch (error) {
-    console.warn(`[ChartPackService] Error fetching sector lights for ${districtId}:`, error);
-    return 0;
-  }
-}
-
-/**
- * Load all locally cached sector lights across all installed districts.
- * Returns a combined array of sector lights with deduplication
- * (keeps the copy with the largest SCAMIN per unique position+sector key).
- */
-export async function loadLocalSectorLights(): Promise<SectorLight[]> {
-  const mbtilesDir = await getMBTilesDir();
-
-  try {
+    // Ensure mbtiles directory exists
     const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
-    if (!dirInfo.exists) return [];
-
-    const files = await FileSystem.readDirectoryAsync(mbtilesDir);
-    const slFiles = files.filter(f => f.startsWith('sector-lights-') && f.endsWith('.json'));
-
-    if (slFiles.length === 0) return [];
-
-    // Load and aggregate all district sector-lights files
-    const deduped = new Map<string, SectorLight>();
-
-    for (const file of slFiles) {
-      try {
-        const content = await FileSystem.readAsStringAsync(`${mbtilesDir}${file}`);
-        const lights: SectorLight[] = JSON.parse(content);
-        for (const light of lights) {
-          const key = `${light.lon.toFixed(5)},${light.lat.toFixed(5)},${light.sectr1},${light.sectr2}`;
-          const existing = deduped.get(key);
-          // Keep the copy with the largest SCAMIN (most permissive — visible at lowest zoom)
-          if (!existing || (existing.scamin < light.scamin)) {
-            deduped.set(key, light);
-          }
-        }
-      } catch (error) {
-        console.warn(`[ChartPackService] Error loading ${file}:`, error);
-      }
+    if (!dirInfo.exists) {
+      await FileSystem.makeDirectoryAsync(mbtilesDir, { intermediates: true });
     }
 
-    console.log(`[ChartPackService] Loaded ${deduped.size} unique sector lights from ${slFiles.length} files`);
-    return Array.from(deduped.values());
+    // Snapshot files before extraction
+    const filesBefore = new Set(await FileSystem.readDirectoryAsync(mbtilesDir));
+
+    // Extract the zip file
+    const { unzip: unzipFile } = await import('react-native-zip-archive');
+    await unzipFile(compressedPath, mbtilesDir);
+
+    // Clean up compressed file
+    await FileSystem.deleteAsync(compressedPath, { idempotent: true });
+
+    // Rename extracted file if needed (zip may contain 'points.mbtiles')
+    const filesAfter = await FileSystem.readDirectoryAsync(mbtilesDir);
+    const newFiles = filesAfter.filter(f => !filesBefore.has(f) && f.endsWith('.mbtiles'));
+
+    const fileInfo = await FileSystem.getInfoAsync(finalPath);
+    if (!fileInfo.exists && newFiles.length === 1) {
+      const extractedPath = `${mbtilesDir}${newFiles[0]}`;
+      console.log(`[ChartPackService] Renaming ${newFiles[0]} -> ${localFilename}`);
+      await FileSystem.moveAsync({ from: extractedPath, to: finalPath });
+    }
+
+    // Verify the file exists
+    const verifyInfo = await FileSystem.getInfoAsync(finalPath);
+    if (!verifyInfo.exists) {
+      console.warn(`[ChartPackService] points.mbtiles not found after extraction for ${districtId}`);
+      return false;
+    }
+
+    const sizeMB = (verifyInfo.size || 0) / 1024 / 1024;
+    console.log(`[ChartPackService] Cached points.mbtiles for ${districtId}: ${sizeMB.toFixed(1)} MB`);
+
+    // Regenerate manifest so tile server can serve the points tiles
+    await generateManifest();
+
+    return true;
   } catch (error) {
-    console.warn('[ChartPackService] Error loading sector lights:', error);
-    return [];
+    console.warn(`[ChartPackService] Error fetching points for ${districtId}:`, error);
+    // Clean up on failure
+    await FileSystem.deleteAsync(compressedPath, { idempotent: true }).catch(() => {});
+    return false;
   }
 }

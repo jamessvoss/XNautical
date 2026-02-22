@@ -79,6 +79,7 @@ export interface LayerVisibility {
   anchorages: boolean;
   anchorBerths: boolean;
   marineFarms: boolean;
+  trafficRoutes: boolean;  // Fairways, TSS lanes
   // Infrastructure layers
   bridges: boolean;
   buildings: boolean;

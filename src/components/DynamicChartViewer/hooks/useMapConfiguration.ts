@@ -94,6 +94,10 @@ export function useMapConfiguration() {
 
   // Wrapper for setMapStyle with timing logs + persistence
   const setMapStyle = useCallback((newStyle: MapStyleOption) => {
+    if (newStyle === 'satellite') {
+      logger.debug(LogCategory.UI, `Satellite map style disabled, ignoring`);
+      return;
+    }
     const now = Date.now();
     logger.info(LogCategory.UI, `Style switch: "${mapStyle}" → "${newStyle}"`);
     performanceTracker.recordMetric(RuntimeMetric.STYLE_SWITCH);
@@ -123,9 +127,11 @@ export function useMapConfiguration() {
 
       // Load persisted mapStyle and ecdisColors
       const settings = await displaySettingsService.getSettings();
-      if (settings.mapStyle) {
+      if (settings.mapStyle && settings.mapStyle !== 'satellite') {
         setMapStyleInternal(settings.mapStyle as MapStyleOption);
         logger.debug(LogCategory.SETTINGS, `Map style loaded: ${settings.mapStyle}`);
+      } else if (settings.mapStyle === 'satellite') {
+        logger.debug(LogCategory.SETTINGS, `Satellite map style disabled, using default 'dark'`);
       }
       if (settings.ecdisColors !== undefined) {
         setEcdisColors(settings.ecdisColors);

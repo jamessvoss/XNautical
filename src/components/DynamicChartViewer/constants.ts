@@ -114,6 +114,8 @@ export const DISPLAY_FEATURES: DisplayFeatureConfig[] = [
   { id: 'gnis', label: 'Place Names (GNIS)', type: 'text', fontSizeKey: 'gnisFontScale', haloKey: 'gnisHaloScale', opacityKey: 'gnisOpacityScale' },
   { id: 'depthContourLabels', label: 'Depth Contour Labels', type: 'text', fontSizeKey: 'depthContourFontScale', haloKey: 'depthContourLabelHaloScale', opacityKey: 'depthContourLabelOpacityScale' },
   { id: 'chartLabels', label: 'Chart Labels', type: 'text', fontSizeKey: 'chartLabelsFontScale', haloKey: 'chartLabelsHaloScale', opacityKey: 'chartLabelsOpacityScale' },
+  { id: 'seaAreaNames', label: 'Sea Area Names', type: 'text', fontSizeKey: 'seaAreaNamesFontScale', haloKey: 'seaAreaNamesHaloScale', opacityKey: 'seaAreaNamesOpacityScale' },
+  { id: 'seabedNames', label: 'Seabed Names', type: 'text', fontSizeKey: 'seabedNamesFontScale', haloKey: 'seabedNamesHaloScale', opacityKey: 'seabedNamesOpacityScale' },
   // Line features (thickness + halo + opacity)
   { id: 'depthContourLines', label: 'Depth Contour Lines', type: 'line', strokeKey: 'depthContourLineScale', haloKey: 'depthContourLineHaloScale', opacityKey: 'depthContourLineOpacityScale' },
   { id: 'coastline', label: 'Coastline', type: 'line', strokeKey: 'coastlineLineScale', haloKey: 'coastlineHaloScale', opacityKey: 'coastlineOpacityScale' },
