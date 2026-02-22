@@ -1355,7 +1355,6 @@ def main():
 
             # Free the in-memory list before tippecanoe
             del points_extracted
-            del points_seen
 
             # Run tippecanoe to produce points.mbtiles
             tippecanoe_points_cmd = [
@@ -1454,7 +1453,6 @@ def main():
             logger.info(f'Uploaded points.mbtiles: {points_count:,d} features')
         else:
             del points_extracted
-            del points_seen
 
         # Free per-chart GeoJSON from tmpfs — no longer needed after Pass 2
         geojson_freed = sum(os.path.getsize(p) for p in local_paths) / 1024 / 1024
