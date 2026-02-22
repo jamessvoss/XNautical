@@ -2207,8 +2207,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         159: showHazards, 153: showHazards, 86: showHazards,
         // Landmarks
         74: showLandmarks,
-        // Soundings - EXCLUDED from click-to-identify (too numerous and not useful)
-        129: false,
+        // Soundings - temporarily tappable for _scaleNum debugging
+        129: showSoundings,
         // Cables (CBLSUB, CBLOHD, CBLARE)
         22: showCables, 21: showCables, 20: showCables,
         // Pipelines (PIPSOL, PIPARE)
