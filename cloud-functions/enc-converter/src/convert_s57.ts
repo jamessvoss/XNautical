@@ -61,6 +61,7 @@ interface SectorLight {
   colour: number;
   scamin: number;
   chartId: string;
+  valnmr?: number;
 }
 
 // ─── Coordinate rounding ──────────────────────────────────────────────────
@@ -210,6 +211,7 @@ function main(): void {
             colour: colour ?? 1,
             scamin: isNaN(scamin) ? Infinity : scamin,
             chartId,
+            valnmr: props.VALNMR !== undefined ? parseFloat(String(props.VALNMR)) : undefined,
           });
         }
       }

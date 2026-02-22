@@ -321,6 +321,15 @@ def dedup_key(feature: dict) -> str:
 
     if geom_type == 'Point':
         coords = geom.get('coordinates', [0, 0])
+        # LIGHTS: include sector bearings + colour to preserve multi-sector lights
+        # at the same coordinate (S-57 encodes each sector as a separate feature)
+        if objl == 75:
+            sectr1 = props.get('SECTR1', '')
+            sectr2 = props.get('SECTR2', '')
+            colour = props.get('COLOUR', '')
+            lon = round(coords[0], 5)
+            lat = round(coords[1], 5)
+            return f"{objl}:{lon}:{lat}:{sectr1}:{sectr2}:{colour}"
         if objnam:
             # Named features: name + OBJL is strong identity, use looser coords
             lon = round(coords[0], 4)
@@ -968,7 +977,10 @@ def main():
         logger.info(f'M_COVR coverage: {len(coverage_union)} scales indexed, '
                    f'{len(higher_coverage)} scales have higher-scale clip masks '
                    f'({coverage_duration:.1f}s)')
+        # Precompute per-scale list of higher scales for point coverage suppression
+        _coverage_higher_scales = {}
         for sn in sorted(coverage_union.keys()):
+            _coverage_higher_scales[sn] = sorted(s for s in coverage_union if s > sn)
             area_deg2 = coverage_union[sn].GetArea()
             has_clip = sn in higher_coverage
             logger.info(f'  US{sn}: {area_deg2:.2f} deg² coverage'
@@ -1078,8 +1090,24 @@ def main():
                         point_feature['properties']['SCAMIN'] = best_scamin
                     # Set tippecanoe minzoom from SCAMIN
                     scamin_minz = scamin_to_minzoom(best_scamin if best_scamin > 0 else None, 0)
+                    # ECDIS usage band suppression: if a higher-scale M_COVR
+                    # covers this point, cap maxzoom so it yields when the
+                    # higher-scale data takes over.
+                    native_max = SCALE_ZOOM_RANGES.get(scale_num, (0, 15))[1]
+                    point_maxz = native_max
+                    if coverage_union and scale_num in _coverage_higher_scales:
+                        coords = geom.get('coordinates', [])
+                        if len(coords) >= 2:
+                            pt_ogr = ogr.Geometry(ogr.wkbPoint)
+                            pt_ogr.AddPoint_2D(coords[0], coords[1])
+                            for higher_sn in _coverage_higher_scales[scale_num]:
+                                if coverage_union[higher_sn].Contains(pt_ogr):
+                                    higher_floor = SCALE_ZOOM_RANGES.get(higher_sn, (0, 15))[0]
+                                    point_maxz = higher_floor - 1
+                                    break
                     point_feature['tippecanoe'] = {
                         'minzoom': scamin_minz,
+                        'maxzoom': point_maxz,
                         'layer': 'points',
                     }
                     points_extracted.append(point_feature)
@@ -1097,11 +1125,13 @@ def main():
                                 'colour': int(stripped.get('COLOUR', 1)),
                                 'scamin': float(best_scamin) if best_scamin > 0 else 0,
                                 'scaleNum': scale_num,
+                                'maxZoom': point_maxz,
+                                'valnmr': float(stripped['VALNMR']) if stripped.get('VALNMR') is not None else None,
                             })
                     if tracer.active:
                         tmatch = tracer.matches(feature)
                         if tmatch:
-                            tracer.log(tmatch, 'POINT-EXTRACT', f'→ points.mbtiles SCAMIN={best_scamin} minzoom={scamin_minz} _scaleNum={scale_num} (chart={chart_id})', feature)
+                            tracer.log(tmatch, 'POINT-EXTRACT', f'→ points.mbtiles SCAMIN={best_scamin} minzoom={scamin_minz} maxzoom={point_maxz} _scaleNum={scale_num} (chart={chart_id})', feature)
                     total_features_output += 1
                     scale_feature_counts[scale_num] += 1
                     continue

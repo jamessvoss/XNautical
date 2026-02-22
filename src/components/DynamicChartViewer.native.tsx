@@ -902,7 +902,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Complete sector light index — loaded once from points.mbtiles metadata.
   // This is a deterministic, complete list embedded by the compose pipeline.
   interface SectorLight {
-    lon: number; lat: number; sectr1: number; sectr2: number; colour: number; scamin: number; scaleNum?: number;
+    lon: number; lat: number; sectr1: number; sectr2: number; colour: number; scamin: number; scaleNum?: number; maxZoom?: number;
+    valnmr?: number;
   }
   const sectorLightIndexRef = useRef<SectorLight[]>([]);
   // M_COVR coverage boundaries per scale — loaded from points.mbtiles metadata.
@@ -1710,10 +1711,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           light.lat < viewSouth - padLat || light.lat > viewNorth + padLat) continue;
       if (!scaminVisible(light.scamin)) continue;
       // ECDIS usage band: suppress sector lights past their scale's native zoom range
-      if (light.scaleNum) {
-        const scaleMaxZooms: Record<number, number> = { 1: 8, 2: 10, 3: 13 };
-        const maxZoom = scaleMaxZooms[light.scaleNum];
-        if (maxZoom !== undefined && zoom > maxZoom) continue;
+      if (light.maxZoom !== undefined && zoom > light.maxZoom) continue;
+
+      // Physical ceiling + mobile clamp: min(VALNMR_degrees, screen_constant_degrees)
+      // VALNMR is in nautical miles. 1 NM = 1/60 degree of latitude.
+      let effectiveRadiusLon = dpToDegreesLon;
+      let effectiveRadiusLat = dpToDegreesLat;
+      if (light.valnmr != null && light.valnmr > 0) {
+        const valnmrDegreesLat = light.valnmr / 60;
+        const valnmrDegreesLon = valnmrDegreesLat / Math.cos(light.lat * Math.PI / 180);
+        effectiveRadiusLon = Math.min(valnmrDegreesLon, dpToDegreesLon);
+        effectiveRadiusLat = Math.min(valnmrDegreesLat, dpToDegreesLat);
       }
 
       // S-52: SECTR1/SECTR2 are bearings FROM SEAWARD toward the light.
@@ -1729,12 +1737,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
       // Sector leg endpoints (at arc radius distance from light)
       const legEnd1: [number, number] = [
-        light.lon + dpToDegreesLon * Math.sin(startRad),
-        light.lat + dpToDegreesLat * Math.cos(startRad),
+        light.lon + effectiveRadiusLon * Math.sin(startRad),
+        light.lat + effectiveRadiusLat * Math.cos(startRad),
       ];
       const legEnd2: [number, number] = [
-        light.lon + dpToDegreesLon * Math.sin(endRad),
-        light.lat + dpToDegreesLat * Math.cos(endRad),
+        light.lon + effectiveRadiusLon * Math.sin(endRad),
+        light.lat + effectiveRadiusLat * Math.cos(endRad),
       ];
 
       // Sector leg 1 (light center → arc start)
@@ -1757,8 +1765,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         const bearing = startBearing + arcSpan * (i / numPoints);
         const bearingRad = bearing * Math.PI / 180;
         arcCoords.push([
-          light.lon + dpToDegreesLon * Math.sin(bearingRad),
-          light.lat + dpToDegreesLat * Math.cos(bearingRad),
+          light.lon + effectiveRadiusLon * Math.sin(bearingRad),
+          light.lat + effectiveRadiusLat * Math.cos(bearingRad),
         ]);
       }
       arcFeatures.push({

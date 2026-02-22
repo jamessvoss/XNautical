@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Homer Halibut Hunters - Two Page Brochure</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Open+Sans:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,700;1,600&display=swap');
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  @page {
+    size: 8.5in 11in;
+    margin: 0;
+  }
+
+  body {
+    font-family: 'Open Sans', sans-serif;
+    background: #d0d0d0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 40px;
+    padding: 30px;
+  }
+
+  .page-label {
+    font-family: 'Oswald', sans-serif;
+    font-size: 11pt;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    margin-bottom: -25px;
+  }
+
+  .page {
+    width: 8.5in;
+    height: 11in;
+    background: #fff;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+    page-break-after: always;
+  }
+
+  @media print {
+    body { background: none; padding: 0; gap: 0; }
+    .page { box-shadow: none; }
+    .page-label { display: none; }
+  }
+
+  /* ========== PAGE 1 - FRONT ========== */
+
+  .p1-hero {
+    position: relative;
+    height: 3.2in;
+    overflow: hidden;
+  }
+  .p1-hero img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 40%;
+    filter: brightness(0.45);
+  }
+  .p1-hero-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 0.3in;
+  }
+  .p1-hero-overlay .logo {
+    width: 1.5in;
+    height: 1.5in;
+    object-fit: contain;
+    filter: drop-shadow(0 3px 10px rgba(0,0,0,0.5)) brightness(1.1);
+    margin-bottom: 0.1in;
+  }
+  .p1-hero-overlay h1 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 38pt;
+    font-weight: 700;
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    line-height: 1.0;
+    text-shadow: 0 3px 12px rgba(0,0,0,0.7);
+  }
+  .p1-hero-overlay .subtitle {
+    font-family: 'Playfair Display', serif;
+    font-style: italic;
+    font-size: 14pt;
+    color: #b8d8f0;
+    margin-top: 5px;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  }
+  .p1-hero-overlay .hero-contact {
+    font-size: 9pt;
+    color: #ddd;
+    margin-top: 8px;
+    letter-spacing: 0.5px;
+  }
+
+  /* Blue accent bar */
+  .accent-bar {
+    background: linear-gradient(135deg, #0b3d6e, #145a9e);
+    color: #fff;
+    text-align: center;
+    padding: 0.1in 0.4in;
+  }
+  .accent-bar p {
+    font-size: 9pt;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+
+  /* Photo row */
+  .p1-photo-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0;
+    height: 1.6in;
+  }
+  .p1-photo-row img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  /* Content section */
+  .p1-content {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.2in;
+    padding: 0.2in 0.4in 0.15in;
+  }
+
+  .section-title {
+    font-family: 'Oswald', sans-serif;
+    font-size: 12pt;
+    font-weight: 600;
+    color: #0b3d6e;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 2.5px solid #c41e1e;
+    padding-bottom: 3px;
+    margin-bottom: 6px;
+  }
+
+  .section-title-sm {
+    font-family: 'Oswald', sans-serif;
+    font-size: 10pt;
+    font-weight: 600;
+    color: #0b3d6e;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+
+  .experience-text {
+    font-size: 8pt;
+    line-height: 1.5;
+    color: #333;
+  }
+  .experience-text strong {
+    color: #0b3d6e;
+  }
+
+  .highlight-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 5px;
+  }
+  .highlight-list li {
+    font-size: 7.5pt;
+    line-height: 1.35;
+    color: #333;
+    padding-left: 14px;
+    position: relative;
+  }
+  .highlight-list li::before {
+    content: '▸';
+    position: absolute;
+    left: 0;
+    color: #c41e1e;
+    font-weight: bold;
+    font-size: 9pt;
+    line-height: 1;
+    top: 1px;
+  }
+
+  .quote-box {
+    background: linear-gradient(135deg, #f0f5fa, #e8f0f8);
+    border-left: 3px solid #0b3d6e;
+    border-radius: 0 4px 4px 0;
+    padding: 8px 10px;
+    margin-top: 8px;
+  }
+  .quote-box p {
+    font-family: 'Playfair Display', serif;
+    font-style: italic;
+    font-size: 8pt;
+    color: #333;
+    line-height: 1.45;
+  }
+
+  /* Trips section */
+  .trip-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .trip-item {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px;
+    align-items: start;
+    background: #f7f9fc;
+    border-radius: 4px;
+    padding: 5px 7px;
+  }
+  .trip-item .trip-icon {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #c41e1e;
+    margin-top: 3px;
+    flex-shrink: 0;
+  }
+  .trip-item .trip-icon.star {
+    background: #ffd700;
+  }
+  .trip-item h4 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 7.5pt;
+    font-weight: 600;
+    color: #0b3d6e;
+    text-transform: uppercase;
+    line-height: 1.2;
+  }
+  .trip-item p {
+    font-size: 6.5pt;
+    color: #555;
+    line-height: 1.3;
+  }
+  .trip-item .trip-dates {
+    font-size: 6pt;
+    color: #888;
+    font-weight: 600;
+  }
+
+  .trip-item.featured {
+    background: linear-gradient(135deg, #0b3d6e, #145a9e);
+  }
+  .trip-item.featured h4 { color: #fff; }
+  .trip-item.featured p { color: #cde0f5; }
+  .trip-item.featured .trip-dates { color: #a0c4e8; }
+
+  /* Page 1 Footer */
+  .p1-footer {
+    background: linear-gradient(135deg, #0b3d6e, #0a2d52);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.08in 0.4in;
+    gap: 12px;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 0.35in;
+  }
+  .p1-footer .footer-logo {
+    width: 0.28in;
+    height: 0.28in;
+    object-fit: contain;
+    filter: brightness(1.2);
+  }
+  .p1-footer span {
+    font-family: 'Oswald', sans-serif;
+    font-size: 8pt;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .p1-footer .divider {
+    width: 1px;
+    height: 14px;
+    background: rgba(255,255,255,0.3);
+  }
+  .p1-footer .footer-info {
+    font-size: 7pt;
+    font-weight: 400;
+  }
+
+  /* ========== PAGE 2 - BACK ========== */
+
+  .p2-header {
+    background: linear-gradient(135deg, #0b3d6e, #145a9e);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.1in 0.4in;
+    gap: 10px;
+    height: 0.45in;
+  }
+  .p2-header .header-logo {
+    width: 0.35in;
+    height: 0.35in;
+    object-fit: contain;
+    filter: brightness(1.2);
+  }
+  .p2-header h2 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 16pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+
+  .p2-content {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.2in;
+    padding: 0.2in 0.4in;
+  }
+
+  .p2-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12in;
+  }
+
+  .detail-block {
+    background: #f7f9fc;
+    border-radius: 5px;
+    padding: 8px 10px;
+  }
+  .detail-block h4 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 9pt;
+    font-weight: 600;
+    color: #0b3d6e;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+    letter-spacing: 0.5px;
+  }
+  .detail-block p, .detail-block li {
+    font-size: 7pt;
+    line-height: 1.45;
+    color: #444;
+  }
+  .detail-block ul {
+    list-style: none;
+    margin-top: 3px;
+  }
+  .detail-block ul li {
+    padding-left: 12px;
+    position: relative;
+    margin-bottom: 2px;
+  }
+  .detail-block ul li::before {
+    content: '✓';
+    position: absolute;
+    left: 0;
+    color: #27ae60;
+    font-weight: bold;
+    font-size: 7pt;
+  }
+
+  .bring-block {
+    background: linear-gradient(135deg, #fff8e1, #fff3cd);
+    border-left: 3px solid #e67e22;
+    border-radius: 0 5px 5px 0;
+    padding: 8px 10px;
+  }
+  .bring-block h4 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 9pt;
+    font-weight: 600;
+    color: #e67e22;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+  .bring-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 10px;
+  }
+  .bring-item {
+    font-size: 7pt;
+    color: #555;
+    padding-left: 11px;
+    position: relative;
+    line-height: 1.5;
+  }
+  .bring-item::before {
+    content: '●';
+    position: absolute;
+    left: 0;
+    color: #e67e22;
+    font-size: 5pt;
+    top: 2px;
+  }
+
+  .included-block {
+    background: linear-gradient(135deg, #e8f5e9, #f1f8e9);
+    border-left: 3px solid #27ae60;
+    border-radius: 0 5px 5px 0;
+    padding: 8px 10px;
+  }
+  .included-block h4 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 9pt;
+    font-weight: 600;
+    color: #27ae60;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+  .included-block p {
+    font-size: 7pt;
+    color: #444;
+    line-height: 1.45;
+  }
+
+  .season-block {
+    background: #f7f9fc;
+    border-radius: 5px;
+    padding: 8px 10px;
+  }
+  .season-block h4 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 9pt;
+    font-weight: 600;
+    color: #0b3d6e;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .season-peak {
+    display: inline-block;
+    background: #c41e1e;
+    color: #fff;
+    font-family: 'Oswald', sans-serif;
+    font-size: 7pt;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 2px 10px;
+    border-radius: 2px;
+    margin-bottom: 4px;
+  }
+  .season-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 3px 0;
+    font-size: 7pt;
+    color: #333;
+  }
+  .season-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .season-dot.halibut { background: #0b3d6e; }
+  .season-dot.rockfish { background: #c41e1e; }
+  .season-dot.salmon { background: #e67e22; }
+  .season-dot.lingcod { background: #27ae60; }
+
+  .month-timeline {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 3px;
+    margin-top: 6px;
+  }
+  .month-card {
+    text-align: center;
+    border-radius: 3px;
+    padding: 3px 2px;
+    font-size: 6pt;
+    font-weight: 600;
+    color: #fff;
+  }
+  .month-card.early { background: #5b9bd5; }
+  .month-card.peak { background: #c41e1e; }
+  .month-card.prime { background: #0b3d6e; }
+  .month-card.late { background: #7f8c8d; }
+
+  .boats-block {
+    background: #f7f9fc;
+    border-radius: 5px;
+    padding: 8px 10px;
+  }
+  .boats-block h4 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 9pt;
+    font-weight: 600;
+    color: #0b3d6e;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+  .boat-features {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 8px;
+  }
+  .boat-feature {
+    font-size: 6.5pt;
+    color: #444;
+    padding-left: 11px;
+    position: relative;
+    line-height: 1.5;
+  }
+  .boat-feature::before {
+    content: '⚓';
+    position: absolute;
+    left: 0;
+    font-size: 5pt;
+    top: 1px;
+  }
+
+  /* Photo gallery */
+  .p2-photo-gallery {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 0;
+    height: 2.4in;
+  }
+  .p2-photo-gallery img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .p2-photo-gallery .photo-tall {
+    grid-row: 1 / 3;
+  }
+
+  /* P2 Footer */
+  .p2-footer {
+    background: linear-gradient(135deg, #0b3d6e, #0a2d52);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.1in 0.4in;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 0.55in;
+  }
+  .p2-footer-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .p2-footer-left .footer-logo {
+    width: 0.4in;
+    height: 0.4in;
+    object-fit: contain;
+    filter: brightness(1.2);
+  }
+  .p2-footer-left .footer-text h3 {
+    font-family: 'Oswald', sans-serif;
+    font-size: 11pt;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .p2-footer-left .footer-text p {
+    font-size: 7pt;
+    color: #a0c4e8;
+  }
+  .p2-footer-center {
+    text-align: center;
+  }
+  .p2-footer-center .website {
+    font-family: 'Oswald', sans-serif;
+    font-size: 11pt;
+    font-weight: 600;
+    color: #b8d8f0;
+    letter-spacing: 0.5px;
+  }
+  .p2-footer-center p {
+    font-size: 7pt;
+    color: #8ab0d4;
+    margin-top: 2px;
+  }
+  .p2-footer-right {
+    text-align: right;
+  }
+  .p2-footer-right .phone {
+    font-family: 'Oswald', sans-serif;
+    font-size: 12pt;
+    font-weight: 600;
+  }
+  .p2-footer-right .email {
+    font-size: 7pt;
+    color: #a0c4e8;
+  }
+  .p2-footer-right .social {
+    font-size: 6.5pt;
+    color: #8ab0d4;
+    margin-top: 1px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ========== PAGE 1 — FRONT ========== -->
+<div class="page-label">Page 1 &mdash; Front</div>
+<div class="page">
+
+  <!-- Hero -->
+  <div class="p1-hero">
+    <img src="https://homerhalibuthunters.com/wp-content/uploads/2015/01/Leaving-Homer-Harbor-1920x1090-1.webp" alt="Homer Harbor at dawn">
+    <div class="p1-hero-overlay">
+      <img class="logo" src="https://homerhalibuthunters.com/wp-content/uploads/2023/05/HHH-Logo.png" alt="Homer Halibut Hunters Logo">
+      <h1>Homer Halibut Hunters</h1>
+      <div class="subtitle">Alaska's Premier Halibut Fishing Charters</div>
+      <div class="hero-contact">Homer, Alaska &bull; The Halibut Capital of the World</div>
+    </div>
+  </div>
+
+  <!-- Accent bar -->
+  <div class="accent-bar">
+    <p>World-Class Vessels &bull; USCG Licensed Captains &bull; Maximum 6 Anglers Per Boat &bull; We Fish 7 Days A Week</p>
+  </div>
+
+  <!-- Photo row -->
+  <div class="p1-photo-row">
+    <img src="https://homerhalibuthunters.com/wp-content/uploads/2022/10/DriftersLodgeHalibut1280x720.webp" alt="Happy anglers with halibut limits">
+    <img src="https://homerhalibuthunters.com/wp-content/uploads/2022/10/Yelloweye.webp" alt="Beautiful yelloweye rockfish">
+    <img src="https://homerhalibuthunters.com/wp-content/uploads/2022/10/Big-Kachemak-Bay-King-1280x1024-1.webp" alt="King salmon catch">
+  </div>
+
+  <!-- Content columns -->
+  <div class="p1-content">
+    <!-- Left -->
+    <div>
+      <div class="section-title">The Experience</div>
+      <p class="experience-text">
+        Your adventure begins at Homer Harbor as you motor into breathtaking <strong>Kachemak Bay</strong>, surrounded by glacier-filled mountains and incredible wildlife. Spot whales, otters, seals, puffins, and bald eagles before you even reach the fishing grounds.
+      </p>
+      <ul class="highlight-list">
+        <li>Fish up to <strong>4,500 square miles</strong> of the richest halibut waters on earth</li>
+        <li>Expert crew coaches you through every step &mdash; beginners to seasoned pros</li>
+        <li>Average halibut 25&ndash;40 lbs with daily shots at <strong>100+ lb trophy "barn doors"</strong></li>
+        <li>Fast, heated boats with restrooms, charging outlets &amp; top-of-the-line equipment</li>
+        <li>Crew fillets &amp; bags your catch on the boat &mdash; processing available at the dock</li>
+        <li>Take your fish home! Airlines &amp; processors make it easy to ship to the lower 48</li>
+      </ul>
+      <div class="quote-box">
+        <p>"Whether this is your first trip to Alaska or you're an experienced angler, our goal is to make every day the halibut charter experience of a lifetime."</p>
+      </div>
+    </div>
+
+    <!-- Right -->
+    <div>
+      <div class="section-title">Our Fishing Adventures</div>
+      <div class="trip-list">
+        <div class="trip-item">
+          <div class="trip-icon"></div>
+          <div>
+            <h4>3/4-Day Halibut</h4>
+            <p>Perfect for families &amp; first-timers. Kachemak Bay.</p>
+            <div class="trip-dates">~6 Hrs &bull; May 15 &ndash; Sept 30</div>
+          </div>
+        </div>
+        <div class="trip-item">
+          <div class="trip-icon"></div>
+          <div>
+            <h4>Full-Day Halibut</h4>
+            <p>Go deeper for trophy halibut. More time, bigger fish.</p>
+            <div class="trip-dates">7&ndash;8 Hrs &bull; May 15 &ndash; Sept 30</div>
+          </div>
+        </div>
+        <div class="trip-item featured">
+          <div class="trip-icon star"></div>
+          <div>
+            <h4>&#9733; Halibut &amp; Rockfish Combo</h4>
+            <p>Our most popular trip! Trophy halibut + beautiful yelloweye, tiger &amp; more.</p>
+            <div class="trip-dates">7&ndash;8 Hrs &bull; May 15 &ndash; Sept 30</div>
+          </div>
+        </div>
+        <div class="trip-item">
+          <div class="trip-icon"></div>
+          <div>
+            <h4>Halibut &amp; Salmon Combo</h4>
+            <p>Bottom fish for halibut, troll for king &amp; silver salmon.</p>
+            <div class="trip-dates">7&ndash;8 Hrs &bull; May 15 &ndash; Aug 20</div>
+          </div>
+        </div>
+        <div class="trip-item">
+          <div class="trip-icon"></div>
+          <div>
+            <h4>Multispecies Triple Threat</h4>
+            <p>The ultimate: halibut, rockfish, salmon &amp; lingcod.</p>
+            <div class="trip-dates">8&ndash;9 Hrs &bull; May 15 &ndash; Aug 20</div>
+          </div>
+        </div>
+        <div class="trip-item">
+          <div class="trip-icon"></div>
+          <div>
+            <h4>Overnight Multispecies</h4>
+            <p>Two days of fishing + overnight in Seldovia, AK.</p>
+            <div class="trip-dates">2 Days &bull; May 15 &ndash; Sept 30</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="p1-footer">
+    <img class="footer-logo" src="https://homerhalibuthunters.com/wp-content/uploads/2023/05/HHH-Logo.png" alt="HHH">
+    <span>Homer Halibut Hunters</span>
+    <div class="divider"></div>
+    <span class="footer-info">(907) 302-4124</span>
+    <div class="divider"></div>
+    <span class="footer-info">HomerHalibutHunters.com</span>
+    <div class="divider"></div>
+    <span class="footer-info">Info@HomerHalibutHunters.com</span>
+  </div>
+
+</div>
+
+<!-- ========== PAGE 2 — BACK ========== -->
+<div class="page-label">Page 2 &mdash; Back</div>
+<div class="page">
+
+  <!-- Header -->
+  <div class="p2-header">
+    <img class="header-logo" src="https://homerhalibuthunters.com/wp-content/uploads/2023/05/HHH-Logo.png" alt="HHH">
+    <h2>Trip Details &amp; Planning</h2>
+  </div>
+
+  <!-- Two columns -->
+  <div class="p2-content">
+
+    <!-- LEFT COLUMN -->
+    <div class="p2-col">
+
+      <div class="season-block">
+        <h4>2026 Season &amp; Best Dates</h4>
+        <span class="season-peak">Peak Season: June 1 &ndash; September 15</span>
+        <div style="font-size:6.5pt;color:#666;margin-bottom:4px;">Best Combination of Weather + Fishing: July 1 &ndash; September 1</div>
+        <div class="season-row"><span class="season-dot halibut"></span> <strong>Halibut:</strong>&nbsp; Excellent mid-May &ndash; Sept 30. 2 per day, no annual limit</div>
+        <div class="season-row"><span class="season-dot rockfish"></span> <strong>Rockfish:</strong>&nbsp; Year-round. 3 per day. Prized yelloweye &amp; tiger rockfish</div>
+        <div class="season-row"><span class="season-dot salmon"></span> <strong>King Salmon:</strong>&nbsp; May &ndash; August. Silver Salmon mid-July &ndash; September</div>
+        <div class="season-row"><span class="season-dot lingcod"></span> <strong>Lingcod:</strong>&nbsp; Retention starts July 1. 1 per day, 35&Prime; minimum</div>
+        <div class="month-timeline">
+          <div class="month-card early">MAY<br><span style="font-size:5pt;font-weight:400;">Season Opens</span></div>
+          <div class="month-card peak">JUNE<br><span style="font-size:5pt;font-weight:400;">Peak Begins</span></div>
+          <div class="month-card prime">JULY<br><span style="font-size:5pt;font-weight:400;">Prime Time</span></div>
+          <div class="month-card prime">AUG<br><span style="font-size:5pt;font-weight:400;">Silvers Arrive</span></div>
+          <div class="month-card late">SEPT<br><span style="font-size:5pt;font-weight:400;">Big Fish</span></div>
+        </div>
+      </div>
+
+      <div class="detail-block">
+        <h4>Monthly Highlights</h4>
+        <p><strong style="color:#0b3d6e;">May:</strong> Season opens. Great weather, sunshine, kings, rockfish &amp; halibut moving in from deep water. First whale sightings.</p>
+        <p style="margin-top:3px;"><strong style="color:#0b3d6e;">June:</strong> Peak season begins! Kings, halibut &amp; rockfish in full swing. Whale sightings increase. Book early &mdash; fills fast.</p>
+        <p style="margin-top:3px;"><strong style="color:#0b3d6e;">July:</strong> Prime time. Best weather, major salmon runs, lingcod opens July 1. The very best of the year.</p>
+        <p style="margin-top:3px;"><strong style="color:#0b3d6e;">August:</strong> Silver salmon arrive mid-month. Fishing remains excellent. Crowds begin to thin.</p>
+        <p style="margin-top:3px;"><strong style="color:#0b3d6e;">September:</strong> Big fish, fewer crowds. Weather more variable &mdash; book early in your trip for flexibility.</p>
+      </div>
+
+      <div class="boats-block">
+        <h4>Our Fleet</h4>
+        <p style="font-size:7pt;color:#444;margin-bottom:4px;">Fast, comfortable boats built for Alaska's waters. Max 6 anglers per boat.</p>
+        <div class="boat-features">
+          <div class="boat-feature">Warm heated cabins</div>
+          <div class="boat-feature">Onboard restrooms</div>
+          <div class="boat-feature">Dual GPS fish finders</div>
+          <div class="boat-feature">Charging outlets</div>
+          <div class="boat-feature">All-aluminum construction</div>
+          <div class="boat-feature">Twin/triple engines</div>
+          <div class="boat-feature">Air-ride seating</div>
+          <div class="boat-feature">Premium fishing gear</div>
+        </div>
+        <p style="font-size:6.5pt;color:#666;margin-top:4px;"><strong>Fleet:</strong> Taurus 44&prime; (triple 300HP) &bull; Orion 30&prime; &bull; Scorpius 33&prime; &bull; Europa 28&prime;</p>
+      </div>
+
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div class="p2-col">
+
+      <div class="bring-block">
+        <h4>What To Bring</h4>
+        <div class="bring-grid">
+          <div class="bring-item">Alaska fishing license (buy online at ADF&amp;G)</div>
+          <div class="bring-item">King salmon stamp (if targeting kings)</div>
+          <div class="bring-item">Warm layered clothing</div>
+          <div class="bring-item">Waterproof jacket &amp; pants</div>
+          <div class="bring-item">Waterproof boots or shoes above the ankle</div>
+          <div class="bring-item">Food, snacks &amp; drinks (alcohol OK)</div>
+          <div class="bring-item">Camera for trophy photos!</div>
+          <div class="bring-item">Sunscreen &amp; sunglasses</div>
+        </div>
+      </div>
+
+      <div class="included-block">
+        <h4>What We Provide</h4>
+        <p>All fishing gear &mdash; rods, reels, tackle &amp; bait. Expert instruction and coaching for all skill levels. Fish filleting &amp; bagging on the boat included. No experience necessary! Our professional, USCG-licensed crew handles everything from start to finish.</p>
+      </div>
+
+      <div class="detail-block">
+        <h4>Getting Your Fish Home</h4>
+        <p>We fillet &amp; bag your catch right on the boat. At the dock, a fish processor meets you &mdash; they portion, vacuum seal, freeze, and box your fish for the trip home. Airlines are fully prepared for frozen fish boxes. Anchorage airport even has overnight freezer storage for ~$10/box.</p>
+      </div>
+
+      <div class="detail-block">
+        <h4>Meeting Location &amp; Departure</h4>
+        <ul>
+          <li>Homer Harbor Marina &mdash; meet at Harbor Grill kiosk</li>
+          <li>Check-in 6:15 AM, depart ~6:30 AM (7:00 AM September+)</li>
+          <li>Full-day trips return 3:30&ndash;4:30 PM</li>
+          <li>Staff contacts you 1&ndash;2 days before with boat &amp; slip details</li>
+        </ul>
+      </div>
+
+      <div class="detail-block">
+        <h4>Good to Know</h4>
+        <ul>
+          <li>Private boat charters available &mdash; book all 6 seats</li>
+          <li>Groups larger than 6 split across boats fishing nearby</li>
+          <li>Military &amp; veteran 5% discount (call to book)</li>
+          <li>All ages welcome &mdash; no minimum age requirement</li>
+          <li>June, July &amp; August often book 6 months in advance</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Photo gallery -->
+  <div class="p2-photo-gallery">
+    <img class="photo-tall" src="https://homerhalibuthunters.com/wp-content/uploads/2024/09/HHH-2024-9.jpeg" alt="Angler with halibut">
+    <img src="https://homerhalibuthunters.com/wp-content/uploads/2022/10/ButtWackersGreenx-1280x720-1.webp" alt="Trophy halibut haul">
+    <img src="https://homerhalibuthunters.com/wp-content/uploads/2024/09/HHH-2024-135.jpeg" alt="Fishing action">
+    <img src="https://homerhalibuthunters.com/wp-content/uploads/2022/10/Bob-Jim-Halibut-Whittier1280x720.webp" alt="Massive halibut">
+    <img src="https://homerhalibuthunters.com/wp-content/uploads/2024/09/HHH-2024-59.jpeg" alt="Group photo with catch">
+  </div>
+
+  <!-- Footer -->
+  <div class="p2-footer">
+    <div class="p2-footer-left">
+      <img class="footer-logo" src="https://homerhalibuthunters.com/wp-content/uploads/2023/05/HHH-Logo.png" alt="HHH">
+      <div class="footer-text">
+        <h3>Homer Halibut Hunters</h3>
+        <p>Homer Harbor Marina &bull; Homer, Alaska</p>
+      </div>
+    </div>
+    <div class="p2-footer-center">
+      <div class="website">HomerHalibutHunters.com</div>
+      <p>Book online or call us today!</p>
+    </div>
+    <div class="p2-footer-right">
+      <div class="phone">(907) 302-4124</div>
+      <div class="email">Info@HomerHalibutHunters.com</div>
+      <div class="social">@homerhalibuthunters</div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

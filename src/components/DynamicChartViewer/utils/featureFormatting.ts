@@ -94,6 +94,11 @@ export function formatFeatureProperties(feature: FeatureInfo, depthUnit: 'meters
       if (props.DEPTH !== undefined) {
         formatted['Depth'] = convertDepthValue(Number(props.DEPTH));
       }
+      // Show all properties for debugging scale band filtering
+      for (const [key, value] of Object.entries(props)) {
+        if (key === 'DEPTH' || key === 'OBJNAM' || key === '_featureCoordinates' || key === '_tapCoordinates') continue;
+        formatted[key] = String(value);
+      }
       return formatted;
 
     case 'Depth Area':
