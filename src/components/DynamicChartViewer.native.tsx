@@ -902,9 +902,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Complete sector light index — loaded once from points.mbtiles metadata.
   // This is a deterministic, complete list embedded by the compose pipeline.
   interface SectorLight {
-    lon: number; lat: number; sectr1: number; sectr2: number; colour: number; scamin: number;
+    lon: number; lat: number; sectr1: number; sectr2: number; colour: number; scamin: number; scaleNum?: number;
   }
   const sectorLightIndexRef = useRef<SectorLight[]>([]);
+  // M_COVR coverage boundaries per scale — loaded from points.mbtiles metadata.
+  // Used for ECDIS usage band filtering (suppressing lower-scale features in areas
+  // covered by higher-scale charts). Keys are scale numbers as strings.
+  const coverageBoundariesRef = useRef<Record<string, any>>({});
   // Points VectorSource tile URL — set during chart loading when points-*.mbtiles is found.
   // All point features (soundings, nav-aids, hazards) served from a single MBTiles file.
   const [pointsTileUrl, setPointsTileUrl] = useState<string | null>(null);
@@ -1585,8 +1589,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 } else {
                   logger.warn(LogCategory.CHARTS, 'No sector_lights in points.mbtiles metadata');
                 }
+                if (meta?.coverage_boundaries) {
+                  const boundaries = JSON.parse(meta.coverage_boundaries);
+                  coverageBoundariesRef.current = boundaries;
+                  logger.info(LogCategory.CHARTS, `Coverage boundaries: ${Object.keys(boundaries).length} scales loaded from metadata`);
+                }
               } catch (e) {
-                logger.warn(LogCategory.CHARTS, `Failed to load sector light index: ${e}`);
+                logger.warn(LogCategory.CHARTS, `Failed to load points.mbtiles metadata: ${e}`);
               }
             }
 
@@ -1700,6 +1709,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       if (light.lon < viewWest - padLon || light.lon > viewEast + padLon ||
           light.lat < viewSouth - padLat || light.lat > viewNorth + padLat) continue;
       if (!scaminVisible(light.scamin)) continue;
+      // ECDIS usage band: suppress sector lights past their scale's native zoom range
+      if (light.scaleNum) {
+        const scaleMaxZooms: Record<number, number> = { 1: 8, 2: 10, 3: 13 };
+        const maxZoom = scaleMaxZooms[light.scaleNum];
+        if (maxZoom !== undefined && zoom > maxZoom) continue;
+      }
 
       // S-52: SECTR1/SECTR2 are bearings FROM SEAWARD toward the light.
       // The light shines OUTWARD: add 180° to get the direction it illuminates.
@@ -2511,6 +2526,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     ['all', ['>=', ['get', '_scaleNum'], 5], ['>=', ['zoom'], 6]],   // US5+: z6+ (native range z6-15)
   ], []);
 
+  // ECDIS usage band filter for point features from points.mbtiles.
+  // Per S-57/ECDIS: features from lower-scale charts should not persist past
+  // their native zoom range. This prevents "ghost" symbols from overview charts
+  // cluttering the display when detailed charts are available.
+  // Hard ceiling per scale matches SCALE_ZOOM_RANGES from the compose pipeline.
+  const pointScaleFilter: any[] = useMemo(() => ['any',
+    ['!', ['has', '_scaleNum']],                                       // No scale → pass through
+    ['all', ['==', ['get', '_scaleNum'], 1], ['<=', ['zoom'], 8]],     // US1: z0-8
+    ['all', ['==', ['get', '_scaleNum'], 2], ['<=', ['zoom'], 10]],    // US2: z0-10
+    ['all', ['==', ['get', '_scaleNum'], 3], ['<=', ['zoom'], 13]],    // US3: z4-13
+    ['all', ['>=', ['get', '_scaleNum'], 4]],                          // US4+: no ceiling
+  ], []);
+
   // ─── renderChartLayers: split into sub-group functions ──────────────
   // Each sub-group has independent dependencies for finer-grained memoization.
   // When a display slider changes, only the affected sub-group rebuilds its JSX.
@@ -2583,7 +2611,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-drgare`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 46], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 46], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.DRGARE,
           fillOpacity: scaledDredgedAreaOpacity,
@@ -2597,7 +2625,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-fairwy`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 51], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 51], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.FAIRWY,
           fillOpacity: scaledFairwayOpacity,
@@ -2611,7 +2639,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-cblare`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 20], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 20], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.CBLARE,
           fillOpacity: scaledCableAreaOpacity,
@@ -2625,7 +2653,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-pipare`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 92], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 92], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.PIPARE,
           fillOpacity: scaledPipelineAreaOpacity,
@@ -2639,7 +2667,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-resare`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 112], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 112], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: [
             'match',
@@ -2663,7 +2691,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-ctnare`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 27], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 27], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.CTNARE,
           fillOpacity: scaledCautionAreaOpacity,
@@ -2677,7 +2705,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-mipare`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 83], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 83], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.MIPARE,
           fillOpacity: scaledMilitaryAreaOpacity,
@@ -2691,7 +2719,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-achare`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 4], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 4], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.ACHARE,
           fillOpacity: scaledAnchorageOpacity,
@@ -2705,7 +2733,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-marcul`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 82], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 82], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.MARCUL,
           fillOpacity: scaledMarineFarmOpacity,
@@ -2719,7 +2747,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-tsslpt`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 148], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 148], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.TSSLPT,
           fillOpacity: 0.1,
@@ -2733,7 +2761,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-tsslpt-line`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 148], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 148], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.TSSLPT,
           lineWidth: 1.5,
@@ -2763,7 +2791,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-canals-fill`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 23], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 23], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.DEPVS,
           fillOpacity: 0.6,
@@ -2774,7 +2802,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-canals-line`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 23], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 23], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CHGRD,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 8, 1, 14, 2],
@@ -2795,7 +2823,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         filter={['all',
           ['==', ['get', 'OBJL'], 121],
           ['==', ['geometry-type'], 'Polygon'],
-          scaminFilter
+          scaminFilter, bgFillScaleFilter
         ]}
         style={{
           fillColor: s52Colors.SBDFL,
@@ -2813,7 +2841,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         filter={['all',
           ['==', ['get', 'OBJL'], 121],
           ['==', ['geometry-type'], 'Polygon'],
-          scaminFilter
+          scaminFilter, bgFillScaleFilter
         ]}
         style={{
           lineColor: s52Colors.SBDLN,
@@ -2844,7 +2872,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-drgare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 46], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 46], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.DRGOL,
           lineWidth: 1.5,
@@ -2859,7 +2887,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-fairwy-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 51], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 51], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.FWYOL,
           lineWidth: 2,
@@ -2874,7 +2902,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-cblare-outline`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 20], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 20], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CABLN,
           lineWidth: scaledCableLineWidth,
@@ -2890,7 +2918,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-pipare-outline`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 92], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 92], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.PIPLN,
           lineWidth: scaledPipelineLineWidth * 0.75,
@@ -2906,7 +2934,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-resare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 112], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 112], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: [
             'match',
@@ -2931,7 +2959,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-ctnare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 27], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 27], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CTNOL,
           lineWidth: 2,
@@ -2946,7 +2974,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-mipare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 83], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 83], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.MIPOL,
           lineWidth: 2,
@@ -2961,7 +2989,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-achare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 4], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 4], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.ACHOL,
           lineWidth: 2,
@@ -2976,7 +3004,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-marcul-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 82], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 82], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.MCUOL,
           lineWidth: 2,
@@ -3021,7 +3049,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-bridge-fill`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.BRGFL,
           fillOpacity: 0.6,
@@ -3035,7 +3063,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-bridge-halo`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledBridgeLineWidth + scaledBridgeLineHalo,
@@ -3050,7 +3078,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-bridge`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 11], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.BRGLN,
           lineWidth: scaledBridgeLineWidth,
@@ -3065,7 +3093,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-buisgl`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 12], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 12], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.BUIFL,
           fillOpacity: 0.4,
@@ -3079,7 +3107,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-morfac-line-halo`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledMooringLineHaloWidth,
@@ -3094,7 +3122,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-morfac-line`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.MORLN,
           lineWidth: scaledMooringLineWidth,
@@ -3109,7 +3137,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-morfac-fill`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 84], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.MORLN,
           fillOpacity: 0.4,
@@ -3123,7 +3151,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-slcons-halo`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledShorelineConstructionHaloWidth,
@@ -3138,7 +3166,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-slcons`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.SLCLN,
           lineWidth: scaledShorelineConstructionLineWidth,
@@ -3153,7 +3181,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-slcons-point`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Point'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Point'], scaminFilter, bgFillScaleFilter]}
         style={{
           circleColor: s52Colors.SLCLN,
           circleRadius: ['interpolate', ['linear'], ['zoom'], 12, 3, 14, 4, 18, 6],
@@ -3168,7 +3196,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-slcons-fill`}
         id={`${p}-slcons-fill`}
         sourceLayerID="charts"
-        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 122], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.SLCFL,
           fillOpacity: 0.5,
@@ -3182,7 +3210,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-causwy-fill`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.BRGFL,
           fillOpacity: 0.5,
@@ -3193,7 +3221,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-causwy-line`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 26], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CSWYL,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4],
@@ -3207,7 +3235,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-ponton-fill`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.PONTN,
           fillOpacity: 0.5,
@@ -3218,7 +3246,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-ponton-line`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 95], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CHBLK,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 1, 14, 2],
@@ -3232,7 +3260,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-hulkes-fill`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Polygon'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.HULKS,
           fillOpacity: 0.5,
@@ -3243,7 +3271,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-hulkes-point`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Point'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 65], ['==', ['geometry-type'], 'Point'], scaminFilter, bgFillScaleFilter]}
         style={{
           circleColor: s52Colors.HULKS,
           circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 3, 14, 5],
@@ -3330,7 +3358,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-navlne`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 85], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 85], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.NAVLN,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
@@ -3345,7 +3373,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-rectrc`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 109], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 109], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.RECTR,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 12, 2],
@@ -3360,7 +3388,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-tselne`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 145], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 145], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.TSELN,
           lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1.5, 12, 3],
@@ -3374,7 +3402,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-lndelv`}
         sourceLayerID="charts"
         minZoomLevel={8}
-        filter={['all', ['==', ['get', 'OBJL'], 72], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 72], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.LDELV,
           lineWidth: 0.5,
@@ -3389,7 +3417,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-cblsub-halo`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 22], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 22], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledCableLineWidth + scaledCableLineHalo,
@@ -3404,7 +3432,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-cblsub`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 22], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 22], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CABLN,
           lineWidth: scaledCableLineWidth,
@@ -3420,7 +3448,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-cblohd-halo`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 21], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 21], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledCableLineWidth + scaledCableLineHalo,
@@ -3435,7 +3463,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-cblohd`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 21], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 21], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CABLN,
           lineWidth: scaledCableLineWidth,
@@ -3451,7 +3479,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-pipsol-halo`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 94], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 94], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledPipelineLineWidth + scaledPipelineLineHalo,
@@ -3466,7 +3494,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-pipsol`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 94], ['==', ['geometry-type'], 'LineString'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 94], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.PIPLN,
           lineWidth: scaledPipelineLineWidth,
@@ -3498,7 +3526,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-seaare`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 119], ['has', 'OBJNAM'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 119], ['has', 'OBJNAM'], scaminFilter, bgFillScaleFilter]}
         style={{
           textField: ['get', 'OBJNAM'],
           textSize: scaledSeaAreaNamesFontSize,
@@ -3519,7 +3547,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-lndrgn`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 73], ['has', 'OBJNAM'], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 73], ['has', 'OBJNAM'], scaminFilter, bgFillScaleFilter]}
         style={{
           textField: ['get', 'OBJNAM'],
           textSize: 11,
@@ -3542,7 +3570,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-cblsub-label`}
         sourceLayerID="charts"
         minZoomLevel={10}
-        filter={['all', ['==', ['get', 'OBJL'], 22], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 22], scaminFilter, bgFillScaleFilter]}
         style={{
           textField: 'Cable',
           textSize: 9,
@@ -3561,7 +3589,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-pipsol-label`}
         sourceLayerID="charts"
         minZoomLevel={10}
-        filter={['all', ['==', ['get', 'OBJL'], 94], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 94], scaminFilter, bgFillScaleFilter]}
         style={{
           textField: [
             'case',
@@ -3620,7 +3648,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-soundg"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 129], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 129], scaminFilter, pointScaleFilter]}
       style={{
         textField: depthTextFieldExpression,
         textSize: scaledSoundingsFontSize,
@@ -3644,7 +3672,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       filter={['all',
         ['==', ['get', 'OBJL'], 121],
         ['has', 'NATSUR'],
-        scaminFilter
+        scaminFilter, pointScaleFilter
       ]}
       style={{
         textField: [
@@ -3684,7 +3712,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-uwtroc"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 153], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 153], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: [
           'case',
@@ -3708,7 +3736,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-obstrn"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 86], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 86], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: 'obstruction',
         iconSize: scaledHazardIconSize,
@@ -3725,7 +3753,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-wattur-halo"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 156], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 156], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: 'tide-rips-halo',
         iconSize: scaledTideRipsHaloSize,
@@ -3742,7 +3770,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-wattur"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 156], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 156], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: 'tide-rips',
         iconSize: scaledTideRipsIconSize,
@@ -3759,7 +3787,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-uwtroc-label"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 153], ['has', 'VALSOU'], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 153], ['has', 'VALSOU'], scaminFilter, pointScaleFilter]}
       style={{
         textField: ['to-string', ['round', ['get', 'VALSOU']]],
         textSize: 9,
@@ -3781,7 +3809,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-morfac"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 84], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 84], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: 'mooring-buoy',
         iconSize: scaledMooringIconSize,
@@ -3798,7 +3826,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-wrecks"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 159], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 159], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: [
           'match',
@@ -3824,7 +3852,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-daymar"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 39], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 39], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: 'beacon-generic',
         iconSize: scaledBeaconIconSize,
@@ -3841,7 +3869,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-topmar"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 144], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 144], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: 'beacon-generic',
         iconSize: scaledBeaconIconSize,
@@ -3858,7 +3886,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-fogsig"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 58], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 58], scaminFilter, pointScaleFilter]}
       style={{
         circleColor: s52Colors.FOGSN,
         circleRadius: ['interpolate', ['linear'], ['zoom'], 8, 3, 14, 5],
@@ -3874,7 +3902,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-pilpnt"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 90], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 90], scaminFilter, pointScaleFilter]}
       style={{
         circleColor: s52Colors.PILPT,
         circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 4],
@@ -3889,7 +3917,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-rscsta"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 111], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 111], scaminFilter, pointScaleFilter]}
       style={{
         circleColor: s52Colors.RSCST,
         circleRadius: ['interpolate', ['linear'], ['zoom'], 8, 4, 14, 6],
@@ -3913,7 +3941,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           ['==', ['get', 'OBJL'], 16],
           ['==', ['get', 'OBJL'], 15]
         ],
-        scaminFilter
+        scaminFilter, pointScaleFilter
       ]}
       style={{
         iconImage: [
@@ -3951,7 +3979,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           ['==', ['get', 'OBJL'], 16],
           ['==', ['get', 'OBJL'], 15]
         ],
-        scaminFilter
+        scaminFilter, pointScaleFilter
       ]}
       style={{
         iconImage: [
@@ -3988,7 +4016,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           ['==', ['get', 'OBJL'], 9],
           ['==', ['get', 'OBJL'], 6]
         ],
-        scaminFilter
+        scaminFilter, pointScaleFilter
       ]}
       style={{
         iconImage: [
@@ -4023,7 +4051,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           ['==', ['get', 'OBJL'], 9],
           ['==', ['get', 'OBJL'], 6]
         ],
-        scaminFilter
+        scaminFilter, pointScaleFilter
       ]}
       style={{
         iconImage: [
@@ -4050,7 +4078,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-lndmrk-halo"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 74], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 74], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: [
           'match',
@@ -4084,7 +4112,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-lndmrk"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 74], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 74], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: [
           'match',
@@ -4118,7 +4146,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-lndmrk-label"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 74], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 74], scaminFilter, pointScaleFilter]}
       style={{
         textField: [
           'case',
@@ -4149,7 +4177,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-lights"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 75], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 75], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: [
           'match',
@@ -4176,7 +4204,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-achbrt"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 3], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 3], scaminFilter, pointScaleFilter]}
       style={{
         iconImage: 'anchor',
         iconSize: scaledAnchorIconSize,
@@ -4193,7 +4221,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       id="pt-achbrt-label"
       sourceLayerID="points"
       minZoomLevel={0}
-      filter={['all', ['==', ['get', 'OBJL'], 3], scaminFilter]}
+      filter={['all', ['==', ['get', 'OBJL'], 3], scaminFilter, pointScaleFilter]}
       style={{
         textField: ['coalesce', ['get', 'OBJNAM'], 'Anchorage'],
         textSize: 10,
@@ -4206,7 +4234,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       }}
     />,
 
-  ], [scaminFilter, s52Colors, depthTextFieldExpression,
+  ], [scaminFilter, pointScaleFilter, s52Colors, depthTextFieldExpression,
     showSoundings, showSeabed, showHazards, showMoorings, showBeacons, showBuoys, showLandmarks, showLights, showAnchorBerths,
     scaledSoundingsFontSize, scaledSoundingsHalo, scaledSoundingsOpacity,
     scaledSeabedNamesFontSize, scaledSeabedNamesHalo, scaledSeabedNamesOpacity,
@@ -4261,7 +4289,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderStructureLayers(source.sourceId);
     return cache;
-  }, [chartScaleSources, scaminFilter, s52Colors,
+  }, [chartScaleSources, scaminFilter, bgFillScaleFilter, s52Colors,
     showBridges, showBuildings, showMoorings, showShorelineConstruction,
     scaledBridgeLineWidth, scaledBridgeLineHalo, scaledBridgeOpacity,
     scaledMooringLineWidth, scaledMooringLineHaloWidth, scaledMooringLineHalo, scaledMooringOpacity,
@@ -4274,7 +4302,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderLineLayers(source.sourceId);
     return cache;
-  }, [chartScaleSources, scaminFilter, contourScaleFilter, s52Colors, s52Mode,
+  }, [chartScaleSources, scaminFilter, bgFillScaleFilter, contourScaleFilter, s52Colors, s52Mode,
     showDepthContours, showCoastline, showLand, showCables, showPipelines,
     scaledDepthContourLineWidth, scaledDepthContourLineHaloWidth,
     scaledDepthContourLineHalo, scaledDepthContourLineOpacity,
@@ -4295,7 +4323,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderSymbolLayers(source.sourceId);
     return cache;
-  }, [chartScaleSources, scaminFilter, contourScaleFilter, s52Colors,
+  }, [chartScaleSources, scaminFilter, bgFillScaleFilter, contourScaleFilter, s52Colors,
     showCables, showPipelines, showDepthContours,
     showSeaAreaNames, showLandRegions,
     scaledSeaAreaNamesFontSize, scaledSeaAreaNamesHalo, scaledSeaAreaNamesOpacity,

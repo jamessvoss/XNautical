@@ -986,7 +986,6 @@ def main():
         contours_clipped = 0   # fully removed by M_COVR clipping
         contours_trimmed = 0   # partially clipped by M_COVR
         points_extracted = []    # All Point features for points.mbtiles
-        points_seen = set()      # Track keys already added to avoid duplicates
         sector_lights_index = [] # Sector light index for points.mbtiles metadata
         scale_feature_counts = defaultdict(int)
 
@@ -1056,53 +1055,53 @@ def main():
                     continue
 
                 # ── Point extraction: divert ALL Point features to points.mbtiles ──
-                # Every Point geometry feature goes to a single points.mbtiles,
-                # served as its own VectorSource. One copy per feature, SCAMIN drives
-                # visibility, tippecanoe handles spatial indexing natively.
+                # Every Point geometry goes to points.mbtiles (separate VectorSource).
+                # No dedup — all scale copies are emitted with their own _scaleNum.
+                # The app uses coverage metadata + _scaleNum to decide which copy
+                # to display at each zoom/location (ECDIS usage band rules).
                 # Line/Polygon instances of the same OBJL stay in per-scale tiles.
                 geom_type = geom.get('type', '')
                 if geom_type == 'Point':
                     key = dedup_key(feature)
-                    if key not in points_seen:
-                        points_seen.add(key)
-                        # Apply the most permissive SCAMIN from all copies
-                        best_scamin = point_best_scamin.get(key, 0)
-                        # Strip metadata properties not needed for rendering
-                        stripped = {k: v for k, v in props.items()
-                                    if k not in ('RCID', 'PRIM', 'GRUP', 'SORDAT', 'SORIND',
-                                                 'CHART_ID', '_chartId', '_scaleNum', 'OBJL_NAME')}
-                        point_feature = {
-                            'type': 'Feature',
-                            'geometry': geom,
-                            'properties': stripped,
-                        }
-                        if best_scamin > 0:
-                            point_feature['properties']['SCAMIN'] = best_scamin
-                        # Set tippecanoe minzoom from SCAMIN
-                        scamin_minz = scamin_to_minzoom(best_scamin if best_scamin > 0 else None, 0)
-                        point_feature['tippecanoe'] = {
-                            'minzoom': scamin_minz,
-                            'layer': 'points',
-                        }
-                        points_extracted.append(point_feature)
-                        # Collect sector lights for metadata index
-                        if objl == 75:  # LIGHTS
-                            sectr1 = stripped.get('SECTR1')
-                            sectr2 = stripped.get('SECTR2')
-                            if sectr1 is not None and sectr2 is not None:
-                                coords = geom.get('coordinates', [])
-                                sector_lights_index.append({
-                                    'lon': round(coords[0], 6),
-                                    'lat': round(coords[1], 6),
-                                    'sectr1': float(sectr1),
-                                    'sectr2': float(sectr2),
-                                    'colour': int(stripped.get('COLOUR', 1)),
-                                    'scamin': float(best_scamin) if best_scamin > 0 else 0,
-                                })
-                        if tracer.active:
-                            tmatch = tracer.matches(feature)
-                            if tmatch:
-                                tracer.log(tmatch, 'POINT-EXTRACT', f'→ points.mbtiles SCAMIN={best_scamin} minzoom={scamin_minz} (chart={chart_id})', feature)
+                    best_scamin = point_best_scamin.get(key, 0)
+                    # Strip metadata properties not needed for rendering
+                    # (keep _scaleNum for app-side usage band filtering)
+                    stripped = {k: v for k, v in props.items()
+                                if k not in ('RCID', 'PRIM', 'GRUP', 'SORDAT', 'SORIND',
+                                             'CHART_ID', '_chartId', 'OBJL_NAME')}
+                    point_feature = {
+                        'type': 'Feature',
+                        'geometry': geom,
+                        'properties': stripped,
+                    }
+                    if best_scamin > 0:
+                        point_feature['properties']['SCAMIN'] = best_scamin
+                    # Set tippecanoe minzoom from SCAMIN
+                    scamin_minz = scamin_to_minzoom(best_scamin if best_scamin > 0 else None, 0)
+                    point_feature['tippecanoe'] = {
+                        'minzoom': scamin_minz,
+                        'layer': 'points',
+                    }
+                    points_extracted.append(point_feature)
+                    # Collect sector lights for metadata index
+                    if objl == 75:  # LIGHTS
+                        sectr1 = stripped.get('SECTR1')
+                        sectr2 = stripped.get('SECTR2')
+                        if sectr1 is not None and sectr2 is not None:
+                            coords = geom.get('coordinates', [])
+                            sector_lights_index.append({
+                                'lon': round(coords[0], 6),
+                                'lat': round(coords[1], 6),
+                                'sectr1': float(sectr1),
+                                'sectr2': float(sectr2),
+                                'colour': int(stripped.get('COLOUR', 1)),
+                                'scamin': float(best_scamin) if best_scamin > 0 else 0,
+                                'scaleNum': scale_num,
+                            })
+                    if tracer.active:
+                        tmatch = tracer.matches(feature)
+                        if tmatch:
+                            tracer.log(tmatch, 'POINT-EXTRACT', f'→ points.mbtiles SCAMIN={best_scamin} minzoom={scamin_minz} _scaleNum={scale_num} (chart={chart_id})', feature)
                     total_features_output += 1
                     scale_feature_counts[scale_num] += 1
                     continue
@@ -1404,6 +1403,25 @@ def main():
             else:
                 logger.info('No sector lights found — skipping metadata injection')
             del sector_lights_index
+
+            # Embed M_COVR coverage boundaries in points.mbtiles metadata
+            # App uses these for ECDIS usage band filtering — suppressing
+            # lower-scale features in areas covered by higher-scale charts.
+            if coverage_union:
+                coverage_meta = {}
+                for sn, geom in coverage_union.items():
+                    simplified = geom.SimplifyPreserveTopology(0.001)  # ~100m tolerance
+                    if simplified and not simplified.IsEmpty():
+                        coverage_meta[str(sn)] = json.loads(simplified.ExportToJson())
+                if coverage_meta:
+                    conn = sqlite3.connect(points_mbtiles_path)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO metadata (name, value) VALUES (?, ?)",
+                        ('coverage_boundaries', json.dumps(coverage_meta, separators=(',', ':')))
+                    )
+                    conn.commit()
+                    conn.close()
+                    logger.info(f'Embedded coverage boundaries for {len(coverage_meta)} scales in points.mbtiles metadata')
 
             # Upload points.mbtiles (raw + zip in parallel)
             points_storage_path = f'{district_label}/charts/points.mbtiles'
