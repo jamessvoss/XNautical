@@ -56,7 +56,6 @@ export function useChartLoading(
 
   // Data source toggles
   const [useMBTiles] = useState(true);
-  const useCompositeTiles = true;
 
   // GNIS state (owned here since it's discovered during scanning)
   const [gnisAvailable, setGnisAvailableLocal] = useState(false);
@@ -73,7 +72,6 @@ export function useChartLoading(
   // Refs
   const lastManifestTimeRef = useRef<number>(0);
   const lastStationsTimeRef = useRef<number>(0);
-  const progressiveLoadingRef = useRef<boolean>(false);
 
   // Composite tile URL
   const compositeTileUrl = useMemo(() => {
@@ -540,77 +538,10 @@ export function useChartLoading(
     }, [externalState.satelliteTileSets.length, externalState.basemapTileSets.length, externalState.oceanTileSets.length, externalState.terrainTileSets.length, externalState.hasLocalBasemap, externalState.gnisAvailable])
   );
 
-  // Helper: Add charts in batches
-  const addChartsBatched = useCallback(async (
-    currentCharts: string[],
-    newCharts: string[],
-    batchSize: number = 8,
-    phaseName: string
-  ): Promise<string[]> => {
-    let accumulated = [...currentCharts];
-    const total = newCharts.length;
-
-    for (let i = 0; i < newCharts.length; i += batchSize) {
-      const batch = newCharts.slice(i, i + batchSize);
-      accumulated = [...accumulated, ...batch];
-
-      setChartLoadingProgress({ current: Math.min(i + batchSize, total), total, phase: phaseName });
-      startTransition(() => {
-        setChartsToRender([...accumulated]);
-      });
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
-
-    return accumulated;
-  }, []);
-
-  // Progressive loading (skipped in composite mode)
+  // Mark loading complete — unified VectorSource handles all zoom levels directly.
   useEffect(() => {
-    if (useCompositeTiles) {
-      logger.debug(LogCategory.CHARTS, 'Progressive loading skipped - using composite tile mode');
-      setLoadingPhase('complete');
-      return;
-    }
-
-    if (loadingPhase === 'us1' && tileServerReady && mbtilesCharts.length > 0) {
-      if (progressiveLoadingRef.current) return;
-      progressiveLoadingRef.current = true;
-
-      const interactionHandle = InteractionManager.runAfterInteractions(async () => {
-        const us1Charts = mbtilesCharts.filter(m => m.chartId.startsWith('US1')).map(m => m.chartId);
-        const us2us3Charts = mbtilesCharts.filter(m => m.chartId.match(/^US[23]/)).map(m => m.chartId);
-
-        const tier1All = await addChartsBatched(us1Charts, us2us3Charts, 8, 'Loading coastal charts');
-        setChartLoadingProgress(null);
-        setLoadingPhase('tier1');
-
-        setTimeout(async () => {
-          const us4Charts = mbtilesCharts.filter(m => m.chartId.startsWith('US4')).map(m => m.chartId).slice(0, 100 - tier1All.length);
-          let phase3Total = tier1All;
-          if (us4Charts.length > 0) {
-            phase3Total = await addChartsBatched(tier1All, us4Charts, 10, 'Loading approach charts');
-          }
-          setChartLoadingProgress(null);
-
-          setTimeout(async () => {
-            const us5us6Charts = mbtilesCharts.filter(m => m.chartId.match(/^US[56]/)).map(m => m.chartId).slice(0, 150 - phase3Total.length);
-            if (us5us6Charts.length > 0) {
-              await addChartsBatched(phase3Total, us5us6Charts, 15, 'Loading harbor charts');
-            }
-            setChartLoadingProgress(null);
-            setLoadingPhase('complete');
-            progressiveLoadingRef.current = false;
-            logger.info(LogCategory.CHARTS, 'Progressive loading: all phases complete');
-          }, 150);
-        }, 200);
-      });
-
-      return () => {
-        interactionHandle.cancel();
-        progressiveLoadingRef.current = false;
-      };
-    }
-  }, [loadingPhase, tileServerReady, mbtilesCharts, addChartsBatched, useCompositeTiles]);
+    setLoadingPhase('complete');
+  }, []);
 
   return {
     loading,
@@ -624,7 +555,6 @@ export function useChartLoading(
     tileServerReady,
     storageUsed,
     useMBTiles,
-    useCompositeTiles,
     gnisAvailable,
     cacheBuster,
     compositeTileUrl,

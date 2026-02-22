@@ -67,9 +67,9 @@ SCALE_ZOOM_RANGES = {
 }
 
 # SCAMIN offset for converting S-57 SCAMIN to tippecanoe minzoom.
-# 0 = exact SCAMIN threshold (matches app's chartDetail=medium).
-# Increase to include features at lower zooms (headroom for chartDetail).
-SCAMIN_HEADROOM = 0
+# 2 = generates tiles 2 zooms earlier than chartDetail=medium threshold,
+# providing headroom for chartDetail=ultra (offset=2) to actually work.
+SCAMIN_HEADROOM = 2
 
 # S-57 Group 1 "skin of earth" features + depth contours — SCAMIN must NOT
 # restrict their visibility. Group 1 features define the fundamental land/water
@@ -93,7 +93,7 @@ def scamin_to_minzoom(scamin_val, native_lo: int) -> int:
         if scamin <= 0:
             return native_lo
         z = 28 - SCAMIN_HEADROOM - math.log2(scamin)
-        return max(native_lo, int(z))
+        return max(native_lo, round(z))
     except (ValueError, TypeError):
         return native_lo
 
@@ -399,6 +399,10 @@ def build_coverage_index(local_paths):
             props = feature.get('properties', {})
             if props.get('OBJL') != M_COVR_OBJL:
                 continue
+            # Only CATCOV=1 ("coverage available") defines chart authority.
+            # CATCOV=2 is the chart's outer bounding box — not actual coverage.
+            if str(props.get('CATCOV', '1')) != '1':
+                continue
             geom = feature.get('geometry')
             if not geom or geom.get('type') is None:
                 continue
@@ -447,7 +451,8 @@ def build_higher_scale_coverage(coverage_union):
         next_higher = [s for s in sorted_scales if s > sn]
         if not next_higher:
             continue
-        higher_coverage[sn] = coverage_union[next_higher[0]].Clone()
+        higher_sn = next_higher[0]
+        higher_coverage[sn] = (coverage_union[higher_sn].Clone(), higher_sn)
 
     return higher_coverage
 
@@ -982,6 +987,7 @@ def main():
         contours_trimmed = 0   # partially clipped by M_COVR
         points_extracted = []    # All Point features for points.mbtiles
         points_seen = set()      # Track keys already added to avoid duplicates
+        sector_lights_index = [] # Sector light index for points.mbtiles metadata
         scale_feature_counts = defaultdict(int)
 
         # Per-scale newline-delimited GeoJSON files. Features may be written
@@ -1079,6 +1085,20 @@ def main():
                             'layer': 'points',
                         }
                         points_extracted.append(point_feature)
+                        # Collect sector lights for metadata index
+                        if objl == 75:  # LIGHTS
+                            sectr1 = stripped.get('SECTR1')
+                            sectr2 = stripped.get('SECTR2')
+                            if sectr1 is not None and sectr2 is not None:
+                                coords = geom.get('coordinates', [])
+                                sector_lights_index.append({
+                                    'lon': round(coords[0], 6),
+                                    'lat': round(coords[1], 6),
+                                    'sectr1': float(sectr1),
+                                    'sectr2': float(sectr2),
+                                    'colour': int(stripped.get('COLOUR', 1)),
+                                    'scamin': float(best_scamin) if best_scamin > 0 else 0,
+                                })
                         if tracer.active:
                             tmatch = tracer.matches(feature)
                             if tmatch:
@@ -1088,17 +1108,35 @@ def main():
                     continue
 
                 # M_COVR authority clipping: remove/trim lower-scale features
-                # where higher-scale charts provide coverage
+                # where higher-scale charts provide coverage.
+                # To avoid zoom gaps (e.g. US3 clipped by US4 but US4 tiles
+                # start at z6, leaving z4-5 empty), we write an UNCLIPPED copy
+                # for zoom levels below the higher scale's native range.
                 if objl in MCOVR_CLIP_OBJLS and scale_num in higher_coverage:
                     try:
                         ogr_line = ogr.CreateGeometryFromJson(json.dumps(geom))
                         if ogr_line and not ogr_line.IsEmpty():
-                            clip_mask = higher_coverage[scale_num]
+                            clip_mask, higher_sn = higher_coverage[scale_num]
+                            higher_lo = SCALE_ZOOM_RANGES.get(higher_sn, (0, 15))[0]
+                            my_lo = SCALE_ZOOM_RANGES.get(scale_num, (0, 15))[0]
+                            gap_maxz = higher_lo - 1  # last zoom before higher scale starts
+
                             if clip_mask.Contains(ogr_line):
                                 if tracer.active:
                                     tmatch = tracer.matches(feature)
                                     if tmatch:
                                         tracer.log(tmatch, 'MCOVR-CLIPPED', f'entirely within higher-scale coverage, removed (chart={chart_id} US{scale_num})', feature)
+                                # Write unclipped copy for gap zooms where higher scale has no tiles
+                                if gap_maxz >= my_lo and scale_num in scale_geojson:
+                                    gap_feature = dict(feature)
+                                    gap_feature['tippecanoe'] = {
+                                        'minzoom': my_lo,
+                                        'maxzoom': gap_maxz,
+                                        'layer': 'charts',
+                                    }
+                                    line = json.dumps(gap_feature, separators=(',', ':')) + '\n'
+                                    buffer_feature(scale_num, line)
+                                    scale_counts[scale_num] += 1
                                 contours_clipped += 1
                                 continue
                             if clip_mask.Intersects(ogr_line):
@@ -1111,6 +1149,17 @@ def main():
                                         tmatch = tracer.matches(feature)
                                         if tmatch:
                                             tracer.log(tmatch, 'MCOVR-TRIMMED', f'partially clipped by higher-scale coverage (chart={chart_id} US{scale_num})', feature)
+                                    # Write unclipped copy for gap zooms
+                                    if gap_maxz >= my_lo and scale_num in scale_geojson:
+                                        gap_feature = dict(feature)
+                                        gap_feature['tippecanoe'] = {
+                                            'minzoom': my_lo,
+                                            'maxzoom': gap_maxz,
+                                            'layer': 'charts',
+                                        }
+                                        line = json.dumps(gap_feature, separators=(',', ':')) + '\n'
+                                        buffer_feature(scale_num, line)
+                                        scale_counts[scale_num] += 1
                                     feature['geometry'] = clipped_json
                                     geom = clipped_json
                                     contours_trimmed += 1
@@ -1119,6 +1168,17 @@ def main():
                                         tmatch = tracer.matches(feature)
                                         if tmatch:
                                             tracer.log(tmatch, 'MCOVR-CLIPPED', f'Difference produced empty geometry, removed (chart={chart_id} US{scale_num})', feature)
+                                    # Write unclipped copy for gap zooms
+                                    if gap_maxz >= my_lo and scale_num in scale_geojson:
+                                        gap_feature = dict(feature)
+                                        gap_feature['tippecanoe'] = {
+                                            'minzoom': my_lo,
+                                            'maxzoom': gap_maxz,
+                                            'layer': 'charts',
+                                        }
+                                        line = json.dumps(gap_feature, separators=(',', ':')) + '\n'
+                                        buffer_feature(scale_num, line)
+                                        scale_counts[scale_num] += 1
                                     contours_clipped += 1
                                     continue
                     except Exception as e:
@@ -1330,6 +1390,20 @@ def main():
             if error:
                 logger.error(f'points.mbtiles validation FAILED: {error}')
                 sys.exit(1)
+
+            # Embed sector light index in points.mbtiles metadata
+            if sector_lights_index:
+                conn = sqlite3.connect(points_mbtiles_path)
+                conn.execute(
+                    "INSERT OR REPLACE INTO metadata (name, value) VALUES (?, ?)",
+                    ('sector_lights', json.dumps(sector_lights_index, separators=(',', ':')))
+                )
+                conn.commit()
+                conn.close()
+                logger.info(f'Embedded {len(sector_lights_index)} sector lights in points.mbtiles metadata')
+            else:
+                logger.info('No sector lights found — skipping metadata injection')
+            del sector_lights_index
 
             # Upload points.mbtiles (raw + zip in parallel)
             points_storage_path = f'{district_label}/charts/points.mbtiles'

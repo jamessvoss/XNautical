@@ -70,7 +70,6 @@ export function useMapConfiguration() {
     hasLocalTerrain: boolean;
     gnisAvailable: boolean;
     useMBTiles: boolean;
-    useCompositeTiles: boolean;
     tileServerUrl: string;
     styleJSON: string;
     gates: { label: string; expression: string; pass: boolean }[];
@@ -302,7 +301,6 @@ export function useMapConfiguration() {
     tileServerReady: boolean;
     gnisAvailable: boolean;
     useMBTiles: boolean;
-    useCompositeTiles: boolean;
     showGNISNames: boolean;
     showPlaceNames: boolean;
     mapRef: React.RefObject<any>;
@@ -315,7 +313,7 @@ export function useMapConfiguration() {
         { label: 'Vector basemap renders', expression: `tileServerReady(${params.tileServerReady}) && hasLocalBasemap(${hasLocalBasemap}) && isVectorStyle(${isVectorStyle})`, pass: params.tileServerReady && hasLocalBasemap && isVectorStyle },
         { label: 'Ocean source renders', expression: `tileServerReady(${params.tileServerReady}) && oceanTileSets.length(${oceanTileSets.length}) > 0 && mapStyle === 'ocean'`, pass: params.tileServerReady && oceanTileSets.length > 0 && mapStyle === 'ocean' },
         { label: 'Terrain source renders', expression: `tileServerReady(${params.tileServerReady}) && terrainTileSets.length(${terrainTileSets.length}) > 0 && mapStyle === 'terrain'`, pass: params.tileServerReady && terrainTileSets.length > 0 && mapStyle === 'terrain' },
-        { label: 'Charts source renders', expression: `useMBTiles(${params.useMBTiles}) && tileServerReady(${params.tileServerReady}) && useCompositeTiles(${params.useCompositeTiles})`, pass: params.useMBTiles && params.tileServerReady && params.useCompositeTiles },
+        { label: 'Charts source renders', expression: `useMBTiles(${params.useMBTiles}) && tileServerReady(${params.tileServerReady})`, pass: params.useMBTiles && params.tileServerReady },
         { label: 'Satellite source renders', expression: `tileServerReady(${params.tileServerReady}) && satelliteTileSets.length(${satelliteTileSets.length}) > 0`, pass: params.tileServerReady && satelliteTileSets.length > 0 },
         { label: 'GNIS source renders', expression: `tileServerReady(${params.tileServerReady}) && gnisAvailable(${params.gnisAvailable}) && showGNISNames(${params.showGNISNames}) && showPlaceNames(${params.showPlaceNames})`, pass: params.tileServerReady && params.gnisAvailable && params.showGNISNames && params.showPlaceNames },
       ];
@@ -358,7 +356,6 @@ export function useMapConfiguration() {
         hasLocalBasemap, hasLocalOcean, hasLocalTerrain,
         gnisAvailable: params.gnisAvailable,
         useMBTiles: params.useMBTiles,
-        useCompositeTiles: params.useCompositeTiles,
         tileServerUrl: serverUrl,
         styleJSON: currentStyleJSON.length > 300 ? currentStyleJSON.substring(0, 300) + '...' : currentStyleJSON,
         gates, mapLibreSources, mapLibreLayers, styleError,

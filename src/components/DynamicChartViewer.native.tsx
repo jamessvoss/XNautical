@@ -79,12 +79,12 @@ interface TileSet {
 }
 
 interface ChartScaleSource {
-  sourceId: string;    // VectorSource id, e.g., 'charts-us1'
-  packId: string;      // MBTiles pack id, e.g., 'd07_US1'
-  scaleNumber: number; // Scale number, e.g., 1
-  tileUrl: string;     // Tile URL template for per-pack endpoint
-  minZoom: number;     // VectorSource minZoomLevel
-  maxZoom: number;     // VectorSource maxZoomLevel
+  sourceId: string;    // VectorSource id: 'charts-unified'
+  packId: string;      // MBTiles pack id, e.g., 'd07_charts'
+  scaleNumber: number; // Always 0 for unified source
+  tileUrl: string;     // Tile URL template
+  minZoom: number;     // 0
+  maxZoom: number;     // 15
 }
 
 export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}) {
@@ -145,12 +145,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Data source toggles
   const [useMBTiles, setUseMBTiles] = useState(true);
   
-  // Composite tile mode - single VectorSource with server-side quilting
-  // Per-chart mode has been removed - composite is now the only mode
-  const useCompositeTiles = true;
-
-  // Multi-source rendering: separate VectorSource per scale pack (US1-US5)
-  // When populated, replaces composite mode for seamless multi-scale chart display
+  // Unified chart source: single VectorSource covering all zoom levels (z0-15).
+  // Scale transitions are handled by bgFillScaleFilter/contourScaleFilter on _scaleNum.
   const [chartScaleSources, setChartScaleSources] = useState<ChartScaleSource[]>([]);
 
   // Layer visibility - consolidated into single reducer for performance (fewer re-renders)
@@ -903,26 +899,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     type: 'FeatureCollection'; features: any[];
   }>({ type: 'FeatureCollection', features: [] });
   const sectorArcDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Accumulated sector lights — persists across queries for stability.
-  // queryRenderedFeaturesInRect is non-deterministic (misses features on some calls).
-  // Once a sector light is found, we keep it until it's far outside the viewport.
-  // Key: "lon,lat,sectr1,sectr2", Value: light data
-  const sectorLightCacheRef = useRef<Map<string, {
+  // Complete sector light index — loaded once from points.mbtiles metadata.
+  // This is a deterministic, complete list embedded by the compose pipeline.
+  interface SectorLight {
     lon: number; lat: number; sectr1: number; sectr2: number; colour: number; scamin: number;
-  }>>(new Map());
+  }
+  const sectorLightIndexRef = useRef<SectorLight[]>([]);
   // Points VectorSource tile URL — set during chart loading when points-*.mbtiles is found.
   // All point features (soundings, nav-aids, hazards) served from a single MBTiles file.
   const [pointsTileUrl, setPointsTileUrl] = useState<string | null>(null);
 
-  // Lazy-load: only render VectorSources whose zoom range overlaps current zoom (with buffer)
-  // Use integer zoom so fractional changes during pan don't trigger recalculation
-  const zoomInt = Math.round(currentZoom);
-  const activeScaleSources = useMemo(() => {
-    const buffer = 1; // Pre-load 1 zoom level ahead/behind for smooth transitions
-    return chartScaleSources.filter(source =>
-      zoomInt >= (source.minZoom - buffer) && zoomInt <= (source.maxZoom + buffer)
-    );
-  }, [chartScaleSources, zoomInt]);
 
   const [centerCoord, setCenterCoordState] = useState<[number, number]>([-151.55, 59.64]);
   const centerCoordRef = useRef<[number, number]>([-151.55, 59.64]);
@@ -990,9 +976,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // Create runDiagnostics from hook factory (needs local component state)
   const runDiagnostics = useMemo(() => createRunDiagnostics({
-    tileServerReady, gnisAvailable, useMBTiles, useCompositeTiles,
+    tileServerReady, gnisAvailable, useMBTiles,
     showGNISNames, showPlaceNames, mapRef,
-  }), [createRunDiagnostics, tileServerReady, gnisAvailable, useMBTiles, useCompositeTiles, showGNISNames, showPlaceNames]);
+  }), [createRunDiagnostics, tileServerReady, gnisAvailable, useMBTiles, showGNISNames, showPlaceNames]);
 
   // Update overlay context with GPS data (reads from ref — no re-render dependency)
   useEffect(() => {
@@ -1212,128 +1198,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     }, [satelliteTileSets.length, basemapTileSets.length, oceanTileSets.length, terrainTileSets.length, hasLocalBasemap, gnisAvailable])
   );
 
-  // Ref to track if progressive loading is in progress (prevents duplicate runs)
-  const progressiveLoadingRef = useRef<boolean>(false);
-  
-  // Helper: Add charts in batches with yields to keep UI responsive
-  const addChartsBatched = useCallback(async (
-    currentCharts: string[],
-    newCharts: string[],
-    batchSize: number = 8,
-    phaseName: string
-  ): Promise<string[]> => {
-    let accumulated = [...currentCharts];
-    const total = newCharts.length;
-    
-    for (let i = 0; i < newCharts.length; i += batchSize) {
-      const batch = newCharts.slice(i, i + batchSize);
-      accumulated = [...accumulated, ...batch];
-      
-      // Update progress indicator
-      setChartLoadingProgress({
-        current: Math.min(i + batchSize, total),
-        total,
-        phase: phaseName,
-      });
-      
-      // Use startTransition to mark this as a non-urgent update
-      startTransition(() => {
-        setChartsToRender([...accumulated]);
-      });
-      
-      // Yield to main thread between batches - allows UI to stay responsive
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
-    
-    return accumulated;
-  }, []);
-  
-  // Progressive loading: Add more charts after initial render
-  // Uses InteractionManager, batching, and startTransition for responsiveness
-  // SKIPPED when composite mode is enabled (not needed - single VectorSource)
+  // Mark loading complete — unified VectorSource handles all zoom levels directly.
   useEffect(() => {
-    // Skip progressive loading in composite mode - not needed
-    if (useCompositeTiles) {
-      logger.debug(LogCategory.CHARTS, 'Progressive loading skipped - using composite tile mode');
-      setLoadingPhase('complete');
-      return;
-    }
-    
-    logger.debug(LogCategory.CHARTS, `Progressive effect: phase=${loadingPhase}, serverReady=${tileServerReady}, charts=${mbtilesCharts.length}`);
-    
-    if (loadingPhase === 'us1' && tileServerReady && mbtilesCharts.length > 0) {
-      // Prevent duplicate runs
-      if (progressiveLoadingRef.current) {
-        return;
-      }
-      progressiveLoadingRef.current = true;
-      
-      logger.debug(LogCategory.CHARTS, 'Progressive loading: scheduling Phase 2...');
-      
-      // Wait for any pending interactions/animations to complete
-      const interactionHandle = InteractionManager.runAfterInteractions(async () => {
-        logger.debug(LogCategory.CHARTS, 'Progressive loading: Phase 2 starting');
-        
-        // Get US1 charts (already rendered)
-        const us1Charts = mbtilesCharts
-          .filter(m => m.chartId.startsWith('US1'))
-          .map(m => m.chartId);
-        
-        // Get US2+US3 charts to add
-        const us2us3Charts = mbtilesCharts
-          .filter(m => m.chartId.match(/^US[23]/))
-          .map(m => m.chartId);
-        
-        logger.perf(LogCategory.CHARTS, `Phase 2: Adding ${us2us3Charts.length} US2+US3 charts`);
-        
-        // Add US2+US3 charts in batches
-        const tier1All = await addChartsBatched(us1Charts, us2us3Charts, 8, 'Loading coastal charts');
-        
-        // Clear progress and move to next phase
-        setChartLoadingProgress(null);
-        setLoadingPhase('tier1');
-        
-        // Phase 3: Add US4 charts after a brief delay
-        setTimeout(async () => {
-          const us4Charts = mbtilesCharts
-            .filter(m => m.chartId.startsWith('US4'))
-            .map(m => m.chartId)
-            .slice(0, 100 - tier1All.length); // Fill up to 100
-          
-          let phase3Total = tier1All;
-          if (us4Charts.length > 0) {
-            logger.perf(LogCategory.CHARTS, `Phase 3: Adding ${us4Charts.length} US4 charts`);
-            phase3Total = await addChartsBatched(tier1All, us4Charts, 10, 'Loading approach charts');
-          }
-          
-          setChartLoadingProgress(null);
-          
-          // Phase 4: Add US5/US6 charts (harbor/berthing detail)
-          setTimeout(async () => {
-            const us5us6Charts = mbtilesCharts
-              .filter(m => m.chartId.match(/^US[56]/))
-              .map(m => m.chartId)
-              .slice(0, 150 - phase3Total.length); // Fill up to 150 total
-            
-            if (us5us6Charts.length > 0) {
-              logger.perf(LogCategory.CHARTS, `Phase 4: Adding ${us5us6Charts.length} US5/US6 charts`);
-              await addChartsBatched(phase3Total, us5us6Charts, 15, 'Loading harbor charts');
-            }
-            
-            setChartLoadingProgress(null);
-            setLoadingPhase('complete');
-            progressiveLoadingRef.current = false;
-            logger.info(LogCategory.CHARTS, 'Progressive loading: all phases complete');
-          }, 150);
-        }, 200);
-      });
-      
-      return () => {
-        interactionHandle.cancel();
-        progressiveLoadingRef.current = false;
-      };
-    }
-  }, [loadingPhase, tileServerReady, mbtilesCharts, addChartsBatched, useCompositeTiles]);
+    setLoadingPhase('complete');
+  }, []);
   
   // Auto-start GPS tracking when map loads - always show user's location
   useEffect(() => {
@@ -1678,12 +1546,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             logger.setStartupParam('tileServerPort', 8765);
             logger.setStartupParam('tileServerStatus', 'running');
             
-            // Build chart sources — detect unified pack vs per-scale packs
+            // Find unified chart pack (composed by compose_job.py)
             const unifiedPack = loadedMbtiles.find(m => m.chartId.endsWith('_charts'));
             const scaleSources: ChartScaleSource[] = [];
 
             if (unifiedPack) {
-              // Unified mode: single source covering all zoom levels
               scaleSources.push({
                 sourceId: 'charts-unified',
                 packId: unifiedPack.chartId,
@@ -1694,36 +1561,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               });
               logger.info(LogCategory.CHARTS, `Unified chart source: ${unifiedPack.chartId} z0-15`);
             } else {
-              // Legacy per-scale mode
-              const getScaleZoomRange = (scale: number): { min: number; max: number } => {
-                switch (scale) {
-                  case 1: return { min: 0, max: 6 };
-                  case 2: return { min: 4, max: 10 };
-                  case 3: return { min: 7, max: 13 };
-                  case 4: return { min: 11, max: 15 };
-                  case 5: return { min: 14, max: 15 };
-                  default: return { min: 14, max: 15 };
-                }
-              };
-
-              for (const chart of loadedMbtiles) {
-                const scaleMatch = chart.chartId.match(/US(\d)/);
-                if (!scaleMatch) continue;
-                const scaleNumber = parseInt(scaleMatch[1], 10);
-                const zoomRange = getScaleZoomRange(scaleNumber);
-                scaleSources.push({
-                  sourceId: `charts-us${scaleNumber}`,
-                  packId: chart.chartId,
-                  scaleNumber,
-                  tileUrl: `${serverUrl}/tiles/${chart.chartId}/{z}/{x}/{y}.pbf`,
-                  minZoom: zoomRange.min,
-                  maxZoom: zoomRange.max,
-                });
-              }
-              scaleSources.sort((a, b) => a.scaleNumber - b.scaleNumber);
-              for (const src of scaleSources) {
-                logger.info(LogCategory.CHARTS, `  ${src.sourceId}: ${src.packId} z${src.minZoom}-${src.maxZoom}`);
-              }
+              logger.warn(LogCategory.CHARTS, 'No unified chart pack found (*_charts.mbtiles)');
             }
 
             setChartScaleSources(scaleSources);
@@ -1735,10 +1573,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             if (pointsPack) {
               setPointsTileUrl(`${serverUrl}/tiles/${pointsPack.chartId}/{z}/{x}/{y}.pbf`);
               logger.info(LogCategory.CHARTS, `Points VectorSource: ${pointsPack.chartId}`);
+
+              // Load sector light index from MBTiles metadata (embedded by compose pipeline).
+              // This is a complete, deterministic list — no queryRenderedFeaturesInRect needed.
+              try {
+                const meta = await tileServer.getMetadata(pointsPack.chartId);
+                if (meta?.sector_lights) {
+                  const sectorLights = JSON.parse(meta.sector_lights);
+                  sectorLightIndexRef.current = sectorLights;
+                  logger.info(LogCategory.CHARTS, `Sector light index: ${sectorLights.length} lights loaded from metadata`);
+                } else {
+                  logger.warn(LogCategory.CHARTS, 'No sector_lights in points.mbtiles metadata');
+                }
+              } catch (e) {
+                logger.warn(LogCategory.CHARTS, `Failed to load sector light index: ${e}`);
+              }
             }
 
-            const chartSummary = `${loadedMbtiles.length} charts (${scaleSources.length} source${scaleSources.length === 1 ? '' : 's'})`;
-            setDebugInfo(`Server: ${serverUrl}\nCharts: ${chartSummary}\nMode: Multi-source\nDir: ${mbtilesDir}`);
+            const chartSummary = `${loadedMbtiles.length} mbtiles (${scaleSources.length > 0 ? 'unified' : 'none'})`;
+            setDebugInfo(`Server: ${serverUrl}\nCharts: ${chartSummary}\nDir: ${mbtilesDir}`);
           } else {
             logger.warn(LogCategory.TILES, 'Failed to start tile server');
             logger.setStartupParam('tileServerStatus', 'failed');
@@ -1799,10 +1652,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     // Skip arc generation below z6 — sector arcs aren't useful at overview zoom
     // and the query is expensive (CircleLayer not rendered below z6).
     if (zoom < 6) {
-      if (sectorLightCacheRef.current.size > 0) {
-        sectorLightCacheRef.current.clear();
-        setSectorArcFeatures({ type: 'FeatureCollection', features: [] });
-      }
+      setSectorArcFeatures({ type: 'FeatureCollection', features: [] });
       return;
     }
 
@@ -1832,63 +1682,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
     // SCAMIN filter in JS: show arc if the light's SCAMIN makes it visible at current zoom
     const scaminVisible = (scamin: number) => {
-      if (!isFinite(scamin)) return true; // No SCAMIN = always visible
+      if (!scamin || !isFinite(scamin)) return true; // No SCAMIN (0) = always visible
       const minZoom = 28 - scaminOffset - Math.log2(scamin);
       return zoom >= minZoom;
     };
 
-    const cache = sectorLightCacheRef.current;
-
-    // Query rendered LIGHTS from points VectorSource for sector arcs.
-    // queryRenderedFeaturesInRect on local tiles is fast (no network).
-    // Only returns features passing the layer's SCAMIN filter — no JS filtering needed.
-    if (pointsTileUrl) {
-      try {
-        const features = await mapRef.current.queryRenderedFeaturesInRect(
-          [0, 0, width, height],
-          undefined,
-          ['pt-lights']
-        );
-
-        cache.clear();
-        for (const f of features) {
-          const props = f.properties;
-          if (!props?.SECTR1 || !props?.SECTR2) continue;
-          const coords = f.geometry?.coordinates;
-          if (!coords) continue;
-
-          const lon = coords[0];
-          const lat = coords[1];
-          if (lon < viewWest - padLon || lon > viewEast + padLon ||
-              lat < viewSouth - padLat || lat > viewNorth + padLat) continue;
-
-          const sectr1 = parseFloat(String(props.SECTR1));
-          const sectr2 = parseFloat(String(props.SECTR2));
-          if (isNaN(sectr1) || isNaN(sectr2)) continue;
-
-          const scamin = parseFloat(String(props.SCAMIN));
-          const key = `${lon.toFixed(5)},${lat.toFixed(5)},${sectr1},${sectr2}`;
-
-          const existing = cache.get(key);
-          if (!existing || existing.scamin < (isNaN(scamin) ? Infinity : scamin)) {
-            cache.set(key, {
-              lon, lat,
-              sectr1, sectr2,
-              colour: typeof props.COLOUR === 'number' ? props.COLOUR : parseInt(String(props.COLOUR)) || 1,
-              scamin: isNaN(scamin) ? Infinity : scamin,
-            });
-          }
-        }
-      } catch {
-        // Query failed — keep existing cache entries
-      }
-    }
+    // Filter sector lights from the complete index by viewport bounds + SCAMIN.
+    // The index is loaded once from points.mbtiles metadata — always complete.
+    const sectorLights = sectorLightIndexRef.current;
 
     // Generate arc + sector leg geometries using screen-calibrated dp-to-degrees.
     // Per S-52 §3.1.5: sector legs at fixed 25mm screen size (~60dp).
     const arcFeatures: any[] = [];
 
-    for (const [, light] of cache) {
+    for (const light of sectorLights) {
+      // Viewport bounds check with generous padding
+      if (light.lon < viewWest - padLon || light.lon > viewEast + padLon ||
+          light.lat < viewSouth - padLat || light.lat > viewNorth + padLat) continue;
       if (!scaminVisible(light.scamin)) continue;
 
       // S-52: SECTR1/SECTR2 are bearings FROM SEAWARD toward the light.
@@ -1943,13 +1753,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       });
     }
 
+    logger.info(LogCategory.CHARTS, `[SECTOR-ARC] Generated ${arcFeatures.length} arc features from ${sectorLights.length} sector lights in index`);
     setSectorArcFeatures({ type: 'FeatureCollection', features: arcFeatures });
   };
 
-  // Clear arcs and cache when lights layer is turned off
+  // Clear arcs when lights layer is turned off
   useEffect(() => {
     if (!showLights) {
-      sectorLightCacheRef.current.clear();
       setSectorArcFeatures({ type: 'FeatureCollection', features: [] });
     }
   }, [showLights]);
@@ -2018,6 +1828,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       });
     }, 150);
   }, [limitZoomToCharts, effectiveMaxZoom]);
+
+  // Trigger sector arc update when points VectorSource becomes available.
+  // Tiles need time to load after the source mounts, so delay the query.
+  useEffect(() => {
+    if (!pointsTileUrl) return;
+    const timer = setTimeout(() => {
+      updateSectorArcsRef.current();
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [pointsTileUrl]);
 
   // Lightweight camera update — refs only, no state, no re-renders
   // Used by onRegionIsChanging (during active pan/zoom) to keep refs fresh
@@ -2637,9 +2457,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, []);
 
   // ─── renderChartLayers ───────────────────────────────────────────────
-  // Generates all ~60 chart layer definitions for a given VectorSource.
+  // Generates all ~60 chart layer definitions for the unified VectorSource.
   // The prefix parameter ensures unique layer IDs per source.
-  // Used by both multi-source rendering (per-scale pack) and composite fallback.
   // ─── SCAMIN OFFSET ──────────────────────────────────────────────────
   // Chart Detail setting controls how many zoom levels earlier features appear
   // relative to their S-57 SCAMIN value. Used by both chart tile layers and station layers.
@@ -2930,7 +2749,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-lakare`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 69], scaminFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 69], bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.DEPVS,
           fillOpacity: 0.6,
@@ -4712,10 +4531,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* All sources always mounted for stable layer order.               */}
         {/* chartLayerCache (memoized JSX to prevent recreation on pan/zoom)*/}
         {/* ================================================================== */}
-        {/* Chart vector sources — unified single source or per-scale.          */}
-        {/* Always mount ALL sources to keep layer order stable.                */}
-        {/* minZoomLevel/maxZoomLevel on VectorSource prevents tile loading     */}
-        {/* outside each source's range, so there's no performance cost.        */}
+        {/* Unified chart VectorSource (z0-15).                                  */}
         {useMBTiles && tileServerReady && debugIsSourceVisible('charts') && chartScaleSources.length > 0 && (
           chartScaleSources.map(source => (
             <MapLibre.VectorSource
@@ -6863,14 +6679,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 </View>
                 <View style={diagStyles.row}>
                   <Text style={diagStyles.label}>Rendering Mode</Text>
-                  <Text style={diagStyles.value}>{chartScaleSources.length === 1 && chartScaleSources[0].sourceId === 'charts-unified' ? 'Unified (deduplicated)' : chartScaleSources.length > 0 ? `Multi-source (${activeScaleSources.length}/${chartScaleSources.length} active)` : 'No charts'}</Text>
+                  <Text style={diagStyles.value}>{chartScaleSources.length > 0 ? `Unified (${chartScaleSources[0].packId})` : 'No charts'}</Text>
                 </View>
-                {chartScaleSources.length > 0 && (
-                  <View style={diagStyles.row}>
-                    <Text style={diagStyles.label}>Scale Sources</Text>
-                    <Text style={diagStyles.mono}>{chartScaleSources.map(s => `${activeScaleSources.includes(s) ? '●' : '○'} ${s.packId} z${s.minZoom}-${s.maxZoom}`).join('\n')}</Text>
-                  </View>
-                )}
                 <View style={diagStyles.row}>
                   <Text style={diagStyles.label}>Tile Server URL</Text>
                   <Text style={diagStyles.mono}>{debugDiagnostics.tileServerUrl}</Text>
