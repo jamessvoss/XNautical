@@ -390,6 +390,8 @@ MCOVR_CLIP_OBJLS = {
     30,   # COALNE — coastline (doubled coastlines)
     71,   # LNDARE — land areas (overlapping polygons)
     129,  # SOUNDG — soundings (duplicate depth values)
+    58,   # CBLSUB — submarine cables (doubled lines at scale overlaps)
+    64,   # PIPSOL — pipelines (doubled lines at scale overlaps)
 }
 
 
@@ -808,11 +810,12 @@ def main():
     district_id = os.environ.get('DISTRICT_ID', '').zfill(2)
     bucket_name = os.environ.get('BUCKET_NAME', 'xnautical-8a296.firebasestorage.app')
 
-    if not district_id or district_id == '00':
-        logger.error('DISTRICT_ID environment variable not set')
-        sys.exit(1)
-
-    district_label = os.environ.get('DISTRICT_LABEL') or f'{district_id}cgd'
+    district_label = os.environ.get('DISTRICT_LABEL') or ''
+    if not district_label:
+        if not district_id or district_id == '00':
+            logger.error('DISTRICT_ID environment variable not set')
+            sys.exit(1)
+        district_label = f'{district_id}cgd'
     district_prefix = get_district_prefix(district_label)
 
     logger.info(f'=== Starting compose job for {district_label} (prefix: {district_prefix}) ===')
@@ -1105,6 +1108,9 @@ def main():
                                     higher_floor = SCALE_ZOOM_RANGES.get(higher_sn, (0, 15))[0]
                                     point_maxz = higher_floor - 1
                                     break
+                    # Skip if coverage suppression leaves no visible zoom range
+                    if point_maxz < 0 or point_maxz < scamin_minz:
+                        continue
                     point_feature['tippecanoe'] = {
                         'minzoom': scamin_minz,
                         'maxzoom': point_maxz,
