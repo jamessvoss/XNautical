@@ -86,7 +86,7 @@ NOAA_CONCURRENT_CHUNKS = 3  # concurrent date-chunk fetches per station
 NOAA_INTER_REQUEST_DELAY = 0.2  # seconds between concurrent requests
 
 # Valid region IDs
-VALID_REGIONS = ['01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd']
+VALID_REGIONS = ['01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd', '17cgd-test']
 
 
 # ============================================================================
@@ -1381,12 +1381,12 @@ def generate():
     years_forward = int(body.get('yearsForward', 2))
     max_stations = body.get('maxStations')
     
-    if region_id not in VALID_REGIONS:
+    if region_id not in VALID_REGIONS and not body.get('allowCustomRegion'):
         return jsonify({
             'error': f'Invalid regionId: {region_id}',
             'valid': VALID_REGIONS,
         }), 400
-    
+
     if gen_type not in ('tides', 'currents'):
         return jsonify({
             'error': f'Invalid type: {gen_type}. Must be "tides" or "currents" (run separately, not "all")',
@@ -1405,8 +1405,9 @@ def generate():
 def get_status():
     """Get prediction generation status for a region."""
     region_id = request.args.get('regionId', '').strip()
+    allow_custom = request.args.get('allowCustomRegion', '').lower() in ('true', '1')
 
-    if region_id not in VALID_REGIONS:
+    if region_id not in VALID_REGIONS and not allow_custom:
         return jsonify({
             'error': f'Invalid regionId: {region_id}',
             'valid': VALID_REGIONS,
@@ -1452,21 +1453,21 @@ def clear_lock():
         return jsonify({'error': 'Invalid JSON body'}), 400
     
     region_id = body.get('regionId', '').strip()
-    
-    if region_id not in VALID_REGIONS:
+
+    if region_id not in VALID_REGIONS and not body.get('allowCustomRegion'):
         return jsonify({
             'error': f'Invalid regionId: {region_id}',
             'valid': VALID_REGIONS,
         }), 400
-    
+
     try:
         db_client = firestore.Client()
         doc_ref = db_client.collection('districts').document(region_id)
         doc = doc_ref.get()
-        
+
         if not doc.exists:
             return jsonify({'error': f'Region {region_id} not found in Firestore'}), 404
-        
+
         data = doc.to_dict()
         old_status = data.get('predictionStatus', {})
         old_state = old_status.get('state')

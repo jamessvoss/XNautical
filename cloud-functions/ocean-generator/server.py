@@ -85,7 +85,7 @@ COASTAL_BUFFER_MIN_ZOOM = 6
 DISTRICT_PREFIXES = {
     '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
     '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
-    '17cgd': 'd17',
+    '17cgd': 'd17', '17cgd-test': '17-test',
 }
 
 def get_district_prefix(region_id: str) -> str:
@@ -122,6 +122,9 @@ REGION_BOUNDS = {
         # Split across antimeridian
         {'west': -180, 'south': 50, 'east': -129, 'north': 72},
         {'west': 170, 'south': 50, 'east': 180, 'north': 65},
+    ]},
+    '17cgd-test': {'name': 'Arctic (Test)', 'bounds': [
+        {'west': -154, 'south': 57, 'east': -144, 'north': 63},
     ]},
 }
 
@@ -607,6 +610,18 @@ def generate_ocean():
     data = request.get_json(silent=True) or {}
     region_id = data.get('regionId', '').strip()
     buffer_nm = float(data.get('bufferNm', DEFAULT_BUFFER_NM))
+
+    # Accept optional custom bounds for ad-hoc test districts
+    custom_bounds = data.get('bounds')
+    if custom_bounds and region_id not in REGION_BOUNDS:
+        bounds_list = [custom_bounds] if isinstance(custom_bounds, dict) else custom_bounds
+        REGION_BOUNDS[region_id] = {
+            'name': data.get('name', region_id),
+            'bounds': bounds_list,
+        }
+        if region_id not in DISTRICT_PREFIXES:
+            DISTRICT_PREFIXES[region_id] = region_id.replace('cgd', '')
+        logger.info(f'Registered custom region {region_id} with bounds {bounds_list}')
 
     if region_id not in REGION_BOUNDS:
         return jsonify({

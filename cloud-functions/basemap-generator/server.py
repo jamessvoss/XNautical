@@ -36,6 +36,7 @@ import sys
 import time
 import math
 import json
+import gzip
 import sqlite3
 import logging
 import asyncio
@@ -87,6 +88,7 @@ BASEMAP_FILENAMES = {
     '01cgd': 'd01_basemap', '05cgd': 'd05_basemap', '07cgd': 'd07_basemap',
     '08cgd': 'd08_basemap', '09cgd': 'd09_basemap', '11cgd': 'd11_basemap',
     '13cgd': 'd13_basemap', '14cgd': 'd14_basemap', '17cgd': 'd17_basemap',
+    '17cgd-test': '17-test_basemap',
 }
 
 def get_basemap_internal_name(region_id: str) -> str:
@@ -123,6 +125,9 @@ REGION_BOUNDS = {
         # Split across antimeridian
         {'west': -180, 'south': 50, 'east': -129, 'north': 72},
         {'west': 170, 'south': 50, 'east': 180, 'north': 65},
+    ]},
+    '17cgd-test': {'name': 'Arctic (Test)', 'bounds': [
+        {'west': -154, 'south': 57, 'east': -144, 'north': 63},
     ]},
 }
 
@@ -476,9 +481,14 @@ def download_and_store_tiles(tiles, db_path, min_zoom, max_zoom, name, region_bo
     cursor = conn.cursor()
 
     # Use a transaction for faster inserts
+    # Gzip-compress tiles for consistency with the native tile server,
+    # which always sets Content-Encoding: gzip when serving PBF tiles.
     cursor.execute('BEGIN TRANSACTION')
     for z, x, y, data in results:
         tms_y = tile_y_to_tms(y, z)
+        # Only compress if not already gzip-compressed
+        if data[:2] != b'\x1f\x8b':
+            data = gzip.compress(data)
         cursor.execute(
             'INSERT OR REPLACE INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?)',
             (z, x, tms_y, data)
@@ -608,6 +618,19 @@ def generate_basemap():
     data = request.get_json(silent=True) or {}
     region_id = data.get('regionId', '').strip()
     buffer_nm = float(data.get('bufferNm', DEFAULT_BUFFER_NM))
+
+    # Accept optional custom bounds for ad-hoc test districts
+    custom_bounds = data.get('bounds')
+    if custom_bounds and region_id not in REGION_BOUNDS:
+        bounds_list = [custom_bounds] if isinstance(custom_bounds, dict) else custom_bounds
+        REGION_BOUNDS[region_id] = {
+            'name': data.get('name', region_id),
+            'bounds': bounds_list,
+        }
+        prefix = region_id.replace('cgd', '')
+        if region_id not in BASEMAP_FILENAMES:
+            BASEMAP_FILENAMES[region_id] = f'{prefix}_basemap'
+        logger.info(f'Registered custom region {region_id} with bounds {bounds_list}')
 
     if region_id not in REGION_BOUNDS:
         return jsonify({

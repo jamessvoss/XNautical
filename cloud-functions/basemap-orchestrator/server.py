@@ -20,6 +20,7 @@ Endpoints:
 """
 
 import os
+import re
 import json
 import time
 import logging
@@ -174,8 +175,9 @@ def run_parallel(tasks):
 
 
 def extract_district_number(region_id):
-    """Extract numeric district ID from region string (e.g. '05cgd' -> '05')."""
-    return region_id.replace('cgd', '')
+    """Extract numeric district ID from region string (e.g. '05cgd' -> '05', '17cgd-test' -> '17')."""
+    m = re.match(r'^(\d+)', region_id.replace('cgd', ''))
+    return m.group(1) if m else region_id.replace('cgd', '')
 
 
 # ============================================================================
@@ -203,9 +205,17 @@ def pipeline():
     steps = data.get('steps', PIPELINE_STEPS)
     buffer_nm = data.get('bufferNm')
     skip_on_failure = data.get('skipOnFailure', False)
+    custom_bounds = data.get('bounds')
+    custom_name = data.get('name')
 
     if not region_id:
         return jsonify({'error': 'regionId is required'}), 400
+
+    # Dynamically register unknown regions when custom bounds are provided
+    if custom_bounds and region_id not in VALID_REGIONS:
+        VALID_REGIONS.add(region_id)
+        logger.info(f'Registered custom region {region_id} with bounds {custom_bounds}')
+
     if region_id not in VALID_REGIONS:
         return jsonify({'error': f'Invalid regionId. Valid: {sorted(VALID_REGIONS)}'}), 400
 
@@ -237,11 +247,15 @@ def pipeline():
     # --- Step 2: ENC Convert ---
     if 'enc-convert' in steps:
         logger.info(f'--- Step 2: ENC Convert for district {district_num} ---')
-        result = call_service('enc-converter', '/convert-district-parallel', {
+        convert_body = {
             'districtId': district_num,
             'batchSize': 10,
             'maxParallel': 80,
-        })
+        }
+        # For test districts like '17cgd-test', pass districtLabel override
+        if region_id != f'{district_num}cgd':
+            convert_body['districtLabel'] = region_id
+        result = call_service('enc-converter', '/convert-district-parallel', convert_body)
         step_results.append(result)
         if not result['success']:
             failed = True
@@ -254,6 +268,10 @@ def pipeline():
         gen_body = {'regionId': region_id}
         if buffer_nm is not None:
             gen_body['bufferNm'] = buffer_nm
+        if custom_bounds:
+            gen_body['bounds'] = custom_bounds
+        if custom_name:
+            gen_body['name'] = custom_name
 
         tasks = [
             (gen_type, '/generate', gen_body.copy())
@@ -276,10 +294,13 @@ def pipeline():
         logger.info(f'--- Step 4: Predictions for {region_id} ---')
         for pred_type in ['tides', 'currents']:
             logger.info(f'  Running {pred_type}...')
-            result = call_service('predictions', '/generate', {
+            pred_body = {
                 'regionId': region_id,
                 'type': pred_type,
-            })
+            }
+            if custom_bounds:
+                pred_body['allowCustomRegion'] = True
+            result = call_service('predictions', '/generate', pred_body)
             result['step'] = f'predictions-{pred_type}'
             step_results.append(result)
             if not result['success']:
@@ -349,11 +370,17 @@ def generate_all():
     data = request.get_json() or {}
     region_id = data.get('regionId')
     buffer_nm = data.get('bufferNm')
+    custom_bounds = data.get('bounds')
+    custom_name = data.get('name')
     types = data.get('types', list(TILE_GENERATOR_TYPES))
     parallel = data.get('parallel', True)
 
     if not region_id:
         return jsonify({'error': 'regionId is required'}), 400
+
+    if custom_bounds and region_id not in VALID_REGIONS:
+        VALID_REGIONS.add(region_id)
+
     if region_id not in VALID_REGIONS:
         return jsonify({'error': f'Invalid regionId. Valid: {sorted(VALID_REGIONS)}'}), 400
 
@@ -368,6 +395,10 @@ def generate_all():
     body = {'regionId': region_id}
     if buffer_nm is not None:
         body['bufferNm'] = buffer_nm
+    if custom_bounds:
+        body['bounds'] = custom_bounds
+    if custom_name:
+        body['name'] = custom_name
 
     if parallel:
         tasks = [(t, '/generate', body.copy()) for t in types]
@@ -412,9 +443,15 @@ def generate_single():
     region_id = data.get('regionId')
     gen_type = data.get('type') or request.args.get('type')
     buffer_nm = data.get('bufferNm')
+    custom_bounds = data.get('bounds')
+    custom_name = data.get('name')
 
     if not region_id:
         return jsonify({'error': 'regionId is required'}), 400
+
+    if custom_bounds and region_id not in VALID_REGIONS:
+        VALID_REGIONS.add(region_id)
+
     if region_id not in VALID_REGIONS:
         return jsonify({'error': f'Invalid regionId. Valid: {sorted(VALID_REGIONS)}'}), 400
     if not gen_type:
@@ -425,6 +462,10 @@ def generate_single():
     body = {'regionId': region_id}
     if buffer_nm is not None:
         body['bufferNm'] = buffer_nm
+    if custom_bounds:
+        body['bounds'] = custom_bounds
+    if custom_name:
+        body['name'] = custom_name
 
     logger.info(f'=== GENERATE {gen_type} for {region_id} ===')
     result = call_service(gen_type, '/generate', body)
@@ -451,8 +492,9 @@ def status():
 
     if not region_id:
         return jsonify({'error': 'regionId query parameter is required'}), 400
+    # Allow querying status for any region (custom test districts included)
     if region_id not in VALID_REGIONS:
-        return jsonify({'error': f'Invalid regionId. Valid: {sorted(VALID_REGIONS)}'}), 400
+        VALID_REGIONS.add(region_id)
 
     if gen_type:
         if gen_type not in TILE_GENERATOR_TYPES:
