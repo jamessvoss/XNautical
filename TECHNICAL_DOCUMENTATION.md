@@ -79,13 +79,21 @@ Per ECDIS standard, when a higher-scale chart covers an area, ALL lower-scale li
 - **Partially overlapping** → geometry trimmed via `OGR Difference()`
 - **Fully outside** → feature kept as-is
 
-To prevent zoom gaps (e.g. US3 clipped by US4, but US4 tiles start at z6 leaving z4-5 empty), an unclipped copy is emitted for zoom levels below the higher scale's native floor.
-
 Clipping is cascading per-scale-pair: each scale is clipped only against the immediately next higher scale, not the union of all higher scales.
+
+**Gap protection** — two types of zoom gaps are prevented:
+
+1. **Tile-level gap**: Higher-scale tiles don't exist at low zooms (e.g. US4 floor z6). An unclipped copy of the clipped feature is emitted for zoom levels below the higher scale's floor, respecting the feature's SCAMIN minzoom.
+
+2. **SCAMIN gap**: Higher-scale tiles exist but the replacement feature has a tighter SCAMIN (e.g. US4 cable with SCAMIN z8 is clipped by US5, but US5's cable has SCAMIN z10 — gap at z8-9). A "SCAMIN filler" copy is emitted that stays visible until the higher scale's replacement feature turns on. For partially-trimmed features, the filler uses only the intersection geometry (the clipped-away inside portion) to avoid doubling.
 
 #### Point Extraction and Coverage Suppression
 
-All Point geometry features are diverted to a separate `points.mbtiles` (not included in per-scale chart tiles). Points are NOT geometrically clipped. Instead, each point gets a `tippecanoe.maxzoom` cap based on M_COVR spatial coverage — if a higher-scale chart covers the point's location, its maxzoom is set to `higher_scale_floor - 1` so it yields when the higher-scale data takes over.
+All Point geometry features are diverted to a separate `points.mbtiles` (not included in per-scale chart tiles). Points are NOT geometrically clipped. Instead, **nav aids** (buoys, lights, beacons, wrecks, etc.) get a `tippecanoe.maxzoom` cap based on M_COVR spatial coverage — if a higher-scale chart covers the point's location, its maxzoom is capped so it yields when the higher-scale data takes over.
+
+The nav aid suppression finds the **most detailed** (highest) scale covering the point and caps maxzoom to that scale's floor minus one. This avoids cascading suppression gaps: e.g. a US2 light in an area covered by both US3 and US4 yields at `US4_floor - 1 = z5` (not `US3_floor - 1 = z3`), keeping it visible through intermediate zooms.
+
+**Soundings are exempt** from coverage suppression. Because soundings use density thinning (`--drop-densest-as-needed`), suppressing lower-scale soundings creates voids where all lower-scale soundings are removed but the replacement scale's soundings are thinned to near-zero at its floor zoom. Instead, soundings keep their full native zoom range and tippecanoe's density algorithm naturally balances the mix across scales.
 
 #### Sounding Density Thinning
 

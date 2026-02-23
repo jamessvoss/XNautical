@@ -1105,14 +1105,24 @@ def main():
                     # ECDIS usage band suppression: if a higher-scale M_COVR
                     # covers this point, cap maxzoom so it yields when the
                     # higher-scale data takes over.
+                    # Soundings (OBJL 129) are exempt: they use density thinning
+                    # (--drop-densest-as-needed) which naturally balances density
+                    # across scales. Suppressing them creates voids where all
+                    # lower-scale soundings are removed but the replacement
+                    # scale's soundings are thinned to near-zero at its floor.
                     native_max = SCALE_ZOOM_RANGES.get(scale_num, (0, 15))[1]
                     point_maxz = native_max
-                    if coverage_union and scale_num in _coverage_higher_scales:
+                    if objl != 129 and coverage_union and scale_num in _coverage_higher_scales:
                         coords = geom.get('coordinates', [])
                         if len(coords) >= 2:
                             pt_ogr = ogr.Geometry(ogr.wkbPoint)
                             pt_ogr.AddPoint_2D(coords[0], coords[1])
-                            for higher_sn in _coverage_higher_scales[scale_num]:
+                            # Find the HIGHEST (most detailed) scale covering this
+                            # point, not the lowest. This keeps lower-scale soundings
+                            # visible through intermediate zooms until the most
+                            # detailed replacement kicks in, avoiding gaps caused by
+                            # cascading suppression + density thinning.
+                            for higher_sn in reversed(_coverage_higher_scales[scale_num]):
                                 if coverage_union[higher_sn].Contains(pt_ogr):
                                     higher_floor = SCALE_ZOOM_RANGES.get(higher_sn, (0, 15))[0]
                                     point_maxz = higher_floor - 1
