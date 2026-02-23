@@ -16,7 +16,7 @@ This React Native application displays official NOAA S-57 electronic navigationa
 │                                   ▼          ▼          ▼        │
 │                              per-scale   points.mbtiles          │
 │                              .mbtiles    (nav aids +             │
-│                              (charts)     soundings)             │
+│                              (charts)     soundings + hazards)   │
 │                                   │          │                   │
 │                                   ▼          ▼                   │
 │                             Firebase Storage (per-district)      │
@@ -29,7 +29,7 @@ This React Native application displays official NOAA S-57 electronic navigationa
 │                                                                  │
 │  LocalTileServer (native) ──► MapLibre GL layers                 │
 │  ├── charts layer (lines/polygons/areas)                         │
-│  ├── points layer (nav aids, soundings)                          │
+│  ├── points layer (nav aids, soundings, hazards)                 │
 │  └── arcs layer (sector light arcs)                              │
 │                                                                  │
 │  App-side filtering:                                             │
@@ -127,7 +127,7 @@ The compose job embeds two metadata entries into `points.mbtiles`:
 {district}cgd/chart-geojson/{chartId}/{chartId}.geojson — Cached per-chart GeoJSON
 {district}cgd/chart-geojson/_manifest.json            — Valid chart list for compose
 {district}cgd/charts/{US1-US6}.mbtiles                — Per-scale chart tile packs
-{district}cgd/charts/points.mbtiles                   — All point features (nav aids + soundings)
+{district}cgd/charts/points.mbtiles                   — All point features (nav aids + soundings + hazards)
 {district}cgd/charts/manifest.json                    — Pack metadata for the app
 {district}cgd/charts/conversion-report.json           — Detailed conversion report
 ```
@@ -148,7 +148,7 @@ Three vector tile layers are rendered:
 | Layer    | Content                          | Source        |
 |----------|----------------------------------|---------------|
 | `charts` | Depth areas, contours, coastline, land, cables, pipelines, restricted areas, fairways, etc. | Per-scale .mbtiles |
-| `points` | Nav aids (buoys, lights, beacons, wrecks), soundings | points.mbtiles |
+| `points` | Nav aids (buoys, lights, beacons), soundings, hazards (rocks, wrecks, obstructions) | points.mbtiles |
 | `arcs`   | Sector light arc geometries      | Per-scale .mbtiles |
 
 ### ECDIS Usage Band Filtering (App-Side)
