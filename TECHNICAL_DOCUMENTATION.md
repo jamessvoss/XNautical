@@ -2,295 +2,183 @@
 
 ## Overview
 
-This React Native application displays official NOAA S-57 electronic navigational charts (ENCs) offline on mobile devices. It implements professional ECDIS-style chart quilting, SCAMIN-based feature visibility, and proper nautical symbology.
+This React Native application displays official NOAA S-57 electronic navigational charts (ENCs) offline on mobile devices. Charts are converted server-side into MBTiles vector tiles, downloaded per-district, and rendered with MapLibre GL using ECDIS-style chart quilting, cross-scale feature suppression, and proper nautical symbology.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        React Native App                          │
-├─────────────────────────────────────────────────────────────────┤
-│  ChartViewer.native.tsx                                          │
-│  ├── Mapbox GL Native (@rnmapbox/maps)                          │
-│  ├── GeoJSON Data Layers                                         │
-│  │   ├── DEPARE (Depth Areas) - Polygons                        │
-│  │   ├── DEPCNT (Depth Contours) - Lines                        │
-│  │   ├── SOUNDG (Soundings) - Points                            │
-│  │   └── LNDARE (Land Areas) - Polygons                         │
-│  └── Debug Overlay                                               │
-├─────────────────────────────────────────────────────────────────┤
-│  assets/Maps/                                                    │
-│  ├── US4AK4PH_*.json (Approach scale)                           │
-│  ├── US5AK5SI_*.json (Homer Harbor)                             │
-│  ├── US5AK5QG_*.json (Seldovia Harbor)                          │
-│  └── US5AK5SJ_*.json (Approach Detail)                          │
+│                     Cloud Run (Server-Side)                      │
+│                                                                  │
+│  S-57 (.000) ──► ogr2ogr ──► GeoJSON ──► compose_job.py         │
+│                                              │                   │
+│                                   ┌──────────┼──────────┐        │
+│                                   ▼          ▼          ▼        │
+│                              per-scale   points.mbtiles          │
+│                              .mbtiles    (nav aids +             │
+│                              (charts)     soundings)             │
+│                                   │          │                   │
+│                                   ▼          ▼                   │
+│                             Firebase Storage (per-district)      │
+└─────────────────────────────────────────────────────────────────┘
+                                    │
+                              download on demand
+                                    │
+┌─────────────────────────────────────────────────────────────────┐
+│                     React Native App (Client)                    │
+│                                                                  │
+│  LocalTileServer (native) ──► MapLibre GL layers                 │
+│  ├── charts layer (lines/polygons/areas)                         │
+│  ├── points layer (nav aids, soundings)                          │
+│  └── arcs layer (sector light arcs)                              │
+│                                                                  │
+│  App-side filtering:                                             │
+│  ├── _scaleNum + coverage_boundaries → ECDIS usage band rules   │
+│  ├── SCAMIN → zoom-based feature visibility                      │
+│  └── OBJL-based symbology (colors, icons, labels)                │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Data Pipeline
+## Conversion Pipeline
 
-### Source Data: S-57 Format
+### Source Data
 
-S-57 is the IHO (International Hydrographic Organization) standard for electronic navigational charts. NOAA provides free S-57 ENCs for US waters.
+NOAA provides free S-57 ENCs organized by Coast Guard District (01-17). Each chart has a scale prefix (US1-US6) indicating its detail level:
 
-**Chart Files Used:**
-| Chart ID | Name | Scale Type | Coverage |
-|----------|------|------------|----------|
-| US4AK4PH | Approaches to Homer Harbor | Approach (1:120,000) | Kachemak Bay |
-| US5AK5SI | Homer Harbor | Harbor (1:18,000) | Homer Spit |
-| US5AK5QG | Seldovia Harbor | Harbor (1:18,000) | Seldovia |
-| US5AK5SJ | Approaches Detail | Approach Detail (1:30,000) | Eastern approaches |
+| Scale | Name     | Zoom Range | Typical Use          |
+|-------|----------|------------|----------------------|
+| US1   | Overview | z0-8       | Ocean crossing       |
+| US2   | General  | z0-10      | Coastal transit       |
+| US3   | Coastal  | z4-13      | Nearshore navigation |
+| US4   | Approach | z6-15      | Harbor approaches    |
+| US5   | Harbour  | z6-15      | Port entry           |
+| US6   | Berthing | z6-15      | Docking              |
 
-### Extraction Process
+### Per-Chart Conversion (`convert.py`)
 
-S-57 data is converted to GeoJSON using GDAL/OGR:
+1. **S-57 → GeoJSON** via `ogr2ogr` — extracts all geometry layers, adds `_chartId` property, generates light sector arc geometries, splits SOUNDG MultiPoint into individual depth points, assigns correct OBJL codes from layer names.
+2. **GeoJSON uploaded** to Firebase Storage as cached chart-geojson (persistent across runs).
 
-```bash
-# Extract depth contours
-ogr2ogr -f GeoJSON US5AK5SI_depcnt.json US5AK5SI.000 DEPCNT
+### Compose Job (`compose_job.py`)
 
-# Extract depth areas
-ogr2ogr -f GeoJSON US5AK5SI_depare.json US5AK5SI.000 DEPARE
+A single Cloud Run Job that reads all per-chart GeoJSON for a district and produces unified MBTiles. Key processing steps:
 
-# Extract soundings
-ogr2ogr -f GeoJSON US5AK5SI_soundg.json US5AK5SI.000 SOUNDG
+#### Deduplication
 
-# Extract land areas
-ogr2ogr -f GeoJSON US5AK5SI_lndare.json US5AK5SI.000 LNDARE
-```
+When the same real-world feature appears in multiple overlapping charts, the compose job deduplicates by keeping the version from the highest-scale (most detailed) chart. Dedup covers:
+- **Physical objects**: rocks, wrecks, obstructions
+- **Hydrographic features**: depth areas, depth contours
+- **Line features**: cables, pipelines, coastlines
+- **Regulatory zones**: restricted areas, military areas, caution areas
 
-### Sounding Processing
+#### M_COVR Authority Clipping (Non-Point Features)
 
-S-57 stores soundings as 3D MultiPoint geometries where depth is the Z coordinate. We "explode" these into individual Point features with a DEPTH property:
+Per ECDIS standard, when a higher-scale chart covers an area, ALL lower-scale line/polygon/area features in that area are suppressed. The compose job uses M_COVR (coverage) polygons from each chart to clip:
 
-```
-Original: MultiPoint with 701 coordinates, depth in Z
-Processed: 701 Point features, each with DEPTH property
-```
+- **Fully inside** higher-scale coverage → feature removed entirely
+- **Partially overlapping** → geometry trimmed via `OGR Difference()`
+- **Fully outside** → feature kept as-is
 
-**Total Soundings Extracted:**
-- US4AK4PH: 1,234 soundings
-- US5AK5SI: 701 soundings
-- US5AK5QG: 308 soundings
-- US5AK5SJ: 235 soundings
-- **Total: 2,478 soundings**
+To prevent zoom gaps (e.g. US3 clipped by US4, but US4 tiles start at z6 leaving z4-5 empty), an unclipped copy is emitted for zoom levels below the higher scale's native floor.
 
-## Chart Quilting
+Clipping is cascading per-scale-pair: each scale is clipped only against the immediately next higher scale, not the union of all higher scales.
 
-### Concept
+#### Point Extraction and Coverage Suppression
 
-"Quilting" is how professional ECDIS systems display multiple overlapping charts. Charts are rendered in order from least to most detailed, with detailed charts overlaying less detailed ones.
+All Point geometry features are diverted to a separate `points.mbtiles` (not included in per-scale chart tiles). Points are NOT geometrically clipped. Instead, each point gets a `tippecanoe.maxzoom` cap based on M_COVR spatial coverage — if a higher-scale chart covers the point's location, its maxzoom is set to `higher_scale_floor - 1` so it yields when the higher-scale data takes over.
 
-```
-Render Order (bottom to top):
-1. US4AK4PH (Approach) - Base layer, always visible
-2. US5AK5SJ (Approach Detail) - Overlays approach
-3. US5AK5SI (Homer Harbor) - Overlays where it has coverage
-4. US5AK5QG (Seldovia Harbor) - Overlays where it has coverage
-```
+#### Sounding Density Thinning
 
-### Implementation
+Soundings (OBJL 129) are split from other point features (nav aids) for separate tippecanoe processing:
 
-```typescript
-const CHART_RENDER_ORDER: ChartKey[] = [
-  'US4AK4PH',  // Least detailed (bottom)
-  'US5AK5SJ',
-  'US5AK5SI',
-  'US5AK5QG'   // Most detailed (top)
-];
-```
+- **Nav aids** (buoys, lights, beacons, wrecks, etc.): processed with `-r1 --no-feature-limit --no-tile-size-limit` — every feature preserved at every zoom level from its minzoom to maxzoom.
+- **Soundings**: processed with `--drop-densest-as-needed -M 2000` — tippecanoe auto-thins at low zoom to keep tile sizes under 2KB, progressively increasing density as zoom increases. At max zoom, full sounding density is preserved.
 
-Each layer is rendered for all charts in order, ensuring proper z-ordering.
+Both use layer name `points` and are merged via `tile-join` into a single `points.mbtiles`. The app needs no special handling — soundings are simply sparser at overview zooms and denser as you zoom in.
 
-## SCAMIN (Scale Minimum) Filtering
+#### Tippecanoe Tile Generation
 
-### What is SCAMIN?
+Per-scale GeoJSON is processed by tippecanoe workers (parallel Cloud Run Jobs):
+- Each feature has `tippecanoe.minzoom`, `tippecanoe.maxzoom`, and `tippecanoe.layer` set by the compose job
+- `-r1 --no-feature-limit --no-tile-size-limit --no-line-simplification` preserves every chart feature exactly
+- High-zoom scales (maxzoom > 14) are split into zoom bands for parallel processing
+- Workers upload per-band `.mbtiles` which are merged via `tile-join` into unified scale packs
 
-SCAMIN is an S-57 attribute that specifies the minimum display scale for a feature. It prevents clutter at small scales by hiding features that would be too dense.
+#### Metadata Injection
 
-**SCAMIN Values in Our Data:**
+The compose job embeds two metadata entries into `points.mbtiles`:
 
-| Feature Type | US4AK4PH | US5AK5SI | US5AK5QG | US5AK5SJ |
-|--------------|----------|----------|----------|----------|
-| Contours (DEPCNT) | 179,999 / 349,999 | 21,999 / 44,999 | 21,999 / 44,999 | 44,999 / 89,999 |
-| Soundings (SOUNDG) | 119,999 | 17,999 | 17,999 | 29,999 |
-| Depth Areas (DEPARE) | None | None | None | None |
+- **`sector_lights`**: JSON index of all sector light features (coordinates, sectors, colors, ranges) for the app's sector light arc rendering.
+- **`coverage_boundaries`**: Simplified M_COVR polygons per scale. The app uses these client-side for ECDIS usage band filtering — suppressing lower-scale point features in areas covered by higher-scale charts.
 
-### SCAMIN to Zoom Level Conversion
+### Storage Layout (Firebase Storage)
 
 ```
-zoom ≈ log₂(559,082,264 / scale)
-
-SCAMIN 17,999  → zoom ~15
-SCAMIN 29,999  → zoom ~14
-SCAMIN 44,999  → zoom ~13.5
-SCAMIN 119,999 → zoom ~12
-SCAMIN 179,999 → zoom ~11.5
+{district}cgd/enc-source/{chartId}/{chartId}.000      — S-57 source files
+{district}cgd/chart-geojson/{chartId}/{chartId}.geojson — Cached per-chart GeoJSON
+{district}cgd/chart-geojson/_manifest.json            — Valid chart list for compose
+{district}cgd/charts/{US1-US6}.mbtiles                — Per-scale chart tile packs
+{district}cgd/charts/points.mbtiles                   — All point features (nav aids + soundings)
+{district}cgd/charts/manifest.json                    — Pack metadata for the app
+{district}cgd/charts/conversion-report.json           — Detailed conversion report
 ```
 
-### Contour Filtering (Mutually Exclusive)
+## App Consumption
 
-Contours use mutually exclusive zoom bands to prevent crossing lines from different chart scales:
+### Tile Serving
 
-```typescript
-filter={[
-  'any',
-  // Harbor (SCAMIN <= 50000) -> zoom 15+ ONLY
-  ['all', ['<=', ['get', 'SCAMIN'], 50000], ['>=', ['zoom'], 15]],
-  // Detail (50000 < SCAMIN <= 100000) -> zoom 13-14 ONLY
-  ['all', ['>', ['get', 'SCAMIN'], 50000], ['<=', ['get', 'SCAMIN'], 100000], 
-   ['>=', ['zoom'], 13], ['<', ['zoom'], 15]],
-  // Approach (SCAMIN > 100000) -> zoom 11-12 ONLY
-  ['all', ['>', ['get', 'SCAMIN'], 100000], 
-   ['>=', ['zoom'], 11], ['<', ['zoom'], 13]],
-]}
-```
+The app downloads `.mbtiles` files per-district and serves them locally via a native `LocalTileServer` (Swift/Kotlin). The server handles:
+- Per-scale chart tile requests (`/tiles/{scale}/{z}/{x}/{y}.pbf`)
+- Point tile requests from `points.mbtiles`
+- Composite tile quilting (merging multiple scales into a single response)
 
-### Sounding Filtering (Additive)
+### MapLibre GL Layers
 
-Soundings use additive filtering - more soundings appear as you zoom in:
+Three vector tile layers are rendered:
 
-```typescript
-filter={[
-  'any',
-  // Harbor (SCAMIN <= 20000) -> zoom 14+
-  ['all', ['<=', ['get', 'SCAMIN'], 20000], ['>=', ['zoom'], 14]],
-  // Detail (20000 < SCAMIN <= 30000) -> zoom 13+
-  ['all', ['>', ['get', 'SCAMIN'], 20000], ['<=', ['get', 'SCAMIN'], 30000], 
-   ['>=', ['zoom'], 13]],
-  // Approach (SCAMIN > 30000) -> zoom 12+
-  ['all', ['>', ['get', 'SCAMIN'], 30000], ['>=', ['zoom'], 12]],
-]}
-```
+| Layer    | Content                          | Source        |
+|----------|----------------------------------|---------------|
+| `charts` | Depth areas, contours, coastline, land, cables, pipelines, restricted areas, fairways, etc. | Per-scale .mbtiles |
+| `points` | Nav aids (buoys, lights, beacons, wrecks), soundings | points.mbtiles |
+| `arcs`   | Sector light arc geometries      | Per-scale .mbtiles |
 
-## Layer Rendering
+### ECDIS Usage Band Filtering (App-Side)
 
-### Depth Areas (DEPARE)
+For point features, the app implements client-side ECDIS usage band rules using:
+- `_scaleNum` property on each feature (which scale's chart it came from)
+- `coverage_boundaries` metadata from `points.mbtiles` (M_COVR polygons per scale)
+- Current zoom level and map viewport
 
-Polygons representing depth zones, colored by depth range:
+At a given zoom/location, the app determines which scale "owns" that area and hides point features from lower scales. This complements the server-side maxzoom capping — the server handles the common case, the app handles edge cases at tile boundaries.
 
-```typescript
-fillColor: [
-  'step', ['get', 'DRVAL2'],
-  '#A5D6FF',  // 0-2m: Very light blue
-  2, '#8ECCFF',  // 2-5m
-  5, '#6BB8E8',  // 5-10m
-  10, '#4A9FD8', // 10-20m
-  20, '#B8D4E8', // 20m+
-]
-```
+### SCAMIN-Based Visibility
 
-### Depth Contours (DEPCNT)
-
-Lines at specific depths, color-coded by chart source (debug mode):
-
-| Chart | Debug Color |
-|-------|-------------|
-| US4AK4PH | Orange |
-| US5AK5SJ | Purple |
-| US5AK5SI | Green |
-| US5AK5QG | Red |
-
-### Soundings (SOUNDG)
-
-Individual depth values with priority-based display:
-
-- **Depth-based coloring**: Red (<5m), Blue (5-20m), Gray (>20m)
-- **Priority sorting**: `symbolSortKey: ['get', 'DEPTH']` - shallower soundings shown first
-- **Collision detection**: Non-overlapping text with depth priority
-
-### Land Areas (LNDARE)
-
-Filled polygons in tan/sand color (#E8D4A0).
-
-## Debug Features
-
-The app includes comprehensive debugging tools:
-
-### Debug Info Panel
-- Current zoom level
-- Active SCAMIN band indicator
-- Chart activity status with color coding
-
-### Chart Boundary Outlines
-- Dashed lines showing each chart's coverage area
-- Color-coded to match chart debug colors
-- Toggle on/off
-
-### Feature Inspector (Tap-to-Inspect)
-- Tap any feature to see its properties
-- Shows SCAMIN, depth values, source chart
-- Displays all S-57 attributes
-
-### Feature Counts
-- Total contours and soundings per chart
-- Visibility based on current zoom
-
-## File Structure
+Features with SCAMIN (Scale Minimum) attributes are filtered by zoom level. The compose job converts SCAMIN values to tippecanoe minzoom:
 
 ```
-XNautical/
-├── src/
-│   └── components/
-│       ├── ChartViewer.native.tsx  # Main map component
-│       ├── ChartViewer.web.tsx     # Web version
-│       └── ChartViewer.tsx         # Platform selector
-├── assets/
-│   └── Maps/
-│       ├── US4AK4PH_ENC_ROOT/      # Original S-57 files
-│       ├── US4AK4PH_depare.json    # Extracted GeoJSON
-│       ├── US4AK4PH_depcnt.json
-│       ├── US4AK4PH_soundg.json
-│       ├── US4AK4PH_lndare.json
-│       └── ... (similar for other charts)
-├── App.tsx                          # Entry point
-├── app.json                         # Expo config
-└── .env                             # Mapbox token (not in repo)
+zoom ≈ log₂(559,082,264 / SCAMIN)
 ```
 
-## Key Dependencies
+Features don't appear until the map zoom reaches their SCAMIN-derived minimum, preventing clutter at overview zooms.
 
-- `@rnmapbox/maps`: React Native Mapbox GL
-- `expo`: React Native framework
-- `react-native`: Mobile UI framework
+### Feature Inspector
 
-## Environment Setup
+Tapping any feature shows an info panel with:
+- Feature type and name (OBJNAM)
+- Source chart (`_chartId`) and scale (`_scaleNum`)
+- Depth values (DRVAL1/DRVAL2 for areas, DEPTH for soundings)
+- All relevant S-57 attributes
 
-1. Create `.env` file with Mapbox token:
-```
-EXPO_PUBLIC_MAPBOX_ACCESS_TOKEN=pk.your_token_here
-```
+## Key Properties on Features
 
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Run on Android:
-```bash
-npx expo run:android
-```
-
-## Performance Considerations
-
-### Data Size
-- Total GeoJSON: ~4MB bundled with app
-- Larger datasets may need lazy loading to avoid Hermes VM compilation limits
-
-### Rendering Optimization
-- `minZoomLevel` on ShapeSources prevents rendering at inappropriate scales
-- SCAMIN filtering reduces feature count at low zoom
-- Symbol collision detection managed by Mapbox GL
-
-## Future Enhancements
-
-1. **Navigation Features**: Add lights, buoys, beacons, hazards (data extracted but not yet displayed due to bundle size constraints)
-
-2. **Lazy Loading**: Load GeoJSON from asset files at runtime instead of bundling
-
-3. **Additional Charts**: Support for more chart coverage areas
-
-4. **Offline Tiles**: Pre-cached base map tiles for true offline operation
+| Property    | Set By  | Purpose |
+|-------------|---------|---------|
+| `OBJL`      | Server  | S-57 object class code (determines symbology) |
+| `_scaleNum` | Server  | Scale band (1-6) of source chart |
+| `_chartId`  | Server  | Source chart ID (e.g. `US4AK4KM`) |
+| `SCAMIN`    | Server  | Scale minimum for visibility filtering |
+| `DEPTH`     | Server  | Sounding depth in meters |
+| `DRVAL1/2`  | Server  | Depth range for depth areas |
 
 ## References
 
@@ -298,4 +186,5 @@ npx expo run:android
 - [IHO S-52 Presentation Library](https://iho.int/en/s-52-standard)
 - [NOAA ENC Direct](https://charts.noaa.gov/ENCs/ENCs.shtml)
 - [GDAL/OGR S-57 Driver](https://gdal.org/drivers/vector/s57.html)
-- [Mapbox GL JS Expressions](https://docs.mapbox.com/mapbox-gl-js/style-spec/expressions/)
+- [tippecanoe](https://github.com/felt/tippecanoe)
+- [MapLibre GL](https://maplibre.org/)

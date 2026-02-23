@@ -377,23 +377,6 @@ def _flatten_coords(coords):
 # contour at different depths, same area with different boundaries).
 # This is the S-57 intended use of M_COVR — it defines chart authority boundaries.
 #
-# M_COVR authority clipping — ONLY skin-of-earth and hydrographic features
-# where cross-scale overlap causes visual problems (seams, doubled contours,
-# duplicate soundings, doubled coastlines).
-# Point features (rocks, wrecks, buoys, lights, beacons, etc.) must NOT be
-# clipped — they rely on dedup only. If dedup doesn't catch them (different
-# coords across scales), both versions should remain because we can't know
-# if the higher-scale chart actually surveyed that specific feature.
-MCOVR_CLIP_OBJLS = {
-    42,   # DEPARE — depth areas (seams at scale boundaries)
-    43,   # DEPCNT — depth contours (doubled lines)
-    30,   # COALNE — coastline (doubled coastlines)
-    71,   # LNDARE — land areas (overlapping polygons)
-    129,  # SOUNDG — soundings (duplicate depth values)
-    58,   # CBLSUB — submarine cables (doubled lines at scale overlaps)
-    64,   # PIPSOL — pipelines (doubled lines at scale overlaps)
-}
-
 
 def build_coverage_index(local_paths):
     """Stream all chart GeoJSON and collect M_COVR (OBJL=302) polygons per scale.
@@ -1083,7 +1066,7 @@ def main():
                     # (keep _scaleNum for app-side usage band filtering)
                     stripped = {k: v for k, v in props.items()
                                 if k not in ('RCID', 'PRIM', 'GRUP', 'SORDAT', 'SORIND',
-                                             'CHART_ID', '_chartId', 'OBJL_NAME')}
+                                             'CHART_ID', 'OBJL_NAME')}
                     point_feature = {
                         'type': 'Feature',
                         'geometry': geom,
@@ -1147,7 +1130,7 @@ def main():
                 # To avoid zoom gaps (e.g. US3 clipped by US4 but US4 tiles
                 # start at z6, leaving z4-5 empty), we write an UNCLIPPED copy
                 # for zoom levels below the higher scale's native range.
-                if objl in MCOVR_CLIP_OBJLS and scale_num in higher_coverage:
+                if scale_num in higher_coverage:
                     try:
                         ogr_line = ogr.CreateGeometryFromJson(json.dumps(geom))
                         if ogr_line and not ogr_line.IsEmpty():
@@ -1373,48 +1356,102 @@ def main():
                        f'{contours_trimmed} partially trimmed')
         logger.info(f'Points extracted: {len(points_extracted):,d} Point features for points.mbtiles')
 
-        # ─── Write points.geojson and run tippecanoe → points.mbtiles ───
+        # ─── Write points GeoJSON and run tippecanoe → points.mbtiles ───
+        # Nav aids (all non-sounding points): -r1 keeps every feature at every zoom.
+        # Soundings (OBJL 129): --drop-densest-as-needed auto-thins at low zoom,
+        # reaching full density at max zoom (standard ECDIS behavior).
         points_count = len(points_extracted)
         points_storage_path = ''
         if points_extracted:
-            points_geojson_path = os.path.join(output_dir, 'points.geojson')
+            navaid_geojson_path = os.path.join(output_dir, 'navaid.geojson')
+            soundings_geojson_path = os.path.join(output_dir, 'soundings.geojson')
+            navaid_mbtiles_path = os.path.join(output_dir, 'navaid.mbtiles')
+            soundings_mbtiles_path = os.path.join(output_dir, 'soundings.mbtiles')
             points_mbtiles_path = os.path.join(output_dir, 'points.mbtiles')
 
-            # Write as newline-delimited GeoJSON (tippecanoe auto-detects)
-            with open(points_geojson_path, 'w') as f:
+            # Separate soundings from nav aids and write two GeoJSON files
+            navaid_count = 0
+            sounding_count = 0
+            with open(navaid_geojson_path, 'w') as f_nav, \
+                 open(soundings_geojson_path, 'w') as f_snd:
                 for pf in points_extracted:
-                    f.write(json.dumps(pf, separators=(',', ':')) + '\n')
+                    if pf['properties'].get('OBJL') == 129:
+                        f_snd.write(json.dumps(pf, separators=(',', ':')) + '\n')
+                        sounding_count += 1
+                    else:
+                        f_nav.write(json.dumps(pf, separators=(',', ':')) + '\n')
+                        navaid_count += 1
 
-            points_geojson_mb = os.path.getsize(points_geojson_path) / 1024 / 1024
-            logger.info(f'Wrote points.geojson: {points_count:,d} features '
-                       f'({points_geojson_mb:.1f} MB)')
+            navaid_mb = os.path.getsize(navaid_geojson_path) / 1024 / 1024
+            sounding_mb = os.path.getsize(soundings_geojson_path) / 1024 / 1024
+            logger.info(f'Wrote navaid.geojson: {navaid_count:,d} features ({navaid_mb:.1f} MB)')
+            logger.info(f'Wrote soundings.geojson: {sounding_count:,d} features ({sounding_mb:.1f} MB)')
 
             # Free the in-memory list before tippecanoe
             del points_extracted
 
-            # Run tippecanoe to produce points.mbtiles
-            tippecanoe_points_cmd = [
-                'tippecanoe', '-o', points_mbtiles_path,
-                '-Z', '0', '-z', '15',
-                '-r1',
-                '--no-feature-limit',
-                '--no-tile-size-limit',
-                '--no-line-simplification',
-                '-l', 'points',
-                '--force',
-                points_geojson_path,
-            ]
-            logger.info(f'Running tippecanoe for points.mbtiles: {" ".join(tippecanoe_points_cmd)}')
-            proc = subprocess.run(tippecanoe_points_cmd, capture_output=True, text=True)
-            if proc.returncode != 0:
-                logger.error(f'tippecanoe (points) failed: {proc.stderr[:500]}')
-                sys.exit(1)
+            # Run tippecanoe for nav aids: -r1 keeps every feature
+            if navaid_count > 0:
+                tippecanoe_navaid_cmd = [
+                    'tippecanoe', '-o', navaid_mbtiles_path,
+                    '-Z', '0', '-z', '15',
+                    '-r1',
+                    '--no-feature-limit',
+                    '--no-tile-size-limit',
+                    '--no-line-simplification',
+                    '-l', 'points',
+                    '--force',
+                    navaid_geojson_path,
+                ]
+                logger.info(f'Running tippecanoe for navaid.mbtiles: {" ".join(tippecanoe_navaid_cmd)}')
+                proc = subprocess.run(tippecanoe_navaid_cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    logger.error(f'tippecanoe (navaid) failed: {proc.stderr[:500]}')
+                    sys.exit(1)
+                skipped = [l for l in proc.stderr.splitlines() if 'Skipping this tile' in l]
+                if skipped:
+                    logger.error(f'tippecanoe (navaid) DROPPED {len(skipped)} TILES!')
+                    sys.exit(1)
+                logger.info(f'navaid.mbtiles: {os.path.getsize(navaid_mbtiles_path) / 1024 / 1024:.1f} MB')
 
-            # Check for skipped tiles
-            skipped = [l for l in proc.stderr.splitlines() if 'Skipping this tile' in l]
-            if skipped:
-                logger.error(f'tippecanoe (points) DROPPED {len(skipped)} TILES!')
-                sys.exit(1)
+            # Run tippecanoe for soundings: --drop-densest-as-needed for auto-thinning
+            if sounding_count > 0:
+                tippecanoe_sounding_cmd = [
+                    'tippecanoe', '-o', soundings_mbtiles_path,
+                    '-Z', '0', '-z', '15',
+                    '--drop-densest-as-needed',
+                    '-M', '2000',
+                    '--no-line-simplification',
+                    '-l', 'points',
+                    '--force',
+                    soundings_geojson_path,
+                ]
+                logger.info(f'Running tippecanoe for soundings.mbtiles: {" ".join(tippecanoe_sounding_cmd)}')
+                proc = subprocess.run(tippecanoe_sounding_cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    logger.error(f'tippecanoe (soundings) failed: {proc.stderr[:500]}')
+                    sys.exit(1)
+                logger.info(f'soundings.mbtiles: {os.path.getsize(soundings_mbtiles_path) / 1024 / 1024:.1f} MB')
+
+            # Merge nav aids + soundings into points.mbtiles via tile-join
+            tile_join_inputs = []
+            if navaid_count > 0:
+                tile_join_inputs.append(navaid_mbtiles_path)
+            if sounding_count > 0:
+                tile_join_inputs.append(soundings_mbtiles_path)
+
+            if len(tile_join_inputs) == 1:
+                # Only one type present — just rename
+                os.rename(tile_join_inputs[0], points_mbtiles_path)
+            else:
+                tile_join_cmd = [
+                    'tile-join', '-o', points_mbtiles_path, '--force',
+                ] + tile_join_inputs
+                logger.info(f'Running tile-join for points.mbtiles: {" ".join(tile_join_cmd)}')
+                proc = subprocess.run(tile_join_cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    logger.error(f'tile-join (points) failed: {proc.stderr[:500]}')
+                    sys.exit(1)
 
             points_mbtiles_mb = os.path.getsize(points_mbtiles_path) / 1024 / 1024
             logger.info(f'points.mbtiles: {points_mbtiles_mb:.1f} MB')
@@ -1481,10 +1518,11 @@ def main():
                 pool.submit(_upload_points_zip)
 
             # Free from tmpfs
-            os.remove(points_geojson_path)
-            os.remove(points_mbtiles_path)
-            if os.path.exists(points_zip_path):
-                os.remove(points_zip_path)
+            for p in [navaid_geojson_path, soundings_geojson_path,
+                       navaid_mbtiles_path, soundings_mbtiles_path,
+                       points_mbtiles_path, points_zip_path]:
+                if os.path.exists(p):
+                    os.remove(p)
 
             logger.info(f'Uploaded points.mbtiles: {points_count:,d} features')
         else:
