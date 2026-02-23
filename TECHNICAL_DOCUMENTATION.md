@@ -93,16 +93,17 @@ All Point geometry features are diverted to a separate `points.mbtiles` (not inc
 
 The nav aid suppression finds the **most detailed** (highest) scale covering the point and caps maxzoom to that scale's floor minus one. This avoids cascading suppression gaps: e.g. a US2 light in an area covered by both US3 and US4 yields at `US4_floor - 1 = z5` (not `US3_floor - 1 = z3`), keeping it visible through intermediate zooms.
 
-**Soundings are exempt** from coverage suppression. Because soundings use density thinning (`--drop-densest-as-needed`), suppressing lower-scale soundings creates voids where all lower-scale soundings are removed but the replacement scale's soundings are thinned to near-zero at its floor zoom. Instead, soundings keep their full native zoom range and tippecanoe's density algorithm naturally balances the mix across scales.
+**Soundings and hazards are exempt** from coverage suppression. Because these features use density thinning (`--drop-densest-as-needed`), suppressing lower-scale versions creates voids where all lower-scale features are removed but the replacement scale's features are thinned to near-zero at its floor zoom. Instead, they keep their full native zoom range and tippecanoe's density algorithm naturally balances the mix across scales.
 
-#### Sounding Density Thinning
+#### Density Thinning (Soundings & Hazards)
 
-Soundings (OBJL 129) are split from other point features (nav aids) for separate tippecanoe processing:
+Points are split three ways for separate tippecanoe processing:
 
-- **Nav aids** (buoys, lights, beacons, wrecks, etc.): processed with `-r1 --no-feature-limit --no-tile-size-limit` — every feature preserved at every zoom level from its minzoom to maxzoom.
-- **Soundings**: processed with `--drop-densest-as-needed -M 2000` — tippecanoe auto-thins at low zoom to keep tile sizes under 2KB, progressively increasing density as zoom increases. At max zoom, full sounding density is preserved.
+- **Nav aids** (buoys, lights, beacons, etc.): processed with `-r1 --no-feature-limit --no-tile-size-limit` — every feature preserved at every zoom level from its minzoom to maxzoom.
+- **Soundings** (OBJL 129): processed with `--drop-densest-as-needed -M 2000` — tippecanoe auto-thins at low zoom to keep tile sizes under 2KB, progressively increasing density as zoom increases.
+- **Hazards** (rocks, obstructions, wrecks): processed with `--drop-densest-as-needed -M 2000` — same density thinning as soundings. Too numerous for `-r1` at low zoom (creates unreadable black blobs), but full density is preserved at high zoom where precise positions matter.
 
-Both use layer name `points` and are merged via `tile-join` into a single `points.mbtiles`. The app needs no special handling — soundings are simply sparser at overview zooms and denser as you zoom in.
+All three use layer name `points` and are merged via `tile-join` into a single `points.mbtiles`. The app needs no special handling — density-thinned features are simply sparser at overview zooms and denser as you zoom in.
 
 #### Tippecanoe Tile Generation
 

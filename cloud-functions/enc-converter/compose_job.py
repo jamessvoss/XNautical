@@ -79,6 +79,11 @@ SCAMIN_HEADROOM = 2
 # These always use the scale band's native zoom range, never SCAMIN-derived minzoom.
 SKIN_OF_EARTH_OBJLS = {30, 42, 43, 69, 71}  # COALNE, DEPARE, DEPCNT, LAKARE, LNDARE
 
+# Point features exempt from M_COVR coverage suppression and processed with
+# density thinning (--drop-densest-as-needed) instead of -r1 keep-all.
+# These are too numerous for -r1 at low zoom and create voids when suppressed.
+DENSITY_THINNED_OBJLS = {129, 153, 86, 159}  # SOUNDG, UWTROC, OBSTRN, WRECKS
+
 
 def scamin_to_minzoom(scamin_val, native_lo: int) -> int:
     """Convert S-57 SCAMIN to a tippecanoe minzoom level.
@@ -1105,14 +1110,12 @@ def main():
                     # ECDIS usage band suppression: if a higher-scale M_COVR
                     # covers this point, cap maxzoom so it yields when the
                     # higher-scale data takes over.
-                    # Soundings (OBJL 129) are exempt: they use density thinning
-                    # (--drop-densest-as-needed) which naturally balances density
-                    # across scales. Suppressing them creates voids where all
-                    # lower-scale soundings are removed but the replacement
-                    # scale's soundings are thinned to near-zero at its floor.
+                    # Density-thinned features (soundings, rocks, obstructions,
+                    # wrecks) are exempt from coverage suppression — they use
+                    # --drop-densest-as-needed which naturally balances density.
                     native_max = SCALE_ZOOM_RANGES.get(scale_num, (0, 15))[1]
                     point_maxz = native_max
-                    if objl != 129 and coverage_union and scale_num in _coverage_higher_scales:
+                    if objl not in DENSITY_THINNED_OBJLS and coverage_union and scale_num in _coverage_higher_scales:
                         coords = geom.get('coordinates', [])
                         if len(coords) >= 2:
                             pt_ogr = ogr.Geometry(ogr.wkbPoint)
@@ -1462,35 +1465,49 @@ def main():
         logger.info(f'Points extracted: {len(points_extracted):,d} Point features for points.mbtiles')
 
         # ─── Write points GeoJSON and run tippecanoe → points.mbtiles ───
-        # Nav aids (all non-sounding points): -r1 keeps every feature at every zoom.
-        # Soundings (OBJL 129): --drop-densest-as-needed auto-thins at low zoom,
-        # reaching full density at max zoom (standard ECDIS behavior).
+        # Three-way split for different tippecanoe strategies:
+        # - Nav aids (lights, buoys, beacons, etc.): -r1 keeps every feature
+        # - Soundings (OBJL 129): --drop-densest-as-needed -M 2000 for auto-thinning
+        # - Hazards (UWTROC 153, OBSTRN 86, WRECKS 159): --drop-densest-as-needed
+        #   -M 2000 — too dense at low zoom with -r1, density thinning gives
+        #   progressive detail while preserving full density at high zoom.
+        HAZARD_OBJLS = {153, 86, 159}
         points_count = len(points_extracted)
         points_storage_path = ''
         if points_extracted:
             navaid_geojson_path = os.path.join(output_dir, 'navaid.geojson')
             soundings_geojson_path = os.path.join(output_dir, 'soundings.geojson')
+            hazards_geojson_path = os.path.join(output_dir, 'hazards.geojson')
             navaid_mbtiles_path = os.path.join(output_dir, 'navaid.mbtiles')
             soundings_mbtiles_path = os.path.join(output_dir, 'soundings.mbtiles')
+            hazards_mbtiles_path = os.path.join(output_dir, 'hazards.mbtiles')
             points_mbtiles_path = os.path.join(output_dir, 'points.mbtiles')
 
-            # Separate soundings from nav aids and write two GeoJSON files
+            # Three-way split: nav aids, soundings, hazards
             navaid_count = 0
             sounding_count = 0
+            hazard_count = 0
             with open(navaid_geojson_path, 'w') as f_nav, \
-                 open(soundings_geojson_path, 'w') as f_snd:
+                 open(soundings_geojson_path, 'w') as f_snd, \
+                 open(hazards_geojson_path, 'w') as f_haz:
                 for pf in points_extracted:
-                    if pf['properties'].get('OBJL') == 129:
+                    pf_objl = pf['properties'].get('OBJL')
+                    if pf_objl == 129:
                         f_snd.write(json.dumps(pf, separators=(',', ':')) + '\n')
                         sounding_count += 1
+                    elif pf_objl in HAZARD_OBJLS:
+                        f_haz.write(json.dumps(pf, separators=(',', ':')) + '\n')
+                        hazard_count += 1
                     else:
                         f_nav.write(json.dumps(pf, separators=(',', ':')) + '\n')
                         navaid_count += 1
 
             navaid_mb = os.path.getsize(navaid_geojson_path) / 1024 / 1024
             sounding_mb = os.path.getsize(soundings_geojson_path) / 1024 / 1024
+            hazard_mb = os.path.getsize(hazards_geojson_path) / 1024 / 1024
             logger.info(f'Wrote navaid.geojson: {navaid_count:,d} features ({navaid_mb:.1f} MB)')
             logger.info(f'Wrote soundings.geojson: {sounding_count:,d} features ({sounding_mb:.1f} MB)')
+            logger.info(f'Wrote hazards.geojson: {hazard_count:,d} features ({hazard_mb:.1f} MB)')
 
             # Free the in-memory list before tippecanoe
             del points_extracted
@@ -1538,12 +1555,34 @@ def main():
                     sys.exit(1)
                 logger.info(f'soundings.mbtiles: {os.path.getsize(soundings_mbtiles_path) / 1024 / 1024:.1f} MB')
 
-            # Merge nav aids + soundings into points.mbtiles via tile-join
+            # Run tippecanoe for hazards: --drop-densest-as-needed for auto-thinning
+            # (rocks, obstructions, wrecks are too dense at low zoom with -r1)
+            if hazard_count > 0:
+                tippecanoe_hazard_cmd = [
+                    'tippecanoe', '-o', hazards_mbtiles_path,
+                    '-Z', '0', '-z', '15',
+                    '--drop-densest-as-needed',
+                    '-M', '2000',
+                    '--no-line-simplification',
+                    '-l', 'points',
+                    '--force',
+                    hazards_geojson_path,
+                ]
+                logger.info(f'Running tippecanoe for hazards.mbtiles: {" ".join(tippecanoe_hazard_cmd)}')
+                proc = subprocess.run(tippecanoe_hazard_cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    logger.error(f'tippecanoe (hazards) failed: {proc.stderr[:500]}')
+                    sys.exit(1)
+                logger.info(f'hazards.mbtiles: {os.path.getsize(hazards_mbtiles_path) / 1024 / 1024:.1f} MB')
+
+            # Merge nav aids + soundings + hazards into points.mbtiles via tile-join
             tile_join_inputs = []
             if navaid_count > 0:
                 tile_join_inputs.append(navaid_mbtiles_path)
             if sounding_count > 0:
                 tile_join_inputs.append(soundings_mbtiles_path)
+            if hazard_count > 0:
+                tile_join_inputs.append(hazards_mbtiles_path)
 
             if len(tile_join_inputs) == 1:
                 # Only one type present — just rename
@@ -1623,8 +1662,8 @@ def main():
                 pool.submit(_upload_points_zip)
 
             # Free from tmpfs
-            for p in [navaid_geojson_path, soundings_geojson_path,
-                       navaid_mbtiles_path, soundings_mbtiles_path,
+            for p in [navaid_geojson_path, soundings_geojson_path, hazards_geojson_path,
+                       navaid_mbtiles_path, soundings_mbtiles_path, hazards_mbtiles_path,
                        points_mbtiles_path, points_zip_path]:
                 if os.path.exists(p):
                     os.remove(p)
