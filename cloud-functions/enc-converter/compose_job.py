@@ -900,6 +900,12 @@ def main():
         dedup_index = {}       # key -> (chart_id, feat_idx, scale_num)
         key_scales = defaultdict(set)
         point_best_scamin = {}  # key -> best (most permissive / largest) SCAMIN for all Point features
+        dedup_best_scamin = {}  # key -> best (most permissive / largest) SCAMIN across all dedup copies
+        # Track tightest (smallest non-zero) SCAMIN per (scale, OBJL) for
+        # visibility-aware M_COVR clipping — used to determine when the
+        # higher scale's replacement feature actually becomes visible.
+        scale_objl_tightest_scamin = {}
+        scale_objl_exists = set()  # (scale_num, objl) pairs that exist in the data
         total_features_input = 0
         features_per_chart = {}
 
@@ -935,9 +941,29 @@ def main():
                     if scamin_val > prev:
                         point_best_scamin[key] = scamin_val
 
+                # Track tightest SCAMIN per (scale, OBJL) for non-point features
+                if geom_type != 'Point' and scale_num > 0:
+                    skey = (scale_num, objl)
+                    scale_objl_exists.add(skey)
+                    try:
+                        scamin_val = float(props.get('SCAMIN', 0) or 0)
+                    except (ValueError, TypeError):
+                        scamin_val = 0
+                    if scamin_val > 0:
+                        prev = scale_objl_tightest_scamin.get(skey)
+                        if prev is None or scamin_val < prev:
+                            scale_objl_tightest_scamin[skey] = scamin_val
+
                 if objl in ALL_DEDUP_OBJLS:
                     key = dedup_key(feature)
                     key_scales[key].add(scale_num)
+                    # Track most permissive (largest) SCAMIN across all copies
+                    try:
+                        scamin_val = float(props.get('SCAMIN', 0) or 0)
+                    except (ValueError, TypeError):
+                        scamin_val = 0
+                    if scamin_val > dedup_best_scamin.get(key, 0):
+                        dedup_best_scamin[key] = scamin_val
                     existing = dedup_index.get(key)
                     if existing is None or existing[2] < scale_num:
                         if tracer.active:
@@ -1127,9 +1153,14 @@ def main():
 
                 # M_COVR authority clipping: remove/trim lower-scale features
                 # where higher-scale charts provide coverage.
-                # To avoid zoom gaps (e.g. US3 clipped by US4 but US4 tiles
-                # start at z6, leaving z4-5 empty), we write an UNCLIPPED copy
-                # for zoom levels below the higher scale's native range.
+                #
+                # Two types of gap protection:
+                # 1. Tile-level gap: higher scale tiles don't exist yet at low zooms
+                #    (e.g. US4 floor z6, US5 floor z6 — no gap here).
+                # 2. SCAMIN gap: higher scale tiles exist but the replacement feature
+                #    isn't visible yet due to a tighter SCAMIN. We emit a "filler"
+                #    copy of the clipped geometry that stays visible until the
+                #    higher scale's feature turns on.
                 if scale_num in higher_coverage:
                     try:
                         ogr_line = ogr.CreateGeometryFromJson(json.dumps(geom))
@@ -1139,20 +1170,53 @@ def main():
                             my_lo = SCALE_ZOOM_RANGES.get(scale_num, (0, 15))[0]
                             gap_maxz = higher_lo - 1  # last zoom before higher scale starts
 
+                            # Compute SCAMIN filler range: keep clipped geometry
+                            # visible until the higher scale's version of this
+                            # feature type actually turns on.
+                            my_scamin_minz = my_lo if objl in SKIN_OF_EARTH_OBJLS else scamin_to_minzoom(props.get('SCAMIN'), my_lo)
+                            higher_objl_key = (higher_sn, objl)
+                            higher_tightest = scale_objl_tightest_scamin.get(higher_objl_key)
+                            if higher_tightest is not None:
+                                # Higher scale has this OBJL with SCAMIN — filler
+                                # until the tightest SCAMIN kicks in
+                                higher_feat_minz = scamin_to_minzoom(higher_tightest, higher_lo)
+                            elif higher_objl_key in scale_objl_exists:
+                                # Higher scale has this OBJL but no SCAMIN —
+                                # visible at the scale floor, no filler needed
+                                higher_feat_minz = higher_lo
+                            else:
+                                # Higher scale has NO features of this type —
+                                # filler covers our full range (effectively no clip)
+                                higher_feat_minz = SCALE_ZOOM_RANGES.get(scale_num, (0, 15))[1] + 1
+                            scamin_filler_minz = max(my_scamin_minz, higher_lo)
+                            scamin_filler_maxz = higher_feat_minz - 1
+
                             if clip_mask.Contains(ogr_line):
                                 if tracer.active:
                                     tmatch = tracer.matches(feature)
                                     if tmatch:
                                         tracer.log(tmatch, 'MCOVR-CLIPPED', f'entirely within higher-scale coverage, removed (chart={chart_id} US{scale_num})', feature)
-                                # Write unclipped copy for gap zooms where higher scale has no tiles
-                                if gap_maxz >= my_lo and scale_num in scale_geojson:
+                                # Write unclipped copy for tile-level gap zooms
+                                if gap_maxz >= my_scamin_minz and scale_num in scale_geojson:
                                     gap_feature = dict(feature)
                                     gap_feature['tippecanoe'] = {
-                                        'minzoom': my_lo,
+                                        'minzoom': my_scamin_minz,
                                         'maxzoom': gap_maxz,
                                         'layer': 'charts',
                                     }
                                     line = json.dumps(gap_feature, separators=(',', ':')) + '\n'
+                                    buffer_feature(scale_num, line)
+                                    scale_counts[scale_num] += 1
+                                # Write SCAMIN filler: keeps feature visible until
+                                # the higher scale's replacement feature turns on
+                                if scamin_filler_maxz >= scamin_filler_minz and scale_num in scale_geojson:
+                                    filler_feature = dict(feature)
+                                    filler_feature['tippecanoe'] = {
+                                        'minzoom': scamin_filler_minz,
+                                        'maxzoom': scamin_filler_maxz,
+                                        'layer': 'charts',
+                                    }
+                                    line = json.dumps(filler_feature, separators=(',', ':')) + '\n'
                                     buffer_feature(scale_num, line)
                                     scale_counts[scale_num] += 1
                                 contours_clipped += 1
@@ -1167,17 +1231,33 @@ def main():
                                         tmatch = tracer.matches(feature)
                                         if tmatch:
                                             tracer.log(tmatch, 'MCOVR-TRIMMED', f'partially clipped by higher-scale coverage (chart={chart_id} US{scale_num})', feature)
-                                    # Write unclipped copy for gap zooms
-                                    if gap_maxz >= my_lo and scale_num in scale_geojson:
+                                    # Write unclipped copy for tile-level gap zooms
+                                    if gap_maxz >= my_scamin_minz and scale_num in scale_geojson:
                                         gap_feature = dict(feature)
                                         gap_feature['tippecanoe'] = {
-                                            'minzoom': my_lo,
+                                            'minzoom': my_scamin_minz,
                                             'maxzoom': gap_maxz,
                                             'layer': 'charts',
                                         }
                                         line = json.dumps(gap_feature, separators=(',', ':')) + '\n'
                                         buffer_feature(scale_num, line)
                                         scale_counts[scale_num] += 1
+                                    # Write SCAMIN filler for the clipped-away inside portion only
+                                    if scamin_filler_maxz >= scamin_filler_minz and scale_num in scale_geojson:
+                                        inside_geom = ogr_line.Intersection(clip_mask)
+                                        if inside_geom and not inside_geom.IsEmpty():
+                                            if not inside_geom.IsValid():
+                                                inside_geom = inside_geom.MakeValid()
+                                            filler_feature = dict(feature)
+                                            filler_feature['geometry'] = json.loads(inside_geom.ExportToJson())
+                                            filler_feature['tippecanoe'] = {
+                                                'minzoom': scamin_filler_minz,
+                                                'maxzoom': scamin_filler_maxz,
+                                                'layer': 'charts',
+                                            }
+                                            line = json.dumps(filler_feature, separators=(',', ':')) + '\n'
+                                            buffer_feature(scale_num, line)
+                                            scale_counts[scale_num] += 1
                                     feature['geometry'] = clipped_json
                                     geom = clipped_json
                                     contours_trimmed += 1
@@ -1186,15 +1266,26 @@ def main():
                                         tmatch = tracer.matches(feature)
                                         if tmatch:
                                             tracer.log(tmatch, 'MCOVR-CLIPPED', f'Difference produced empty geometry, removed (chart={chart_id} US{scale_num})', feature)
-                                    # Write unclipped copy for gap zooms
-                                    if gap_maxz >= my_lo and scale_num in scale_geojson:
+                                    # Write unclipped copy for tile-level gap zooms
+                                    if gap_maxz >= my_scamin_minz and scale_num in scale_geojson:
                                         gap_feature = dict(feature)
                                         gap_feature['tippecanoe'] = {
-                                            'minzoom': my_lo,
+                                            'minzoom': my_scamin_minz,
                                             'maxzoom': gap_maxz,
                                             'layer': 'charts',
                                         }
                                         line = json.dumps(gap_feature, separators=(',', ':')) + '\n'
+                                        buffer_feature(scale_num, line)
+                                        scale_counts[scale_num] += 1
+                                    # Write SCAMIN filler
+                                    if scamin_filler_maxz >= scamin_filler_minz and scale_num in scale_geojson:
+                                        filler_feature = dict(feature)
+                                        filler_feature['tippecanoe'] = {
+                                            'minzoom': scamin_filler_minz,
+                                            'maxzoom': scamin_filler_maxz,
+                                            'layer': 'charts',
+                                        }
+                                        line = json.dumps(filler_feature, separators=(',', ':')) + '\n'
                                         buffer_feature(scale_num, line)
                                         scale_counts[scale_num] += 1
                                     contours_clipped += 1
@@ -1254,9 +1345,13 @@ def main():
 
                     # Apply SCAMIN-derived minzoom — ensures partitioned
                     # copies don't appear at zooms below their SCAMIN threshold.
+                    # Use best (most permissive) SCAMIN across all dedup copies so
+                    # the winner inherits the widest visibility from any scale's version.
                     # Skip for group 1 (skin of earth) features which must always be visible.
                     if objl not in SKIN_OF_EARTH_OBJLS:
-                        scamin_minz = scamin_to_minzoom(props.get('SCAMIN'), desired_minz)
+                        best_scamin = dedup_best_scamin.get(key, 0)
+                        scamin_for_minz = best_scamin if best_scamin > 0 else props.get('SCAMIN')
+                        scamin_minz = scamin_to_minzoom(scamin_for_minz, desired_minz)
                         desired_minz = max(desired_minz, scamin_minz)
 
                     # Write a copy to each owning scale's file with its zoom slice
