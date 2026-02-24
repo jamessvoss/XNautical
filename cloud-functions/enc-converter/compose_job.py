@@ -79,6 +79,14 @@ SCAMIN_HEADROOM = 2
 # These always use the scale band's native zoom range, never SCAMIN-derived minzoom.
 SKIN_OF_EARTH_OBJLS = {30, 42, 43, 69, 71}  # COALNE, DEPARE, DEPCNT, LAKARE, LNDARE
 
+# Line features whose M_COVR filler should extend through the lower scale's
+# full native zoom range.  The higher scale's M_COVR may cover an area without
+# providing replacement features of this type at that location; the app-side
+# opacity attenuation (buildContourScaleOpacity) handles visual fading where
+# both scales overlap.  Area fills (DEPARE, LNDARE) are excluded because
+# overlapping opaque polygons from different scales cause rendering artifacts.
+_FILLER_FULL_RANGE_OBJLS = {43, 30}  # DEPCNT, COALNE
+
 # Point features exempt from M_COVR coverage suppression and processed with
 # density thinning (--drop-densest-as-needed) instead of -r1 keep-all.
 # These are too numerous for -r1 at low zoom and create voids when suppressed.
@@ -1188,8 +1196,16 @@ def main():
                             # feature type actually turns on.
                             my_scamin_minz = my_lo if objl in SKIN_OF_EARTH_OBJLS else scamin_to_minzoom(props.get('SCAMIN'), my_lo)
                             higher_objl_key = (higher_sn, objl)
-                            higher_tightest = scale_objl_tightest_scamin.get(higher_objl_key)
-                            if higher_tightest is not None:
+                            if objl in _FILLER_FULL_RANGE_OBJLS:
+                                # Line features where the app handles cross-scale
+                                # overlap via opacity fading: filler extends through
+                                # the lower scale's full native range.  The higher
+                                # scale may lack this feature type at specific
+                                # locations within its M_COVR, so we cannot rely
+                                # on a global SCAMIN aggregate to predict when
+                                # replacement features appear.
+                                higher_feat_minz = SCALE_ZOOM_RANGES.get(scale_num, (0, 15))[1] + 1
+                            elif (higher_tightest := scale_objl_tightest_scamin.get(higher_objl_key)) is not None:
                                 # Higher scale has this OBJL with SCAMIN — filler
                                 # until the tightest SCAMIN kicks in
                                 higher_feat_minz = scamin_to_minzoom(higher_tightest, higher_lo)
