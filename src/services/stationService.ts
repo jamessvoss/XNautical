@@ -1267,10 +1267,11 @@ export async function getStationPredictionsForRange(
 
     return rows;
   } catch (error: any) {
-    // Check if this is a "shared object released" error (stale connection after hot reload)
+    // Check if this is a stale connection error (hot reload, native handle invalidated)
     if (error?.message?.includes('shared object') ||
         error?.message?.includes('already released') ||
-        error?.message?.includes('Cannot convert provided JavaScriptObject')) {
+        error?.message?.includes('Cannot convert provided JavaScriptObject') ||
+        error?.message?.includes('NullPointerException')) {
       console.warn('[PREDICTIONS] Detected stale connection, resetting and retrying...');
 
       // Reset all connections for this type
@@ -1293,7 +1294,7 @@ export async function getStationPredictionsForRange(
         const startDateStr = formatLocalDate(startDate);
         const endDateStr = formatLocalDate(endDate);
         const tableName = stationType === 'tide' ? 'tide_predictions' : 'current_predictions';
-        
+
         return await result.db.getAllAsync(
           `SELECT * FROM ${tableName} 
            WHERE station_id = ? AND date >= ? AND date <= ? 
@@ -1366,10 +1367,11 @@ export async function getStationPredictions(stationId: string, stationType: 'tid
       date: dateStr,
     };
   } catch (error: any) {
-    // Check if this is a "shared object released" error (stale connection after hot reload)
-    if (error?.message?.includes('shared object') || 
+    // Check if this is a stale connection error (hot reload, native handle invalidated)
+    if (error?.message?.includes('shared object') ||
         error?.message?.includes('already released') ||
-        error?.message?.includes('Cannot convert provided JavaScriptObject')) {
+        error?.message?.includes('Cannot convert provided JavaScriptObject') ||
+        error?.message?.includes('NullPointerException')) {
       console.warn('[SQLITE] Detected stale connection, resetting and retrying...');
       
       // Reset connections for this type
