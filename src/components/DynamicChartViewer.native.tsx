@@ -247,6 +247,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Scale coverage debug overlay
   const [showScaleDebug, setShowScaleDebug] = useState(false);
 
+  // Debug: dump all raw features on tap to console
+  const [debugDumpFeatures, setDebugDumpFeatures] = useState(false);
+
   // Memoized depth text field expression based on unit setting
   const depthTextFieldExpression = useMemo(() => {
     const unit = displaySettings.depthUnits;
@@ -2229,6 +2232,22 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       const queryTime = Date.now() - queryStart;
       logger.debug(LogCategory.UI, `Feature query: ${queryTime}ms (${allFeatures?.features?.length || 0} raw features)`);
 
+      // Debug dump: log every raw feature at the tap point to console
+      if (debugDumpFeatures && allFeatures?.features?.length) {
+        console.log(`\n========== TAP DUMP (${latitude.toFixed(5)}, ${longitude.toFixed(5)}) — ${allFeatures.features.length} features ==========`);
+        for (const f of allFeatures.features) {
+          const p = f.properties || {};
+          const geomType = f.geometry?.type || '?';
+          const layerId = (f as any).layer?.id || '(no layer)';
+          console.log(
+            `  OBJL=${p.OBJL ?? '?'} US${p._scaleNum ?? '?'} chart=${p._chartId ?? '?'} ` +
+            `geom=${geomType} layer=${layerId}`,
+            JSON.stringify(p)
+          );
+        }
+        console.log(`========== END TAP DUMP ==========\n`);
+      }
+
       // FIRST: Check for tide/current station clicks (these take priority)
       // Since ShapeSource features don't have layer.id, we identify them by properties
       // Collect special features (tide stations, current stations, live buoys) into unified list
@@ -2464,7 +2483,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       showSoundings, showCables, showPipelines, showDepthContours, showCoastline,
       showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
       showMarineFarms, showTrafficRoutes, showSeabed, showBridges, showBuildings, showMoorings,
-      showShorelineConstruction, showDepthAreas, showLand]);
+      showShorelineConstruction, showDepthAreas, showLand, debugDumpFeatures]);
 
   // Handle map long press - create a waypoint or add to route depending on mode
   const handleMapLongPress = useCallback((e: any) => {
@@ -6761,6 +6780,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 value={showScaleDebug}
                 onToggle={() => setShowScaleDebug(!showScaleDebug)}
                 subtitle="Color-codes DEPARE/DEPCNT by chart scale"
+              />
+              <DebugToggle
+                label="Dump Features on Tap"
+                value={debugDumpFeatures}
+                onToggle={() => setDebugDumpFeatures(!debugDumpFeatures)}
+                subtitle="Logs all raw features at tap point to console"
               />
             </View>
 
