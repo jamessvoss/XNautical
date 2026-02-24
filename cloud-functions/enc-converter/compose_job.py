@@ -79,13 +79,11 @@ SCAMIN_HEADROOM = 2
 # These always use the scale band's native zoom range, never SCAMIN-derived minzoom.
 SKIN_OF_EARTH_OBJLS = {30, 42, 43, 69, 71}  # COALNE, DEPARE, DEPCNT, LAKARE, LNDARE
 
-# Line features whose M_COVR filler should extend through the lower scale's
-# full native zoom range.  The higher scale's M_COVR may cover an area without
-# providing replacement features of this type at that location; the app-side
-# opacity attenuation (buildContourScaleOpacity) handles visual fading where
-# both scales overlap.  Area fills (DEPARE, LNDARE) are excluded because
-# overlapping opaque polygons from different scales cause rendering artifacts.
-_FILLER_FULL_RANGE_OBJLS = {43, 30}  # DEPCNT, COALNE
+# Skin-of-earth features whose M_COVR filler should extend through the lower
+# scale's full native zoom range.  The higher scale's M_COVR may cover an area
+# without providing replacement features at that location; the app-side
+# bgFillScaleFilter / buildContourScaleOpacity handle visual overlap.
+_FILLER_FULL_RANGE_OBJLS = {42, 43, 30}  # DEPARE, DEPCNT, COALNE
 
 # Point features exempt from M_COVR coverage suppression and processed with
 # density thinning (--drop-densest-as-needed) instead of -r1 keep-all.
