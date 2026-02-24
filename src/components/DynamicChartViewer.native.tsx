@@ -106,8 +106,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   } = useStationData();
   const {
     s52Mode, setS52Mode, uiTheme, s52Colors,
-    mapStyle, setMapStyle, isVectorStyle, ecdisColors, setEcdisColors,
-    basemapPalette, mapStyleUrls, themedStyles,
+    landImagery, setLandImagery, marineImagery, setMarineImagery,
+    showVectorBasemap, hasLandRasterTiles, hasMarineRasterTiles,
+    ecdisLand, ecdisMarine, ecdisColors,
+    basemapPalette, themedStyles,
     hasLocalBasemap, setHasLocalBasemap,
     satelliteTileSets, setSatelliteTileSets,
     basemapTileSets, setBasemapTileSets,
@@ -942,7 +944,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   
   
   // GPS and Navigation state - overlay visibility from context (rendered in App.tsx)
-  const { showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails, showDebugMap, setShowDebugMap, showNavData, setShowNavData } = useOverlay();
+  const { showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails, showDebugMap, setShowDebugMap, showNavData, setShowNavData, mapResetKey } = useOverlay();
   const [followGPS, setFollowGPS] = useState(true); // Follow mode - center map on position
   const followGPSRef = useRef(true); // Ref for immediate follow mode check (avoids race condition)
   const isProgrammaticCameraMove = useRef(false); // Flag to distinguish programmatic vs user camera moves
@@ -954,24 +956,14 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // child VectorSource registration and prevents tiles from loading.
   // Instead, we let MapView use its default style and cover it with a BackgroundLayer.
   const mapBackgroundColor = useMemo(() => {
-    // ECDIS mode: white background — standard ECDIS deep water default.
-    // Areas without chart coverage appear as white (deep water), matching
-    // the traditional IHO ECDIS day-mode presentation.
-    if (ecdisColors) return '#FFFFFF';
-    // Background colors are fixed per imagery choice — they must match the
-    // basemap palette (light text on dark bg, dark text on light bg).
-    // Chart *feature* colors (depth areas, land, etc.) change with display mode
-    // via s52Colors tokens; the base background does not.
-    const styles: Record<string, string> = {
-      satellite: '#0A0A10',
-      light: '#f5f5f5',
-      dark: '#1a1a2e',
-      street: '#f0ede8',
-      ocean: '#1a3a5c',
-      terrain: '#dfe6e9',
-    };
-    return styles[mapStyle] || '#1a1a2e';
-  }, [mapStyle, ecdisColors]);
+    if (ecdisLand) return '#FFFFFF';
+    switch (landImagery) {
+      case 'satellite': return '#0A0A10';
+      case 'terrain': return '#dfe6e9';
+      case 'street': return s52Mode === 'day' ? '#f5f5f5' : '#1a1a2e';
+      default: return '#1a1a2e';
+    }
+  }, [landImagery, ecdisLand, s52Mode]);
 
   // Memoize composite tile URL to prevent constant VectorSource re-renders
   const compositeTileUrl = useMemo(() => {
@@ -2576,7 +2568,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 5, s52Colors.DEPMD,
                 10, s52Colors.DEPDW,
               ],
-          fillOpacity: ecdisColors ? 1 : (mapStyle === 'satellite' ? scaledDepthAreaOpacitySatellite : scaledDepthAreaOpacity),
+          fillOpacity: ecdisMarine ? 1 : (hasMarineRasterTiles ? scaledDepthAreaOpacitySatellite : scaledDepthAreaOpacity),
           visibility: (ecdisColors || showDepthAreas) ? 'visible' : 'none',
         }}
       />,
@@ -2604,7 +2596,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         filter={['all', ['==', ['get', 'OBJL'], 71], bgFillScaleFilter]}
         style={{
           fillColor: s52Colors.LANDA,
-          fillOpacity: ecdisColors ? 1 : (mapStyle === 'satellite' ? 0.2 : 1),
+          fillOpacity: ecdisLand ? 1 : (hasLandRasterTiles ? 0.2 : 1),
           visibility: (ecdisColors || showLand) ? 'visible' : 'none',
         }}
       />,
@@ -4282,7 +4274,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     showDepthAreas, showDepthContours, showLand, showCables, showPipelines,
     showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages, showMarineFarms, showTrafficRoutes,
     showSeaAreaNames, showLandRegions, showSeabed,
-    mapStyle, ecdisColors, s52Colors, displaySettings.depthContourLineScale,
+    hasLandRasterTiles, hasMarineRasterTiles, ecdisColors, s52Colors, displaySettings.depthContourLineScale,
     scaledDepthAreaOpacity, scaledDepthAreaOpacitySatellite, scaledDepthContourLineOpacity,
     scaledDredgedAreaOpacity, scaledFairwayOpacity,
     scaledCableAreaOpacity, scaledPipelineAreaOpacity,
@@ -4396,7 +4388,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       <View style={styles.mapSection}>
       <View style={styles.mapTouchWrapper}>
       <MapLibre.MapView
-        key={`map-${mapStyle}-${s52Mode}`}
+        key={`map-${landImagery}-${s52Mode}-${mapResetKey}`}
         ref={mapRef}
         style={styles.map}
         // DO NOT set mapStyle prop — it triggers native removeAllSourcesFromMap()
@@ -4455,12 +4447,36 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
         <MapLibre.Images images={NAV_SYMBOLS} />
 
-        {/* Satellite Imagery - renders at very bottom when available */}
+        {/* ================================================================== */}
+        {/* OCEAN BASEMAP - ESRI Ocean raster tiles (per zoom level)           */}
+        {/* Renders BELOW satellite so satellite covers ESRI's land rendering  */}
+        {/* On open water (no satellite tiles), ocean tiles show through       */}
+        {/* ================================================================== */}
+        {tileServerReady && oceanTileSets.length > 0 && oceanTileSets.map((tileSet) => {
+          const oceanVisible = (hasMarineRasterTiles && debugIsSourceVisible('ocean')) ? 1 : 0;
+          return (
+            <MapLibre.RasterSource
+              key={`ocean-src-${tileSet.id}`}
+              id={`ocean-src-${tileSet.id}`}
+              tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/${tileSet.id}/{z}/{x}/{y}.png`]}
+              tileSize={256}
+              minZoomLevel={tileSet.minZoom}
+              maxZoomLevel={tileSet.maxZoom}
+            >
+              <MapLibre.RasterLayer
+                id={`ocean-layer-${tileSet.id}`}
+                style={{ rasterOpacity: oceanVisible }}
+              />
+            </MapLibre.RasterSource>
+          );
+        })}
+
+        {/* Satellite Imagery - renders ABOVE ocean so it covers ESRI's land rendering */}
         {/* Each satellite_z*.mbtiles file is loaded as a separate source with its zoom range */}
         {tileServerReady && satelliteTileSets.length > 0 && satelliteTileSets.map((tileSet) => {
-          const satelliteVisible = (mapStyle === 'satellite' && !ecdisColors && debugIsSourceVisible('satellite')) ? 1 : 0;
+          const satelliteVisible = (landImagery === 'satellite' && debugIsSourceVisible('satellite')) ? 1 : 0;
           // Log satellite visibility during style switch
-          if (styleSwitchStartRef.current > 0 && mapStyle === 'satellite' && tileSet.minZoom === 0) {
+          if (styleSwitchStartRef.current > 0 && landImagery === 'satellite' && tileSet.minZoom === 0) {
           }
           return (
             <MapLibre.RasterSource
@@ -4484,7 +4500,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Raster Bathymetry Sources - renders BELOW vector chart data */}
         {tileServerReady && rasterCharts.map((chart) => {
           const rasterTileUrl = tileServer.getRasterTileUrlTemplate(chart.chartId);
-          
+
           return (
             <MapLibre.RasterSource
               key={`raster-src-${chart.chartId}-${cacheBuster}`}
@@ -4505,34 +4521,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         })}
 
         {/* ================================================================== */}
-        {/* OCEAN BASEMAP - ESRI Ocean raster tiles (per zoom level)           */}
-        {/* Same pattern as satellite: one RasterSource per ocean_z*.mbtiles   */}
-        {/* ================================================================== */}
-        {tileServerReady && oceanTileSets.length > 0 && oceanTileSets.map((tileSet) => {
-          const oceanVisible = (mapStyle === 'ocean' && debugIsSourceVisible('ocean')) ? 1 : 0;
-          return (
-            <MapLibre.RasterSource
-              key={`ocean-src-${tileSet.id}`}
-              id={`ocean-src-${tileSet.id}`}
-              tileUrlTemplates={[`${tileServer.getTileServerUrl()}/tiles/${tileSet.id}/{z}/{x}/{y}.png`]}
-              tileSize={256}
-              minZoomLevel={tileSet.minZoom}
-              maxZoomLevel={tileSet.maxZoom}
-            >
-              <MapLibre.RasterLayer
-                id={`ocean-layer-${tileSet.id}`}
-                style={{ rasterOpacity: oceanVisible }}
-              />
-            </MapLibre.RasterSource>
-          );
-        })}
-
-        {/* ================================================================== */}
         {/* TERRAIN BASEMAP - OpenTopoMap raster tiles (per zoom level)        */}
         {/* Same pattern as satellite: one RasterSource per terrain_z*.mbtiles */}
         {/* ================================================================== */}
         {tileServerReady && terrainTileSets.length > 0 && terrainTileSets.map((tileSet) => {
-          const terrainVisible = (mapStyle === 'terrain' && debugIsSourceVisible('terrain')) ? 1 : 0;
+          const terrainVisible = (landImagery === 'terrain' && debugIsSourceVisible('terrain')) ? 1 : 0;
           return (
             <MapLibre.RasterSource
               key={`terrain-src-${tileSet.id}`}
@@ -4618,7 +4611,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* Uses a separate VectorSource so these land-context features appear */}
         {/* on top of the opaque chart fills (DEPARE, LNDARE)                 */}
         {/* ================================================================== */}
-        {tileServerReady && hasLocalBasemap && (isVectorStyle || ecdisColors) && debugIsSourceVisible('basemap') && (() => {
+        {tileServerReady && hasLocalBasemap && showVectorBasemap && debugIsSourceVisible('basemap') && (() => {
           const p = basemapPalette;
           const vis = 'visible';
           const basemapTileUrl = basemapTileSets.length > 0
@@ -4626,7 +4619,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             : `${tileServer.getTileServerUrl()}/tiles/basemap/{z}/{x}/{y}.pbf`;
           return (
           <MapLibre.VectorSource
-            key={`basemap-overlay-${mapStyle}-${s52Mode}`}
+            key={`basemap-overlay-${landImagery}-${s52Mode}`}
             id="basemap-overlay-source"
             tileUrlTemplates={[basemapTileUrl]}
             minZoomLevel={0}
@@ -5417,34 +5410,46 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             <View style={styles.layerSelectorContent}>
               {/* Column 1 */}
               <View style={styles.layerSelectorColumn}>
-                {/* Imagery - Land/Background */}
-                <Text style={styles.layerSectionHeader}>Imagery</Text>
-                <TouchableOpacity style={[styles.layerToggleRow, mapStyle === 'satellite' && styles.layerToggleRowActive]} onPress={() => setMapStyle('satellite')}>
+                {/* Land Imagery */}
+                <Text style={styles.layerSectionHeader}>Land</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, landImagery === 'satellite' && styles.layerToggleRowActive]} onPress={() => setLandImagery('satellite')}>
                   <Text style={styles.layerToggleText}>Satellite</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.layerToggleRow, mapStyle === 'ocean' && styles.layerToggleRowActive, !hasLocalOcean && { opacity: 0.4 }]}
-                  onPress={() => hasLocalOcean && setMapStyle('ocean')}
-                  disabled={!hasLocalOcean}
-                >
-                  <Text style={styles.layerToggleText}>Ocean{!hasLocalOcean ? ' ⬇' : ''}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.layerToggleRow, mapStyle === 'terrain' && styles.layerToggleRowActive, !hasLocalTerrain && { opacity: 0.4 }]}
-                  onPress={() => hasLocalTerrain && setMapStyle('terrain')}
+                  style={[styles.layerToggleRow, landImagery === 'terrain' && styles.layerToggleRowActive, !hasLocalTerrain && { opacity: 0.4 }]}
+                  onPress={() => hasLocalTerrain && setLandImagery('terrain')}
                   disabled={!hasLocalTerrain}
                 >
                   <Text style={styles.layerToggleText}>Terrain{!hasLocalTerrain ? ' ⬇' : ''}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.layerToggleRow, mapStyle === 'street' && styles.layerToggleRowActive, !hasLocalBasemap && { opacity: 0.4 }]}
-                  onPress={() => hasLocalBasemap && setMapStyle('street')}
+                  style={[styles.layerToggleRow, landImagery === 'street' && styles.layerToggleRowActive, !hasLocalBasemap && { opacity: 0.4 }]}
+                  onPress={() => hasLocalBasemap && setLandImagery('street')}
                   disabled={!hasLocalBasemap}
                 >
                   <Text style={styles.layerToggleText}>Street{!hasLocalBasemap ? ' ⬇' : ''}</Text>
                 </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, ecdisLand && styles.layerToggleRowActive]} onPress={() => setLandImagery('ecdis')}>
+                  <Text style={styles.layerToggleText}>ECDIS</Text>
+                </TouchableOpacity>
 
-                {/* Display Mode — Day/Dusk/Night + ECDIS toggle */}
+                {/* Marine Imagery */}
+                <Text style={styles.layerSectionHeader}>Marine</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, marineImagery === 'chart' && styles.layerToggleRowActive]} onPress={() => setMarineImagery('chart')}>
+                  <Text style={styles.layerToggleText}>Chart</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.layerToggleRow, marineImagery === 'ocean' && styles.layerToggleRowActive, !hasLocalOcean && { opacity: 0.4 }]}
+                  onPress={() => hasLocalOcean && setMarineImagery('ocean')}
+                  disabled={!hasLocalOcean}
+                >
+                  <Text style={styles.layerToggleText}>Ocean{!hasLocalOcean ? ' ⬇' : ''}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, ecdisMarine && styles.layerToggleRowActive]} onPress={() => setMarineImagery('ecdis')}>
+                  <Text style={styles.layerToggleText}>ECDIS</Text>
+                </TouchableOpacity>
+
+                {/* Display Mode — Day/Dusk/Night */}
                 <Text style={styles.layerSectionHeader}>Display Mode</Text>
                 <TouchableOpacity style={[styles.layerToggleRow, s52Mode === 'day' && styles.layerToggleRowActive]} onPress={() => setS52Mode('day')}>
                   <Text style={styles.layerToggleText}>Day</Text>
@@ -5454,9 +5459,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.layerToggleRow, s52Mode === 'night' && styles.layerToggleRowActive]} onPress={() => setS52Mode('night')}>
                   <Text style={styles.layerToggleText}>Night</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.layerToggleRow, ecdisColors && styles.layerToggleRowActive]} onPress={() => setEcdisColors(!ecdisColors)}>
-                  <Text style={styles.layerToggleText}>ECDIS Colors</Text>
                 </TouchableOpacity>
 
                 {/* Depth Section */}
@@ -6565,13 +6567,21 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               </View>
             )}
 
-            {/* Imagery */}
-            <Text style={debugStyles.sectionTitle}>IMAGERY</Text>
+            {/* Land Imagery */}
+            <Text style={debugStyles.sectionTitle}>LAND IMAGERY</Text>
             <View style={debugStyles.card}>
-              <DebugToggle label="Satellite" value={mapStyle === 'satellite'} onToggle={() => setMapStyle('satellite')} radio />
-              <DebugToggle label="Street" value={mapStyle === 'street'} onToggle={() => setMapStyle('street')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
-              <DebugToggle label="Ocean" value={mapStyle === 'ocean'} onToggle={() => setMapStyle('ocean')} radio subtitle={hasLocalOcean ? `${oceanTileSets.length} zoom sets` : 'Not downloaded'} />
-              <DebugToggle label="Terrain" value={mapStyle === 'terrain'} onToggle={() => setMapStyle('terrain')} radio subtitle={hasLocalTerrain ? `${terrainTileSets.length} zoom sets` : 'Not downloaded'} />
+              <DebugToggle label="Satellite" value={landImagery === 'satellite'} onToggle={() => setLandImagery('satellite')} radio />
+              <DebugToggle label="Terrain" value={landImagery === 'terrain'} onToggle={() => setLandImagery('terrain')} radio subtitle={hasLocalTerrain ? `${terrainTileSets.length} zoom sets` : 'Not downloaded'} />
+              <DebugToggle label="Street" value={landImagery === 'street'} onToggle={() => setLandImagery('street')} radio subtitle={hasLocalBasemap ? 'Vector basemap' : 'No basemap tiles'} />
+              <DebugToggle label="ECDIS" value={ecdisLand} onToggle={() => setLandImagery('ecdis')} radio />
+            </View>
+
+            {/* Marine Imagery */}
+            <Text style={debugStyles.sectionTitle}>MARINE IMAGERY</Text>
+            <View style={debugStyles.card}>
+              <DebugToggle label="Chart" value={marineImagery === 'chart'} onToggle={() => setMarineImagery('chart')} radio />
+              <DebugToggle label="Ocean" value={marineImagery === 'ocean'} onToggle={() => setMarineImagery('ocean')} radio subtitle={hasLocalOcean ? `${oceanTileSets.length} zoom sets` : 'Not downloaded'} />
+              <DebugToggle label="ECDIS" value={ecdisMarine} onToggle={() => setMarineImagery('ecdis')} radio />
             </View>
 
             {/* Display Mode */}
@@ -6580,7 +6590,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               <DebugToggle label="Day" value={s52Mode === 'day'} onToggle={() => setS52Mode('day')} radio />
               <DebugToggle label="Dusk" value={s52Mode === 'dusk'} onToggle={() => setS52Mode('dusk')} radio />
               <DebugToggle label="Night" value={s52Mode === 'night'} onToggle={() => setS52Mode('night')} radio />
-              <DebugToggle label="ECDIS Colors" value={ecdisColors} onToggle={() => setEcdisColors(!ecdisColors)} />
             </View>
 
             {/* MAP SOURCES - the main purpose of this debug panel */}
@@ -6682,8 +6691,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   <Text style={diagStyles.sectionHeaderText}>STATE</Text>
                 </View>
                 <View style={diagStyles.row}>
-                  <Text style={diagStyles.label}>mapStyle</Text>
-                  <Text style={diagStyles.value}>{debugDiagnostics.mapStyle}</Text>
+                  <Text style={diagStyles.label}>landImagery</Text>
+                  <Text style={diagStyles.value}>{debugDiagnostics.landImagery}</Text>
+                </View>
+                <View style={diagStyles.row}>
+                  <Text style={diagStyles.label}>marineImagery</Text>
+                  <Text style={diagStyles.value}>{debugDiagnostics.marineImagery}</Text>
                 </View>
                 <View style={diagStyles.row}>
                   <Text style={diagStyles.label}>s52Mode</Text>

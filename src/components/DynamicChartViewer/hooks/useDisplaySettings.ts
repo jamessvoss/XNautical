@@ -140,8 +140,8 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   tideCorrectedSoundings: false,
   chartDetail: 'max',
   // Map display
-  mapStyle: 'dark',
-  ecdisColors: false,
+  landImagery: 'satellite',
+  marineImagery: 'chart',
 };
 
 export function useDisplaySettings() {

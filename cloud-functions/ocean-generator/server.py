@@ -5,9 +5,10 @@ Ocean Tile Generator - Cloud Run Service
 Downloads ocean basemap tiles from ESRI World Ocean Base and packages them
 into MBTiles files for offline use in XNautical.
 
-Uses Natural Earth 10m land polygons for coastal buffer filtering:
-tiles are only downloaded if they fall within a configurable distance
-(default 25nm) of the coastline, avoiding wasteful open-ocean downloads.
+Uses Natural Earth 10m land polygons for ocean zone filtering:
+tiles are downloaded for all water areas plus a configurable buffer
+(default 25nm) onto land, covering ocean surfaces with overlap
+onto the coastal band.
 
 Endpoints:
   POST /generate  - Generate ocean tiles for a region
@@ -196,15 +197,15 @@ def format_bytes(size):
 # Cache the loaded land geometry per region to avoid re-loading
 _land_cache = {}
 
-def load_land_for_region(region_id, buffer_nm=DEFAULT_BUFFER_NM):
+def load_ocean_zone_for_region(region_id, buffer_nm=DEFAULT_BUFFER_NM):
     """
     Load Natural Earth land polygons, clip to region bounds, and create
-    a coastal buffer zone.
+    an ocean zone: all water areas + buffer_nm onto land.
 
-    Returns a prepared Shapely geometry representing the coastal zone
-    (land boundary +/- buffer_nm nautical miles).
+    Returns a prepared Shapely geometry representing the ocean zone
+    (water + buffer_nm nautical miles inland from coastline).
     """
-    cache_key = f'{region_id}_{buffer_nm}'
+    cache_key = f'{region_id}_ocean_{buffer_nm}'
     if cache_key in _land_cache:
         return _land_cache[cache_key]
 
@@ -212,7 +213,7 @@ def load_land_for_region(region_id, buffer_nm=DEFAULT_BUFFER_NM):
     if not region:
         return None
 
-    logger.info(f'Loading Natural Earth land data for {region_id}...')
+    logger.info(f'Loading Natural Earth land data for {region_id} (ocean zone)...')
     start = time.time()
 
     # Create region clip box (union of all bounds for this region)
@@ -245,29 +246,31 @@ def load_land_for_region(region_id, buffer_nm=DEFAULT_BUFFER_NM):
             continue
 
     if not land_geometries:
-        logger.warning(f'No land features found for {region_id}')
-        _land_cache[cache_key] = None
-        return None
+        # No land in region = entire region is water → return full clip region
+        logger.info(f'  No land features found for {region_id} — entire region is water')
+        prepared = prep(clip_region)
+        _land_cache[cache_key] = prepared
+        return prepared
 
     logger.info(f'  Found {len(land_geometries)} land features for {region_id}')
 
     # Union all land features
     land = unary_union(land_geometries)
 
-    # Get the coastline (boundary of land polygons)
-    coastline = land.boundary
+    # Invert: water = clip region minus land
+    water = clip_region.difference(land)
 
-    # Buffer the coastline by the requested distance
+    # Buffer water areas onto land by the requested distance
     # 1 nautical mile = 1/60 degree of latitude
     buffer_deg = buffer_nm / 60.0
-    coastal_zone = coastline.buffer(buffer_deg)
+    ocean_zone = water.buffer(buffer_deg)
 
     # Prepare for fast intersection tests
-    prepared = prep(coastal_zone)
+    prepared = prep(ocean_zone)
 
     load_time = time.time() - start
-    logger.info(f'  Coastal zone prepared in {load_time:.1f}s '
-                f'(buffer: {buffer_nm}nm = {buffer_deg:.4f}°)')
+    logger.info(f'  Ocean zone prepared in {load_time:.1f}s '
+                f'(buffer: {buffer_nm}nm = {buffer_deg:.4f}° onto land)')
 
     _land_cache[cache_key] = prepared
     return prepared
@@ -301,26 +304,26 @@ def get_all_tiles_for_region(region_id, min_zoom, max_zoom, buffer_nm=DEFAULT_BU
     Get all tiles needed for a region across zoom levels.
 
     For zoom < COASTAL_BUFFER_MIN_ZOOM: full bounding box (trivial counts)
-    For zoom >= COASTAL_BUFFER_MIN_ZOOM: coastal buffer filtering
+    For zoom >= COASTAL_BUFFER_MIN_ZOOM: ocean zone filtering
     """
     region = REGION_BOUNDS.get(region_id)
     if not region:
         return set()
 
-    # Load coastal zone geometry (cached after first call)
-    coastal_zone = load_land_for_region(region_id, buffer_nm)
+    # Load ocean zone geometry (cached after first call)
+    coastal_zone = load_ocean_zone_for_region(region_id, buffer_nm)
 
     all_tiles = set()
 
     for z in range(min_zoom, max_zoom + 1):
         if z < COASTAL_BUFFER_MIN_ZOOM or coastal_zone is None:
-            # Low zoom or no coastline data: full bounding box
+            # Low zoom or no ocean zone data: full bounding box
             for bounds in region['bounds']:
                 all_tiles.update(get_tiles_for_bounds(bounds, z))
             zoom_count = sum(1 for t in all_tiles if t[0] == z)
             logger.info(f'  z{z}: {zoom_count:,} tiles (full bbox)')
         else:
-            # Higher zoom: filter by coastal buffer
+            # Higher zoom: filter by ocean zone
             zoom_tiles = set()
             total_checked = 0
             for bounds in region['bounds']:
@@ -330,7 +333,7 @@ def get_all_tiles_for_region(region_id, min_zoom, max_zoom, buffer_nm=DEFAULT_BU
             all_tiles.update(zoom_tiles)
             pct = len(zoom_tiles) / total_checked * 100 if total_checked > 0 else 0
             logger.info(f'  z{z}: {len(zoom_tiles):,} / {total_checked:,} tiles '
-                        f'({pct:.1f}% of bbox, coastal buffer)')
+                        f'({pct:.1f}% of bbox, ocean zone)')
 
     return all_tiles
 
@@ -633,7 +636,7 @@ def generate_ocean():
     start_time = time.time()
 
     logger.info(f'=== Starting ocean generation for {region_id} ({region["name"]}) ===')
-    logger.info(f'  Coastal buffer: +/- {buffer_nm}nm from coastline')
+    logger.info(f'  Ocean zone: water + {buffer_nm}nm buffer onto land')
 
     # Initialize clients
     storage_client = storage.Client()
@@ -648,12 +651,12 @@ def generate_ocean():
             'state': 'generating',
             'startedAt': firestore.SERVER_TIMESTAMP,
             'message': f'Generating ocean tiles for {region["name"]} '
-                       f'(+/- {buffer_nm}nm coastal buffer)...',
+                       f'(water + {buffer_nm}nm onto land)...',
         })
 
-        # Pre-load coastal zone (shared across all packs)
-        logger.info('Pre-loading coastal zone geometry...')
-        load_land_for_region(region_id, buffer_nm)
+        # Pre-load ocean zone (shared across all packs)
+        logger.info('Pre-loading ocean zone geometry...')
+        load_ocean_zone_for_region(region_id, buffer_nm)
 
         pack_results = {}
 

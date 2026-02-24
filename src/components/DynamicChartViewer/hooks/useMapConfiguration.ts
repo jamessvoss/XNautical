@@ -11,7 +11,7 @@ import * as tileServer from '../../../services/tileServer';
 import * as displaySettingsService from '../../../services/displaySettingsService';
 import { logger, LogCategory } from '../../../services/loggingService';
 import { performanceTracker, RuntimeMetric } from '../../../services/performanceTracker';
-import type { MapStyleOption } from '../types';
+import type { LandImageryOption, MarineImageryOption } from '../types';
 
 interface TileSet { id: string; minZoom: number; maxZoom: number; }
 
@@ -20,15 +20,19 @@ export function useMapConfiguration() {
   const [s52Mode, setS52ModeInternal] = useState<S52DisplayMode>('dusk');
   const [uiTheme, setUITheme] = useState(themeService.getUITheme('dusk'));
 
-  // Map style options
-  const [mapStyle, setMapStyleInternal] = useState<MapStyleOption>('dark');
+  // Land and Marine imagery (independent axes)
+  const [landImagery, setLandImageryInternal] = useState<LandImageryOption>('satellite');
+  const [marineImagery, setMarineImageryInternal] = useState<MarineImageryOption>('chart');
 
-  // ECDIS chart color mode (independent of base map style)
-  const [ecdisColors, setEcdisColors] = useState(false);
+  // ECDIS derived from imagery choices (not standalone state)
+  const ecdisLand = landImagery === 'ecdis';
+  const ecdisMarine = marineImagery === 'ecdis';
+  const ecdisColors = ecdisLand || ecdisMarine;
 
-  // Which styles use the vector basemap tiles
-  const VECTOR_BASEMAP_STYLES: MapStyleOption[] = ['light', 'dark', 'street'];
-  const isVectorStyle = VECTOR_BASEMAP_STYLES.includes(mapStyle);
+  // Derived booleans from the two imagery axes
+  const hasLandRasterTiles = landImagery === 'satellite' || landImagery === 'terrain';
+  const hasMarineRasterTiles = marineImagery === 'ocean';
+  const showVectorBasemap = landImagery === 'street' || ecdisLand;
 
   // Local basemap availability
   const [hasLocalBasemap, setHasLocalBasemap] = useState(false);
@@ -62,7 +66,8 @@ export function useMapConfiguration() {
   const [showDebug, setShowDebug] = useState(false);
   const [debugDiagnostics, setDebugDiagnostics] = useState<{
     timestamp: string;
-    mapStyle: string;
+    landImagery: string;
+    marineImagery: string;
     s52Mode: string;
     tileServerReady: boolean;
     hasLocalBasemap: boolean;
@@ -91,32 +96,31 @@ export function useMapConfiguration() {
     setUITheme(themeService.getUITheme(mode));
   }, []);
 
-  // Wrapper for setMapStyle with timing logs + persistence
-  const setMapStyle = useCallback((newStyle: MapStyleOption) => {
-    if (newStyle === 'satellite') {
-      logger.debug(LogCategory.UI, `Satellite map style disabled, ignoring`);
-      return;
-    }
+  // Wrapper for setLandImagery with timing logs + persistence
+  const setLandImagery = useCallback((newLand: LandImageryOption) => {
     const now = Date.now();
-    logger.info(LogCategory.UI, `Style switch: "${mapStyle}" → "${newStyle}"`);
+    logger.info(LogCategory.UI, `Land imagery switch: "${landImagery}" → "${newLand}"`);
     performanceTracker.recordMetric(RuntimeMetric.STYLE_SWITCH);
 
     styleSwitchStartRef.current = now;
-    styleSwitchFromRef.current = mapStyle;
-    styleSwitchToRef.current = newStyle;
+    styleSwitchFromRef.current = landImagery;
+    styleSwitchToRef.current = newLand;
     styleSwitchRenderCountRef.current = 0;
 
-    setMapStyleInternal(newStyle);
-    displaySettingsService.updateSetting('mapStyle', newStyle);
-  }, [mapStyle]);
+    setLandImageryInternal(newLand);
+    displaySettingsService.updateSetting('landImagery', newLand);
+  }, [landImagery]);
 
-  // Wrapper for setEcdisColors with persistence
-  const setEcdisColorsWithPersist = useCallback((value: boolean) => {
-    setEcdisColors(value);
-    displaySettingsService.updateSetting('ecdisColors', value);
-  }, []);
+  // Wrapper for setMarineImagery with persistence
+  const setMarineImagery = useCallback((newMarine: MarineImageryOption) => {
+    logger.info(LogCategory.UI, `Marine imagery switch: "${marineImagery}" → "${newMarine}"`);
+    performanceTracker.recordMetric(RuntimeMetric.STYLE_SWITCH);
 
-  // Load saved S-52 theme mode, mapStyle, ecdisColors on mount and subscribe to changes
+    setMarineImageryInternal(newMarine);
+    displaySettingsService.updateSetting('marineImagery', newMarine);
+  }, [marineImagery]);
+
+  // Load saved S-52 theme mode and imagery settings on mount and subscribe to changes
   useEffect(() => {
     const loadThemeMode = async () => {
       const savedMode = await themeService.loadSavedMode();
@@ -124,17 +128,15 @@ export function useMapConfiguration() {
       setUITheme(themeService.getUITheme(savedMode));
       logger.debug(LogCategory.SETTINGS, `S-52 display mode loaded: ${savedMode}`);
 
-      // Load persisted mapStyle and ecdisColors
+      // Load persisted imagery settings
       const settings = await displaySettingsService.getSettings();
-      if (settings.mapStyle && settings.mapStyle !== 'satellite') {
-        setMapStyleInternal(settings.mapStyle as MapStyleOption);
-        logger.debug(LogCategory.SETTINGS, `Map style loaded: ${settings.mapStyle}`);
-      } else if (settings.mapStyle === 'satellite') {
-        logger.debug(LogCategory.SETTINGS, `Satellite map style disabled, using default 'dark'`);
+      if (settings.landImagery) {
+        setLandImageryInternal(settings.landImagery as LandImageryOption);
+        logger.debug(LogCategory.SETTINGS, `Land imagery loaded: ${settings.landImagery}`);
       }
-      if (settings.ecdisColors !== undefined) {
-        setEcdisColors(settings.ecdisColors);
-        logger.debug(LogCategory.SETTINGS, `ECDIS colors loaded: ${settings.ecdisColors}`);
+      if (settings.marineImagery) {
+        setMarineImageryInternal(settings.marineImagery as MarineImageryOption);
+        logger.debug(LogCategory.SETTINGS, `Marine imagery loaded: ${settings.marineImagery}`);
       }
     };
     loadThemeMode();
@@ -154,9 +156,9 @@ export function useMapConfiguration() {
   useEffect(() => {
     if (styleSwitchStartRef.current > 0) {
       const elapsed = Date.now() - styleSwitchStartRef.current;
-      logger.debug(LogCategory.UI, `Style switch: React state updated to "${mapStyle}" (${elapsed}ms)`);
+      logger.debug(LogCategory.UI, `Style switch: React state updated to land="${landImagery}" (${elapsed}ms)`);
     }
-  }, [mapStyle]);
+  }, [landImagery]);
 
   // Style switch tracking: render commit
   useLayoutEffect(() => {
@@ -164,7 +166,7 @@ export function useMapConfiguration() {
       const elapsed = Date.now() - styleSwitchStartRef.current;
       logger.debug(LogCategory.UI, `Style switch: render committed (${elapsed}ms)`);
     }
-  }, [mapStyle]);
+  }, [landImagery]);
 
   // Glyphs URL for local font serving
   const glyphsUrl = 'http://127.0.0.1:8765/fonts/{fontstack}/{range}.pbf';
@@ -177,7 +179,7 @@ export function useMapConfiguration() {
     [s52Mode, ecdisColors]
   );
 
-  // Basemap color palettes per vector style
+  // Basemap color palettes — only relevant when landImagery === 'street'
   // ECDIS mode forces light palette (dark text on white background)
   const basemapPalette = useMemo(() => {
     const palettes = {
@@ -199,38 +201,21 @@ export function useMapConfiguration() {
         waterText: '#4a6a8a', landcoverOpacity: 0.4, buildingOpacity: 0.5,
         parkOpacity: 0.3, roadNightDim: 0.6,
       },
-      street: {
-        bg: '#f5f5f0', water: '#aadaff', waterway: '#aadaff', ice: '#f0f0f0',
-        grass: '#f5f5f0',         // Almost white - matches background
-        wood: '#f5f5f0',          // Almost white - matches background
-        wetland: '#f5f5f0',       // Almost white - matches background
-        residential: '#f5f5f0', industrial: '#f0f0ec',
-        park: '#e8f5e8',          // Extremely subtle hint of green - like Google Maps
-        building: '#e8e8e8', road: '#ffffff', roadCasing: '#d0d0d0',
-        text: '#333333', textHalo: '#ffffff', grid: '#d8d8d8',
-        waterText: '#5d8cae',
-        landcoverOpacity: 0.15,   // Extremely low - almost invisible
-        buildingOpacity: 0.9,     // Buildings more visible
-        parkOpacity: 0.1,         // Barely there - like Google Maps
-        roadNightDim: 1,
-      },
     };
-    // ECDIS forces light palette for correct contrast on white background
-    if (ecdisColors) return palettes.light;
-    if (mapStyle === 'light' || mapStyle === 'dark' || mapStyle === 'street') {
-      return palettes[mapStyle];
+    // ECDIS land forces light palette for correct contrast on white background
+    if (ecdisLand) return palettes.light;
+    if (landImagery === 'street') {
+      return s52Mode === 'day' ? palettes.light : palettes.dark;
     }
-    return palettes.light; // fallback for satellite, ocean, terrain, etc.
-  }, [mapStyle, ecdisColors]);
+    return palettes.light; // fallback for satellite, terrain
+  }, [landImagery, ecdisLand, s52Mode]);
 
-  // MapLibre background styles per mode — fixed per imagery, not display mode
-  const mapStyleUrls = useMemo<Record<MapStyleOption, object>>(() => ({
-    satellite: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#0A0A10' } }] },
-    light: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f5f5f5' } }] },
-    dark: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a1a2e' } }] },
-    street: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#f0ede8' } }] },
-    ocean: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#1a3a5c' } }] },
-    terrain: { version: 8, glyphs: glyphsUrl, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#dfe6e9' } }] },
+  // MapLibre style object — just glyphs + empty background
+  // Actual background color is handled by mapBackgroundColor in the main component
+  const mapStyleUrl = useMemo(() => ({
+    version: 8, glyphs: glyphsUrl, sources: {}, layers: [
+      { id: 'background', type: 'background', paint: { 'background-color': '#000000' } },
+    ],
   }), [glyphsUrl]);
 
   // Dynamic themed styles
@@ -307,14 +292,14 @@ export function useMapConfiguration() {
   }) => {
     return async () => {
       const serverUrl = tileServer.getTileServerUrl();
-      const currentStyleJSON = JSON.stringify(mapStyleUrls[mapStyle]);
+      const currentStyleJSON = JSON.stringify(mapStyleUrl);
 
       const gates = [
-        { label: 'Vector basemap renders', expression: `tileServerReady(${params.tileServerReady}) && hasLocalBasemap(${hasLocalBasemap}) && isVectorStyle(${isVectorStyle})`, pass: params.tileServerReady && hasLocalBasemap && isVectorStyle },
-        { label: 'Ocean source renders', expression: `tileServerReady(${params.tileServerReady}) && oceanTileSets.length(${oceanTileSets.length}) > 0 && mapStyle === 'ocean'`, pass: params.tileServerReady && oceanTileSets.length > 0 && mapStyle === 'ocean' },
-        { label: 'Terrain source renders', expression: `tileServerReady(${params.tileServerReady}) && terrainTileSets.length(${terrainTileSets.length}) > 0 && mapStyle === 'terrain'`, pass: params.tileServerReady && terrainTileSets.length > 0 && mapStyle === 'terrain' },
+        { label: 'Vector basemap renders', expression: `tileServerReady(${params.tileServerReady}) && hasLocalBasemap(${hasLocalBasemap}) && showVectorBasemap(${showVectorBasemap})`, pass: params.tileServerReady && hasLocalBasemap && showVectorBasemap },
+        { label: 'Ocean source renders', expression: `tileServerReady(${params.tileServerReady}) && oceanTileSets.length(${oceanTileSets.length}) > 0 && hasMarineRasterTiles(${hasMarineRasterTiles})`, pass: params.tileServerReady && oceanTileSets.length > 0 && hasMarineRasterTiles },
+        { label: 'Terrain source renders', expression: `tileServerReady(${params.tileServerReady}) && terrainTileSets.length(${terrainTileSets.length}) > 0 && landImagery === 'terrain'`, pass: params.tileServerReady && terrainTileSets.length > 0 && landImagery === 'terrain' },
         { label: 'Charts source renders', expression: `useMBTiles(${params.useMBTiles}) && tileServerReady(${params.tileServerReady})`, pass: params.useMBTiles && params.tileServerReady },
-        { label: 'Satellite source renders', expression: `tileServerReady(${params.tileServerReady}) && satelliteTileSets.length(${satelliteTileSets.length}) > 0`, pass: params.tileServerReady && satelliteTileSets.length > 0 },
+        { label: 'Satellite source renders', expression: `tileServerReady(${params.tileServerReady}) && satelliteTileSets.length(${satelliteTileSets.length}) > 0 && landImagery === 'satellite'`, pass: params.tileServerReady && satelliteTileSets.length > 0 && landImagery === 'satellite' },
         { label: 'GNIS source renders', expression: `tileServerReady(${params.tileServerReady}) && gnisAvailable(${params.gnisAvailable}) && showGNISNames(${params.showGNISNames}) && showPlaceNames(${params.showPlaceNames})`, pass: params.tileServerReady && params.gnisAvailable && params.showGNISNames && params.showPlaceNames },
       ];
 
@@ -351,7 +336,7 @@ export function useMapConfiguration() {
 
       setDebugDiagnostics({
         timestamp: new Date().toISOString(),
-        mapStyle, s52Mode,
+        landImagery, marineImagery, s52Mode,
         tileServerReady: params.tileServerReady,
         hasLocalBasemap, hasLocalOcean, hasLocalTerrain,
         gnisAvailable: params.gnisAvailable,
@@ -361,7 +346,7 @@ export function useMapConfiguration() {
         gates, mapLibreSources, mapLibreLayers, styleError,
       });
     };
-  }, [mapStyle, s52Mode, hasLocalBasemap, hasLocalOcean, hasLocalTerrain, isVectorStyle, satelliteTileSets, oceanTileSets, terrainTileSets, mapStyleUrls]);
+  }, [landImagery, marineImagery, s52Mode, hasLocalBasemap, hasLocalOcean, hasLocalTerrain, showVectorBasemap, hasMarineRasterTiles, satelliteTileSets, oceanTileSets, terrainTileSets, mapStyleUrl]);
 
   return {
     // S-52 mode
@@ -369,15 +354,22 @@ export function useMapConfiguration() {
     setS52Mode,
     uiTheme,
     s52Colors,
-    // Map style
-    mapStyle,
-    setMapStyle,
-    isVectorStyle,
+    // Imagery axes
+    landImagery,
+    setLandImagery,
+    marineImagery,
+    setMarineImagery,
+    // Derived booleans
+    showVectorBasemap,
+    hasLandRasterTiles,
+    hasMarineRasterTiles,
+    // ECDIS (derived from imagery choices)
+    ecdisLand,
+    ecdisMarine,
     ecdisColors,
-    setEcdisColors: setEcdisColorsWithPersist,
     glyphsUrl,
     basemapPalette,
-    mapStyleUrls,
+    mapStyleUrl,
     themedStyles,
     // Tile sets
     hasLocalBasemap,

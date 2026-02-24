@@ -101,4 +101,5 @@ export type LayerVisibilityAction =
   | { type: 'SET'; layer: keyof LayerVisibility; value: boolean }
   | { type: 'SET_ALL'; value: boolean };
 
-export type MapStyleOption = 'satellite' | 'light' | 'dark' | 'street' | 'ocean' | 'terrain';
+export type LandImageryOption = 'satellite' | 'terrain' | 'street' | 'ecdis';
+export type MarineImageryOption = 'ocean' | 'chart' | 'ecdis';

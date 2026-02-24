@@ -157,8 +157,8 @@ export interface DisplaySettings {
   chartDetail: 'low' | 'medium' | 'high' | 'ultra' | 'max';
 
   // Map display settings (persisted)
-  mapStyle: 'satellite' | 'light' | 'dark' | 'street' | 'ocean' | 'terrain';
-  ecdisColors: boolean;
+  landImagery: 'satellite' | 'terrain' | 'street' | 'ecdis';
+  marineImagery: 'ocean' | 'chart' | 'ecdis';
 }
 
 const DEFAULT_SETTINGS: DisplaySettings = {
@@ -291,8 +291,8 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   tideCorrectedSoundings: true,
   chartDetail: 'max',  // Default: +4 offset, maximum detail — all features visible at earliest zoom levels
   // Map display
-  mapStyle: 'dark',
-  ecdisColors: false,
+  landImagery: 'satellite',
+  marineImagery: 'chart',
 };
 
 // In-memory cache
@@ -311,6 +311,34 @@ export async function loadSettings(): Promise<DisplaySettings> {
     const stored = await AsyncStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored);
+      // Migrate old mapStyle → landImagery + marineImagery
+      if (parsed.mapStyle && !parsed.landImagery) {
+        switch (parsed.mapStyle) {
+          case 'satellite':
+            parsed.landImagery = 'satellite';
+            parsed.marineImagery = 'chart';
+            break;
+          case 'ocean':
+            parsed.landImagery = 'street';
+            parsed.marineImagery = 'ocean';
+            break;
+          case 'terrain':
+            parsed.landImagery = 'terrain';
+            parsed.marineImagery = 'chart';
+            break;
+          default: // 'street', 'light', 'dark'
+            parsed.landImagery = 'street';
+            parsed.marineImagery = 'chart';
+            break;
+        }
+        delete parsed.mapStyle;
+      }
+      // Migrate old ecdisColors boolean → ecdis imagery options
+      if (parsed.ecdisColors === true) {
+        parsed.landImagery = 'ecdis';
+        parsed.marineImagery = 'ecdis';
+      }
+      delete parsed.ecdisColors;
       cachedSettings = { ...DEFAULT_SETTINGS, ...parsed };
     } else {
       logger.debug(LogCategory.SETTINGS, 'No stored settings, using defaults');
