@@ -83,13 +83,13 @@ SKIN_OF_EARTH_OBJLS = {30, 42, 43, 69, 71}  # COALNE, DEPARE, DEPCNT, LAKARE, LN
 # scale's full native zoom range.  The higher scale's M_COVR may cover an area
 # without providing replacement features at that location; the app-side
 # bgFillScaleFilter / buildContourScaleOpacity handle visual overlap.
-_FILLER_FULL_RANGE_OBJLS = {42, 30}  # DEPARE, COALNE
+_FILLER_FULL_RANGE_OBJLS = {30}  # COALNE
 
-# OBJLs exempt from M_COVR clipping entirely.  Depth contours from different
-# scale charts are complementary (different survey intervals/sources) and should
-# coexist.  The dedup pass removes true duplicates via coordinate hashing;
-# the app's buildContourScaleOpacity fades lower-scale lines where both are visible.
-_MCOVR_CLIP_EXEMPT_OBJLS = {43}  # DEPCNT
+# OBJLs exempt from M_COVR clipping entirely.  Depth areas and contours from
+# different scale charts are complementary (different survey data/intervals) and
+# should coexist.  The dedup pass removes true duplicates via coordinate hashing;
+# the app's buildContourScaleOpacity fades lower-scale features where both are visible.
+_MCOVR_CLIP_EXEMPT_OBJLS = {42, 43}  # DEPARE, DEPCNT
 
 # Point features exempt from M_COVR coverage suppression and processed with
 # density thinning (--drop-densest-as-needed) instead of -r1 keep-all.
