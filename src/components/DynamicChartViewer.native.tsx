@@ -387,6 +387,23 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     [displaySettings.seaAreaNamesOpacityScale]
   );
 
+  // Memoized scaled Land Regions text settings
+  const scaledLandRegionsFontSize = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    8, Math.round(10 * displaySettings.landRegionsFontScale),
+    12, Math.round(14 * displaySettings.landRegionsFontScale),
+  ], [displaySettings.landRegionsFontScale]);
+
+  const scaledLandRegionsHalo = useMemo(() =>
+    1.5 * displaySettings.landRegionsHaloScale,
+    [displaySettings.landRegionsHaloScale]
+  );
+
+  const scaledLandRegionsOpacity = useMemo(() =>
+    Math.min(1, Math.max(0, displaySettings.landRegionsOpacityScale)),
+    [displaySettings.landRegionsOpacityScale]
+  );
+
   // Memoized scaled Seabed Names text settings
   const scaledSeabedNamesFontSize = useMemo(() =>
     Math.round(10 * displaySettings.seabedNamesFontScale),
@@ -525,10 +542,85 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   ], [displaySettings.coastlineLineScale, scaledCoastlineHalo]);
 
   // Memoized scaled line opacities (clamped to 0-1 range)
-  const scaledDepthContourLineOpacity = useMemo(() => 
+  const scaledDepthContourLineOpacity = useMemo(() =>
     Math.min(1, Math.max(0, displaySettings.depthContourLineOpacityScale)),
     [displaySettings.depthContourLineOpacityScale]
   );
+
+  // Depth contours: fade lower-scale features at zooms where higher-scale
+  // data is expected, preventing visual line doubling from overlapping scales.
+  // Features past their native zoom ceiling fade to 15% (gap protection for
+  // areas without higher-scale coverage).
+  //
+  // MapLibre only allows ONE zoom-based interpolate per property expression,
+  // so the zoom interpolate must be outermost with data-driven case at each
+  // stop.  The base opacity multiplier is baked in at JS time.
+  //
+  // Fade schedule (before baseOpacity multiplier):
+  //   US1-2: 1.0 @ z5 → 0.15 @ z9 (linear)
+  //   US3:   1.0 @ z7 → 0.15 @ z11 (linear)
+  //   US4+:  always 1.0
+  const buildContourScaleOpacity = (base: number): any[] => {
+    const floor = base * 0.7;
+    const mid   = base * 0.575;   // midpoint of linear 1.0→0.15 over 4 zoom levels
+    return [
+      'interpolate', ['linear'], ['zoom'],
+      // z<=5: all scales at full opacity
+      5, base,
+      // z7: US1-2 midway through fade; US3+ still full
+      7, ['case',
+        ['all', ['has', '_scaleNum'], ['<=', ['get', '_scaleNum'], 2]], mid,
+        base],
+      // z9: US1-2 at floor; US3 midway through fade; US4+ still full
+      9, ['case',
+        ['all', ['has', '_scaleNum'], ['==', ['get', '_scaleNum'], 3]], mid,
+        ['all', ['has', '_scaleNum'], ['<=', ['get', '_scaleNum'], 2]], floor,
+        base],
+      // z>=11: US4+ full; US1-3 at floor
+      11, ['case',
+        ['all', ['has', '_scaleNum'], ['>=', ['get', '_scaleNum'], 4]], base,
+        ['has', '_scaleNum'], floor,
+        base],
+    ];
+  };
+
+  const contourHaloScaleOpacity = useMemo(
+    () => buildContourScaleOpacity(0.5 * scaledDepthContourLineOpacity),
+    [scaledDepthContourLineOpacity]
+  );
+
+  const contourLineScaleOpacity = useMemo(
+    () => buildContourScaleOpacity(0.9 * scaledDepthContourLineOpacity),
+    [scaledDepthContourLineOpacity]
+  );
+
+  const contourLabelScaleOpacity = useMemo(
+    () => buildContourScaleOpacity(scaledDepthContourLabelOpacity),
+    [scaledDepthContourLabelOpacity]
+  );
+
+  // Scale-aware contour colors: lower-scale contours get a distinct muted color
+  // so users can tell primary (current-scale) from supplemental (lower-scale) data.
+  const contourLineScaleColor = useMemo((): any[] => [
+    'case',
+    ['all', ['has', '_scaleNum'], ['<=', ['get', '_scaleNum'], 3]],
+    '#80C0E0',           // Lower-scale (US1-3): light cyan
+    s52Colors.CHGRD,     // Higher-scale (US4+): theme color (white in relief)
+  ], [s52Colors.CHGRD]);
+
+  const contourHaloScaleColor = useMemo((): any[] => [
+    'case',
+    ['all', ['has', '_scaleNum'], ['<=', ['get', '_scaleNum'], 3]],
+    '#1A3040',           // Lower-scale halo: darker cyan shadow
+    s52Colors.HLCLR,     // Higher-scale halo: theme halo
+  ], [s52Colors.HLCLR]);
+
+  const contourLabelScaleColor = useMemo((): any[] => [
+    'case',
+    ['all', ['has', '_scaleNum'], ['<=', ['get', '_scaleNum'], 3]],
+    '#80C0E0',           // Lower-scale labels: light cyan (matches line)
+    s52Colors.DPCTX,     // Higher-scale labels: theme color
+  ], [s52Colors.DPCTX]);
 
   const scaledCoastlineOpacity = useMemo(() => 
     Math.min(1, Math.max(0, displaySettings.coastlineOpacityScale)),
@@ -774,49 +866,57 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     [displaySettings.anchorSymbolOpacityScale]
   );
 
-  // Tide station symbol scaling (base zoom interpolation with user scale applied)
+  // Tide station symbol scaling — fade in small, full size by z12
   const scaledTideStationIconSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.3 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
+    7, 0.15 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
+    9, 0.4 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
     12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
   ], [displaySettings.tideStationSymbolSizeScale]);
 
   const scaledTideStationHaloSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.3 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
+    7, 0.15 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
+    9, 0.4 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
     12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
   ], [displaySettings.tideStationSymbolSizeScale, displaySettings.tideStationSymbolHaloScale]);
 
-  const scaledTideStationSymbolOpacity = useMemo(() => 
-    Math.min(1, Math.max(0, displaySettings.tideStationSymbolOpacityScale ?? 1.0)),
-    [displaySettings.tideStationSymbolOpacityScale]
-  );
+  const scaledTideStationSymbolOpacity = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    7, 0.3 * Math.min(1, Math.max(0, displaySettings.tideStationSymbolOpacityScale ?? 1.0)),
+    9, 0.7 * Math.min(1, Math.max(0, displaySettings.tideStationSymbolOpacityScale ?? 1.0)),
+    12, Math.min(1, Math.max(0, displaySettings.tideStationSymbolOpacityScale ?? 1.0)),
+  ], [displaySettings.tideStationSymbolOpacityScale]);
 
-  // Current station symbol scaling (base zoom interpolation with user scale applied)
+  // Current station symbol scaling — fade in small, full size by z12
   const scaledCurrentStationIconSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.3 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
+    7, 0.15 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
+    9, 0.4 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
     12, 1.0 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
   ], [displaySettings.currentStationSymbolSizeScale]);
 
   const scaledCurrentStationHaloSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.3 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
+    7, 0.15 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
+    9, 0.4 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
     12, 1.0 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
   ], [displaySettings.currentStationSymbolSizeScale, displaySettings.currentStationSymbolHaloScale]);
 
-  const scaledCurrentStationSymbolOpacity = useMemo(() => 
-    Math.min(1, Math.max(0, displaySettings.currentStationSymbolOpacityScale ?? 1.0)),
-    [displaySettings.currentStationSymbolOpacityScale]
-  );
+  const scaledCurrentStationSymbolOpacity = useMemo(() => [
+    'interpolate', ['linear'], ['zoom'],
+    7, 0.3 * Math.min(1, Math.max(0, displaySettings.currentStationSymbolOpacityScale ?? 1.0)),
+    9, 0.7 * Math.min(1, Math.max(0, displaySettings.currentStationSymbolOpacityScale ?? 1.0)),
+    12, Math.min(1, Math.max(0, displaySettings.currentStationSymbolOpacityScale ?? 1.0)),
+  ], [displaySettings.currentStationSymbolOpacityScale]);
 
-  // Slightly larger version for station name labels
+  // Tide station name labels — appear at z10, full size by z13
   const scaledTideStationLabelSize = useMemo(() => {
     const baseSize = 15 * (displaySettings.tideStationTextSizeScale ?? 1.0);
     return [
       'interpolate', ['linear'], ['zoom'],
       10, baseSize * 0.5,  // 50% at z10
-      13, baseSize         // 100% at z13
+      13, baseSize          // 100% at z13
     ];
   }, [displaySettings.tideStationTextSizeScale]);
 
@@ -830,13 +930,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     [displaySettings.tideStationTextOpacityScale]
   );
 
-  // Slightly larger version for station name labels (1.1x)
+  // Current station name labels — appear at z10, full size by z13
   const scaledCurrentStationLabelSize = useMemo(() => {
     const baseSize = 15 * (displaySettings.currentStationTextSizeScale ?? 1.0);
     return [
       'interpolate', ['linear'], ['zoom'],
       10, baseSize * 0.5,  // 50% at z10
-      13, baseSize         // 100% at z13
+      13, baseSize          // 100% at z13
     ];
   }, [displaySettings.currentStationTextSizeScale]);
 
@@ -1768,7 +1868,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       });
     }
 
-    logger.info(LogCategory.CHARTS, `[SECTOR-ARC] Generated ${arcFeatures.length} arc features from ${sectorLights.length} sector lights in index`);
     setSectorArcFeatures({ type: 'FeatureCollection', features: arcFeatures });
   };
 
@@ -2484,9 +2583,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // This lets Chart Detail control everything uniformly.
   const scaminToZoom = (scamin: number) => Math.max(0, Math.round(28 - Math.log2(scamin) - scaminOffset));
 
-  // Tide/current station markers
-  const stationIconMinZoom = scaminToZoom(3000000);   // ~z6 at high
-  const stationLabelMinZoom = scaminToZoom(120000);   // ~z10 at high
+  // Tide/current station markers — icons fade in gradually, text at z9
+  const stationIconMinZoom = 7;
+  const stationLabelMinZoom = 10;
 
   // GNIS place name categories
   const gnisWaterMinZoom = scaminToZoom(8388608);     // ~z4 at high (bays, channels, sounds)
@@ -2515,9 +2614,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // Line features (DEPCNT) use overlapping bands. The compose_job clips
   // lower-scale contours against the next-higher scale's M_COVR coverage
-  // (cascading per-scale-pair), so the tile data has no cross-scale geometry
-  // overlap — overlapping display bands are safe (no double-contours) and
-  // ensure contour continuity at all zooms.
+  // (cascading per-scale-pair). SKIN_OF_EARTH features (DEPCNT, DEPARE,
+  // COALNE, LNDARE) retain filler copies through their full native zoom
+  // range to prevent gaps in single-coverage areas; buildContourScaleOpacity
+  // fades these where higher-scale data overlaps.
   const contourScaleFilter: any[] = useMemo(() => ['any',
     ['!', ['has', '_scaleNum']],
     ['all', ['<=', ['get', '_scaleNum'], 2], ['<', ['zoom'], 11]],   // US1-2: z0-10 (native max)
@@ -2565,20 +2665,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         }}
       />,
 
-      /* DEPARE - Depth Area Outlines (depth transition edges act as contour lines) */
-      <MapLibre.LineLayer
-        key={`${p}-depare-outline`}
-        id={`${p}-depare-outline`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 42], bgFillScaleFilter]}
-        style={{
-          lineColor: s52Colors.CHGRD,
-          lineWidth: 0.5,
-          lineOpacity: 0.5,
-          visibility: (showDepthContours || ecdisColors) ? 'visible' : 'none',
-        }}
-      />,
+      /* DEPARE outlines removed — DEPCNT (OBJL 43) provides proper depth contour
+         lines.  DEPARE polygon edges also trace chart panel boundaries, producing
+         unwanted rectangular lines across the map. */
 
       /* LNDARE - Land Areas (all scales render — consistent coverage) */
       <MapLibre.FillLayer
@@ -2811,7 +2900,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`${p}-sbdare-fill`}
         id={`${p}-sbdare-fill`}
         sourceLayerID="charts"
-        minZoomLevel={0}
+        minZoomLevel={6}
         filter={['all',
           ['==', ['get', 'OBJL'], 121],
           ['==', ['geometry-type'], 'Polygon'],
@@ -2819,7 +2908,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         ]}
         style={{
           fillColor: s52Colors.SBDFL,
-          fillOpacity: 0.15,
+          fillOpacity: ['interpolate', ['linear'], ['zoom'], 6, 0.03, 9, 0.08, 12, 0.15],
           visibility: showSeabed ? 'visible' : 'none',
         }}
       />,
@@ -2838,7 +2927,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           lineColor: s52Colors.SBDLN,
           lineWidth: 0.5,
-          lineOpacity: 0.4,
+          lineOpacity: ['interpolate', ['linear'], ['zoom'], 10, 0.15, 13, 0.4],
           lineDasharray: [4, 2],
           visibility: showSeabed ? 'visible' : 'none',
         }}
@@ -3020,6 +3109,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               '#888888'],
             fillOpacity: 0.4,
             visibility: 'visible',
+          }}
+        />,
+      ] : []),
+
+      /* Debug: Scale coverage heatmap — DEPCNT colored by _scaleNum */
+      ...(showScaleDebug ? [
+        <MapLibre.LineLayer
+          key={`${p}-contour-scale-debug`}
+          id={`${p}-contour-scale-debug`}
+          sourceLayerID="charts"
+          minZoomLevel={0}
+          filter={['==', ['get', 'OBJL'], 43]}
+          style={{
+            lineColor: ['match', ['get', '_scaleNum'],
+              1, '#ff0000', 2, '#ff8800', 3, '#ffff00',
+              4, '#00ff00', 5, '#00aaff', 6, '#8800ff',
+              '#888888'],
+            lineWidth: 3,
+            lineOpacity: 0.9,
           }}
         />,
       ] : []),
@@ -3292,9 +3400,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 43], contourScaleFilter]}
         style={{
-          lineColor: s52Colors.HLCLR,
+          lineColor: contourHaloScaleColor,
           lineWidth: scaledDepthContourLineHaloWidth,
-          lineOpacity: scaledDepthContourLineHalo > 0 ? 0.5 * scaledDepthContourLineOpacity : 0,
+          lineOpacity: scaledDepthContourLineHalo > 0
+            ? contourHaloScaleOpacity
+            : 0,
           visibility: showDepthContours ? 'visible' : 'none',
         }}
       />,
@@ -3307,9 +3417,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 43], contourScaleFilter]}
         style={{
-          lineColor: s52Colors.CHGRD,
+          lineColor: contourLineScaleColor,
           lineWidth: scaledDepthContourLineWidth,
-          lineOpacity: 0.7 * scaledDepthContourLineOpacity,
+          lineOpacity: contourLineScaleOpacity,
           visibility: showDepthContours ? 'visible' : 'none',
         }}
       />,
@@ -3542,10 +3652,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         filter={['all', ['==', ['get', 'OBJL'], 73], ['has', 'OBJNAM'], scaminFilter, bgFillScaleFilter]}
         style={{
           textField: ['get', 'OBJNAM'],
-          textSize: 11,
+          textSize: scaledLandRegionsFontSize,
           textColor: s52Colors.LRGNT,
           textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: 1.5,
+          textHaloWidth: scaledLandRegionsHalo,
+          textOpacity: scaledLandRegionsOpacity,
           textFont: ['Noto Sans Regular'],
           textAllowOverlap: false,
           visibility: showLandRegions ? 'visible' : 'none',
@@ -3611,10 +3722,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         style={{
           textField: ['to-string', ['coalesce', ['get', 'VALDCO'], '']],
           textSize: scaledDepthContourFontSize,
-          textColor: s52Colors.DPCTX,
-          textHaloColor: s52Colors.HLCLR,
+          textColor: contourLabelScaleColor,
+          textHaloColor: contourHaloScaleColor,
           textHaloWidth: scaledDepthContourLabelHalo,
-          textOpacity: scaledDepthContourLabelOpacity,
+          textOpacity: contourLabelScaleOpacity,
           symbolPlacement: 'line',
           symbolSpacing: 300,
           textFont: ['Noto Sans Regular'],
@@ -3644,9 +3755,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       style={{
         textField: depthTextFieldExpression,
         textSize: scaledSoundingsFontSize,
-        textColor: displaySettings.tideCorrectedSoundings ? s52Colors.LITGN : s52Colors.SNDCR,
-        textHaloColor: displaySettings.tideCorrectedSoundings ? s52Colors.CHBLK : s52Colors.HLCLR,
-        textHaloWidth: displaySettings.tideCorrectedSoundings ? scaledSoundingsHalo * 1.5 : scaledSoundingsHalo,
+        textColor: displaySettings.tideCorrectedSoundings ? '#00DD00' : '#FFFFFF',
+        textHaloColor: '#000000',
+        textHaloWidth: displaySettings.tideCorrectedSoundings ? scaledSoundingsHalo * 3.0 : scaledSoundingsHalo,
         textOpacity: scaledSoundingsOpacity,
         textAllowOverlap: true,
         textIgnorePlacement: true,
@@ -3660,7 +3771,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       key="pt-sbdare"
       id="pt-sbdare"
       sourceLayerID="points"
-      minZoomLevel={0}
+      minZoomLevel={6}
       filter={['all',
         ['==', ['get', 'OBJL'], 121],
         ['has', 'NATSUR'],
@@ -3682,11 +3793,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           ['==', ['get', 'NATSUR'], '9'], 'R',
           '',
         ],
-        textSize: scaledSeabedNamesFontSize,
+        textSize: ['interpolate', ['linear'], ['zoom'], 6, scaledSeabedNamesFontSize * 0.5, 10, scaledSeabedNamesFontSize * 0.75, 13, scaledSeabedNamesFontSize],
         textColor: s52Colors.SBDTX,
         textHaloColor: s52Colors.HLCLR,
         textHaloWidth: scaledSeabedNamesHalo,
-        textOpacity: scaledSeabedNamesOpacity,
+        textOpacity: ['interpolate', ['linear'], ['zoom'], 6, 0.2, 9, 0.5, 12, scaledSeabedNamesOpacity],
         textFont: ['Noto Sans Italic'],
         textAllowOverlap: true,
         textIgnorePlacement: true,
@@ -4259,8 +4370,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fillLayerCache = useMemo(() => {
+    const t0 = performance.now();
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderFillLayers(source.sourceId);
+    console.log(`[PERF] fillLayerCache rebuilt: ${(performance.now() - t0).toFixed(1)}ms`);
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, showScaleDebug,
     showDepthAreas, showDepthContours, showLand, showCables, showPipelines,
@@ -4278,8 +4391,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const structureLayerCache = useMemo(() => {
+    const t0 = performance.now();
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderStructureLayers(source.sourceId);
+    console.log(`[PERF] structureLayerCache rebuilt: ${(performance.now() - t0).toFixed(1)}ms`);
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, s52Colors,
     showBridges, showBuildings, showMoorings, showShorelineConstruction,
@@ -4291,13 +4406,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const lineLayerCache = useMemo(() => {
+    const t0 = performance.now();
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderLineLayers(source.sourceId);
+    console.log(`[PERF] lineLayerCache rebuilt: ${(performance.now() - t0).toFixed(1)}ms`);
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, contourScaleFilter, s52Colors, s52Mode,
     showDepthContours, showCoastline, showLand, showCables, showPipelines,
     scaledDepthContourLineWidth, scaledDepthContourLineHaloWidth,
     scaledDepthContourLineHalo, scaledDepthContourLineOpacity,
+    contourHaloScaleOpacity, contourLineScaleOpacity,
     scaledCoastlineLineWidth, scaledCoastlineHaloWidth, scaledCoastlineHalo, scaledCoastlineOpacity,
     scaledCableLineWidth, scaledCableLineHalo, scaledCableLineOpacity,
     scaledPipelineLineWidth, scaledPipelineLineHalo, scaledPipelineLineOpacity,
@@ -4312,20 +4430,24 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const symbolLayerCache = useMemo(() => {
+    const t0 = performance.now();
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderSymbolLayers(source.sourceId);
+    console.log(`[PERF] symbolLayerCache rebuilt: ${(performance.now() - t0).toFixed(1)}ms`);
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, contourScaleFilter, s52Colors,
     showCables, showPipelines, showDepthContours,
     showSeaAreaNames, showLandRegions,
     scaledSeaAreaNamesFontSize, scaledSeaAreaNamesHalo, scaledSeaAreaNamesOpacity,
-    scaledDepthContourFontSize, scaledDepthContourLabelHalo, scaledDepthContourLabelOpacity,
+    scaledLandRegionsFontSize, scaledLandRegionsHalo, scaledLandRegionsOpacity,
+    scaledDepthContourFontSize, scaledDepthContourLabelHalo, scaledDepthContourLabelOpacity, contourLabelScaleOpacity,
   ]);
 
   // Composition: merge sub-group caches into final layer array per source.
   // When a sub-group cache is stable (same reference), the spread is cheap
   // and React's reconciliation skips those elements.
   const chartLayerCache = useMemo(() => {
+    const t0 = performance.now();
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) {
       const sid = source.sourceId;
@@ -4337,6 +4459,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         ...(symbolLayerCache[sid] || []),
       ];
     }
+    console.log(`[PERF] chartLayerCache merged: ${(performance.now() - t0).toFixed(1)}ms`);
     return cache;
   }, [chartScaleSources, fillLayerCache, structureLayerCache, lineLayerCache, soundingLayerCache, symbolLayerCache]);
 
@@ -4379,6 +4502,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       {/* Map section wrapper - takes remaining space */}
       <View style={styles.mapSection}>
       <View style={styles.mapTouchWrapper}>
+      {console.log(`[PERF] MapView render key=map-${landImagery}-${s52Mode}-${mapResetKey}`)}
       <MapLibre.MapView
         key={`map-${landImagery}-${s52Mode}-${mapResetKey}`}
         ref={mapRef}
@@ -6636,7 +6760,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 label="Scale Coverage Debug"
                 value={showScaleDebug}
                 onToggle={() => setShowScaleDebug(!showScaleDebug)}
-                subtitle="Color-codes DEPARE by chart scale"
+                subtitle="Color-codes DEPARE/DEPCNT by chart scale"
               />
             </View>
 

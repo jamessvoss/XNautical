@@ -114,6 +114,12 @@ export function formatFeatureProperties(feature: FeatureInfo, depthUnit: 'meters
       if (props.VALDCO !== undefined) {
         formatted['Depth'] = convertDepthValue(Number(props.VALDCO));
       }
+      if (props._scaleNum !== undefined) {
+        formatted['Scale Band'] = `US${props._scaleNum}`;
+      }
+      if (props._chartId !== undefined) {
+        formatted['Chart ID'] = String(props._chartId);
+      }
       return formatted;
 
     case 'Pipeline':

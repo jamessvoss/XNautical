@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 
 import sqlite3
 
-from osgeo import ogr
+from osgeo import ogr, osr
 from google.cloud import storage, firestore
 
 # Setup logging
@@ -71,13 +71,13 @@ SCALE_ZOOM_RANGES = {
 # providing headroom for chartDetail=ultra (offset=2) to actually work.
 SCAMIN_HEADROOM = 2
 
-# S-57 Group 1 "skin of earth" features + depth contours — SCAMIN must NOT
-# restrict their visibility. Group 1 features define the fundamental land/water
-# boundary; DEPCNT is included because depth contours are safety-critical and
-# should be visible whenever the scale band's tiles exist (matching how
-# commercial chart plotters always show contours for situational awareness).
-# These always use the scale band's native zoom range, never SCAMIN-derived minzoom.
-SKIN_OF_EARTH_OBJLS = {30, 42, 43, 69, 71}  # COALNE, DEPARE, DEPCNT, LAKARE, LNDARE
+# S-57 Group 1 "skin of earth" features — SCAMIN must NOT restrict their
+# visibility. Group 1 features define the fundamental land/water/depth canvas
+# and must be exhaustive at all native zooms.
+# DEPCNT (43) is intentionally excluded: it carries SCAMIN in NOAA cells for
+# low-zoom de-cluttering. With DEPCNT here, gap fillers would ignore SCAMIN and
+# show contours at zooms where they shouldn't appear.
+SKIN_OF_EARTH_OBJLS = {30, 42, 69, 71}  # COALNE, DEPARE, LAKARE, LNDARE
 
 # Skin-of-earth features whose M_COVR filler should extend through the lower
 # scale's full native zoom range.  The higher scale's M_COVR may cover an area
@@ -85,11 +85,12 @@ SKIN_OF_EARTH_OBJLS = {30, 42, 43, 69, 71}  # COALNE, DEPARE, DEPCNT, LAKARE, LN
 # bgFillScaleFilter / buildContourScaleOpacity handle visual overlap.
 _FILLER_FULL_RANGE_OBJLS = {30}  # COALNE
 
-# OBJLs exempt from M_COVR clipping entirely.  Depth areas and contours from
-# different scale charts are complementary (different survey data/intervals) and
-# should coexist.  The dedup pass removes true duplicates via coordinate hashing;
-# the app's buildContourScaleOpacity fades lower-scale features where both are visible.
-_MCOVR_CLIP_EXEMPT_OBJLS = {42, 43}  # DEPARE, DEPCNT
+# OBJLs exempt from M_COVR clipping entirely.
+# DEPARE and DEPCNT were previously exempt but are now clipped like all other
+# features. Gap fillers + SCAMIN fillers + Path 4 fallback ensure no data gaps.
+# This eliminates contour ghosting and depth area tile-load-order visual races,
+# and reduces tile size by removing redundant cross-scale geometry.
+_MCOVR_CLIP_EXEMPT_OBJLS = set()
 
 # Point features exempt from M_COVR coverage suppression and processed with
 # density thinning (--drop-densest-as-needed) instead of -r1 keep-all.
@@ -113,6 +114,114 @@ def scamin_to_minzoom(scamin_val, native_lo: int) -> int:
         return max(native_lo, round(z))
     except (ValueError, TypeError):
         return native_lo
+
+# Minimum fragment length in meters to keep after .Difference() clipping.
+# Fragments shorter than this are discarded as boundary shrapnel.
+_MIN_FRAGMENT_LENGTH_M = 50
+
+# Minimum polygon area in square meters to keep after clipping.
+# Slivers smaller than this are discarded as boundary artifacts.
+_MIN_FRAGMENT_AREA_M2 = 500
+
+# Small outward buffer in degrees (~10m at 60N) applied to clipped DEPARE polygons
+# to prevent transparent cracks between the clipped lower-scale fill and the
+# higher-scale M_COVR boundary. The app's Z-index hides the resulting overlap.
+_DEPARE_BUFFER_DEG = 0.00015
+
+
+def _haversine_length_m(coords):
+    """Sum of segment lengths in meters using Haversine formula.
+
+    Correct at all latitudes — avoids the flat-earth trap where Pythagorean
+    math on raw lon/lat shrinks with cos(latitude).
+    """
+    R = 6_371_000  # Earth radius in meters
+    total = 0.0
+    for i in range(1, len(coords)):
+        lon1, lat1 = math.radians(coords[i-1][0]), math.radians(coords[i-1][1])
+        lon2, lat2 = math.radians(coords[i][0]), math.radians(coords[i][1])
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+        total += 2 * R * math.asin(math.sqrt(a))
+    return total
+
+
+def _filter_line_fragments(geom_json):
+    """Remove tiny line stubs from .Difference() clipping artifacts.
+
+    When a generalized lower-scale line 'wiggles' across a precise higher-scale
+    M_COVR boundary, .Difference() produces MultiLineString with tiny fragments.
+    Uses Haversine length so the 50m threshold is correct at any latitude.
+
+    Returns filtered GeoJSON dict, or None if all fragments are too small.
+    """
+    gtype = geom_json.get('type', '')
+
+    if gtype == 'LineString':
+        coords = geom_json.get('coordinates', [])
+        if _haversine_length_m(coords) < _MIN_FRAGMENT_LENGTH_M:
+            return None
+        return geom_json
+
+    elif gtype == 'MultiLineString':
+        kept = [c for c in geom_json.get('coordinates', [])
+                if _haversine_length_m(c) >= _MIN_FRAGMENT_LENGTH_M]
+        if not kept:
+            return None
+        if len(kept) == 1:
+            return {'type': 'LineString', 'coordinates': kept[0]}
+        return {'type': 'MultiLineString', 'coordinates': kept}
+
+    return geom_json
+
+
+def _filter_polygon_slivers(geom_json):
+    """Remove tiny polygon slivers from .Difference() clipping artifacts.
+
+    Checks area in square meters via OGR SRS transform to EPSG:3857.
+    Returns filtered GeoJSON dict, or None if all polygons are slivers.
+    """
+    gtype = geom_json.get('type', '')
+
+    if gtype not in ('Polygon', 'MultiPolygon'):
+        return geom_json
+
+    ogr_geom = ogr.CreateGeometryFromJson(json.dumps(geom_json))
+    if not ogr_geom:
+        return geom_json
+
+    # Transform to Web Mercator for area in square meters
+    src_srs = osr.SpatialReference()
+    src_srs.ImportFromEPSG(4326)
+    dst_srs = osr.SpatialReference()
+    dst_srs.ImportFromEPSG(3857)
+    transform = osr.CoordinateTransformation(src_srs, dst_srs)
+
+    if gtype == 'Polygon':
+        clone = ogr_geom.Clone()
+        clone.Transform(transform)
+        if clone.GetArea() < _MIN_FRAGMENT_AREA_M2:
+            return None
+        return geom_json
+
+    elif gtype == 'MultiPolygon':
+        kept = []
+        for i in range(ogr_geom.GetGeometryCount()):
+            part = ogr_geom.GetGeometryRef(i)
+            clone = part.Clone()
+            clone.Transform(transform)
+            if clone.GetArea() >= _MIN_FRAGMENT_AREA_M2:
+                kept.append(json.loads(part.ExportToJson()))
+        if not kept:
+            return None
+        if len(kept) == 1:
+            return kept[0]
+        return {'type': 'MultiPolygon',
+                'coordinates': [p['coordinates'] for p in kept]}
+
+    return geom_json
+
 
 # Category 1: Fixed physical objects — deduplicate, keep highest _scaleNum
 # All codes are verified against actual binary OBJL values in S-57 .000 files
@@ -424,6 +533,20 @@ def build_coverage_index(local_paths):
             if ogr_geom and not ogr_geom.IsEmpty():
                 coverage_by_scale[scale_num].append(ogr_geom)
 
+    # Count interior rings BEFORE union to establish expected hole count
+    pre_union_holes = {}
+    for sn, geoms in coverage_by_scale.items():
+        hole_count = 0
+        for g in geoms:
+            if g.GetGeometryType() in (ogr.wkbPolygon, ogr.wkbPolygon25D):
+                hole_count += max(0, g.GetGeometryCount() - 1)
+            elif g.GetGeometryType() in (ogr.wkbMultiPolygon, ogr.wkbMultiPolygon25D):
+                for i in range(g.GetGeometryCount()):
+                    hole_count += max(0, g.GetGeometryRef(i).GetGeometryCount() - 1)
+        if hole_count > 0:
+            pre_union_holes[sn] = hole_count
+            logger.info(f'  US{sn} M_COVR input: {hole_count} interior holes across {len(geoms)} polygons')
+
     # Union all polygons per scale (with validity checks)
     coverage_union = {}
     for sn, geoms in coverage_by_scale.items():
@@ -437,6 +560,30 @@ def build_coverage_index(local_paths):
         if not union.IsValid():
             union = union.MakeValid()
         coverage_union[sn] = union
+
+        # Validate interior ring preservation after union + MakeValid
+        if sn in pre_union_holes:
+            post_holes = 0
+            if union.GetGeometryType() in (ogr.wkbPolygon, ogr.wkbPolygon25D):
+                post_holes = max(0, union.GetGeometryCount() - 1)
+            elif union.GetGeometryType() in (ogr.wkbMultiPolygon, ogr.wkbMultiPolygon25D):
+                for i in range(union.GetGeometryCount()):
+                    post_holes += max(0, union.GetGeometryRef(i).GetGeometryCount() - 1)
+
+            expected = pre_union_holes[sn]
+            if post_holes < expected:
+                logger.warning(
+                    f'  US{sn} M_COVR HOLE LOSS: {expected} holes before union, '
+                    f'{post_holes} after. {expected - post_holes} holes may have been '
+                    f'filled by MakeValid(). Features inside these holes may be '
+                    f'incorrectly clipped.'
+                )
+                # TODO: If this fires in production, implement hole rescue:
+                # 1. Extract interior rings from pre-union polygons
+                # 2. Union the exterior shells only
+                # 3. Punch holes back in with .Difference(hole_union)
+            else:
+                logger.info(f'  US{sn} M_COVR union: {post_holes} interior holes preserved')
 
     return coverage_union
 
@@ -1232,6 +1379,16 @@ def main():
                                 # Write unclipped copy for tile-level gap zooms
                                 if gap_maxz >= my_scamin_minz and scale_num in scale_geojson:
                                     gap_feature = dict(feature)
+                                    gap_geom = feature['geometry']
+                                    # Simplify heavyweight polygon gap fillers for low-zoom tiles
+                                    if objl in SKIN_OF_EARTH_OBJLS and gap_maxz <= 5:
+                                        ogr_gap = ogr.CreateGeometryFromJson(json.dumps(gap_geom))
+                                        if ogr_gap:
+                                            tolerance = 0.001 * (6 - gap_maxz)
+                                            simplified = ogr_gap.SimplifyPreserveTopology(tolerance)
+                                            if simplified and not simplified.IsEmpty():
+                                                gap_geom = json.loads(simplified.ExportToJson())
+                                    gap_feature['geometry'] = gap_geom
                                     gap_feature['tippecanoe'] = {
                                         'minzoom': my_scamin_minz,
                                         'maxzoom': gap_maxz,
@@ -1260,6 +1417,15 @@ def main():
                                     if not clipped.IsValid():
                                         clipped = clipped.MakeValid()
                                     clipped_json = json.loads(clipped.ExportToJson())
+                                    # Filter shrapnel/slivers from .Difference() artifacts
+                                    if clipped_json.get('type', '') in ('Polygon', 'MultiPolygon'):
+                                        clipped_json = _filter_polygon_slivers(clipped_json)
+                                    else:
+                                        clipped_json = _filter_line_fragments(clipped_json)
+                                    if not clipped_json:
+                                        # Entire feature reduced to shrapnel — treat as fully clipped
+                                        contours_clipped += 1
+                                        continue
                                     if tracer.active:
                                         tmatch = tracer.matches(feature)
                                         if tmatch:
@@ -1267,6 +1433,16 @@ def main():
                                     # Write unclipped copy for tile-level gap zooms
                                     if gap_maxz >= my_scamin_minz and scale_num in scale_geojson:
                                         gap_feature = dict(feature)
+                                        gap_geom = feature['geometry']
+                                        # Simplify heavyweight polygon gap fillers for low-zoom tiles
+                                        if objl in SKIN_OF_EARTH_OBJLS and gap_maxz <= 5:
+                                            ogr_gap = ogr.CreateGeometryFromJson(json.dumps(gap_geom))
+                                            if ogr_gap:
+                                                tolerance = 0.001 * (6 - gap_maxz)
+                                                simplified = ogr_gap.SimplifyPreserveTopology(tolerance)
+                                                if simplified and not simplified.IsEmpty():
+                                                    gap_geom = json.loads(simplified.ExportToJson())
+                                        gap_feature['geometry'] = gap_geom
                                         gap_feature['tippecanoe'] = {
                                             'minzoom': my_scamin_minz,
                                             'maxzoom': gap_maxz,
@@ -1281,16 +1457,32 @@ def main():
                                         if inside_geom and not inside_geom.IsEmpty():
                                             if not inside_geom.IsValid():
                                                 inside_geom = inside_geom.MakeValid()
-                                            filler_feature = dict(feature)
-                                            filler_feature['geometry'] = json.loads(inside_geom.ExportToJson())
-                                            filler_feature['tippecanoe'] = {
-                                                'minzoom': scamin_filler_minz,
-                                                'maxzoom': scamin_filler_maxz,
-                                                'layer': 'charts',
-                                            }
-                                            line = json.dumps(filler_feature, separators=(',', ':')) + '\n'
-                                            buffer_feature(scale_num, line)
-                                            scale_counts[scale_num] += 1
+                                            filler_json = json.loads(inside_geom.ExportToJson())
+                                            # Filter shrapnel/slivers from .Intersection() artifacts
+                                            if filler_json.get('type', '') in ('Polygon', 'MultiPolygon'):
+                                                filler_json = _filter_polygon_slivers(filler_json)
+                                            else:
+                                                filler_json = _filter_line_fragments(filler_json)
+                                            if filler_json:
+                                                filler_feature = dict(feature)
+                                                filler_feature['geometry'] = filler_json
+                                                filler_feature['tippecanoe'] = {
+                                                    'minzoom': scamin_filler_minz,
+                                                    'maxzoom': scamin_filler_maxz,
+                                                    'layer': 'charts',
+                                                }
+                                                line = json.dumps(filler_feature, separators=(',', ':')) + '\n'
+                                                buffer_feature(scale_num, line)
+                                                scale_counts[scale_num] += 1
+                                    # For DEPARE: buffer outward slightly to prevent
+                                    # transparent crack slivers between clipped lower-scale
+                                    # fill and higher-scale M_COVR boundary.
+                                    if objl == 42 and clipped_json.get('type', '') in ('Polygon', 'MultiPolygon'):
+                                        ogr_buffered = ogr.CreateGeometryFromJson(json.dumps(clipped_json))
+                                        if ogr_buffered:
+                                            ogr_buffered = ogr_buffered.Buffer(_DEPARE_BUFFER_DEG)
+                                            if ogr_buffered and not ogr_buffered.IsEmpty():
+                                                clipped_json = json.loads(ogr_buffered.ExportToJson())
                                     feature['geometry'] = clipped_json
                                     geom = clipped_json
                                     contours_trimmed += 1
@@ -1302,6 +1494,16 @@ def main():
                                     # Write unclipped copy for tile-level gap zooms
                                     if gap_maxz >= my_scamin_minz and scale_num in scale_geojson:
                                         gap_feature = dict(feature)
+                                        gap_geom = feature['geometry']
+                                        # Simplify heavyweight polygon gap fillers for low-zoom tiles
+                                        if objl in SKIN_OF_EARTH_OBJLS and gap_maxz <= 5:
+                                            ogr_gap = ogr.CreateGeometryFromJson(json.dumps(gap_geom))
+                                            if ogr_gap:
+                                                tolerance = 0.001 * (6 - gap_maxz)
+                                                simplified = ogr_gap.SimplifyPreserveTopology(tolerance)
+                                                if simplified and not simplified.IsEmpty():
+                                                    gap_geom = json.loads(simplified.ExportToJson())
+                                        gap_feature['geometry'] = gap_geom
                                         gap_feature['tippecanoe'] = {
                                             'minzoom': my_scamin_minz,
                                             'maxzoom': gap_maxz,

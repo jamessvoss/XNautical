@@ -232,7 +232,7 @@ export function useMapPress({
         129: false, // Soundings excluded
         22: showCables, 21: showCables, 20: showCables,
         94: showPipelines, 92: showPipelines,
-        43: false, // Depth contours excluded
+        43: showDepthContours, // Depth contours tappable when visible
         30: showCoastline,
         112: showRestrictedAreas,
         27: showCautionAreas,
@@ -253,7 +253,7 @@ export function useMapPress({
         features: (allFeatures?.features || []).filter((f: any) => {
           const objl = f.properties?.OBJL;
           if (!objl) return false;
-          if (objl === 129 || objl === 43) return false;
+          if (objl === 129) return false;
           return objlVisibility[objl] !== false;
         })
       };
