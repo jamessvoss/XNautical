@@ -83,7 +83,13 @@ SKIN_OF_EARTH_OBJLS = {30, 42, 43, 69, 71}  # COALNE, DEPARE, DEPCNT, LAKARE, LN
 # scale's full native zoom range.  The higher scale's M_COVR may cover an area
 # without providing replacement features at that location; the app-side
 # bgFillScaleFilter / buildContourScaleOpacity handle visual overlap.
-_FILLER_FULL_RANGE_OBJLS = {42, 43, 30}  # DEPARE, DEPCNT, COALNE
+_FILLER_FULL_RANGE_OBJLS = {42, 30}  # DEPARE, COALNE
+
+# OBJLs exempt from M_COVR clipping entirely.  Depth contours from different
+# scale charts are complementary (different survey intervals/sources) and should
+# coexist.  The dedup pass removes true duplicates via coordinate hashing;
+# the app's buildContourScaleOpacity fades lower-scale lines where both are visible.
+_MCOVR_CLIP_EXEMPT_OBJLS = {43}  # DEPCNT
 
 # Point features exempt from M_COVR coverage suppression and processed with
 # density thinning (--drop-densest-as-needed) instead of -r1 keep-all.
@@ -1180,7 +1186,7 @@ def main():
                 #    isn't visible yet due to a tighter SCAMIN. We emit a "filler"
                 #    copy of the clipped geometry that stays visible until the
                 #    higher scale's feature turns on.
-                if scale_num in higher_coverage:
+                if scale_num in higher_coverage and objl not in _MCOVR_CLIP_EXEMPT_OBJLS:
                     try:
                         ogr_line = ogr.CreateGeometryFromJson(json.dumps(geom))
                         if ogr_line and not ogr_line.IsEmpty():
