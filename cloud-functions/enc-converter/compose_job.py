@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 
 import sqlite3
 
-from osgeo import ogr, osr
+from osgeo import ogr
 from google.cloud import storage, firestore
 
 # Setup logging
@@ -176,10 +176,23 @@ def _filter_line_fragments(geom_json):
     return geom_json
 
 
+def _approx_area_m2(ogr_geom):
+    """Approximate area in square meters from WGS-84 polygon using centroid latitude.
+
+    Avoids EPSG:3857 which fails above ~85°N (Alaska, Arctic coverage).
+    Accuracy is ~cos(lat) which is fine for sliver detection.
+    """
+    centroid = ogr_geom.Centroid()
+    lat_rad = math.radians(abs(centroid.GetY()))
+    # 1 deg² ≈ (111320)² * cos(lat) m²
+    m2_per_deg2 = (111320 ** 2) * math.cos(lat_rad)
+    return ogr_geom.GetArea() * m2_per_deg2
+
+
 def _filter_polygon_slivers(geom_json):
     """Remove tiny polygon slivers from .Difference() clipping artifacts.
 
-    Checks area in square meters via OGR SRS transform to EPSG:3857.
+    Uses centroid-latitude area approximation (works at all latitudes).
     Returns filtered GeoJSON dict, or None if all polygons are slivers.
     """
     gtype = geom_json.get('type', '')
@@ -191,17 +204,8 @@ def _filter_polygon_slivers(geom_json):
     if not ogr_geom:
         return geom_json
 
-    # Transform to Web Mercator for area in square meters
-    src_srs = osr.SpatialReference()
-    src_srs.ImportFromEPSG(4326)
-    dst_srs = osr.SpatialReference()
-    dst_srs.ImportFromEPSG(3857)
-    transform = osr.CoordinateTransformation(src_srs, dst_srs)
-
     if gtype == 'Polygon':
-        clone = ogr_geom.Clone()
-        clone.Transform(transform)
-        if clone.GetArea() < _MIN_FRAGMENT_AREA_M2:
+        if _approx_area_m2(ogr_geom) < _MIN_FRAGMENT_AREA_M2:
             return None
         return geom_json
 
@@ -209,9 +213,7 @@ def _filter_polygon_slivers(geom_json):
         kept = []
         for i in range(ogr_geom.GetGeometryCount()):
             part = ogr_geom.GetGeometryRef(i)
-            clone = part.Clone()
-            clone.Transform(transform)
-            if clone.GetArea() >= _MIN_FRAGMENT_AREA_M2:
+            if _approx_area_m2(part) >= _MIN_FRAGMENT_AREA_M2:
                 kept.append(json.loads(part.ExportToJson()))
         if not kept:
             return None
