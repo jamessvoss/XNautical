@@ -105,7 +105,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     handleBuoyClick, reloadStations,
   } = useStationData();
   const {
-    s52Mode, setS52Mode, uiTheme, s52Colors,
+    s52Mode, setS52Mode, uiTheme, s52Colors, depthFillExpression,
     landImagery, setLandImagery, marineImagery, setMarineImagery,
     showVectorBasemap, hasLandRasterTiles, hasMarineRasterTiles,
     ecdisLand, ecdisMarine, ecdisColors,
@@ -2559,15 +2559,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         minZoomLevel={0}
         filter={['all', ['==', ['get', 'OBJL'], 42], bgFillScaleFilter]}
         style={{
-          fillColor: [
-                'step',
-                ['to-number', ['coalesce', ['get', 'DRVAL1'], 0]],
-                s52Colors.DEPIT,
-                0, s52Colors.DEPVS,
-                2, s52Colors.DEPMS,
-                5, s52Colors.DEPMD,
-                10, s52Colors.DEPDW,
-              ],
+          fillColor: depthFillExpression,
           fillOpacity: ecdisMarine ? 1 : (hasMarineRasterTiles ? scaledDepthAreaOpacitySatellite : scaledDepthAreaOpacity),
           visibility: (ecdisColors || showDepthAreas) ? 'visible' : 'none',
         }}
@@ -5435,8 +5427,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
                 {/* Marine Imagery */}
                 <Text style={styles.layerSectionHeader}>Marine</Text>
-                <TouchableOpacity style={[styles.layerToggleRow, marineImagery === 'chart' && styles.layerToggleRowActive]} onPress={() => setMarineImagery('chart')}>
-                  <Text style={styles.layerToggleText}>Chart</Text>
+                <TouchableOpacity style={[styles.layerToggleRow, marineImagery === 'noaa-chart' && styles.layerToggleRowActive]} onPress={() => setMarineImagery('noaa-chart')}>
+                  <Text style={styles.layerToggleText}>NOAA Chart</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.layerToggleRow, marineImagery === 'relief' && styles.layerToggleRowActive]} onPress={() => setMarineImagery('relief')}>
+                  <Text style={styles.layerToggleText}>Relief</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.layerToggleRow, marineImagery === 'ocean' && styles.layerToggleRowActive, !hasLocalOcean && { opacity: 0.4 }]}
@@ -6579,7 +6574,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             {/* Marine Imagery */}
             <Text style={debugStyles.sectionTitle}>MARINE IMAGERY</Text>
             <View style={debugStyles.card}>
-              <DebugToggle label="Chart" value={marineImagery === 'chart'} onToggle={() => setMarineImagery('chart')} radio />
+              <DebugToggle label="NOAA Chart" value={marineImagery === 'noaa-chart'} onToggle={() => setMarineImagery('noaa-chart')} radio />
+              <DebugToggle label="Relief" value={marineImagery === 'relief'} onToggle={() => setMarineImagery('relief')} radio />
               <DebugToggle label="Ocean" value={marineImagery === 'ocean'} onToggle={() => setMarineImagery('ocean')} radio subtitle={hasLocalOcean ? `${oceanTileSets.length} zoom sets` : 'Not downloaded'} />
               <DebugToggle label="ECDIS" value={ecdisMarine} onToggle={() => setMarineImagery('ecdis')} radio />
             </View>

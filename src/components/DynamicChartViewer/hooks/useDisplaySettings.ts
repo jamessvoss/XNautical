@@ -141,7 +141,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   chartDetail: 'max',
   // Map display
   landImagery: 'satellite',
-  marineImagery: 'chart',
+  marineImagery: 'noaa-chart',
 };
 
 export function useDisplaySettings() {

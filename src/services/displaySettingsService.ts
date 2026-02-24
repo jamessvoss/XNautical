@@ -158,7 +158,7 @@ export interface DisplaySettings {
 
   // Map display settings (persisted)
   landImagery: 'satellite' | 'terrain' | 'street' | 'ecdis';
-  marineImagery: 'ocean' | 'chart' | 'ecdis';
+  marineImagery: 'ocean' | 'noaa-chart' | 'ecdis' | 'relief';
 }
 
 const DEFAULT_SETTINGS: DisplaySettings = {
@@ -292,7 +292,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   chartDetail: 'max',  // Default: +4 offset, maximum detail — all features visible at earliest zoom levels
   // Map display
   landImagery: 'satellite',
-  marineImagery: 'chart',
+  marineImagery: 'noaa-chart',
 };
 
 // In-memory cache
@@ -316,7 +316,7 @@ export async function loadSettings(): Promise<DisplaySettings> {
         switch (parsed.mapStyle) {
           case 'satellite':
             parsed.landImagery = 'satellite';
-            parsed.marineImagery = 'chart';
+            parsed.marineImagery = 'noaa-chart';
             break;
           case 'ocean':
             parsed.landImagery = 'street';
@@ -324,11 +324,11 @@ export async function loadSettings(): Promise<DisplaySettings> {
             break;
           case 'terrain':
             parsed.landImagery = 'terrain';
-            parsed.marineImagery = 'chart';
+            parsed.marineImagery = 'noaa-chart';
             break;
           default: // 'street', 'light', 'dark'
             parsed.landImagery = 'street';
-            parsed.marineImagery = 'chart';
+            parsed.marineImagery = 'noaa-chart';
             break;
         }
         delete parsed.mapStyle;
@@ -339,6 +339,10 @@ export async function loadSettings(): Promise<DisplaySettings> {
         parsed.marineImagery = 'ecdis';
       }
       delete parsed.ecdisColors;
+      // Migrate old 'chart' marine imagery → 'noaa-chart'
+      if (parsed.marineImagery === 'chart') {
+        parsed.marineImagery = 'noaa-chart';
+      }
       cachedSettings = { ...DEFAULT_SETTINGS, ...parsed };
     } else {
       logger.debug(LogCategory.SETTINGS, 'No stored settings, using defaults');

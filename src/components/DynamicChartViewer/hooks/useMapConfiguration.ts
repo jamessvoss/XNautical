@@ -22,7 +22,7 @@ export function useMapConfiguration() {
 
   // Land and Marine imagery (independent axes)
   const [landImagery, setLandImageryInternal] = useState<LandImageryOption>('satellite');
-  const [marineImagery, setMarineImageryInternal] = useState<MarineImageryOption>('chart');
+  const [marineImagery, setMarineImageryInternal] = useState<MarineImageryOption>('noaa-chart');
 
   // ECDIS derived from imagery choices (not standalone state)
   const ecdisLand = landImagery === 'ecdis';
@@ -171,13 +171,36 @@ export function useMapConfiguration() {
   // Glyphs URL for local font serving
   const glyphsUrl = 'http://127.0.0.1:8765/fonts/{fontstack}/{range}.pbf';
 
-  // Get S-52 colors for current mode (ECDIS-aware when toggle is on)
-  const s52Colors = useMemo(
-    () => ecdisColors
-      ? themeService.getS52ColorTableWithECDIS(s52Mode)
-      : themeService.getS52ColorTable(s52Mode),
-    [s52Mode, ecdisColors]
-  );
+  // Get S-52 colors for current mode (ECDIS-aware, relief-aware)
+  const s52Colors = useMemo(() => {
+    if (ecdisColors) return themeService.getS52ColorTableWithECDIS(s52Mode);
+    if (marineImagery === 'relief') {
+      return themeService.getS52ColorTableWithMarineTheme(s52Mode, 'relief');
+    }
+    return themeService.getS52ColorTable(s52Mode);
+  }, [s52Mode, ecdisColors, marineImagery]);
+
+  // Build MapLibre expression for DEPARE fills
+  // Relief: smooth interpolate gradient, all others: discrete step bands
+  const depthFillExpression = useMemo(() => {
+    const ramp = themeService.getDepthColorRamp(s52Mode, ecdisColors ? 'ecdis' : marineImagery);
+    const input = ['to-number', ['coalesce', ['get', 'DRVAL1'], 0]];
+    if (ramp.interpolate) {
+      // Smooth gradient: ['interpolate', ['linear'], input, depth1, color1, ...]
+      const expr: any[] = ['interpolate', ['linear'], input];
+      for (const [depth, color] of ramp.stops) {
+        expr.push(depth, color);
+      }
+      return expr;
+    } else {
+      // Discrete bands: ['step', input, defaultColor, depth1, color1, ...]
+      const expr: any[] = ['step', input, ramp.defaultColor];
+      for (const [depth, color] of ramp.stops) {
+        expr.push(depth, color);
+      }
+      return expr;
+    }
+  }, [s52Mode, marineImagery, ecdisColors]);
 
   // Basemap color palettes — only relevant when landImagery === 'street'
   // ECDIS mode forces light palette (dark text on white background)
@@ -354,6 +377,7 @@ export function useMapConfiguration() {
     setS52Mode,
     uiTheme,
     s52Colors,
+    depthFillExpression,
     // Imagery axes
     landImagery,
     setLandImagery,

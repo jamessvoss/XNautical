@@ -102,4 +102,4 @@ export type LayerVisibilityAction =
   | { type: 'SET_ALL'; value: boolean };
 
 export type LandImageryOption = 'satellite' | 'terrain' | 'street' | 'ecdis';
-export type MarineImageryOption = 'ocean' | 'chart' | 'ecdis';
+export type MarineImageryOption = 'ocean' | 'noaa-chart' | 'ecdis' | 'relief';

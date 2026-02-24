@@ -818,6 +818,118 @@ const ECDIS_OVERRIDES: Record<S52DisplayMode, Partial<Record<S52ColorToken, stri
 };
 
 /**
+ * Relief marine theme token overrides per display mode.
+ * Applied to non-fill elements (soundings, contour labels, halos, contour lines)
+ * when the Relief bathymetric gradient is active.
+ */
+const RELIEF_TOKEN_OVERRIDES: Record<S52DisplayMode, Partial<Record<S52ColorToken, string>>> = {
+  day: {
+    SNDCR: '#0A3A5C',   // Soundings - dark navy
+    DPCTX: '#0A3A5C',   // Depth contour labels - dark navy
+    HLCLR: '#C0E8D0',   // Halo - light green-white
+    CHGRD: '#0A4A6C',   // Contour lines - dark teal
+  },
+  dusk: { SNDCR: '#6090C0', DPCTX: '#6090C0', HLCLR: '#1A3030', CHGRD: '#406880' },
+  night: { SNDCR: '#304060', DPCTX: '#304060', HLCLR: '#081410', CHGRD: '#203040' },
+};
+
+/**
+ * Depth color ramp definition for MapLibre fill expressions.
+ * Used by getDepthColorRamp() to build either interpolate or step expressions.
+ */
+export interface DepthColorRamp {
+  interpolate: boolean;      // true = smooth gradient, false = discrete bands
+  defaultColor: string;      // Color below first stop (step mode only)
+  stops: [number, string][]; // [depth_meters, color] pairs, ascending
+}
+
+/**
+ * Relief depth ramps — smooth interpolated gradient per S-52 display mode.
+ * Green (shore) → teal → blue → deep navy.
+ */
+const RELIEF_DEPTH_RAMPS: Record<S52DisplayMode, DepthColorRamp> = {
+  day: {
+    interpolate: true,
+    defaultColor: '#A8D8A0',
+    stops: [
+      [-2, '#A8D8A0'],    // Sandy green (drying/intertidal)
+      [0,  '#88D0A0'],    // Green-teal (shoreline)
+      [2,  '#60C8A0'],    // Teal-green
+      [5,  '#40B898'],    // Teal
+      [10, '#2090B0'],    // Blue (sharp shift)
+      [20, '#1068A0'],    // Deep blue
+      [50, '#0A4890'],    // Navy blue
+      [100, '#083878'],   // Dark navy
+      [200, '#062860'],   // Very dark navy
+      [500, '#041848'],   // Abyss
+    ],
+  },
+  dusk: {
+    interpolate: true,
+    defaultColor: '#4A6848',
+    stops: [
+      [-2, '#4A6848'],    // Dim green
+      [0,  '#406848'],    // Dim green-teal
+      [2,  '#306448'],    // Dim teal-green
+      [5,  '#285C48'],    // Dim teal
+      [10, '#184858'],    // Dim blue (sharp shift)
+      [20, '#103850'],    // Dim deep blue
+      [50, '#0A2848'],    // Dim navy
+      [100, '#082040'],   // Dim dark navy
+      [200, '#061838'],   // Dim very dark navy
+      [500, '#060E24'],   // Dim abyss
+    ],
+  },
+  night: {
+    interpolate: true,
+    defaultColor: '#243418',
+    stops: [
+      [-2, '#243418'],    // Very dim green
+      [0,  '#203420'],    // Very dim green-teal
+      [2,  '#183224'],    // Very dim teal-green
+      [5,  '#142E24'],    // Very dim teal
+      [10, '#0E2430'],    // Very dim blue (sharp shift)
+      [20, '#0A1C2C'],    // Very dim deep blue
+      [50, '#081626'],    // Very dim navy
+      [100, '#061220'],   // Very dim dark navy
+      [200, '#040E1C'],   // Very dim very dark navy
+      [500, '#030814'],   // Very dim abyss
+    ],
+  },
+};
+
+/**
+ * Get S-52 color table with marine theme overrides applied.
+ * Currently supports the 'relief' theme for non-fill token overrides.
+ */
+export function getS52ColorTableWithMarineTheme(
+  mode: S52DisplayMode,
+  theme: 'relief'
+): Record<S52ColorToken, string> {
+  return { ...S52_COLOR_TABLES[mode], ...RELIEF_TOKEN_OVERRIDES[mode] };
+}
+
+/**
+ * Get the depth color ramp for a given display mode and marine theme.
+ * Relief returns a smooth interpolated gradient; all others return discrete step bands.
+ */
+export function getDepthColorRamp(
+  mode: S52DisplayMode,
+  marineTheme: string
+): DepthColorRamp {
+  if (marineTheme === 'relief') return RELIEF_DEPTH_RAMPS[mode];
+  // Standard 4-breakpoint step ramp for noaa-chart, ocean, ecdis
+  const colors = marineTheme === 'ecdis'
+    ? { ...S52_COLOR_TABLES[mode], ...ECDIS_OVERRIDES[mode] }
+    : S52_COLOR_TABLES[mode];
+  return {
+    interpolate: false,
+    defaultColor: colors.DEPIT,
+    stops: [[0, colors.DEPVS], [2, colors.DEPMS], [5, colors.DEPMD], [10, colors.DEPDW]],
+  };
+}
+
+/**
  * Get S-52 color table with ECDIS overrides applied.
  * Use this when the ECDIS toggle is on.
  *
@@ -854,5 +966,7 @@ export default {
   subscribeToModeChanges,
   getS52ColorTable,
   getS52ColorTableWithECDIS,
+  getS52ColorTableWithMarineTheme,
+  getDepthColorRamp,
   hexToRgba,
 };
