@@ -29,7 +29,13 @@ export default function SettingsContent() {
   const [clearing, setClearing] = useState(false);
   const [loadingMBTiles, setLoadingMBTiles] = useState(false);
   const [chartDetail, setChartDetail] = useState<DisplaySettings['chartDetail']>('high');
-  
+  const [depthUnits, setDepthUnits] = useState<DisplaySettings['depthUnits']>('meters');
+  const [distanceUnits, setDistanceUnits] = useState<DisplaySettings['distanceUnits']>('nm');
+  const [speedUnits, setSpeedUnits] = useState<DisplaySettings['speedUnits']>('kn');
+  const [temperatureUnits, setTemperatureUnits] = useState<DisplaySettings['temperatureUnits']>('fahrenheit');
+  const [coordinateFormat, setCoordinateFormat] = useState<DisplaySettings['coordinateFormat']>('dm');
+  const [timeFormat, setTimeFormat] = useState<DisplaySettings['timeFormat']>('12h');
+
   // Helper functions for loading storage info
   const loadStorageInfo = async () => {
     try {
@@ -82,6 +88,12 @@ export default function SettingsContent() {
     // Load chart detail setting
     displaySettingsService.loadSettings().then(settings => {
       setChartDetail(settings.chartDetail);
+      setDepthUnits(settings.depthUnits);
+      setDistanceUnits(settings.distanceUnits);
+      setSpeedUnits(settings.speedUnits);
+      setTemperatureUnits(settings.temperatureUnits);
+      setCoordinateFormat(settings.coordinateFormat);
+      setTimeFormat(settings.timeFormat);
     });
   }, []);
   
@@ -342,36 +354,86 @@ export default function SettingsContent() {
            'Maximum detail — shows all features as early as possible'}
         </Text>
 
-        {/* Placeholder for future settings */}
-        <Text style={styles.sectionTitle}>APP SETTINGS</Text>
+        {/* Map Units Settings */}
+        <Text style={styles.sectionTitle}>MAP UNITS</Text>
 
-        <View style={styles.settingItem}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="moon-outline" size={24} color="#4FC3F7" />
-            <Text style={styles.settingLabel}>Dark Mode</Text>
-          </View>
-          <Text style={styles.settingValue}>On</Text>
+        <Text style={styles.unitLabel}>Depth</Text>
+        <View style={styles.chartDetailRow}>
+          {([['meters', 'Meters'], ['feet', 'Feet'], ['fathoms', 'Fathoms']] as const).map(([value, label]) => (
+            <TouchableOpacity
+              key={value}
+              style={[styles.chartDetailButton, depthUnits === value && styles.chartDetailButtonActive]}
+              onPress={async () => { setDepthUnits(value); await displaySettingsService.updateSetting('depthUnits', value); }}
+            >
+              <Text style={[styles.chartDetailText, depthUnits === value && styles.chartDetailTextActive]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
-        <View style={styles.settingItem}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="notifications-outline" size={24} color="#4FC3F7" />
-            <Text style={styles.settingLabel}>Notifications</Text>
-          </View>
-          <Text style={styles.settingValue}>Enabled</Text>
+        <Text style={styles.unitLabel}>Distance</Text>
+        <View style={styles.chartDetailRow}>
+          {([['nm', 'NM'], ['mi', 'Miles'], ['km', 'KM']] as const).map(([value, label]) => (
+            <TouchableOpacity
+              key={value}
+              style={[styles.chartDetailButton, distanceUnits === value && styles.chartDetailButtonActive]}
+              onPress={async () => { setDistanceUnits(value); await displaySettingsService.updateSetting('distanceUnits', value); }}
+            >
+              <Text style={[styles.chartDetailText, distanceUnits === value && styles.chartDetailTextActive]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
-        <View style={styles.settingItem}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="map-outline" size={24} color="#4FC3F7" />
-            <Text style={styles.settingLabel}>Map Units</Text>
-          </View>
-          <Text style={styles.settingValue}>Nautical</Text>
+        <Text style={styles.unitLabel}>Speed</Text>
+        <View style={styles.chartDetailRow}>
+          {([['kn', 'Knots'], ['mph', 'MPH'], ['kmh', 'km/h']] as const).map(([value, label]) => (
+            <TouchableOpacity
+              key={value}
+              style={[styles.chartDetailButton, speedUnits === value && styles.chartDetailButtonActive]}
+              onPress={async () => { setSpeedUnits(value); await displaySettingsService.updateSetting('speedUnits', value); }}
+            >
+              <Text style={[styles.chartDetailText, speedUnits === value && styles.chartDetailTextActive]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
         </View>
 
-        <Text style={styles.placeholder}>
-          Additional settings coming soon
-        </Text>
+        <Text style={styles.unitLabel}>Temperature</Text>
+        <View style={styles.chartDetailRow}>
+          {([['fahrenheit', '°F'], ['celsius', '°C']] as const).map(([value, label]) => (
+            <TouchableOpacity
+              key={value}
+              style={[styles.chartDetailButton, temperatureUnits === value && styles.chartDetailButtonActive]}
+              onPress={async () => { setTemperatureUnits(value); await displaySettingsService.updateSetting('temperatureUnits', value); }}
+            >
+              <Text style={[styles.chartDetailText, temperatureUnits === value && styles.chartDetailTextActive]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <Text style={styles.unitLabel}>Coordinates</Text>
+        <View style={styles.chartDetailRow}>
+          {([['decimal', 'DD.ddd°'], ['dm', "DD°MM.m'"], ['dms', `DD°MM'SS"`]] as const).map(([value, label]) => (
+            <TouchableOpacity
+              key={value}
+              style={[styles.chartDetailButton, coordinateFormat === value && styles.chartDetailButtonActive]}
+              onPress={async () => { setCoordinateFormat(value); await displaySettingsService.updateSetting('coordinateFormat', value); }}
+            >
+              <Text style={[styles.chartDetailText, coordinateFormat === value && styles.chartDetailTextActive]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <Text style={styles.unitLabel}>Time</Text>
+        <View style={styles.chartDetailRow}>
+          {([['12h', '12 Hour'], ['24h', '24 Hour']] as const).map(([value, label]) => (
+            <TouchableOpacity
+              key={value}
+              style={[styles.chartDetailButton, timeFormat === value && styles.chartDetailButtonActive]}
+              onPress={async () => { setTimeFormat(value); await displaySettingsService.updateSetting('timeFormat', value); }}
+            >
+              <Text style={[styles.chartDetailText, timeFormat === value && styles.chartDetailTextActive]}>{label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
       </View>
     </ScrollView>
   );
@@ -536,11 +598,11 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginBottom: 12,
   },
-  placeholder: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.4)',
-    textAlign: 'center',
-    marginTop: 20,
-    fontStyle: 'italic',
+  unitLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: 'rgba(255, 255, 255, 0.6)',
+    marginTop: 8,
+    marginBottom: 6,
   },
 });

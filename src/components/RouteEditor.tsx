@@ -20,6 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRoutes } from '../contexts/RouteContext';
 import { formatDistance, formatBearing, formatDuration, formatETA, formatFuel, calculateFuelConsumption } from '../services/routeService';
 import { recalculateRoute } from '../utils/routeCalculations';
+import * as unitFormat from '../services/unitFormatService';
 import type { RoutePoint, PerformanceMethod } from '../types/route';
 
 interface RouteEditorProps {
@@ -210,7 +211,7 @@ export default function RouteEditor({ visible, onClose }: RouteEditorProps) {
         
         <TouchableOpacity style={styles.perfBox}>
           <Text style={styles.perfLabel}>Speed</Text>
-          <Text style={styles.perfValue}>{activeRoute.cruisingSpeed} kts</Text>
+          <Text style={styles.perfValue}>{unitFormat.formatSpeed(activeRoute.cruisingSpeed)}</Text>
         </TouchableOpacity>
       </View>
 
@@ -340,7 +341,7 @@ export default function RouteEditor({ visible, onClose }: RouteEditorProps) {
               <>
                 <Text style={styles.menuTitle}>{selectedPoint.name}</Text>
                 <Text style={styles.menuSubtitle}>
-                  {selectedPoint.position.latitude.toFixed(6)}°, {selectedPoint.position.longitude.toFixed(6)}°
+                  {unitFormat.formatCoordinate(selectedPoint.position.latitude, true)}, {unitFormat.formatCoordinate(selectedPoint.position.longitude, false)}
                 </Text>
 
                 <TouchableOpacity style={styles.menuItem} onPress={handleEditPointName}>

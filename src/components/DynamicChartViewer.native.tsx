@@ -54,6 +54,7 @@ import { useOverlay } from '../contexts/OverlayContext';
 import { getCompassModeLabel } from '../utils/compassUtils';
 import * as displaySettingsService from '../services/displaySettingsService';
 import type { DisplaySettings } from '../services/displaySettingsService';
+import * as unitFormat from '../services/unitFormatService';
 import { logger, LogCategory } from '../services/loggingService';
 import { performanceTracker, StartupPhase, RuntimeMetric } from '../services/performanceTracker';
 import * as themeService from '../services/themeService';
@@ -2312,7 +2313,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 properties: {
                   ...props,
                   _specialType: 'currentStation',
-                  _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
+                  _tapCoordinates: `${unitFormat.formatCoordinate(latitude, true)}, ${unitFormat.formatCoordinate(longitude, false)}`,
                 },
               });
             }
@@ -2329,7 +2330,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   ...props,
                   _specialType: 'tideStation',
                   OBJNAM: props.name,
-                  _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
+                  _tapCoordinates: `${unitFormat.formatCoordinate(latitude, true)}, ${unitFormat.formatCoordinate(longitude, false)}`,
                 },
               });
             }
@@ -2346,7 +2347,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                   ...props,
                   _specialType: 'liveBuoy',
                   OBJNAM: props.name,
-                  _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
+                  _tapCoordinates: `${unitFormat.formatCoordinate(latitude, true)}, ${unitFormat.formatCoordinate(longitude, false)}`,
                 },
               });
             }
@@ -2458,13 +2459,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           let featureCoords = '';
           if (geom?.type === 'Point' && geom.coordinates) {
             const [fLon, fLat] = geom.coordinates;
-            featureCoords = `${Number(fLat).toFixed(7)}°, ${Number(fLon).toFixed(7)}°`;
+            featureCoords = `${unitFormat.formatCoordinate(Number(fLat), true)}, ${unitFormat.formatCoordinate(Number(fLon), false)}`;
           }
           uniqueFeatures.push({
             type: LAYER_DISPLAY_NAMES[layer] || layer,
             properties: {
               ...props,
-              _tapCoordinates: `${latitude.toFixed(5)}°, ${longitude.toFixed(5)}°`,
+              _tapCoordinates: `${unitFormat.formatCoordinate(latitude, true)}, ${unitFormat.formatCoordinate(longitude, false)}`,
               ...(featureCoords ? { _featureCoordinates: featureCoords } : {}),
             },
           });

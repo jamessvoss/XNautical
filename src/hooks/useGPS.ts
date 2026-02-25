@@ -22,6 +22,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import * as Location from 'expo-location';
+import * as unitFormat from '../services/unitFormatService';
 
 export interface GPSData {
   // Position
@@ -303,8 +304,7 @@ export function useGPS(options: UseGPSOptions = {}) {
 
 // Utility functions for formatting GPS data
 export function formatSpeed(speedKnots: number | null): string {
-  if (speedKnots === null) return '--';
-  return `${speedKnots.toFixed(1)} kn`;
+  return unitFormat.formatSpeed(speedKnots);
 }
 
 export function formatHeading(heading: number | null): string {
@@ -324,10 +324,5 @@ export function formatAccuracy(accuracy: number | null): string {
 }
 
 export function formatCoordinate(value: number | null, isLatitude: boolean): string {
-  if (value === null) return '--';
-  const abs = Math.abs(value);
-  const deg = Math.floor(abs);
-  const min = (abs - deg) * 60;
-  const dir = isLatitude ? (value >= 0 ? 'N' : 'S') : (value >= 0 ? 'E' : 'W');
-  return `${deg}°${min.toFixed(3)}'${dir}`;
+  return unitFormat.formatCoordinate(value, isLatitude);
 }

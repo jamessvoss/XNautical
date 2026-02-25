@@ -142,6 +142,12 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   depthUnits: 'meters',
   tideCorrectedSoundings: false,
   chartDetail: 'max',
+  // Unit preferences
+  distanceUnits: 'nm',
+  speedUnits: 'kn',
+  temperatureUnits: 'fahrenheit',
+  coordinateFormat: 'dm',
+  timeFormat: '12h',
   // Map display
   landImagery: 'satellite',
   marineImagery: 'noaa-chart',

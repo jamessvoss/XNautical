@@ -16,7 +16,8 @@ import {
 } from 'react-native';
 import { getTidePredictionsForDate, getCurrentPredictionsForDate } from '../services/stationService';
 import type { TideEvent, CurrentEvent } from '../services/stationService';
-import { interpolateTideHeight, generateTideCurve, getTideState, formatTimeDisplay, formatTideHeight } from '../services/tideInterpolation';
+import { interpolateTideHeight, generateTideCurve, getTideState, formatTimeDisplay } from '../services/tideInterpolation';
+import * as unitFormat from '../services/unitFormatService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -163,7 +164,7 @@ export default function TideStationModal({
                 <Text style={styles.sectionTitle}>Current Tide</Text>
                 <View style={styles.currentInfo}>
                   <Text style={styles.currentHeight}>
-                    {formatTideHeight(currentInfo.height)} ft
+                    {unitFormat.formatTideHeight(currentInfo.height)}
                   </Text>
                   <Text style={styles.currentState}>
                     {currentInfo.state === 'rising' ? '↑ Rising' : '↓ Falling'}
@@ -184,8 +185,8 @@ export default function TideStationModal({
                   </Text>
                   <Text style={styles.eventValue}>
                     {stationType === 'tide'
-                      ? `${formatTideHeight((nextEvent as TideEvent).height)} ft`
-                      : `${(nextEvent as CurrentEvent).velocity.toFixed(1)} kts`}
+                      ? unitFormat.formatTideHeight((nextEvent as TideEvent).height)
+                      : unitFormat.formatVelocity((nextEvent as CurrentEvent).velocity)}
                   </Text>
                 </View>
               </View>
@@ -205,7 +206,7 @@ export default function TideStationModal({
                         {event.type === 'H' ? 'High' : 'Low'}
                       </Text>
                       <Text style={styles.eventRowValue}>
-                        {formatTideHeight(event.height)} ft
+                        {unitFormat.formatTideHeight(event.height)}
                       </Text>
                     </View>
                   ))
@@ -221,7 +222,7 @@ export default function TideStationModal({
                         {event.type.charAt(0).toUpperCase() + event.type.slice(1)}
                       </Text>
                       <Text style={styles.eventRowValue}>
-                        {event.velocity.toFixed(1)} kts
+                        {unitFormat.formatVelocity(event.velocity)}
                         {event.direction !== undefined && ` @ ${event.direction}°`}
                       </Text>
                     </View>
@@ -264,8 +265,8 @@ function renderSimpleCurve(curvePoints: Array<{ time: string; height: number }>)
     <View style={{ height: CHART_HEIGHT, width: CHART_WIDTH, backgroundColor: '#f5f5f5', borderRadius: 8, padding: 8 }}>
       {/* Y-axis labels */}
       <View style={{ position: 'absolute', left: 0, top: 8, bottom: 8, justifyContent: 'space-between' }}>
-        <Text style={{ fontSize: 10, color: '#666' }}>{maxHeight.toFixed(1)}</Text>
-        <Text style={{ fontSize: 10, color: '#666' }}>{minHeight.toFixed(1)}</Text>
+        <Text style={{ fontSize: 10, color: '#666' }}>{unitFormat.formatTideHeight(maxHeight)}</Text>
+        <Text style={{ fontSize: 10, color: '#666' }}>{unitFormat.formatTideHeight(minHeight)}</Text>
       </View>
 
       {/* Curve points */}

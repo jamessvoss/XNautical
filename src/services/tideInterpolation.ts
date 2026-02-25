@@ -6,6 +6,7 @@
  */
 
 import type { TideEvent } from './stationService';
+import * as unitFormat from './unitFormatService';
 
 /**
  * Parse time string "HH:MM" to minutes since midnight
@@ -221,19 +222,13 @@ export function formatTideHeight(height: number): string {
 }
 
 /**
- * Format time for display (handles 24-hour to 12-hour conversion)
+ * Format time for display (reads user's 12h/24h preference)
  */
-export function formatTimeDisplay(time: string, use24Hour: boolean = false): string {
-  const [hours, minutes] = time.split(':').map(Number);
-  
-  if (use24Hour) {
-    return time;
+export function formatTimeDisplay(time: string, use24Hour?: boolean): string {
+  if (use24Hour !== undefined) {
+    return unitFormat.formatTimeDisplay(time, use24Hour ? '24h' : '12h');
   }
-  
-  // Convert to 12-hour format
-  const period = hours >= 12 ? 'PM' : 'AM';
-  const displayHours = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
-  return `${displayHours}:${String(minutes).padStart(2, '0')} ${period}`;
+  return unitFormat.formatTimeDisplay(time);
 }
 
 // ============================================================

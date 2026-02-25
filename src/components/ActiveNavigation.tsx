@@ -26,6 +26,7 @@ import { useRoutes } from '../contexts/RouteContext';
 import { useGPS } from '../hooks/useGPS';
 import { calculateNavigationData, isWithinArrivalRadius } from '../utils/routeCalculations';
 import { formatDistance, formatBearing, formatDuration, formatETA } from '../services/routeService';
+import * as unitFormat from '../services/unitFormatService';
 import type { NavigationLegData } from '../types/route';
 
 interface ActiveNavigationProps {
@@ -158,9 +159,9 @@ export default function ActiveNavigation({ visible, position = 'floating' }: Act
         {/* Distance to next */}
         <View style={styles.primaryData}>
           <Text style={styles.primaryValue}>
-            {formatDistance(navData.distanceRemaining, 1).replace(' nm', '')}
+            {unitFormat.formatDistanceValue(navData.distanceRemaining, 1)}
           </Text>
-          <Text style={styles.primaryUnit}>nm</Text>
+          <Text style={styles.primaryUnit}>{unitFormat.getDistanceUnitLabel()}</Text>
         </View>
 
         {/* Target info */}
@@ -198,7 +199,7 @@ export default function ActiveNavigation({ visible, position = 'floating' }: Act
             styles.dataValue,
             Math.abs(navData.crossTrackError) > 0.1 && styles.dataValueWarning,
           ]}>
-            {navData.crossTrackError >= 0 ? 'R' : 'L'} {Math.abs(navData.crossTrackError).toFixed(2)} nm
+            {navData.crossTrackError >= 0 ? 'R' : 'L'} {unitFormat.formatDistanceValue(Math.abs(navData.crossTrackError), 2)} {unitFormat.getDistanceUnitLabel()}
           </Text>
         </View>
 
@@ -207,7 +208,7 @@ export default function ActiveNavigation({ visible, position = 'floating' }: Act
         <View style={styles.dataItem}>
           <Text style={styles.dataLabel}>SOG</Text>
           <Text style={styles.dataValue}>
-            {gpsData.speed !== null ? `${gpsData.speed.toFixed(1)} kts` : '--'}
+            {gpsData.speedKnots !== null ? unitFormat.formatSpeed(gpsData.speedKnots) : '--'}
           </Text>
         </View>
       </View>

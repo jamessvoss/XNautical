@@ -45,6 +45,8 @@ import {
 import { useOverlay } from '../contexts/OverlayContext';
 import { Ionicons } from '@expo/vector-icons';
 import { useGnssSatellites } from '../hooks/useGnssSatellites';
+import * as displaySettingsService from '../services/displaySettingsService';
+import * as unitFormat from '../services/unitFormatService';
 
 // ─────────────────────────────────────────────────────────────
 // Types & Constants
@@ -1063,8 +1065,21 @@ export default function GPSSensorsView() {
     pressure: null, relAltitude: null,
   });
 
-  // ── UI state ──
+  // ── UI state (synced with global coordinate format setting) ──
   const [coordFormat, setCoordFormat] = useState<CoordFormat>('ddm');
+
+  // Load initial coordinate format from global settings
+  useEffect(() => {
+    displaySettingsService.getSettings().then(settings => {
+      const map: Record<string, CoordFormat> = { decimal: 'dd', dm: 'ddm', dms: 'dms' };
+      setCoordFormat(map[settings.coordinateFormat] || 'ddm');
+    });
+    const unsub = displaySettingsService.subscribe(settings => {
+      const map: Record<string, CoordFormat> = { decimal: 'dd', dm: 'ddm', dms: 'dms' };
+      setCoordFormat(map[settings.coordinateFormat] || 'ddm');
+    });
+    return unsub;
+  }, []);
 
   // ── Sparkline history ──
   const pressureHistoryRef = useRef<number[]>([]);
@@ -1198,7 +1213,10 @@ export default function GPSSensorsView() {
 
   const cycleCoordFormat = useCallback(() => {
     setCoordFormat(prev => {
-      switch (prev) { case 'ddm': return 'dms'; case 'dms': return 'dd'; case 'dd': return 'ddm'; }
+      const next: CoordFormat = prev === 'ddm' ? 'dms' : prev === 'dms' ? 'dd' : 'ddm';
+      const globalMap: Record<CoordFormat, 'decimal' | 'dm' | 'dms'> = { dd: 'decimal', ddm: 'dm', dms: 'dms' };
+      displaySettingsService.updateSetting('coordinateFormat', globalMap[next]);
+      return next;
     });
   }, []);
 

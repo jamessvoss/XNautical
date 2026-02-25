@@ -24,6 +24,7 @@ import {
   RoutingMethod,
 } from '../utils/routeCalculations';
 import { generateRouteId } from './routeStorageService';
+import * as unitFormat from './unitFormatService';
 
 /**
  * Generate a unique route point ID
@@ -390,10 +391,10 @@ export function getRouteSummary(route: Route): {
 }
 
 /**
- * Format distance for display
+ * Format distance for display (nm → user's distance unit)
  */
 export function formatDistance(distanceNm: number, decimals: number = 1): string {
-  return `${distanceNm.toFixed(decimals)} nm`;
+  return unitFormat.formatDistance(distanceNm, decimals);
 }
 
 /**

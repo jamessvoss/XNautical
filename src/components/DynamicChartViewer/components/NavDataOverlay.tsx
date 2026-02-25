@@ -9,6 +9,7 @@
 import React, { useState, useEffect, memo } from 'react';
 import { View, Text, Dimensions, StyleSheet } from 'react-native';
 import type { GPSData } from '../../../hooks/useGPS';
+import * as unitFormat from '../../../services/unitFormatService';
 
 interface Props {
   gpsDataRef: React.MutableRefObject<GPSData>;
@@ -92,9 +93,9 @@ function NavDataOverlayInner({
       <View style={[s.navDataBox, s.navDataUpperLeft, { top: topInset + 52 }]}>
         <Text style={s.navDataLabel}>SPD</Text>
         <Text style={s.navDataValue}>
-          {nav.speedKnots !== null ? `${nav.speedKnots.toFixed(1)}` : '--'}
+          {nav.speedKnots !== null ? unitFormat.formatSpeedValue(nav.speedKnots) : '--'}
         </Text>
-        <Text style={s.navDataUnit}>kn</Text>
+        <Text style={s.navDataUnit}>{unitFormat.getSpeedUnitLabel()}</Text>
       </View>
 
       {/* Upper Right - GPS/PAN Position */}
@@ -106,19 +107,19 @@ function NavDataOverlayInner({
         {followGPS && nav.latitude !== null ? (
           <>
             <Text style={s.navDataValueSmall}>
-              {`${Math.abs(nav.latitude).toFixed(4)}°${nav.latitude >= 0 ? 'N' : 'S'}`}
+              {unitFormat.formatCoordinate(nav.latitude, true)}
             </Text>
             <Text style={s.navDataValueSmall}>
-              {`${Math.abs(nav.longitude!).toFixed(4)}°${nav.longitude! >= 0 ? 'E' : 'W'}`}
+              {unitFormat.formatCoordinate(nav.longitude, false)}
             </Text>
           </>
         ) : (
           <>
             <Text style={s.navDataValueSmall}>
-              {`${Math.abs(centerCoordRef.current[1]).toFixed(4)}°${centerCoordRef.current[1] >= 0 ? 'N' : 'S'}`}
+              {unitFormat.formatCoordinate(centerCoordRef.current[1], true)}
             </Text>
             <Text style={s.navDataValueSmall}>
-              {`${Math.abs(centerCoordRef.current[0]).toFixed(4)}°${centerCoordRef.current[0] >= 0 ? 'E' : 'W'}`}
+              {unitFormat.formatCoordinate(centerCoordRef.current[0], false)}
             </Text>
           </>
         )}

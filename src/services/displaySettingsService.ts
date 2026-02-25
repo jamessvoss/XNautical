@@ -159,6 +159,13 @@ export interface DisplaySettings {
   // Controls how many zoom levels earlier features appear relative to their S-57 SCAMIN value
   chartDetail: 'low' | 'medium' | 'high' | 'ultra' | 'max';
 
+  // Unit preferences
+  distanceUnits: 'nm' | 'mi' | 'km';
+  speedUnits: 'kn' | 'mph' | 'kmh';
+  temperatureUnits: 'fahrenheit' | 'celsius';
+  coordinateFormat: 'decimal' | 'dm' | 'dms';
+  timeFormat: '12h' | '24h';
+
   // Map display settings (persisted)
   landImagery: 'satellite' | 'terrain' | 'street' | 'ecdis';
   marineImagery: 'ocean' | 'noaa-chart' | 'ecdis' | 'relief';
@@ -296,6 +303,12 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   depthUnits: 'meters',
   tideCorrectedSoundings: true,
   chartDetail: 'max',  // Default: +4 offset, maximum detail — all features visible at earliest zoom levels
+  // Unit preferences
+  distanceUnits: 'nm',
+  speedUnits: 'kn',
+  temperatureUnits: 'fahrenheit',
+  coordinateFormat: 'dm',
+  timeFormat: '12h',
   // Map display
   landImagery: 'satellite',
   marineImagery: 'noaa-chart',

@@ -10,6 +10,7 @@
 import { doc, getDoc, collection, getDocs } from 'firebase/firestore';
 import { firestore } from '../config/firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as unitFormat from './unitFormatService';
 
 // AsyncStorage keys
 const BUOY_CATALOG_KEY = (districtId: string) => `@XNautical:buoyCatalog:${districtId}`;
@@ -319,30 +320,24 @@ export async function clearBuoys(districtId: string): Promise<void> {
 // ============================================
 
 /**
- * Format temperature for display (Celsius to Fahrenheit)
+ * Format temperature for display (Celsius → user's unit)
  */
 export function formatTemp(celsius: number | undefined): string {
-  if (celsius === undefined) return '--';
-  const fahrenheit = (celsius * 9/5) + 32;
-  return `${fahrenheit.toFixed(0)}°F`;
+  return unitFormat.formatTemp(celsius);
 }
 
 /**
- * Format wave height for display (meters to feet)
+ * Format wave height for display (meters → user's depth unit)
  */
 export function formatWaveHeight(meters: number | undefined): string {
-  if (meters === undefined) return '--';
-  const feet = meters * 3.28084;
-  return `${feet.toFixed(1)} ft`;
+  return unitFormat.formatWaveHeight(meters);
 }
 
 /**
- * Format wind speed for display (m/s to knots)
+ * Format wind speed for display (m/s → user's speed unit)
  */
 export function formatWindSpeed(ms: number | undefined): string {
-  if (ms === undefined) return '--';
-  const knots = ms * 1.94384;
-  return `${knots.toFixed(0)} kts`;
+  return unitFormat.formatWindSpeed(ms);
 }
 
 /**
@@ -373,12 +368,10 @@ export function formatPressure(hPa: number | undefined): string {
 }
 
 /**
- * Format air temp for display
+ * Format air temp for display (Celsius → user's unit)
  */
 export function formatAirTemp(celsius: number | undefined): string {
-  if (celsius === undefined) return '--';
-  const fahrenheit = (celsius * 9/5) + 32;
-  return `${fahrenheit.toFixed(0)}°F`;
+  return unitFormat.formatTemp(celsius);
 }
 
 /**

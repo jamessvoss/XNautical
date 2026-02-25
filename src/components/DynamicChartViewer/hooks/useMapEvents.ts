@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { logger, LogCategory } from '../../../services/loggingService';
 import { performanceTracker, RuntimeMetric } from '../../../services/performanceTracker';
+import * as unitFormat from '../../../services/unitFormatService';
 
 interface UseMapEventsParams {
   mapRef: React.RefObject<any>;
@@ -140,48 +141,29 @@ export function useMapEvents({
     }
   }, []);
 
-  // Scale bar calculation
+  // Scale bar calculation (unit-aware)
   const scaleBarData = useMemo(() => {
     const lat = centerCoord[1];
     const metersPerPixel = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, currentZoom);
 
-    const METERS_PER_NM = 1852;
     const targetWidthPx = 100;
     const targetDistanceM = metersPerPixel * targetWidthPx;
-    const targetDistanceNM = targetDistanceM / METERS_PER_NM;
+    const targetDisplayUnits = unitFormat.metersToDisplayUnit(targetDistanceM);
 
-    const niceValues = [
-      0.01, 0.02, 0.05,
-      0.1, 0.2, 0.5,
-      1, 2, 5,
-      10, 20, 50,
-      100, 200, 500,
-      1000, 2000, 5000,
-    ];
+    const niceValues = unitFormat.getScaleBarNiceValues();
 
-    let bestNM = niceValues[0];
-    let bestDiff = Math.abs(Math.log(targetDistanceNM) - Math.log(niceValues[0]));
+    let bestVal = niceValues[0];
+    let bestDiff = Math.abs(Math.log(targetDisplayUnits) - Math.log(niceValues[0]));
     for (const v of niceValues) {
-      const diff = Math.abs(Math.log(targetDistanceNM) - Math.log(v));
+      const diff = Math.abs(Math.log(targetDisplayUnits) - Math.log(v));
       if (diff < bestDiff) {
         bestDiff = diff;
-        bestNM = v;
+        bestVal = v;
       }
     }
 
-    const barWidthPx = (bestNM * METERS_PER_NM) / metersPerPixel;
-
-    let label: string;
-    if (bestNM >= 1) {
-      label = `${bestNM} nm`;
-    } else {
-      if (bestNM < 0.05) {
-        const feet = Math.round(bestNM * METERS_PER_NM * 3.28084);
-        label = `${feet} ft`;
-      } else {
-        label = `${bestNM} nm`;
-      }
-    }
+    const barWidthPx = unitFormat.displayUnitToMeters(bestVal) / metersPerPixel;
+    const label = unitFormat.formatScaleBarLabel(bestVal);
 
     return { barWidthPx: Math.round(barWidthPx), label };
   }, [currentZoom, centerCoord]);
