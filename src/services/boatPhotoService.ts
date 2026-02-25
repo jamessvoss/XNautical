@@ -37,9 +37,8 @@ if (Platform.OS !== 'web') {
       getDownloadURL: async (ref: any) => ref.getDownloadURL(),
       deleteObject: async (ref: any) => ref.delete(),
     };
-    console.log('[BoatPhotoService] Firebase Storage initialized');
   } catch (e) {
-    console.log('[BoatPhotoService] Firebase Storage not available:', e);
+    console.warn('[BoatPhotoService] Firebase Storage not available:', e);
   }
 }
 

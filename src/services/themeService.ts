@@ -825,12 +825,29 @@ const ECDIS_OVERRIDES: Record<S52DisplayMode, Partial<Record<S52ColorToken, stri
 const RELIEF_TOKEN_OVERRIDES: Record<S52DisplayMode, Partial<Record<S52ColorToken, string>>> = {
   day: {
     SNDCR: '#0A3A5C',   // Soundings - dark navy
-    DPCTX: '#0A3A5C',   // Depth contour labels - dark navy
-    HLCLR: '#C0E8D0',   // Halo - light green-white
-    CHGRD: '#0A4A6C',   // Contour lines - dark teal
+    DPCTX: '#FFFFFF',   // Depth contour labels - white (matches contour lines)
+    HLCLR: '#1A3A5A',   // Halo - dark navy shadow (water labels)
+    CHGRD: '#FFFFFF',   // Contour lines - white
+    LRGNT: '#2A1800',   // Land region names - dark brown (readable on green land)
+    SENAM: '#FFFFFF',   // Sea area names - white (readable on teal/blue gradient)
+    SBDTX: '#C8D8E8',   // Seabed text - light blue-gray (readable on dark blue water)
+    GNSWT: '#FFFFFF',   // GNIS water - white (readable on teal/blue gradient)
+    GNSCL: '#FFFFFF',   // GNIS coastal - white (readable on teal shoreline)
+    GNSLM: '#2A1800',   // GNIS landmark - dark brown (readable on green land)
+    GNSPP: '#B01010',   // GNIS populated - dark red (readable on green land)
+    GNSST: '#FFFFFF',   // GNIS stream - white (readable on blue water)
+    GNSLK: '#FFFFFF',   // GNIS lake - white (readable on blue water)
   },
-  dusk: { SNDCR: '#6090C0', DPCTX: '#6090C0', HLCLR: '#1A3030', CHGRD: '#406880' },
-  night: { SNDCR: '#304060', DPCTX: '#304060', HLCLR: '#081410', CHGRD: '#203040' },
+  dusk: {
+    SNDCR: '#6090C0', DPCTX: '#C0D0E0', HLCLR: '#0A1A2A', CHGRD: '#C0D0E0',
+    LRGNT: '#D8C8A8', SENAM: '#A0C0E0', SBDTX: '#8098B0',
+    GNSWT: '#90B8E0', GNSCL: '#C0A888', GNSLM: '#C0A888', GNSPP: '#E08080', GNSST: '#90B8E0', GNSLK: '#90C8E0',
+  },
+  night: {
+    SNDCR: '#304060', DPCTX: '#607080', HLCLR: '#050A10', CHGRD: '#607080',
+    LRGNT: '#706048', SENAM: '#384860', SBDTX: '#384050',
+    GNSWT: '#304868', GNSCL: '#504030', GNSLM: '#504030', GNSPP: '#603030', GNSST: '#304868', GNSLK: '#305060',
+  },
 };
 
 /**
@@ -850,18 +867,18 @@ export interface DepthColorRamp {
 const RELIEF_DEPTH_RAMPS: Record<S52DisplayMode, DepthColorRamp> = {
   day: {
     interpolate: true,
-    defaultColor: '#A8D8A0',
+    defaultColor: '#C0E8A0',
     stops: [
-      [-2, '#A8D8A0'],    // Sandy green (drying/intertidal)
-      [0,  '#88D0A0'],    // Green-teal (shoreline)
-      [2,  '#60C8A0'],    // Teal-green
-      [5,  '#40B898'],    // Teal
-      [10, '#2090B0'],    // Blue (sharp shift)
-      [20, '#1068A0'],    // Deep blue
-      [50, '#0A4890'],    // Navy blue
-      [100, '#083878'],   // Dark navy
-      [200, '#062860'],   // Very dark navy
-      [500, '#041848'],   // Abyss
+      [-2, '#C0E8A0'],    // Bright lime-green (drying/intertidal)
+      [0,  '#80E0A0'],    // Vivid green (shoreline)
+      [2,  '#50D8A8'],    // Bright teal-green
+      [5,  '#30C8B0'],    // Vivid teal
+      [10, '#18A0C8'],    // Bright blue (sharp shift)
+      [20, '#1070B8'],    // Saturated blue
+      [50, '#0850A0'],    // Rich navy
+      [100, '#063878'],   // Dark navy
+      [200, '#042860'],   // Very dark navy
+      [500, '#021840'],   // Abyss
     ],
   },
   dusk: {

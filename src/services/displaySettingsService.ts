@@ -17,6 +17,7 @@ export interface DisplaySettings {
   chartLabelsFontScale: number;
   
   seaAreaNamesFontScale: number;
+  landRegionsFontScale: number;
   seabedNamesFontScale: number;
 
   // Text halo/stroke width multipliers (1.0 = default)
@@ -25,14 +26,16 @@ export interface DisplaySettings {
   depthContourLabelHaloScale: number;
   chartLabelsHaloScale: number;
   seaAreaNamesHaloScale: number;
+  landRegionsHaloScale: number;
   seabedNamesHaloScale: number;
-  
+
   // Text opacity multipliers (1.0 = default)
   soundingsOpacityScale: number;
   gnisOpacityScale: number;
   depthContourLabelOpacityScale: number;
   chartLabelsOpacityScale: number;
   seaAreaNamesOpacityScale: number;
+  landRegionsOpacityScale: number;
   seabedNamesOpacityScale: number;
   
   // Line width multipliers (1.0 = default)
@@ -168,13 +171,15 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   depthContourFontScale: 1.5,
   chartLabelsFontScale: 1.5,
   seaAreaNamesFontScale: 1.5,
+  landRegionsFontScale: 1.5,
   seabedNamesFontScale: 1.5,
   // Text halo/stroke
-  soundingsHaloScale: 0.1,
+  soundingsHaloScale: 0.6,
   gnisHaloScale: 1.0,
   depthContourLabelHaloScale: 1.0,
   chartLabelsHaloScale: 1.0,
   seaAreaNamesHaloScale: 1.0,
+  landRegionsHaloScale: 1.0,
   seabedNamesHaloScale: 1.0,
   // Text opacities
   soundingsOpacityScale: 1.0,
@@ -182,6 +187,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   depthContourLabelOpacityScale: 1.0,
   chartLabelsOpacityScale: 1.0,
   seaAreaNamesOpacityScale: 1.0,
+  landRegionsOpacityScale: 1.0,
   seabedNamesOpacityScale: 1.0,
   // Line widths
   depthContourLineScale: 1.0,
@@ -285,7 +291,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   currentStationTextHaloScale: 0.1, // 10% default, max 25%
   currentStationTextOpacityScale: 1.0,
   // Other settings
-  dayNightMode: 'dusk',  // S-52 default - dark background suitable for day and twilight
+  dayNightMode: 'day',
   orientationMode: 'north-up',
   depthUnits: 'meters',
   tideCorrectedSoundings: true,

@@ -2,13 +2,13 @@
 """
 Reusable Test District Creator
 
-Creates a complete working test district from a source district by:
-  1. Resolving bounds (from a chart's M_COVR polygon or explicit bounding box)
-  2. Discovering which charts intersect those bounds
-  3. Copying ENC source data and chart GeoJSON
+Creates a complete working test district from a source (master) district by:
+  1. Resolving bounds (from a chart's S-57 M_COVR extent or explicit bounding box)
+  2. Discovering which charts intersect those bounds (reads S-57 files from enc-source/)
+  3. Copying ENC source data (.000 files) to the new district
   4. Copying GNIS place name data
   5. Creating the Firestore district document
-  6. Triggering ENC conversion
+  6. Triggering ENC conversion (generates GeoJSON + MBTiles from copied enc-source)
   7. Triggering imagery generators (basemap, satellite, ocean, terrain)
   8. Triggering prediction generation (tides, currents)
   9. Generating download metadata
@@ -42,13 +42,14 @@ import os
 import re
 import subprocess
 import sys
-import time
 import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from google.cloud import storage, firestore
+from google.auth import default as auth_default
+from google.auth.exceptions import DefaultCredentialsError
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -56,7 +57,57 @@ logger = logging.getLogger(__name__)
 BUCKET_NAME = 'xnautical-8a296.firebasestorage.app'
 GCP_PROJECT = 'xnautical-8a296'
 GCP_REGION = 'us-central1'
-M_COVR_OBJL = 302
+
+# ============================================================================
+# GCP client helpers — use gcloud user credentials (no ADC file needed)
+# ============================================================================
+
+_cached_credentials = None
+
+
+def _get_gcloud_credentials():
+    """Get credentials from gcloud CLI (works when user is logged in via gcloud auth login)."""
+    global _cached_credentials
+    if _cached_credentials is not None:
+        return _cached_credentials
+
+    try:
+        creds, project = auth_default()
+        _cached_credentials = (creds, project)
+        return creds, project
+    except DefaultCredentialsError:
+        pass
+    # Fallback: use gcloud CLI credentials directly
+    from google.oauth2.credentials import Credentials as OAuth2Credentials
+    token = subprocess.check_output(
+        ['gcloud', 'auth', 'print-access-token'], text=True
+    ).strip()
+    result = (OAuth2Credentials(token=token), GCP_PROJECT)
+    _cached_credentials = result
+    return result
+
+
+_cached_storage_client = None
+_cached_firestore_client = None
+
+
+def get_storage_client():
+    """Get an authenticated Storage client (cached)."""
+    global _cached_storage_client
+    if _cached_storage_client is None:
+        creds, project = _get_gcloud_credentials()
+        _cached_storage_client = storage.Client(project=project or GCP_PROJECT, credentials=creds)
+    return _cached_storage_client
+
+
+def get_firestore_client():
+    """Get an authenticated Firestore client (cached)."""
+    global _cached_firestore_client
+    if _cached_firestore_client is None:
+        creds, project = _get_gcloud_credentials()
+        _cached_firestore_client = firestore.Client(project=project or GCP_PROJECT, credentials=creds)
+    return _cached_firestore_client
+
 
 # Service name → Cloud Run service name mapping
 SERVICE_NAMES = {
@@ -66,7 +117,7 @@ SERVICE_NAMES = {
     'ocean': 'ocean-generator',
     'terrain': 'terrain-generator',
     'predictions': 'prediction-generator',
-    'metadata': 'district-metadata',
+    'metadata': 'generate-district-metadata',
 }
 
 # Known GNIS filenames per source district
@@ -104,24 +155,35 @@ REGION_APP_IDS = {
 _service_url_cache = {}
 
 
-def get_service_url(service_key):
-    """Discover Cloud Run service URL via gcloud."""
-    if service_key in _service_url_cache:
-        return _service_url_cache[service_key]
-
-    service_name = SERVICE_NAMES.get(service_key, service_key)
+def _populate_service_url_cache():
+    """Fetch all Cloud Run service URLs at once via gcloud run services list."""
+    if _service_url_cache:
+        return
     try:
-        url = subprocess.check_output([
-            'gcloud', 'run', 'services', 'describe', service_name,
+        output = subprocess.check_output([
+            'gcloud', 'run', 'services', 'list',
             '--region', GCP_REGION,
             '--project', GCP_PROJECT,
-            '--format', 'value(status.url)',
+            '--format', 'csv[no-heading](SERVICE,URL)',
         ], text=True).strip()
-        _service_url_cache[service_key] = url
-        return url
+        for line in output.splitlines():
+            if ',' in line:
+                name, url = line.split(',', 1)
+                _service_url_cache[name.strip()] = url.strip()
+        logger.info(f'  Discovered {len(_service_url_cache)} Cloud Run services')
     except subprocess.CalledProcessError as e:
-        logger.error(f'Failed to get URL for {service_name}: {e}')
-        return None
+        logger.error(f'Failed to list Cloud Run services: {e}')
+
+
+def get_service_url(service_key):
+    """Discover Cloud Run service URL via gcloud."""
+    _populate_service_url_cache()
+
+    service_name = SERVICE_NAMES.get(service_key, service_key)
+    url = _service_url_cache.get(service_name)
+    if not url:
+        logger.error(f'Service URL not found for {service_name}')
+    return url
 
 
 def get_auth_token():
@@ -170,59 +232,84 @@ def call_service(service_key, endpoint, body, timeout=7200):
 # Phase 1: Resolve Bounds
 # ============================================================================
 
-def get_mcovr_polygon(geojson_data):
-    """Extract the union of all M_COVR (OBJL=302) polygons from a GeoJSON FeatureCollection."""
-    from osgeo import ogr
-    polygons = []
-    for feature in geojson_data.get('features', []):
-        props = feature.get('properties', {})
-        if props.get('OBJL') != M_COVR_OBJL:
-            continue
-        geom = feature.get('geometry')
-        if not geom or geom.get('type') is None:
-            continue
-        ogr_geom = ogr.CreateGeometryFromJson(json.dumps(geom))
-        if ogr_geom and not ogr_geom.IsEmpty():
-            polygons.append(ogr_geom)
 
-    if not polygons:
+def get_chart_extent_from_s57(s57_path):
+    """Read M_COVR extent from an S-57 .000 file using GDAL/OGR.
+
+    Returns (west, east, south, north) or None if no coverage found.
+    Also returns the scale number (1-6) parsed from the chart ID.
+    """
+    from osgeo import ogr
+    ogr.UseExceptions()
+    try:
+        ds = ogr.Open(s57_path)
+        if ds is None:
+            return None
+
+        # Try M_COVR layer first (preferred — actual coverage polygon)
+        layer = ds.GetLayerByName('M_COVR')
+        if layer and layer.GetFeatureCount() > 0:
+            ext = layer.GetExtent()
+            return ext  # (minX, maxX, minY, maxY)
+
+        # Fallback: use the union extent of all geometry layers
+        best_ext = None
+        for i in range(ds.GetLayerCount()):
+            lyr = ds.GetLayerByIndex(i)
+            if lyr.GetFeatureCount() > 0:
+                try:
+                    ext = lyr.GetExtent()
+                    if best_ext is None:
+                        best_ext = list(ext)
+                    else:
+                        best_ext[0] = min(best_ext[0], ext[0])
+                        best_ext[1] = max(best_ext[1], ext[1])
+                        best_ext[2] = min(best_ext[2], ext[2])
+                        best_ext[3] = max(best_ext[3], ext[3])
+                except Exception:
+                    continue
+        return tuple(best_ext) if best_ext else None
+    except Exception:
         return None
 
-    union = polygons[0].Clone()
-    for g in polygons[1:]:
-        union = union.Union(g)
-    return union
+
+def get_scale_from_chart_id(chart_id):
+    """Extract scale number from chart ID (e.g. 'US4FL1FT' -> 4)."""
+    m = re.match(r'US(\d)', chart_id)
+    return int(m.group(1)) if m else None
 
 
 def resolve_bounds_from_chart(source_district, chart_id):
-    """Download a chart's GeoJSON and extract bounds from M_COVR polygon."""
+    """Download a chart's S-57 file and extract bounds from M_COVR."""
+    import tempfile
     logger.info(f'Phase 1: Resolving bounds from chart {chart_id}...')
-    client = storage.Client()
+    client = get_storage_client()
     bucket = client.bucket(BUCKET_NAME)
 
-    blob = bucket.blob(f'{source_district}/chart-geojson/{chart_id}/{chart_id}.geojson')
+    blob = bucket.blob(f'{source_district}/enc-source/{chart_id}/{chart_id}.000')
     if not blob.exists():
-        logger.error(f'Chart GeoJSON not found: {source_district}/chart-geojson/{chart_id}/{chart_id}.geojson')
+        logger.error(f'Chart not found: {source_district}/enc-source/{chart_id}/{chart_id}.000')
         sys.exit(1)
 
-    data = json.loads(blob.download_as_text())
-    coverage = get_mcovr_polygon(data)
-    if coverage is None:
-        logger.error(f'No M_COVR polygon found in {chart_id}')
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_path = os.path.join(tmpdir, f'{chart_id}.000')
+        blob.download_to_filename(local_path)
+        ext = get_chart_extent_from_s57(local_path)
+
+    if ext is None:
+        logger.error(f'No coverage found in {chart_id}')
         sys.exit(1)
 
-    env = coverage.GetEnvelope()  # (minX, maxX, minY, maxY)
+    # ext is (minX, maxX, minY, maxY) = (west, east, south, north)
     bounds = {
-        'south': round(env[2], 4),
-        'west': round(env[0], 4),
-        'north': round(env[3], 4),
-        'east': round(env[1], 4),
+        'west': round(ext[0], 6),
+        'east': round(ext[1], 6),
+        'south': round(ext[2], 6),
+        'north': round(ext[3], 6),
     }
-    area = coverage.GetArea()
-    logger.info(f'  Chart {chart_id} M_COVR: {area:.2f} deg²')
-    logger.info(f'  Bounds: S={bounds["south"]} W={bounds["west"]} N={bounds["north"]} E={bounds["east"]}')
-
-    return bounds, coverage
+    logger.info(f'  Chart {chart_id} extent: S={bounds["south"]} W={bounds["west"]} '
+                f'N={bounds["north"]} E={bounds["east"]}')
+    return bounds
 
 
 def resolve_bounds_from_json(bounds_json):
@@ -247,68 +334,74 @@ def resolve_bounds_from_json(bounds_json):
 # Phase 2: Discover Charts
 # ============================================================================
 
-def discover_charts(source_district, bounds, coverage_geom=None):
-    """Find all charts in the source district that intersect the bounds."""
-    from osgeo import ogr
+def _boxes_intersect(b1, b2):
+    """Test if two bounding boxes intersect. Each is {south, west, north, east}."""
+    return (b1['west'] <= b2['east'] and b1['east'] >= b2['west'] and
+            b1['south'] <= b2['north'] and b1['north'] >= b2['south'])
 
-    logger.info(f'\nPhase 2: Discovering charts in {source_district}...')
-    client = storage.Client()
+
+def discover_charts(source_district, bounds):
+    """Find all charts in the source district that intersect the bounds.
+
+    Downloads each chart's S-57 .000 file to read M_COVR extent via GDAL,
+    then tests bounding box intersection with the target area.
+    """
+    import tempfile
+
+    logger.info(f'\nPhase 2: Discovering charts in {source_district} via enc-source...')
+    client = get_storage_client()
     bucket = client.bucket(BUCKET_NAME)
 
-    # If we don't have a coverage geometry (bounds-only mode), create a box
-    if coverage_geom is None:
-        ring = ogr.Geometry(ogr.wkbLinearRing)
-        ring.AddPoint(bounds['west'], bounds['south'])
-        ring.AddPoint(bounds['east'], bounds['south'])
-        ring.AddPoint(bounds['east'], bounds['north'])
-        ring.AddPoint(bounds['west'], bounds['north'])
-        ring.AddPoint(bounds['west'], bounds['south'])
-        coverage_geom = ogr.Geometry(ogr.wkbPolygon)
-        coverage_geom.AddGeometry(ring)
-
-    # List all chart GeoJSON files
-    prefix = f'{source_district}/chart-geojson/'
+    # List all chart directories under enc-source/
+    prefix = f'{source_district}/enc-source/'
     blobs = list(bucket.list_blobs(prefix=prefix))
 
-    chart_blobs = {}
+    # Extract unique chart IDs from blob paths: enc-source/{chartId}/{chartId}.000
+    chart_ids_found = set()
+    chart_blobs = {}  # chartId -> blob for the .000 file
     for b in blobs:
         rel = b.name[len(prefix):]
         parts = rel.split('/')
-        if len(parts) == 2 and parts[1].endswith('.geojson'):
-            chart_blobs[parts[0]] = b
+        if len(parts) >= 2 and parts[1].endswith('.000'):
+            chart_id = parts[0]
+            chart_ids_found.add(chart_id)
+            chart_blobs[chart_id] = b
 
-    logger.info(f'  Found {len(chart_blobs)} charts in {source_district}')
+    logger.info(f'  Found {len(chart_ids_found)} charts in {source_district}/enc-source/')
 
-    def check_chart(chart_id_blob):
-        chart_id, blob = chart_id_blob
+    results = {'match': [], 'no_intersect': 0, 'no_coverage': 0, 'error': 0}
+
+    def check_chart(chart_id):
+        """Download a chart's .000 file, read its extent, and test intersection."""
+        blob = chart_blobs.get(chart_id)
+        if not blob:
+            return chart_id, None, 'error: no .000 blob'
         try:
-            data = json.loads(blob.download_as_text())
-            mcovr = get_mcovr_polygon(data)
-            if mcovr is None:
-                return chart_id, None, 'no_mcovr'
+            with tempfile.TemporaryDirectory() as tmpdir:
+                local_path = os.path.join(tmpdir, f'{chart_id}.000')
+                blob.download_to_filename(local_path)
+                ext = get_chart_extent_from_s57(local_path)
 
-            # Always include US1 charts that cover the area
-            scale_num = None
-            for f in data.get('features', []):
-                sn = f.get('properties', {}).get('_scaleNum')
-                if sn:
-                    scale_num = sn
-                    break
+            if ext is None:
+                return chart_id, None, 'no_coverage'
 
-            if coverage_geom.Intersects(mcovr):
-                return chart_id, scale_num, 'match'
-            # Also include US1 charts if they intersect at all
-            if scale_num == 1 and coverage_geom.Intersects(mcovr):
+            # ext = (minX, maxX, minY, maxY) = (west, east, south, north)
+            chart_bounds = {
+                'west': ext[0], 'east': ext[1],
+                'south': ext[2], 'north': ext[3],
+            }
+
+            scale_num = get_scale_from_chart_id(chart_id)
+
+            if _boxes_intersect(bounds, chart_bounds):
                 return chart_id, scale_num, 'match'
             return chart_id, scale_num, 'no_intersect'
         except Exception as e:
             return chart_id, None, f'error: {e}'
 
-    results = {'match': [], 'no_intersect': 0, 'no_mcovr': 0, 'error': 0}
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(check_chart, item): item[0]
-                   for item in chart_blobs.items()}
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        futures = {pool.submit(check_chart, cid): cid
+                   for cid in sorted(chart_ids_found)}
         done = 0
         total = len(futures)
         for future in as_completed(futures):
@@ -318,8 +411,8 @@ def discover_charts(source_district, bounds, coverage_geom=None):
                 results['match'].append((chart_id, scale_num))
             elif status == 'no_intersect':
                 results['no_intersect'] += 1
-            elif status == 'no_mcovr':
-                results['no_mcovr'] += 1
+            elif status == 'no_coverage':
+                results['no_coverage'] += 1
             else:
                 results['error'] += 1
                 logger.warning(f'  Error checking {chart_id}: {status}')
@@ -335,10 +428,10 @@ def discover_charts(source_district, bounds, coverage_geom=None):
         by_scale[scale_num or 0].append(chart_id)
 
     logger.info(f'\n  === Discovery Results ===')
-    logger.info(f'  Total checked: {len(chart_blobs)}')
+    logger.info(f'  Total checked: {total}')
     logger.info(f'  Matching: {len(results["match"])}')
     logger.info(f'  No intersection: {results["no_intersect"]}')
-    logger.info(f'  No M_COVR: {results["no_mcovr"]}')
+    logger.info(f'  No coverage data: {results["no_coverage"]}')
     logger.info(f'  Errors: {results["error"]}')
 
     for sn in sorted(by_scale.keys()):
@@ -355,34 +448,36 @@ def discover_charts(source_district, bounds, coverage_geom=None):
 # ============================================================================
 
 def copy_enc_data(source_district, test_name, chart_ids):
-    """Copy enc-source and chart-geojson for matching charts."""
-    logger.info(f'\nPhase 3: Copying ENC data ({len(chart_ids)} charts)...')
-    client = storage.Client()
+    """Copy enc-source files for matching charts.
+
+    Only copies enc-source (S-57 .000 files). Chart GeoJSON will be
+    generated by the ENC converter during Phase 6.
+    """
+    logger.info(f'\nPhase 3: Copying ENC source data ({len(chart_ids)} charts)...')
+    client = get_storage_client()
     bucket = client.bucket(BUCKET_NAME)
 
     copied = 0
     errors = 0
 
     def copy_chart(chart_id):
-        nonlocal copied, errors
         chart_copied = 0
         chart_errors = 0
-        for subdir in ['enc-source', 'chart-geojson']:
-            src_prefix = f'{source_district}/{subdir}/{chart_id}/'
-            dst_prefix = f'{test_name}/{subdir}/{chart_id}/'
-            blobs = list(bucket.list_blobs(prefix=src_prefix))
-            for blob in blobs:
-                rel = blob.name[len(src_prefix):]
-                dst_name = f'{dst_prefix}{rel}'
-                try:
-                    bucket.copy_blob(blob, bucket, dst_name)
-                    chart_copied += 1
-                except Exception as e:
-                    logger.error(f'  Failed: {blob.name} -> {dst_name}: {e}')
-                    chart_errors += 1
+        src_prefix = f'{source_district}/enc-source/{chart_id}/'
+        dst_prefix = f'{test_name}/enc-source/{chart_id}/'
+        blobs = list(bucket.list_blobs(prefix=src_prefix))
+        for blob in blobs:
+            rel = blob.name[len(src_prefix):]
+            dst_name = f'{dst_prefix}{rel}'
+            try:
+                bucket.copy_blob(blob, bucket, dst_name)
+                chart_copied += 1
+            except Exception as e:
+                logger.error(f'  Failed: {blob.name} -> {dst_name}: {e}')
+                chart_errors += 1
         return chart_copied, chart_errors
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=16) as pool:
         futures = {pool.submit(copy_chart, cid): cid for cid in chart_ids}
         done = 0
         for future in as_completed(futures):
@@ -394,12 +489,6 @@ def copy_enc_data(source_district, test_name, chart_ids):
                 logger.info(f'  Progress: {done}/{len(chart_ids)} charts, '
                             f'{copied} files copied, {errors} errors')
 
-    # Create _manifest.json
-    manifest = {'chartIds': chart_ids}
-    manifest_blob = bucket.blob(f'{test_name}/chart-geojson/_manifest.json')
-    manifest_blob.upload_from_string(json.dumps(manifest, indent=2),
-                                     content_type='application/json')
-    logger.info(f'  Created _manifest.json with {len(chart_ids)} chart IDs')
     logger.info(f'  Total: {copied} files copied, {errors} errors')
 
 
@@ -410,7 +499,7 @@ def copy_enc_data(source_district, test_name, chart_ids):
 def copy_gnis_data(source_district, test_name):
     """Copy GNIS place name data."""
     logger.info(f'\nPhase 4: Copying GNIS data...')
-    client = storage.Client()
+    client = get_storage_client()
     bucket = client.bucket(BUCKET_NAME)
 
     # Try source district first, then global fallback
@@ -446,7 +535,7 @@ def copy_gnis_data(source_district, test_name):
 def create_firestore_doc(source_district, test_name, bounds):
     """Create the Firestore district document with predictionConfig from source."""
     logger.info(f'\nPhase 5: Creating Firestore document...')
-    db = firestore.Client()
+    db = get_firestore_client()
 
     # Read source district for predictionConfig
     source_doc = db.collection('districts').document(source_district).get()
@@ -687,6 +776,8 @@ def main():
                         help='Discover and report only, no copies or triggers')
     parser.add_argument('--skip-generators', action='store_true',
                         help='Only set up Storage + Firestore, skip generation triggers')
+    parser.add_argument('--skip-setup', action='store_true',
+                        help='Skip phases 1-5 (discovery, copy, Firestore), jump to generators')
     parser.add_argument('--timeout', type=int, default=7200,
                         help='Max wait seconds per generator (default: 7200)')
 
@@ -709,35 +800,38 @@ def main():
     logger.info(f'========================================')
 
     # Phase 1: Resolve bounds
-    coverage_geom = None
     if args.chart:
-        bounds, coverage_geom = resolve_bounds_from_chart(args.source, args.chart)
+        bounds = resolve_bounds_from_chart(args.source, args.chart)
     else:
         bounds = resolve_bounds_from_json(args.bounds)
 
-    # Phase 2: Discover charts
-    chart_ids, by_scale = discover_charts(args.source, bounds, coverage_geom)
+    if not args.skip_setup:
+        # Phase 2: Discover charts
+        chart_ids, by_scale = discover_charts(args.source, bounds)
 
-    if not chart_ids:
-        logger.error('No charts found! Check your bounds or chart ID.')
-        sys.exit(1)
+        if not chart_ids:
+            logger.error('No charts found! Check your bounds or chart ID.')
+            sys.exit(1)
 
-    if args.dry_run:
-        logger.info(f'\n=== DRY RUN COMPLETE ===')
-        logger.info(f'Would create test district: {args.name}')
-        logger.info(f'Charts to copy: {len(chart_ids)}')
-        logger.info(f'Bounds: {bounds}')
-        output_app_config(args.source, args.name, bounds)
-        return
+        if args.dry_run:
+            logger.info(f'\n=== DRY RUN COMPLETE ===')
+            logger.info(f'Would create test district: {args.name}')
+            logger.info(f'Charts to copy: {len(chart_ids)}')
+            logger.info(f'Bounds: {bounds}')
+            output_app_config(args.source, args.name, bounds)
+            return
 
-    # Phase 3: Copy ENC data
-    copy_enc_data(args.source, args.name, chart_ids)
+        # Phase 3: Copy ENC data
+        copy_enc_data(args.source, args.name, chart_ids)
 
-    # Phase 4: Copy GNIS data
-    copy_gnis_data(args.source, args.name)
+        # Phase 4: Copy GNIS data
+        copy_gnis_data(args.source, args.name)
 
-    # Phase 5: Create Firestore document
-    create_firestore_doc(args.source, args.name, bounds)
+        # Phase 5: Create Firestore document
+        create_firestore_doc(args.source, args.name, bounds)
+    else:
+        logger.info('Skipping phases 1-5 (--skip-setup)')
+        chart_ids = []  # unknown when skipping
 
     if args.skip_generators:
         logger.info(f'\n=== SETUP COMPLETE (generators skipped) ===')

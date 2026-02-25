@@ -29,10 +29,8 @@ try {
   jsAuth = initializeAuth(app, {
     persistence: getReactNativePersistence(AsyncStorage)
   });
-  console.log('[FIREBASE] Auth initialized with AsyncStorage persistence');
 } catch (error: any) {
   if (error.code === 'auth/already-initialized') {
-    console.log('[FIREBASE] Auth already initialized, using existing instance');
     jsAuth = getExistingAuth(app);
   } else {
     console.error('[FIREBASE] Auth initialization error:', error);

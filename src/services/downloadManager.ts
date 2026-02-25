@@ -109,7 +109,6 @@ class DownloadManager {
     try {
       const stateJson = await AsyncStorage.getItem(STORAGE_KEY);
       if (!stateJson) {
-        console.log('[DownloadManager] No persisted state found');
         this.initialized = true;
         return;
       }
@@ -455,7 +454,10 @@ class DownloadManager {
    * Pause all active downloads
    */
   async pauseAll(): Promise<void> {
-    console.log('[DownloadManager] Pausing all downloads');
+    const activeCount = Array.from(this.activeDownloads.values()).filter(d => d.status === 'downloading').length;
+    if (activeCount > 0) {
+      console.log(`[DownloadManager] Pausing ${activeCount} active downloads`);
+    }
     const pausePromises: Promise<void>[] = [];
 
     for (const [id, download] of this.activeDownloads) {

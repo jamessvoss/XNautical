@@ -12,6 +12,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
 import { GPSData } from '../hooks/useGPS';
 import { CompassMode, getNextCompassMode } from '../utils/compassUtils';
+import * as tileServer from '../services/tileServer';
 
 interface OverlayState {
   compassMode: CompassMode;
@@ -24,6 +25,7 @@ interface OverlayState {
   showCurrentDetails: boolean;
   showDebugMap: boolean;
   showNavData: boolean;
+  mapResetKey: number;
   heading: number | null;
   course: number | null;
   gpsData: GPSData | null;
@@ -44,6 +46,7 @@ interface OverlayContextType extends OverlayState {
   setShowCurrentDetails: (show: boolean) => void;
   setShowDebugMap: (show: boolean) => void;
   setShowNavData: (show: boolean) => void;
+  requestMapReset: () => void;
   updateGPSData: (data: GPSData) => void;
 }
 
@@ -72,6 +75,7 @@ const OverlayContext = createContext<OverlayContextType>({
   showCurrentDetails: false,
   showDebugMap: false,
   showNavData: false,
+  mapResetKey: 0,
   heading: null,
   course: null,
   gpsData: null,
@@ -88,6 +92,7 @@ const OverlayContext = createContext<OverlayContextType>({
   setShowCurrentDetails: () => {},
   setShowDebugMap: () => {},
   setShowNavData: () => {},
+  requestMapReset: () => {},
   updateGPSData: () => {},
 });
 
@@ -100,6 +105,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
   const [showCurrentDetails, setShowCurrentDetails] = useState(false);
   const [showDebugMap, setShowDebugMap] = useState(false);
   const [showNavData, setShowNavData] = useState(false);
+  const [mapResetKey, setMapResetKey] = useState(0);
   // GPS data stored in a REF, not state.  Updates arrive ~every second from
   // the useGPS hook in DynamicChartViewer.  Using state here would cause the
   // entire OverlayContext value to change on every GPS tick, triggering
@@ -160,6 +166,18 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     gpsDataRef.current = data;
   }, []);
 
+  // Stop tile server, flush caches, and bump the reset key so MapLibre remounts
+  const requestMapReset = useCallback(async () => {
+    console.log('[OverlayContext] requestMapReset: stopping tile server and flushing caches');
+    try {
+      await tileServer.stopTileServer();
+      tileServer.clearCache();
+    } catch (e) {
+      console.warn('[OverlayContext] requestMapReset error:', e);
+    }
+    setMapResetKey(k => k + 1);
+  }, []);
+
   const value: OverlayContextType = useMemo(() => ({
     compassMode,
     showCompass,
@@ -170,6 +188,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     showCurrentDetails,
     showDebugMap,
     showNavData,
+    mapResetKey,
     // heading from GPS ref (not fusedHeading) — stable, no 60Hz re-renders.
     // Fused heading for compass overlays lives in OverlayRenderer (App.tsx).
     heading: gpsDataRef.current.heading,
@@ -190,6 +209,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     setShowCurrentDetails,
     setShowDebugMap,
     setShowNavData,
+    requestMapReset,
     updateGPSData,
   }), [
     compassMode,
@@ -201,6 +221,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     showCurrentDetails,
     showDebugMap,
     showNavData,
+    mapResetKey,
     // gpsData intentionally excluded — stored in ref to avoid cascade re-renders
     // fusedHeading moved to OverlayRenderer — 60Hz updates through context caused
     // cascading re-renders of DynamicChartViewer (same issue as GPS data, see above)
@@ -217,6 +238,7 @@ export function OverlayProvider({ children }: { children: ReactNode }) {
     setShowCurrentDetails,
     setShowDebugMap,
     setShowNavData,
+    requestMapReset,
     updateGPSData,
   ]);
 

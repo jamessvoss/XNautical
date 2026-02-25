@@ -347,12 +347,28 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     [displaySettings.soundingsHaloScale]
   );
 
-  const scaledGnisHalo = useMemo(() => 
-    0.8 * displaySettings.gnisHaloScale,
-    [displaySettings.gnisHaloScale]
+  const scaledGnisHalo = useMemo(() =>
+    marineImagery === 'relief' ? 1.5 * displaySettings.gnisHaloScale : 0.8 * displaySettings.gnisHaloScale,
+    [displaySettings.gnisHaloScale, marineImagery]
   );
 
-  const scaledDepthContourLabelHalo = useMemo(() => 
+  // Relief mode: GNIS water categories (water, coastal, stream, lake) need a dark
+  // water halo; land categories (landmark, populated) need a light land halo.
+  const gnisWaterHaloColor = useMemo(() => {
+    if (marineImagery !== 'relief') return s52Colors.HLCLR;
+    if (s52Mode === 'day') return '#0A3A5C';
+    if (s52Mode === 'dusk') return '#0A1A2A';
+    return '#050A10';
+  }, [marineImagery, s52Mode, s52Colors.HLCLR]);
+
+  const gnisLandHaloColor = useMemo(() => {
+    if (marineImagery !== 'relief') return s52Colors.HLCLR;
+    if (s52Mode === 'day') return '#E8F0D8';
+    if (s52Mode === 'dusk') return '#1A2818';
+    return '#0C140A';
+  }, [marineImagery, s52Mode, s52Colors.HLCLR]);
+
+  const scaledDepthContourLabelHalo = useMemo(() =>
     0.7 * displaySettings.depthContourLabelHaloScale,
     [displaySettings.depthContourLabelHaloScale]
   );
@@ -381,9 +397,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   ], [displaySettings.seaAreaNamesFontScale]);
 
   const scaledSeaAreaNamesHalo = useMemo(() =>
-    1.5 * displaySettings.seaAreaNamesHaloScale,
-    [displaySettings.seaAreaNamesHaloScale]
+    marineImagery === 'relief' ? 2.0 * displaySettings.seaAreaNamesHaloScale : 1.5 * displaySettings.seaAreaNamesHaloScale,
+    [displaySettings.seaAreaNamesHaloScale, marineImagery]
   );
+
+  // Relief mode: sea area labels need a dark halo matching the water gradient,
+  // not the shared HLCLR which blends into the relief background.
+  const seaAreaNamesHaloColor = useMemo(() => {
+    if (marineImagery !== 'relief') return s52Colors.HLCLR;
+    if (s52Mode === 'day') return '#0A3A5C';    // Dark navy (matches deep water)
+    if (s52Mode === 'dusk') return '#0A1A2A';    // Very dark blue
+    return '#050A10';                             // Near black (night)
+  }, [marineImagery, s52Mode, s52Colors.HLCLR]);
 
   const scaledSeaAreaNamesOpacity = useMemo(() =>
     Math.min(1, Math.max(0, displaySettings.seaAreaNamesOpacityScale)),
@@ -398,9 +423,18 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   ], [displaySettings.landRegionsFontScale]);
 
   const scaledLandRegionsHalo = useMemo(() =>
-    1.5 * displaySettings.landRegionsHaloScale,
-    [displaySettings.landRegionsHaloScale]
+    marineImagery === 'relief' ? 2.0 * displaySettings.landRegionsHaloScale : 1.5 * displaySettings.landRegionsHaloScale,
+    [displaySettings.landRegionsHaloScale, marineImagery]
   );
+
+  // Relief mode: land labels need a light halo (green terrain background),
+  // not the shared HLCLR which is dark navy (tuned for water labels).
+  const landRegionsHaloColor = useMemo(() => {
+    if (marineImagery !== 'relief') return s52Colors.HLCLR;
+    if (s52Mode === 'day') return '#E8F0D8';    // Warm light green
+    if (s52Mode === 'dusk') return '#1A2818';    // Dark muted green
+    return '#0C140A';                             // Very dark green (night)
+  }, [marineImagery, s52Mode, s52Colors.HLCLR]);
 
   const scaledLandRegionsOpacity = useMemo(() =>
     Math.min(1, Math.max(0, displaySettings.landRegionsOpacityScale)),
@@ -414,9 +448,17 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   );
 
   const scaledSeabedNamesHalo = useMemo(() =>
-    1.5 * displaySettings.seabedNamesHaloScale,
-    [displaySettings.seabedNamesHaloScale]
+    marineImagery === 'relief' ? 2.0 * displaySettings.seabedNamesHaloScale : 1.5 * displaySettings.seabedNamesHaloScale,
+    [displaySettings.seabedNamesHaloScale, marineImagery]
   );
+
+  // Relief mode: seabed labels sit on water — need a dark halo matching the gradient.
+  const seabedHaloColor = useMemo(() => {
+    if (marineImagery !== 'relief') return s52Colors.HLCLR;
+    if (s52Mode === 'day') return '#0A3A5C';
+    if (s52Mode === 'dusk') return '#0A1A2A';
+    return '#050A10';
+  }, [marineImagery, s52Mode, s52Colors.HLCLR]);
 
   const scaledSeabedNamesOpacity = useMemo(() =>
     Math.min(1, Math.max(0, displaySettings.seabedNamesOpacityScale)),
@@ -3638,52 +3680,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     const p = prefix;
     return [
       /* ============================================== */
-      /* Geographic names (above soundings)             */
-      /* ============================================== */
-
-      /* SEAARE - Sea Area (named water bodies) */
-      <MapLibre.SymbolLayer
-        key={`${p}-seaare`}
-        id={`${p}-seaare`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 119], ['has', 'OBJNAM'], scaminFilter, bgFillScaleFilter]}
-        style={{
-          textField: ['get', 'OBJNAM'],
-          textSize: scaledSeaAreaNamesFontSize,
-          textColor: s52Colors.SENAM,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: scaledSeaAreaNamesHalo,
-          textOpacity: scaledSeaAreaNamesOpacity,
-          textFont: ['Noto Sans Italic'],
-          textAllowOverlap: false,
-          symbolSpacing: 500,
-          visibility: showSeaAreaNames ? 'visible' : 'none',
-        }}
-      />,
-
-      /* LNDRGN - Land Region names */
-      <MapLibre.SymbolLayer
-        key={`${p}-lndrgn`}
-        id={`${p}-lndrgn`}
-        sourceLayerID="charts"
-        minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 73], ['has', 'OBJNAM'], scaminFilter, bgFillScaleFilter]}
-        style={{
-          textField: ['get', 'OBJNAM'],
-          textSize: scaledLandRegionsFontSize,
-          textColor: s52Colors.LRGNT,
-          textHaloColor: s52Colors.HLCLR,
-          textHaloWidth: scaledLandRegionsHalo,
-          textOpacity: scaledLandRegionsOpacity,
-          textFont: ['Noto Sans Regular'],
-          textAllowOverlap: false,
-          visibility: showLandRegions ? 'visible' : 'none',
-        }}
-      />,
-
-      /* ============================================== */
-      /* S-52 LAYER ORDER: Labels & Text (on top)      */
+      /* S-52 LAYER ORDER: Labels & Text               */
       /* ============================================== */
 
       /* CBLSUB Label */
@@ -3753,8 +3750,69 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           visibility: showDepthContours ? 'visible' : 'none',
         }}
       />,
+
     ];
   };
+
+  // ─── GEOGRAPHIC NAME LAYERS ─────────────────────────────────────────────
+  // SEAARE and LNDRGN rendered in a separate VectorSource pass AFTER points
+  // so geographic names appear above soundings, hazards, and nav-aids.
+  const renderGeoNameLayers = (prefix: string) => {
+    const p = prefix;
+    return [
+      /* SEAARE - Sea Area (named water bodies) */
+      <MapLibre.SymbolLayer
+        key={`${p}-gn-seaare`}
+        id={`${p}-gn-seaare`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 119], ['has', 'OBJNAM'], scaminFilter, bgFillScaleFilter]}
+        style={{
+          textField: ['get', 'OBJNAM'],
+          textSize: scaledSeaAreaNamesFontSize,
+          textColor: s52Colors.SENAM,
+          textHaloColor: seaAreaNamesHaloColor,
+          textHaloWidth: scaledSeaAreaNamesHalo,
+          textOpacity: scaledSeaAreaNamesOpacity,
+          textFont: ['Noto Sans Italic'],
+          textAllowOverlap: false,
+          symbolSpacing: 500,
+          visibility: showSeaAreaNames ? 'visible' : 'none',
+        }}
+      />,
+
+      /* LNDRGN - Land Region names */
+      <MapLibre.SymbolLayer
+        key={`${p}-gn-lndrgn`}
+        id={`${p}-gn-lndrgn`}
+        sourceLayerID="charts"
+        minZoomLevel={0}
+        filter={['all', ['==', ['get', 'OBJL'], 73], ['has', 'OBJNAM'], scaminFilter, bgFillScaleFilter]}
+        style={{
+          textField: ['get', 'OBJNAM'],
+          textSize: scaledLandRegionsFontSize,
+          textColor: s52Colors.LRGNT,
+          textHaloColor: landRegionsHaloColor,
+          textHaloWidth: scaledLandRegionsHalo,
+          textOpacity: scaledLandRegionsOpacity,
+          textFont: ['Noto Sans Regular'],
+          textAllowOverlap: false,
+          visibility: showLandRegions ? 'visible' : 'none',
+        }}
+      />,
+    ];
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const geoNameLayerCache = useMemo(() => {
+    const cache: Record<string, React.ReactNode[]> = {};
+    for (const source of chartScaleSources) cache[source.sourceId] = renderGeoNameLayers(source.sourceId);
+    return cache;
+  }, [chartScaleSources, scaminFilter, bgFillScaleFilter, s52Colors,
+    showSeaAreaNames, showLandRegions,
+    scaledSeaAreaNamesFontSize, scaledSeaAreaNamesHalo, scaledSeaAreaNamesOpacity, seaAreaNamesHaloColor,
+    scaledLandRegionsFontSize, scaledLandRegionsHalo, scaledLandRegionsOpacity, landRegionsHaloColor,
+  ]);
 
   // ─── POINT LAYERS (VectorSource from points.mbtiles) ──────────────────
   // All point features: soundings, nav-aids, hazards — rendered from a single
@@ -3814,7 +3872,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         ],
         textSize: ['interpolate', ['linear'], ['zoom'], 6, scaledSeabedNamesFontSize * 0.5, 10, scaledSeabedNamesFontSize * 0.75, 13, scaledSeabedNamesFontSize],
         textColor: s52Colors.SBDTX,
-        textHaloColor: s52Colors.HLCLR,
+        textHaloColor: seabedHaloColor,
         textHaloWidth: scaledSeabedNamesHalo,
         textOpacity: ['interpolate', ['linear'], ['zoom'], 6, 0.2, 9, 0.5, 12, scaledSeabedNamesOpacity],
         textFont: ['Noto Sans Italic'],
@@ -4389,10 +4447,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const fillLayerCache = useMemo(() => {
-    const t0 = performance.now();
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderFillLayers(source.sourceId);
-    console.log(`[PERF] fillLayerCache rebuilt: ${(performance.now() - t0).toFixed(1)}ms`);
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, showScaleDebug,
     showDepthAreas, showDepthContours, showLand, showCables, showPipelines,
@@ -4410,10 +4466,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const structureLayerCache = useMemo(() => {
-    const t0 = performance.now();
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderStructureLayers(source.sourceId);
-    console.log(`[PERF] structureLayerCache rebuilt: ${(performance.now() - t0).toFixed(1)}ms`);
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, s52Colors,
     showBridges, showBuildings, showMoorings, showShorelineConstruction,
@@ -4425,10 +4479,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const lineLayerCache = useMemo(() => {
-    const t0 = performance.now();
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderLineLayers(source.sourceId);
-    console.log(`[PERF] lineLayerCache rebuilt: ${(performance.now() - t0).toFixed(1)}ms`);
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, contourScaleFilter, s52Colors, s52Mode,
     showDepthContours, showCoastline, showLand, showCables, showPipelines,
@@ -4449,16 +4501,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const symbolLayerCache = useMemo(() => {
-    const t0 = performance.now();
     const cache: Record<string, React.ReactNode[]> = {};
     for (const source of chartScaleSources) cache[source.sourceId] = renderSymbolLayers(source.sourceId);
-    console.log(`[PERF] symbolLayerCache rebuilt: ${(performance.now() - t0).toFixed(1)}ms`);
     return cache;
   }, [chartScaleSources, scaminFilter, bgFillScaleFilter, contourScaleFilter, s52Colors,
     showCables, showPipelines, showDepthContours,
-    showSeaAreaNames, showLandRegions,
-    scaledSeaAreaNamesFontSize, scaledSeaAreaNamesHalo, scaledSeaAreaNamesOpacity,
-    scaledLandRegionsFontSize, scaledLandRegionsHalo, scaledLandRegionsOpacity,
     scaledDepthContourFontSize, scaledDepthContourLabelHalo, scaledDepthContourLabelOpacity, contourLabelScaleOpacity,
   ]);
 
@@ -4478,7 +4525,10 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         ...(symbolLayerCache[sid] || []),
       ];
     }
-    console.log(`[PERF] chartLayerCache merged: ${(performance.now() - t0).toFixed(1)}ms`);
+    const totalMs = performance.now() - t0;
+    if (totalMs > 1.0) {
+      console.log(`[PERF] Layer cache rebuilt: ${totalMs.toFixed(1)}ms`);
+    }
     return cache;
   }, [chartScaleSources, fillLayerCache, structureLayerCache, lineLayerCache, soundingLayerCache, symbolLayerCache]);
 
@@ -4521,7 +4571,6 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       {/* Map section wrapper - takes remaining space */}
       <View style={styles.mapSection}>
       <View style={styles.mapTouchWrapper}>
-      {console.log(`[PERF] MapView render key=map-${landImagery}-${s52Mode}-${mapResetKey}`)}
       <MapLibre.MapView
         key={`map-${landImagery}-${s52Mode}-${mapResetKey}`}
         ref={mapRef}
@@ -4724,6 +4773,25 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           >
             {pointLayers}
           </MapLibre.VectorSource>
+        )}
+
+        {/* ================================================================== */}
+        {/* GEOGRAPHIC NAMES — rendered ABOVE points/soundings/hazards.       */}
+        {/* Uses a second VectorSource pass on the same chart tiles so that   */}
+        {/* SEAARE and LNDRGN labels sit on top of the entire feature stack.  */}
+        {/* ================================================================== */}
+        {useMBTiles && tileServerReady && debugIsSourceVisible('charts') && chartScaleSources.length > 0 && (
+          chartScaleSources.map(source => (
+            <MapLibre.VectorSource
+              key={`${source.sourceId}-geonames`}
+              id={`${source.sourceId}-geonames`}
+              tileUrlTemplates={[source.tileUrl]}
+              minZoomLevel={source.minZoom}
+              maxZoomLevel={source.maxZoom}
+            >
+              {geoNameLayerCache[source.sourceId]}
+            </MapLibre.VectorSource>
+          ))
         )}
 
         {/* Dynamic sector arcs — screen-constant size per S-52 §3.1.5.
@@ -5166,7 +5234,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textFont: ['Noto Sans Regular'],
                 textSize: scaledGnisFontSizes.water,
                 textColor: s52Colors.GNSWT,
-                textHaloColor: s52Colors.HLCLR,
+                textHaloColor: gnisWaterHaloColor,
                 textHaloWidth: scaledGnisHalo,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5189,7 +5257,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textFont: ['Noto Sans Regular'],
                 textSize: scaledGnisFontSizes.coastal,
                 textColor: s52Colors.GNSCL,
-                textHaloColor: s52Colors.HLCLR,
+                textHaloColor: gnisWaterHaloColor,
                 textHaloWidth: scaledGnisHalo,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5212,7 +5280,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textFont: ['Noto Sans Regular'], // Changed from Italic to Regular
                 textSize: scaledGnisFontSizes.landmark,
                 textColor: s52Colors.GNSLM,
-                textHaloColor: s52Colors.HLCLR,
+                textHaloColor: gnisLandHaloColor,
                 textHaloWidth: scaledGnisHalo,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5235,7 +5303,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textFont: ['Noto Sans Regular'], // Changed from Bold to Regular
                 textSize: scaledGnisFontSizes.populated,
                 textColor: s52Colors.GNSPP,
-                textHaloColor: s52Colors.HLCLR,
+                textHaloColor: gnisLandHaloColor,
                 textHaloWidth: scaledGnisHalo * 1.25,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5258,7 +5326,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textFont: ['Noto Sans Regular'], // Changed from Italic to Regular
                 textSize: scaledGnisFontSizes.stream,
                 textColor: s52Colors.GNSST,
-                textHaloColor: s52Colors.HLCLR,
+                textHaloColor: gnisWaterHaloColor,
                 textHaloWidth: scaledGnisHalo * 0.875,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,
@@ -5281,7 +5349,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 textFont: ['Noto Sans Regular'], // Changed from Italic to Regular
                 textSize: scaledGnisFontSizes.lake,
                 textColor: s52Colors.GNSLK,
-                textHaloColor: s52Colors.HLCLR,
+                textHaloColor: gnisWaterHaloColor,
                 textHaloWidth: scaledGnisHalo * 0.875,
                 textOpacity: scaledGnisOpacity,
                 textAllowOverlap: false,

@@ -127,7 +127,6 @@ class PerformanceTracker {
   endPhase(phase: StartupPhase, metadata?: Record<string, any>): number {
     const entry = this.startupPhases.get(phase);
     if (!entry) {
-      logger.warn(LogCategory.STARTUP, `Phase ${phase} was never started`);
       return -1;
     }
     
@@ -155,10 +154,14 @@ class PerformanceTracker {
    * Mark startup as complete and log summary
    */
   completeStartup(): number {
+    if (this.startupComplete) {
+      return Math.round(performance.now() - this.startupStartTime);
+    }
+
     if (this.currentPhase) {
       this.endPhase(this.currentPhase);
     }
-    
+
     const totalDuration = Math.round(performance.now() - this.startupStartTime);
     this.startupComplete = true;
     
@@ -176,27 +179,88 @@ class PerformanceTracker {
    * Log a formatted startup summary
    */
   private logStartupSummary(totalDuration: number): void {
+    const W = 53; // inner width between ║ markers
+    const params = logger.getStartupParams();
+
+    const pad = (s: string) => `║  ${s}`.padEnd(W + 1) + '║';
+    const divider = '╠' + '═'.repeat(W) + '╣';
+
+    // Header
+    const version = params.appVersion || '?';
+    const build = params.buildNumber || '?';
+    const device = params.deviceModel || 'Unknown device';
+    const os = params.osVersion || '';
+    const headerLine = `XNAUTICAL v${version} (${build})`;
+    const deviceLine = `${device} · ${params.platform || ''} ${os}`;
+
     logger.logRaw('');
-    logger.logRaw('╔══════════════════════════════════════════════════════════════╗');
-    logger.logRaw('║                    STARTUP COMPLETE                          ║');
-    logger.logRaw('╠══════════════════════════════════════════════════════════════╣');
-    
-    // Sort phases by start time
+    logger.logRaw('╔' + '═'.repeat(W) + '╗');
+    logger.logRaw(`║${headerLine.padStart(Math.floor((W + headerLine.length) / 2)).padEnd(W)}║`);
+    logger.logRaw(`║${deviceLine.padStart(Math.floor((W + deviceLine.length) / 2)).padEnd(W)}║`);
+    logger.logRaw(divider);
+
+    // Phase timings
     const phases = Array.from(this.startupPhases.values())
       .sort((a, b) => a.startTime - b.startTime);
-    
-    phases.forEach((entry) => {
-      const duration = entry.duration ?? 0;
-      const bar = '█'.repeat(Math.min(Math.floor(duration / 50), 20));
-      const padding = ' '.repeat(Math.max(0, 20 - bar.length));
-      logger.logRaw(`║ ${entry.phase.padEnd(20)} ${bar}${padding} ${duration.toString().padStart(5)}ms ║`);
-    });
-    
-    logger.logRaw('╠══════════════════════════════════════════════════════════════╣');
-    logger.logRaw(`║ TOTAL: ${totalDuration}ms${totalDuration > 5000 ? ' ⚠️ SLOW' : ''}`.padEnd(63) + '║');
-    logger.logRaw('╚══════════════════════════════════════════════════════════════╝');
+
+    const phaseNames: Record<string, string> = {
+      directorySetup: 'Directory Setup',
+      manifestLoad: 'Manifest Load',
+      specialFiles: 'Special Files',
+      chartDiscovery: 'Chart Discovery',
+      tileServerStart: 'Tile Server',
+      geoJsonLoad: 'GeoJSON Load',
+      displaySettings: 'Display Settings',
+    };
+
+    for (const entry of phases) {
+      const name = phaseNames[entry.phase] || entry.phase;
+      const dur = entry.duration ?? 0;
+      const dots = '.'.repeat(Math.max(1, 28 - name.length));
+      const line = `${name} ${dots} ${dur.toString().padStart(5)}ms`;
+      logger.logRaw(pad(line));
+    }
+
+    logger.logRaw(divider);
+    logger.logRaw(pad(`Total: ${totalDuration}ms${totalDuration > 5000 ? ' ⚠ SLOW' : ''}`));
+    logger.logRaw(divider);
+
+    // Data statistics from startup params
+    const lines: string[] = [];
+
+    if (params.installedDistricts) {
+      lines.push(`Districts: ${params.installedDistricts}`);
+    }
+    if (params.chartsLoaded !== undefined) {
+      const chartMB = params.chartStorageMB ? ` (${params.chartStorageMB} MB)` : '';
+      lines.push(`Charts: ${params.chartsLoaded} packs${chartMB}`);
+    }
+    const sf = params.specialFiles as Record<string, any> | undefined;
+    if (sf) {
+      const parts: string[] = [];
+      if (sf.satellite) parts.push(`Satellite: ${sf.satellite}`);
+      if (sf.basemap) parts.push(`Basemap: ${sf.basemap}`);
+      if (sf.ocean) parts.push(`Ocean: ${sf.ocean}`);
+      if (sf.gnis) parts.push('GNIS: ✓');
+      if (parts.length > 0) lines.push(parts.join(' · '));
+    }
+    if (params.stationCounts) {
+      lines.push(`Stations: ${params.stationCounts}`);
+    }
+    if (params.displayMode) {
+      lines.push(`Display: ${params.displayMode}`);
+    }
+    if (params.tileServerPort) {
+      lines.push(`Tile Server: :${params.tileServerPort}`);
+    }
+
+    for (const line of lines) {
+      logger.logRaw(pad(line));
+    }
+
+    logger.logRaw('╚' + '═'.repeat(W) + '╝');
     logger.logRaw('');
-    
+
     // Warn if startup is slow
     if (totalDuration > 5000) {
       logger.warn(LogCategory.STARTUP, `Startup took ${(totalDuration / 1000).toFixed(1)}s - consider optimization`);

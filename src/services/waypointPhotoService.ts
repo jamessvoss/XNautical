@@ -35,9 +35,8 @@ if (Platform.OS !== 'web') {
       getDownloadURL: rnfbStorage.getDownloadURL,
       deleteObject: rnfbStorage.deleteObject,
     };
-    console.log('[WaypointPhotoService] Firebase Storage initialized');
   } catch (e) {
-    console.log('[WaypointPhotoService] Firebase Storage not available');
+    console.warn('[WaypointPhotoService] Firebase Storage not available');
   }
 }
 

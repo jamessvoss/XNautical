@@ -21,6 +21,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useOverlay } from '../contexts/OverlayContext';
 import * as chartPackService from '../services/chartPackService';
 import { formatBytes, formatSpeed, formatEta } from '../services/chartService';
 import type { PackDownloadStatus, DistrictDownloadPack } from '../types/chartPack';
@@ -126,6 +127,7 @@ export default function DownloadProgressView({
   const lastLoggedProgress = useRef<Map<string, number>>(new Map());
 
   const insets = useSafeAreaInsets();
+  const { requestMapReset } = useOverlay();
 
   const firestoreId = region.firestoreId;
 
@@ -533,6 +535,9 @@ export default function DownloadProgressView({
 
         addConsoleEntry('__done__', 'All downloads complete!', 'complete');
         console.log('[DownloadProgressView] Download sequence complete');
+
+        // Flush tile server caches and force MapLibre remount
+        await requestMapReset();
 
         Alert.alert('Complete', 'All data downloaded successfully.');
         onComplete();

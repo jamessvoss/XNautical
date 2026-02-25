@@ -136,9 +136,9 @@ export function useScaledDisplayValues(
   // ─── Line widths ──────────────────────────────────────────────────────
   const scaledDepthContourLineWidth = useMemo((): MLExpression => [
     'interpolate', ['linear'], ['zoom'],
-    8, 0.3 * displaySettings.depthContourLineScale,
-    12, 0.7 * displaySettings.depthContourLineScale,
-    16, 1.0 * displaySettings.depthContourLineScale,
+    8, 0.2 * displaySettings.depthContourLineScale,
+    12, 0.5 * displaySettings.depthContourLineScale,
+    16, 0.8 * displaySettings.depthContourLineScale,
   ], [displaySettings.depthContourLineScale]);
 
   const scaledCoastlineLineWidth = useMemo((): MLExpression => [

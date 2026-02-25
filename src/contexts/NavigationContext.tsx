@@ -44,22 +44,18 @@ interface NavigationProviderProps {
 }
 
 export function NavigationProvider({ children }: NavigationProviderProps) {
-  console.log('[NavigationProvider] Initializing...');
   const [contextTabView, setContextTabView] = useState<ContextView>('stats');
   const [navigationRef, setNavigationRef] = useState<any>(null);
-  
+
   const contextTabName = VIEW_NAMES[contextTabView];
-  console.log('[NavigationProvider] contextTabName:', contextTabName);
   
   const setContextView = useCallback((view: ContextView) => {
-    console.log('[NavigationProvider] setContextView called with:', view);
     setContextTabView(view);
     
     // Navigate to the context tab after setting the view
     if (navigationRef) {
       // Small delay to ensure state is updated before navigation
       setTimeout(() => {
-        console.log('[NavigationProvider] Navigating to Context tab');
         navigationRef.navigate('Context');
       }, 50);
     }

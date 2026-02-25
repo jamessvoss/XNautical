@@ -63,12 +63,10 @@ export function useStationData() {
 
   // Handler for buoy clicks
   const handleBuoyClick = async (buoyId: string) => {
-    console.log('[BUOY] Clicked:', buoyId);
     setLoadingBuoyDetail(true);
     try {
       const detail = await getBuoy(buoyId);
       setSelectedBuoy(detail);
-      console.log('[BUOY] Loaded detail:', detail?.name);
     } catch (error) {
       console.error('[BUOY] Error loading detail:', error);
       setSelectedBuoy(null);
@@ -81,49 +79,27 @@ export function useStationData() {
   useEffect(() => {
     const loadStations = async () => {
       try {
-        console.log('[MAP] Loading stations from prediction databases...');
         await loadStationsFromDatabases();
 
         const tides = getCachedTideStations();
         const currents = getCachedCurrentStations();
 
         if (tides.length === 0 && currents.length === 0) {
-          console.log('[MAP] No station metadata found - download predictions to see stations');
           setTideStations([]);
           setCurrentStations([]);
           return;
         }
 
-        console.log(`[MAP] Loaded ${tides.length} tide stations and ${currents.length} current stations from prediction databases`);
-
         const filteredCurrents = filterHighestBinCurrents(currents);
 
         if (tides.length > 0 || filteredCurrents.length > 0) {
-          logger.info(LogCategory.CHARTS, `Loaded ${tides.length} tide stations and ${filteredCurrents.length} current stations (highest bin only) from storage`);
-
-          if (tides.length > 0) {
-            console.log('[MAP] Sample tide station:', {
-              id: tides[0].id, name: tides[0].name,
-              lat: tides[0].lat, lng: tides[0].lng
-            });
-          }
-          if (filteredCurrents.length > 0) {
-            console.log('[MAP] Sample current station:', {
-              id: filteredCurrents[0].id, name: filteredCurrents[0].name,
-              lat: filteredCurrents[0].lat, lng: filteredCurrents[0].lng,
-              bin: filteredCurrents[0].bin
-            });
-          }
-
+          logger.info(LogCategory.CHARTS, `Stations: ${tides.length} tide, ${filteredCurrents.length} current`);
+          logger.setStartupParam('stationCounts', `${tides.length} tide, ${filteredCurrents.length} current`);
           setTideStations(tides);
           setCurrentStations(filteredCurrents);
-          console.log(`[MAP] Successfully set ${tides.length} tide stations and ${filteredCurrents.length} current stations into state`);
-        } else {
-          console.log('[MAP] No stations in storage - user needs to press "Refresh Tide Data" in Settings');
         }
       } catch (error) {
         logger.error(LogCategory.CHARTS, 'Error loading stations', error as Error);
-        console.error('[MAP] Error loading stations:', error);
       }
     };
 
@@ -138,14 +114,11 @@ export function useStationData() {
 
     const updateStationStates = async () => {
       try {
-        console.log('[MAP] Calculating station icon states...');
         const states = await calculateAllStationStates(tideStations, currentStations);
         const iconMaps = createIconNameMap(states);
 
         setTideIconMap(iconMaps.tides);
         setCurrentIconMap(iconMaps.currents);
-
-        console.log(`[MAP] Updated icon states: ${iconMaps.tides.size} tide, ${iconMaps.currents.size} current`);
       } catch (error) {
         console.error('[MAP] Error calculating station states:', error);
       }
@@ -163,27 +136,26 @@ export function useStationData() {
   useEffect(() => {
     const loadBuoys = async () => {
       try {
-        console.log('[MAP] Loading buoys from downloaded districts...');
-        
         // Get list of downloaded districts
         const { getInstalledDistricts } = await import('../../../services/regionRegistryService');
         const installedDistricts = await getInstalledDistricts();
-        
+
         if (installedDistricts.length === 0) {
-          console.log('[MAP] No districts downloaded - no buoys to display');
           setLiveBuoys([]);
           return;
         }
-        
+
         // Load cached buoys for each downloaded district
         const allBuoys: BuoySummary[] = [];
         for (const district of installedDistricts) {
           const buoys = await getCachedBuoyCatalog(district.districtId);
           allBuoys.push(...buoys);
         }
-        
+
         setLiveBuoys(allBuoys);
-        console.log(`[MAP] Loaded ${allBuoys.length} buoys from ${installedDistricts.length} downloaded districts`);
+        if (allBuoys.length > 0) {
+          logger.debug(LogCategory.CHARTS, `Buoys: ${allBuoys.length} from ${installedDistricts.length} districts`);
+        }
       } catch (error) {
         console.warn('[MAP] Error loading buoys:', error);
         setLiveBuoys([]);
@@ -199,15 +171,11 @@ export function useStationData() {
     await loadStationsFromDatabases();
     const tides = getCachedTideStations();
     const currents = getCachedCurrentStations();
-
-    console.log(`[MAP] Reloaded ${tides.length} tide stations and ${currents.length} current stations after prediction download`);
-
     const filteredCurrents = filterHighestBinCurrents(currents);
 
     setTideStations(tides);
     setCurrentStations(filteredCurrents);
-
-    console.log(`[MAP] Filtered ${currents.length} current stations to ${filteredCurrents.length} (highest bin per location)`);
+    logger.info(LogCategory.CHARTS, `Stations reloaded: ${tides.length} tide, ${filteredCurrents.length} current`);
   };
 
   return {

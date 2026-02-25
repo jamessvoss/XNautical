@@ -82,8 +82,9 @@ BUCKET_NAME = os.environ.get('STORAGE_BUCKET', 'xnautical-8a296.firebasestorage.
 NOAA_API_BASE = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter'
 NOAA_REQUEST_TIMEOUT = 30  # seconds per request
 NOAA_MAX_DAYS_PER_REQUEST = 365  # H/L and MAX_SLACK support up to 1 year per request
-NOAA_CONCURRENT_CHUNKS = 3  # concurrent date-chunk fetches per station
-NOAA_INTER_REQUEST_DELAY = 0.2  # seconds between concurrent requests
+NOAA_CONCURRENT_CHUNKS = 2  # concurrent date-chunk fetches per station
+NOAA_INTER_REQUEST_DELAY = 1.0  # seconds between requests (NOAA rate limit ~1 req/s)
+NOAA_INTER_STATION_DELAY = 0.5  # seconds between stations
 
 # Valid region IDs
 VALID_REGIONS = ['01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd', '17cgd-test']
@@ -107,6 +108,7 @@ async def fetch_tide_chunk(session, station_id, begin_date, end_date, semaphore)
     """
     Fetch tide predictions for a single date chunk.
     Returns dict keyed by date (YYYY-MM-DD) or None on error.
+    Retries up to 3 times with exponential backoff on any transient failure.
     """
     params = {
         'station': station_id,
@@ -120,22 +122,35 @@ async def fetch_tide_chunk(session, station_id, begin_date, end_date, semaphore)
         'interval': 'hilo',
     }
 
-    async with semaphore:
-        await asyncio.sleep(NOAA_INTER_REQUEST_DELAY)
-        for attempt in range(3):
+    for attempt in range(3):
+        async with semaphore:
+            await asyncio.sleep(NOAA_INTER_REQUEST_DELAY)
             try:
                 async with session.get(NOAA_API_BASE, params=params) as resp:
                     if resp.status in (429, 403):
                         backoff = (2 ** attempt) * 5 + 5  # 10s, 15s, 25s
-                        logger.warning(f'HTTP {resp.status} for tide {station_id}, backing off {backoff}s')
+                        logger.warning(f'HTTP {resp.status} for tide {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, backing off {backoff}s')
+                        await asyncio.sleep(backoff)
+                        continue
+                    if resp.status >= 500:
+                        backoff = (2 ** attempt) * 3 + 2  # 5s, 8s, 14s
+                        logger.warning(f'HTTP {resp.status} for tide {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff}s')
                         await asyncio.sleep(backoff)
                         continue
                     if resp.status != 200:
+                        logger.warning(f'HTTP {resp.status} for tide {station_id} ({begin_date}-{end_date}), not retryable')
                         return None
                     text = await resp.text()
                     data = json.loads(text)
 
                     if 'error' in data:
+                        err_msg = data['error'].get('message', str(data['error'])) if isinstance(data['error'], dict) else str(data['error'])
+                        if attempt < 2:
+                            backoff = (2 ** attempt) * 2 + 1  # 3s, 5s
+                            logger.warning(f'NOAA error for tide {station_id} ({begin_date}-{end_date}): {err_msg}, attempt {attempt+1}/3, retrying in {backoff}s')
+                            await asyncio.sleep(backoff)
+                            continue
+                        logger.warning(f'NOAA error for tide {station_id} ({begin_date}-{end_date}): {err_msg}, giving up after 3 attempts')
                         return None
 
                     predictions = data.get('predictions', [])
@@ -157,16 +172,18 @@ async def fetch_tide_chunk(session, station_id, begin_date, end_date, semaphore)
                         })
                     return by_date
             except asyncio.TimeoutError:
-                if attempt < 2:
-                    await asyncio.sleep(2)
-                    continue
-                return None
+                backoff = (2 ** attempt) * 3 + 2
+                logger.warning(f'Timeout for tide {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff}s')
+                await asyncio.sleep(backoff)
+                continue
             except Exception as e:
+                backoff = (2 ** attempt) * 2 + 1
+                logger.warning(f'Error fetching tide {station_id} ({begin_date}-{end_date}): {e}, attempt {attempt+1}/3')
                 if attempt < 2:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(backoff)
                     continue
-                logger.warning(f'Error fetching tide {station_id} chunk: {e}')
                 return None
+    logger.warning(f'All 3 attempts failed for tide {station_id} ({begin_date}-{end_date})')
     return None
 
 
@@ -174,6 +191,7 @@ async def fetch_current_chunk(session, station_id, bin_num, begin_date, end_date
     """
     Fetch current predictions for a single date chunk.
     Returns raw prediction list or empty list.
+    Retries up to 3 times with exponential backoff on any transient failure.
     """
     params = {
         'station': station_id,
@@ -187,26 +205,35 @@ async def fetch_current_chunk(session, station_id, bin_num, begin_date, end_date
         'bin': str(bin_num),
     }
 
-    async with semaphore:
-        await asyncio.sleep(NOAA_INTER_REQUEST_DELAY)
-        for attempt in range(3):
+    for attempt in range(3):
+        async with semaphore:
+            await asyncio.sleep(NOAA_INTER_REQUEST_DELAY)
             try:
                 async with session.get(NOAA_API_BASE, params=params) as resp:
                     if resp.status in (429, 403):
                         backoff = (2 ** attempt) * 5 + 5  # 10s, 15s, 25s
-                        logger.warning(f'HTTP {resp.status} for {station_id}, backing off {backoff}s (attempt {attempt+1})')
+                        logger.warning(f'HTTP {resp.status} for current {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, backing off {backoff}s')
+                        await asyncio.sleep(backoff)
+                        continue
+                    if resp.status >= 500:
+                        backoff = (2 ** attempt) * 3 + 2  # 5s, 8s, 14s
+                        logger.warning(f'HTTP {resp.status} for current {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff}s')
                         await asyncio.sleep(backoff)
                         continue
                     if resp.status != 200:
-                        if debug_first:
-                            logger.warning(f'HTTP {resp.status} for current {station_id} bin={bin_num}')
+                        logger.warning(f'HTTP {resp.status} for current {station_id} ({begin_date}-{end_date}), not retryable')
                         return []
                     text = await resp.text()
                     data = json.loads(text)
 
                     if 'error' in data:
-                        if debug_first:
-                            logger.warning(f'NOAA error for {station_id}: {data["error"]}')
+                        err_msg = data['error'].get('message', str(data['error'])) if isinstance(data['error'], dict) else str(data['error'])
+                        if attempt < 2:
+                            backoff = (2 ** attempt) * 2 + 1  # 3s, 5s
+                            logger.warning(f'NOAA error for current {station_id} ({begin_date}-{end_date}): {err_msg}, attempt {attempt+1}/3, retrying in {backoff}s')
+                            await asyncio.sleep(backoff)
+                            continue
+                        logger.warning(f'NOAA error for current {station_id} ({begin_date}-{end_date}): {err_msg}, giving up after 3 attempts')
                         return []
 
                     cp = data.get('current_predictions', {})
@@ -223,17 +250,18 @@ async def fetch_current_chunk(session, station_id, bin_num, begin_date, end_date
                         logger.warning(f'  Debug {station_id}: unexpected response format: {list(data.keys())}')
                     return []
             except asyncio.TimeoutError:
-                logger.warning(f'Timeout for current {station_id} attempt {attempt+1}')
-                if attempt < 2:
-                    await asyncio.sleep(2)
-                    continue
-                return []
+                backoff = (2 ** attempt) * 3 + 2
+                logger.warning(f'Timeout for current {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff}s')
+                await asyncio.sleep(backoff)
+                continue
             except Exception as e:
-                logger.warning(f'Error fetching current {station_id} chunk ({begin_date}-{end_date}): {e}')
+                backoff = (2 ** attempt) * 2 + 1
+                logger.warning(f'Error fetching current {station_id} ({begin_date}-{end_date}): {e}, attempt {attempt+1}/3')
                 if attempt < 2:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(backoff)
                     continue
                 return []
+    logger.warning(f'All 3 attempts failed for current {station_id} ({begin_date}-{end_date})')
     return []
 
 
@@ -549,6 +577,10 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         for i, station in enumerate(stations):
+            # Delay between stations to avoid overwhelming NOAA
+            if i > 0:
+                await asyncio.sleep(NOAA_INTER_STATION_DELAY)
+
             # Check for termination flag every 10 stations
             if i > 0 and i % 10 == 0:
                 district_ref = db_client.collection('districts').document(region_id)
@@ -558,7 +590,7 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
                     if pred_status.get('terminate', False):
                         logger.warning(f'  [TIDES {region_id}] Termination requested at station {i}/{len(stations)}')
                         raise Exception(f'Generation terminated by user request at station {i}/{len(stations)}')
-            
+
             station_id = station['id']
             station_name = station.get('name', station_id)
 
@@ -652,6 +684,10 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         for i, station in enumerate(stations):
+            # Delay between stations to avoid overwhelming NOAA
+            if i > 0:
+                await asyncio.sleep(NOAA_INTER_STATION_DELAY)
+
             # Check for termination flag every 10 stations
             if i > 0 and i % 10 == 0:
                 district_ref = db_client.collection('districts').document(region_id)
@@ -661,7 +697,7 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
                     if pred_status.get('terminate', False):
                         logger.warning(f'  [CURRENTS {region_id}] Termination requested at station {i}/{len(stations)}')
                         raise Exception(f'Generation terminated by user request at station {i}/{len(stations)}')
-            
+
             station_id = station['id']
             station_name = station.get('name', station_id)
             bin_num = station.get('bin', 1)

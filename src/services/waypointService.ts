@@ -41,9 +41,8 @@ if (Platform.OS !== 'web') {
       orderBy: rnfbFirestore.orderBy,
       query: rnfbFirestore.query,
     };
-    console.log('[WaypointService] Native Firestore SDK initialized');
   } catch (e) {
-    console.log('[WaypointService] Native Firestore not available');
+    console.warn('[WaypointService] Native Firestore not available');
   }
 }
 

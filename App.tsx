@@ -1,5 +1,3 @@
-console.log('[App.tsx] Module loading started...');
-
 import React, { useState, useEffect, useRef, useMemo, useCallback, Component, ErrorInfo, ReactNode } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View, Text, Platform, ActivityIndicator, TouchableOpacity, AppState, Modal } from 'react-native';
@@ -8,16 +6,12 @@ import { NavigationContainer, NavigationContainerRef } from '@react-navigation/n
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { FirebaseAuthTypes, getAuth, onAuthStateChanged } from '@react-native-firebase/auth';
 
-console.log('[App.tsx] Core imports complete');
-
 // Platform-specific imports
 import { OverlayProvider, useOverlay } from './src/contexts/OverlayContext';
 import { NavigationProvider, useContextNav } from './src/contexts/NavigationContext';
 import { useDeviceHeading } from './src/hooks/useDeviceHeading';
 import { WaypointProvider } from './src/contexts/WaypointContext';
 import { RouteProvider } from './src/contexts/RouteContext';
-
-console.log('[App.tsx] Context imports complete');
 
 // Only import Firebase-based components on native platforms
 let LoginScreen: React.ComponentType<{ onLoginSuccess: () => void }> | null = null;
@@ -45,38 +39,22 @@ let crashlyticsFns: {
 } | null = null;
 
 if (Platform.OS !== 'web') {
-  console.log('[App.tsx] Loading native screens...');
   LoginScreen = require('./src/screens/LoginScreen').default;
-  console.log('[App.tsx] LoginScreen loaded');
   DynamicChartViewer = require('./src/components/DynamicChartViewer.native').default;
-  console.log('[App.tsx] DynamicChartViewer loaded');
   WeatherScreen = require('./src/screens/WeatherScreen').default;
-  console.log('[App.tsx] WeatherScreen loaded');
   MoreScreen = require('./src/screens/MoreScreen').default;
-  console.log('[App.tsx] MoreScreen loaded');
   ContextScreen = require('./src/screens/ContextScreen').default;
-  console.log('[App.tsx] ContextScreen loaded');
   CompassModal = require('./src/components/CompassModal').default;
-  console.log('[App.tsx] CompassModal loaded');
   HalfMoonCompass = require('./src/components/HalfMoonCompass').default;
-  console.log('[App.tsx] HalfMoonCompass loaded');
   TickerTapeCompass = require('./src/components/TickerTapeCompass').default;
-  console.log('[App.tsx] TickerTapeCompass loaded');
   MinimalCompass = require('./src/components/MinimalCompass').default;
-  console.log('[App.tsx] MinimalCompass loaded');
   GPSInfoModal = require('./src/components/GPSInfoModal').default;
-  console.log('[App.tsx] GPSInfoModal loaded');
   MorePanel = require('./src/components/MorePanel').default;
-  console.log('[App.tsx] MorePanel loaded');
   RegionSelector = require('./src/components/RegionSelector').default;
-  console.log('[App.tsx] RegionSelector loaded');
   WaypointCreationModal = require('./src/components/WaypointCreationModal').default;
-  console.log('[App.tsx] WaypointCreationModal loaded');
-  console.log('[App.tsx] All native screens loaded successfully');
-  
+
   // Initialize Crashlytics for native platforms (modular API)
   try {
-    console.log('[App.tsx] Initializing Crashlytics...');
     const rnfbCrashlytics = require('@react-native-firebase/crashlytics');
     crashlyticsInstance = rnfbCrashlytics.getCrashlytics();
     crashlyticsFns = {
@@ -86,13 +64,12 @@ if (Platform.OS !== 'web') {
       log: rnfbCrashlytics.log,
       recordError: rnfbCrashlytics.recordError,
     };
-    console.log('[App.tsx] Crashlytics initialized');
   } catch (e) {
-    console.log('[App.tsx] Crashlytics not available');
+    // Crashlytics not available
   }
-}
 
-console.log('[App.tsx] Module loading complete');
+  console.log(`[App] Loaded 13 native screens, Crashlytics: ${crashlyticsInstance ? 'yes' : 'no'}`);
+}
 
 // Error Boundary to catch JavaScript errors
 interface ErrorBoundaryProps {
@@ -218,28 +195,17 @@ function ViewerTab() {
 }
 
 function WeatherTab() {
-  console.log('[WeatherTab] Rendering...');
   if (!WeatherScreen) return null;
   return <WeatherScreen />;
 }
 
 function ContextTab() {
-  console.log('[ContextTab] Rendering...');
-  if (!ContextScreen) {
-    console.log('[ContextTab] ContextScreen is null!');
-    return null;
-  }
-  console.log('[ContextTab] Returning ContextScreen component');
+  if (!ContextScreen) return null;
   return <ContextScreen />;
 }
 
 function MoreTab() {
-  console.log('[MoreTab] Rendering...');
-  if (!MoreScreen) {
-    console.log('[MoreTab] MoreScreen is null!');
-    return null;
-  }
-  console.log('[MoreTab] Returning MoreScreen component');
+  if (!MoreScreen) return null;
   return <MoreScreen />;
 }
 
@@ -305,7 +271,6 @@ function OverlayRenderer() {
 }
 
 function AppContent() {
-  console.log('[AppContent] Initializing...');
   const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
@@ -368,7 +333,6 @@ function AppContent() {
 
   // Initialize Crashlytics and listen for auth state changes
   useEffect(() => {
-    console.log('[AppContent] useEffect running...');
     // Enable Crashlytics collection (disabled by default in dev)
     if (crashlyticsFns && crashlyticsInstance && !__DEV__) {
       crashlyticsFns.setCrashlyticsCollectionEnabled(crashlyticsInstance, true);
@@ -376,7 +340,6 @@ function AppContent() {
 
     // Web platform doesn't use auth
     if (Platform.OS === 'web') {
-      console.log('[AppContent] Web platform detected');
       setAuthLoading(false);
       return;
     }
@@ -384,7 +347,7 @@ function AppContent() {
     // Use native Firebase Auth listener with modular API
     const authInstance = getAuth();
     const unsubscribe = onAuthStateChanged(authInstance, (authUser: FirebaseAuthTypes.User | null) => {
-      console.log('Auth state changed:', authUser ? `Logged in as ${authUser.email}` : 'Logged out');
+      if (authUser) console.log(`Auth: ${authUser.email}`);
       setUser(authUser);
       setAuthLoading(false);
 
@@ -417,7 +380,6 @@ function AppContent() {
 
   // Show loading while checking auth
   if (authLoading) {
-    console.log('[AppContent] Rendering loading state');
     return (
       <SafeAreaProvider>
         <View style={styles.loadingContainer}>
@@ -430,7 +392,6 @@ function AppContent() {
 
   // Show login if not authenticated
   if (!user && LoginScreen) {
-    console.log('[AppContent] Rendering login screen');
     return (
       <SafeAreaProvider>
         <LoginScreen onLoginSuccess={() => {}} />
@@ -440,8 +401,6 @@ function AppContent() {
   }
 
   // Main app with tab navigation
-  console.log('[AppContent] Rendering main app with user:', user?.email);
-  console.log('[AppContent] About to render NavigationProvider...');
   return (
     <SafeAreaProvider>
       <NavigationProvider>
@@ -495,7 +454,6 @@ function AppContent() {
 
 // Separate component to access NavigationContext
 function AppNavigator() {
-  console.log('[AppNavigator] Initializing...');
   const navigationRef = useRef<NavigationContainerRef<any>>(null);
   const insets = useSafeAreaInsets();
   const { setNavigationRef, contextTabName } = useContextNav();
@@ -564,7 +522,6 @@ function AppNavigator() {
           options={{ tabBarLabel: 'More' }}
           listeners={{
             tabPress: (e) => {
-              console.log('[AppNavigator] More tab pressed');
               // Prevent navigating to the More screen
               e.preventDefault();
               // Instead toggle the slide-out panel
@@ -582,7 +539,6 @@ const TileTestScreen = require('./src/screens/TileTestScreen').default;
 
 // Main App wrapper with ErrorBoundary
 export default function App() {
-  console.log('[App] Rendering App component...');
   // TEMP: uncomment to use test screen instead of full app
   // return <TileTestScreen />;
   return (

@@ -43,9 +43,8 @@ if (Platform.OS !== 'web') {
       orderBy: rnfbFirestore.orderBy,
       query: rnfbFirestore.query,
     };
-    console.log('[BoatStorageService] Native Firestore SDK initialized');
   } catch (e) {
-    console.log('[BoatStorageService] Native Firestore not available:', e);
+    console.warn('[BoatStorageService] Native Firestore not available:', e);
   }
 }
 

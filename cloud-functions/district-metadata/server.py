@@ -55,7 +55,7 @@ PROJECT_ID = os.environ.get('GCP_PROJECT', 'xnautical-8a296')
 DISTRICT_PREFIXES = {
     '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
     '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
-    '17cgd': 'd17',
+    '17cgd': 'd17', '17cgd-test': '17-test',
 }
 
 # Must match app's BASEMAP_FILENAMES
@@ -63,6 +63,7 @@ BASEMAP_FILENAMES = {
     '01cgd': 'd01_basemap', '05cgd': 'd05_basemap', '07cgd': 'd07_basemap',
     '08cgd': 'd08_basemap', '09cgd': 'd09_basemap', '11cgd': 'd11_basemap',
     '13cgd': 'd13_basemap', '14cgd': 'd14_basemap', '17cgd': 'd17_basemap',
+    '17cgd-test': '17-test_basemap',
 }
 
 

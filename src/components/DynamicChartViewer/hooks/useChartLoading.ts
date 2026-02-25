@@ -5,7 +5,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef, startTransition } from 'react';
-import { Alert, InteractionManager } from 'react-native';
+import { Alert, InteractionManager, Platform } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import * as chartCacheService from '../../../services/chartCacheService';
 import * as chartPackService from '../../../services/chartPackService';
@@ -72,6 +72,7 @@ export function useChartLoading(
   // Refs
   const lastManifestTimeRef = useRef<number>(0);
   const lastStationsTimeRef = useRef<number>(0);
+  const initialLoadCompleteRef = useRef<boolean>(false);
 
   // Composite tile URL
   const compositeTileUrl = useMemo(() => {
@@ -134,7 +135,21 @@ export function useChartLoading(
   // ─── loadCharts ───────────────────────────────────────────────────────
   const loadCharts = async () => {
     performanceTracker.beginStartup();
-    logger.setStartupParam('storagePath', 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles');
+
+    // Collect device/app info for startup banner
+    try {
+      const Constants = require('expo-constants').default;
+      logger.setStartupParam('appVersion', Constants.expoConfig?.version || Constants.manifest?.version || '?');
+      logger.setStartupParam('buildNumber', Constants.nativeBuildVersion || Constants.expoConfig?.extra?.buildNumber || '?');
+    } catch { /* expo-constants not available */ }
+    logger.setStartupParam('platform', Platform.OS);
+    logger.setStartupParam('osVersion', String(Platform.Version));
+    try {
+      const Device = require('expo-device');
+      logger.setStartupParam('deviceModel', Device.modelName || `${Platform.OS} device`);
+    } catch {
+      logger.setStartupParam('deviceModel', `${Platform.OS} device`);
+    }
 
     try {
       setLoading(true);
@@ -443,14 +458,28 @@ export function useChartLoading(
       performanceTracker.endPhase(StartupPhase.GEOJSON_LOAD, { charts: loadedCharts.length });
       setCharts(loadedCharts);
 
+      // Collect data stats for startup banner
+      try {
+        const { getInstalledDistrictIds } = await import('../../../services/regionRegistryService');
+        const districtIds = await getInstalledDistrictIds();
+        if (districtIds.length > 0) {
+          logger.setStartupParam('installedDistricts', districtIds.join(', '));
+        }
+      } catch { /* regionRegistryService not available */ }
+
+      if (manifest?.packs) {
+        const totalMB = Math.round(manifest.packs.reduce((sum, p) => sum + (p.fileSize || 0), 0) / 1024 / 1024);
+        if (totalMB > 0) logger.setStartupParam('chartStorageMB', totalMB);
+      }
+
       // Final summary
       performanceTracker.completeStartup();
-      logger.info(LogCategory.STARTUP, `Tile mode: COMPOSITE (server-side quilting, ~20 layers)`);
     } catch (error) {
       logger.error(LogCategory.STARTUP, 'STARTUP ERROR', error as Error);
       Alert.alert('Error', 'Failed to load cached charts');
     } finally {
       setLoading(false);
+      initialLoadCompleteRef.current = true;
     }
   };
 
@@ -463,9 +492,10 @@ export function useChartLoading(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Check for data changes on focus
+  // Check for data changes on focus (skip during initial load)
   useFocusEffect(
     useCallback(() => {
+      if (!initialLoadCompleteRef.current) return;
       const checkChangesAndReload = async () => {
         try {
           // eslint-disable-next-line @typescript-eslint/no-require-imports

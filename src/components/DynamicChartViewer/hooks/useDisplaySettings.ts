@@ -17,20 +17,23 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   depthContourFontScale: 1.5,
   chartLabelsFontScale: 1.5,
   seaAreaNamesFontScale: 1.5,
+  landRegionsFontScale: 1.5,
   seabedNamesFontScale: 1.5,
   // Text halo/stroke
   soundingsHaloScale: 1.0,
-  gnisHaloScale: 1.0,
+  gnisHaloScale: 0.3,
   depthContourLabelHaloScale: 1.0,
   chartLabelsHaloScale: 1.0,
-  seaAreaNamesHaloScale: 1.0,
-  seabedNamesHaloScale: 1.0,
+  seaAreaNamesHaloScale: 0.3,
+  landRegionsHaloScale: 0.3,
+  seabedNamesHaloScale: 0.3,
   // Text opacities
   soundingsOpacityScale: 1.0,
   gnisOpacityScale: 1.0,
   depthContourLabelOpacityScale: 1.0,
   chartLabelsOpacityScale: 1.0,
   seaAreaNamesOpacityScale: 1.0,
+  landRegionsOpacityScale: 1.0,
   seabedNamesOpacityScale: 1.0,
   // Line widths
   depthContourLineScale: 1.0,
@@ -153,7 +156,9 @@ export function useDisplaySettings() {
       performanceTracker.startPhase(StartupPhase.DISPLAY_SETTINGS);
       const settings = await displaySettingsService.loadSettings();
       performanceTracker.endPhase(StartupPhase.DISPLAY_SETTINGS);
-      logger.debug(LogCategory.SETTINGS, 'Display settings loaded');
+      const modeLabel = settings.dayNightMode === 'day' ? 'Day' : settings.dayNightMode === 'night' ? 'Night' : 'Dusk';
+      const unitLabel = settings.depthUnits === 'meters' ? 'Meters' : settings.depthUnits === 'feet' ? 'Feet' : 'Fathoms';
+      logger.setStartupParam('displayMode', `${modeLabel} · ${unitLabel}`);
       setDisplaySettings(settings);
     };
     loadDisplaySettings();

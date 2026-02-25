@@ -238,7 +238,7 @@ export const REGIONS: Region[] = [
     name: 'Arctic (Test)',
     formerDistrict: '17',
     formerDistrictLabel: '17 CGD Test',
-    firestoreId: '017cgd-test',
+    firestoreId: '17cgd-test',
     description: 'South-Central Alaska (US2PACZS subset)',
     center: [60.0, -148.8],
     color: '#14b8a6',
@@ -248,6 +248,20 @@ export const REGIONS: Region[] = [
     us1Charts: [
       { name: 'US1GLBDC', west: -153.6, south: 38.4, east: -134.4, north: 62.4 },
     ],
+  },
+  {
+    id: 'southeast_wflorida',
+    name: 'W. Florida',
+    formerDistrict: '07',
+    formerDistrictLabel: '7 CGD W. Florida',
+    firestoreId: '07cgd-wflorida',
+    description: 'Tampa Bay & Western Florida Coast',
+    center: [27.867, -82.756],
+    color: '#f43f5e',
+    status: 'converted',
+    mapBounds: [-83.448076, 27.398773, -82.063799, 28.33599],
+    estimatedChartSizeMB: 190,
+    us1Charts: [],
   },
 ];
 

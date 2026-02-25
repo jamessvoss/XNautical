@@ -866,7 +866,6 @@ let isInitialized = false;
  * This prevents stale connection errors when hot reloading
  */
 function resetDatabaseConnections() {
-  console.log('[SQLITE] Resetting database connections...');
   tideDbMap.clear();
   currentDbMap.clear();
   db = null;
@@ -938,7 +937,6 @@ export async function migrateLegacyPredictionDatabases(): Promise<void> {
       await AsyncStorage.multiRemove(['@XNautical:tidesDbPath', '@XNautical:currentsDbPath']);
     }
     
-    console.log('[PREDICTIONS] Legacy migration check complete');
   } catch (error) {
     console.error('[PREDICTIONS] Error during legacy migration:', error);
   }
@@ -1240,7 +1238,7 @@ export async function getStationPredictionsForRange(
       );
       const cnt = totalCount?.cnt ?? 0;
       if (cnt > 0) {
-        // Has data but not for our date range - sample actual dates to diagnose
+        // Has data but not for our date range - detailed diagnostics
         const sampleDates = await database.getAllAsync<{ date: string; cnt: number }>(
           `SELECT date, COUNT(*) as cnt FROM ${tableName} WHERE station_id = ? GROUP BY date ORDER BY date LIMIT 5`,
           [stationId]
@@ -1253,13 +1251,28 @@ export async function getStationPredictionsForRange(
           `SELECT COUNT(DISTINCT date) as cnt FROM ${tableName} WHERE station_id = ?`,
           [stationId]
         );
+        // Check for dates near our query range
+        const nearbyDates = await database.getAllAsync<{ date: string; cnt: number }>(
+          `SELECT date, COUNT(*) as cnt FROM ${tableName} WHERE station_id = ? AND date >= ? AND date <= ? GROUP BY date ORDER BY date LIMIT 5`,
+          [stationId, startDateStr.slice(0, 4) + '-01-01', startDateStr.slice(0, 4) + '-12-31']
+        );
+        // Check raw byte comparison
+        const exactMatch = await database.getFirstAsync<{ cnt: number }>(
+          `SELECT COUNT(*) as cnt FROM ${tableName} WHERE station_id = ? AND date = ?`,
+          [stationId, startDateStr]
+        );
         const sampleStr = sampleDates.map(s => `${s.date}(${s.cnt})`).join(', ');
+        const nearbyStr = nearbyDates.length > 0
+          ? nearbyDates.map(s => `${s.date}(${s.cnt})`).join(', ')
+          : 'NONE';
         console.warn(
           `[PREDICTIONS] 0 results for ${stationId} in ${districtId} (${stationType}), ` +
           `queried ${startDateStr}..${endDateStr}. ` +
           `DB has ${cnt} predictions across ${distinctDays?.cnt ?? '?'} days ` +
           `(${dateRange?.minDate ?? '?'} to ${dateRange?.maxDate ?? '?'}). ` +
-          `Sample dates: ${sampleStr}`
+          `First 5 dates: ${sampleStr}. ` +
+          `Dates in ${startDateStr.slice(0, 4)}: ${nearbyStr}. ` +
+          `Exact match for ${startDateStr}: ${exactMatch?.cnt ?? 0}`
         );
       }
       // Skip logging for stations with 0 total predictions (expected for empty/failed stations)

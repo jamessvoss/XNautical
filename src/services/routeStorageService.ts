@@ -43,9 +43,8 @@ if (Platform.OS !== 'web') {
       orderBy: rnfbFirestore.orderBy,
       query: rnfbFirestore.query,
     };
-    console.log('[RouteStorageService] Native Firestore SDK initialized');
   } catch (e) {
-    console.log('[RouteStorageService] Native Firestore not available');
+    console.warn('[RouteStorageService] Native Firestore not available');
   }
 }
 
