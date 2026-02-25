@@ -1,206 +1,192 @@
 /**
- * Generate tide and current station icons
- * 
- * Generates pre-rendered PNG icons for:
- * - Tide stations: 20 icons (2 directions × 10 fill levels)
- * - Current stations: 40 icons (8 directions × 5 velocity levels)
- * 
+ * Generate tide and current station ring+arrow icons
+ *
+ * Produces PNG icons at 1x/2x/3x densities:
+ *   tide-{0,20,40,60,80,100}.png         (6 levels × 3 densities)
+ *   current-{0,20,40,60,80,100}.png       (6 levels × 3 densities)
+ *   tide-halo.png                          (1 × 3 densities)
+ *   current-halo.png                       (1 × 3 densities)
+ *
+ * Design: circular ring with arrow inside; fill level clips the arrow.
+ *   - Tide: blue (#3498db) up-arrow, rotated by MapLibre (0°=rising, 180°=falling)
+ *   - Current: orange (#e67e22) right-arrow, rotated by MapLibre for compass bearing
+ *
  * Usage: node scripts/generate-station-icons.js
- * Requires: npm install canvas
+ * Requires: sharp (already in project dependencies)
  */
 
-const { createCanvas } = require('canvas');
+const sharp = require('sharp');
 const fs = require('fs');
 const path = require('path');
 
 const OUTPUT_DIR = path.join(__dirname, '..', 'assets', 'symbols', 'png');
 
-// Icon size
-const SIZE = 32;
-const CENTER = SIZE / 2;
+// Base size at 1x; 2x = 96, 3x = 144
+const BASE_SIZE = 48;
+// SVG coordinate system
+const VB = 100;
+
+// Arrow paths from the prototype
+const ARROW_UP = 'M50,12 L72,40 L58,40 L58,88 L42,88 L42,40 L28,40 Z';
+const ARROW_RIGHT = 'M88,50 L60,28 L60,42 L12,42 L12,58 L60,58 L60,72 Z';
 
 // Colors
-const TIDE_COLOR = '#0066CC';
-const TIDE_FILL_COLOR = '#0066CC';
-const CURRENT_COLOR = '#CC0066';
-const STROKE_COLOR = '#FFFFFF';
+const TIDE_COLOR = '#3498db';
+const CURRENT_COLOR = '#e67e22';
+
+// Ring parameters (in viewBox coords)
+const RING_CX = 50;
+const RING_CY = 50;
+const RING_R = 40;
+const RING_STROKE = 3;
+
+// Fill levels
+const FILL_LEVELS = [0, 20, 40, 60, 80, 100];
+
+// Density suffixes
+const DENSITIES = [
+  { suffix: '', scale: 1 },
+  { suffix: '@2x', scale: 2 },
+  { suffix: '@3x', scale: 3 },
+];
 
 /**
- * Generate a single tide icon
- * @param {string} direction - 'rising' or 'falling'
- * @param {number} fillPercent - 0, 10, 20, ... 90
+ * Build a clip-path rect that reveals `percent`% of an arrow from its base.
+ *
+ * Up arrow: base is at bottom (y=88), tip at top (y=12).
+ *   Fill grows upward from y=88 → reveal from bottom.
+ *
+ * Right arrow: base is at left (x=12), tip at right (x=88).
+ *   Fill grows rightward from x=12 → reveal from left.
  */
-function generateTideIcon(direction, fillPercent) {
-  const canvas = createCanvas(SIZE, SIZE);
-  const ctx = canvas.getContext('2d');
-  
-  // Clear with transparency
-  ctx.clearRect(0, 0, SIZE, SIZE);
-  
-  // Draw white background circle for visibility
-  ctx.beginPath();
-  ctx.arc(CENTER, CENTER, 14, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-  ctx.fill();
-  ctx.strokeStyle = STROKE_COLOR;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  
-  // Gauge bar dimensions
-  const barWidth = 8;
-  const barHeight = 18;
-  const barX = CENTER - barWidth / 2;
-  const barY = CENTER - barHeight / 2 + 2; // Slightly lower to make room for arrow
-  
-  // Draw gauge outline
-  ctx.strokeStyle = TIDE_COLOR;
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(barX, barY, barWidth, barHeight);
-  
-  // Draw fill level (from bottom up)
-  const fillHeight = (barHeight * fillPercent) / 100;
-  const fillY = barY + barHeight - fillHeight;
-  
-  ctx.fillStyle = TIDE_FILL_COLOR;
-  ctx.fillRect(barX + 1, fillY, barWidth - 2, fillHeight);
-  
-  // Draw arrow
-  const arrowY = barY - 4;
-  const arrowSize = 5;
-  
-  ctx.fillStyle = TIDE_COLOR;
-  ctx.beginPath();
-  
-  if (direction === 'rising') {
-    // Up arrow
-    ctx.moveTo(CENTER, arrowY - arrowSize);
-    ctx.lineTo(CENTER - arrowSize, arrowY + 2);
-    ctx.lineTo(CENTER + arrowSize, arrowY + 2);
-  } else {
-    // Down arrow (at bottom)
-    const downArrowY = barY + barHeight + 4;
-    ctx.moveTo(CENTER, downArrowY + arrowSize);
-    ctx.lineTo(CENTER - arrowSize, downArrowY - 2);
-    ctx.lineTo(CENTER + arrowSize, downArrowY - 2);
+function clipRect(percent, direction) {
+  const span = 76; // arrow occupies y 12..88 or x 12..88
+  const filled = (percent / 100) * span;
+
+  if (direction === 'up') {
+    // Reveal from bottom: rect starts at (88 - filled) and goes to 88
+    const y = 88 - filled;
+    return `<rect x="0" y="${y}" width="100" height="${filled + 12}"/>`;
   }
-  ctx.closePath();
-  ctx.fill();
-  
-  return canvas;
+  // right: reveal from left
+  return `<rect x="12" y="0" width="${filled}" height="100"/>`;
 }
 
 /**
- * Generate a single current icon (pointing UP/North - will be rotated by MapLibre)
- * @param {number} velocityLevel - 0 (slack) to 4 (max)
+ * Generate SVG string for a station icon
  */
-function generateCurrentIcon(velocityLevel) {
-  const canvas = createCanvas(SIZE, SIZE);
-  const ctx = canvas.getContext('2d');
-  
-  // Clear with transparency
-  ctx.clearRect(0, 0, SIZE, SIZE);
-  
-  // Draw white background circle for visibility
-  ctx.beginPath();
-  ctx.arc(CENTER, CENTER, 14, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-  ctx.fill();
-  ctx.strokeStyle = STROKE_COLOR;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  
-  // Velocity affects arrow size and opacity
-  // Level 0 = slack (small dot), Level 4 = max (full arrow)
-  if (velocityLevel === 0) {
-    // Slack - just draw a small dot
-    ctx.beginPath();
-    ctx.arc(CENTER, CENTER, 4, 0, Math.PI * 2);
-    ctx.fillStyle = CURRENT_COLOR;
-    ctx.globalAlpha = 0.5;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-  } else {
-    // Draw arrow pointing UP (North = 0 degrees)
-    const arrowLength = 6 + velocityLevel * 2; // 8, 10, 12, 14 pixels
-    const arrowWidth = 3 + velocityLevel; // 4, 5, 6, 7 pixels
-    const opacity = 0.4 + velocityLevel * 0.15; // 0.55, 0.7, 0.85, 1.0
-    
-    ctx.save();
-    ctx.translate(CENTER, CENTER);
-    // Arrow points UP (negative Y direction)
-    ctx.rotate(-Math.PI / 2); // Rotate to point up
-    
-    // Arrow body
-    ctx.fillStyle = CURRENT_COLOR;
-    ctx.globalAlpha = opacity;
-    
-    ctx.beginPath();
-    // Arrow pointing right (rotated to point up)
-    ctx.moveTo(arrowLength, 0); // Tip
-    ctx.lineTo(-arrowLength / 2, -arrowWidth);
-    ctx.lineTo(-arrowLength / 3, 0);
-    ctx.lineTo(-arrowLength / 2, arrowWidth);
-    ctx.closePath();
-    ctx.fill();
-    
-    // Arrow outline
-    ctx.strokeStyle = CURRENT_COLOR;
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = 1;
-    ctx.stroke();
-    
-    ctx.restore();
-  }
-  
-  return canvas;
+function buildIconSvg({ arrowPath, color, fillPercent, direction }) {
+  const uid = `clip-${direction}-${fillPercent}`;
+  const hasFill = fillPercent > 0;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VB} ${VB}">
+  <defs>
+    <clipPath id="${uid}">
+      ${clipRect(fillPercent, direction)}
+    </clipPath>
+  </defs>
+  <!-- White halo outside ring -->
+  <circle cx="${RING_CX}" cy="${RING_CY}" r="${RING_R + 3}" fill="none"
+          stroke="white" stroke-width="1" opacity="0.6"/>
+  <!-- Ring stroke (colored) -->
+  <circle cx="${RING_CX}" cy="${RING_CY}" r="${RING_R}" fill="none"
+          stroke="${color}" stroke-width="${RING_STROKE}" opacity="0.85"/>
+  <!-- Arrow white halo for contrast -->
+  <path d="${arrowPath}" fill="none" stroke="white" stroke-width="4"
+        stroke-linejoin="round" opacity="0.6"/>
+  <!-- Arrow outline -->
+  <path d="${arrowPath}" fill="none" stroke="${color}" stroke-width="1.8"
+        stroke-linejoin="round"/>
+  ${hasFill ? `<!-- Arrow fill (clipped to fill level) -->
+  <path d="${arrowPath}" fill="${color}" opacity="0.45"
+        clip-path="url(#${uid})"/>` : ''}
+</svg>`;
 }
 
 /**
- * Save canvas as PNG
+ * Generate SVG string for a halo icon (white circle, slightly larger than ring)
  */
-function saveIcon(canvas, filename) {
-  const buffer = canvas.toBuffer('image/png');
+function buildHaloSvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VB} ${VB}">
+  <circle cx="${RING_CX}" cy="${RING_CY}" r="${RING_R + 4}" fill="white" opacity="0.85"/>
+</svg>`;
+}
+
+/**
+ * Render SVG string to PNG at given pixel size via sharp
+ */
+async function svgToPng(svgString, pixelSize) {
+  const buf = Buffer.from(svgString);
+  return sharp(buf, { density: Math.round((72 * pixelSize) / BASE_SIZE) })
+    .resize(pixelSize, pixelSize)
+    .png()
+    .toBuffer();
+}
+
+/**
+ * Write PNG buffer to file
+ */
+function writePng(buffer, filename) {
   const filepath = path.join(OUTPUT_DIR, filename);
   fs.writeFileSync(filepath, buffer);
-  console.log(`  Created: ${filename}`);
+  console.log(`  ${filename}`);
 }
 
-/**
- * Main generation function
- */
 async function generateAllIcons() {
-  console.log('Generating station icons...\n');
-  
-  // Ensure output directory exists
+  console.log('Generating ring+arrow station icons...\n');
+
   if (!fs.existsSync(OUTPUT_DIR)) {
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   }
-  
-  // Generate tide icons
-  console.log('Generating tide icons (20 total):');
-  const directions = ['rising', 'falling'];
-  const fillLevels = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90];
-  
-  for (const direction of directions) {
-    for (const fill of fillLevels) {
-      const canvas = generateTideIcon(direction, fill);
-      const filename = `tide-${direction}-${fill.toString().padStart(2, '0')}.png`;
-      saveIcon(canvas, filename);
+
+  // --- Tide icons (up arrow, blue) ---
+  console.log('Tide icons:');
+  for (const fill of FILL_LEVELS) {
+    const svg = buildIconSvg({
+      arrowPath: ARROW_UP,
+      color: TIDE_COLOR,
+      fillPercent: fill,
+      direction: 'up',
+    });
+    for (const { suffix, scale } of DENSITIES) {
+      const px = BASE_SIZE * scale;
+      const png = await svgToPng(svg, px);
+      writePng(png, `tide-${fill}${suffix}.png`);
     }
   }
-  
-  // Generate current icons (5 velocity levels, rotation handled by MapLibre)
-  console.log('\nGenerating current icons (5 total):');
-  const velocityLevels = [0, 1, 2, 3, 4];
-  
-  for (const vel of velocityLevels) {
-    const canvas = generateCurrentIcon(vel);
-    const filename = `current-${vel}.png`;
-    saveIcon(canvas, filename);
+
+  // --- Current icons (right arrow, orange) ---
+  console.log('\nCurrent icons:');
+  for (const fill of FILL_LEVELS) {
+    const svg = buildIconSvg({
+      arrowPath: ARROW_RIGHT,
+      color: CURRENT_COLOR,
+      fillPercent: fill,
+      direction: 'right',
+    });
+    for (const { suffix, scale } of DENSITIES) {
+      const px = BASE_SIZE * scale;
+      const png = await svgToPng(svg, px);
+      writePng(png, `current-${fill}${suffix}.png`);
+    }
   }
-  
-  console.log('\nDone! Generated 25 icons total (20 tide + 5 current).');
+
+  // --- Halo icons ---
+  console.log('\nHalo icons:');
+  const haloSvg = buildHaloSvg();
+  for (const type of ['tide', 'current']) {
+    for (const { suffix, scale } of DENSITIES) {
+      const px = BASE_SIZE * scale;
+      const png = await svgToPng(haloSvg, px);
+      writePng(png, `${type}-halo${suffix}.png`);
+    }
+  }
+
+  const totalFiles = FILL_LEVELS.length * 2 * DENSITIES.length + 2 * DENSITIES.length;
+  console.log(`\nDone! Generated ${totalFiles} PNG files.`);
 }
 
-// Run
-generateAllIcons().catch(console.error);
+generateAllIcons().catch(err => {
+  console.error('Error generating icons:', err);
+  process.exit(1);
+});

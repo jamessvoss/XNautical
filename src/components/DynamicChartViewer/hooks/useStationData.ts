@@ -47,8 +47,8 @@ export function useStationData() {
   const [loadingBuoyDetail, setLoadingBuoyDetail] = useState(false);
 
   // Station icon states (calculated every 15 minutes)
-  const [tideIconMap, setTideIconMap] = useState<Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null }>>(new Map());
-  const [currentIconMap, setCurrentIconMap] = useState<Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null }>>(new Map());
+  const [tideIconMap, setTideIconMap] = useState<Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null; positionSlot: number; tickEvents?: Array<{ type: 'H' | 'L'; angleSlot: number; label: string; time: string; value: string }> }>>(new Map());
+  const [currentIconMap, setCurrentIconMap] = useState<Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null; positionSlot: number; tickEvents?: Array<{ type: 'slack' | 'flood' | 'ebb'; angleSlot: number; label: string; time: string; value: string }> }>>(new Map());
 
   // Station modal state
   const [selectedStation, setSelectedStation] = useState<{

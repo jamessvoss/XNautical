@@ -88,6 +88,68 @@ interface ChartScaleSource {
   maxZoom: number;     // 15
 }
 
+// 12 clock-face slots for current station tick marks (30° each)
+// Each slot has a unit offset vector (dx, dy) and text anchor for label placement
+const TICK_SLOTS = Array.from({ length: 12 }, (_, i) => {
+  const angle = (i * 30) * Math.PI / 180;
+  const dx = Math.sin(angle);
+  const dy = -Math.cos(angle);
+  // Text anchor: left-align on right side, right-align on left side, center at top/bottom
+  const textAnchor = dx > 0.1 ? 'left' : dx < -0.1 ? 'right' : 'center';
+  return { id: i, dx, dy, textAnchor };
+});
+
+/**
+ * Deconflict label slots on a 12-position circular ring.
+ * Dots stay at true positions (angleSlot); this returns separate label positions
+ * with minimum 2-slot separation so text doesn't overlap.
+ */
+function deconflictLabelSlots(slots: number[], positionSlot: number): number[] {
+  if (slots.length <= 1) return [...slots];
+
+  const N = 12;
+  const cwDist = (a: number, b: number) => ((b - a) % N + N) % N;
+  const circDist = (a: number, b: number) => { const d = cwDist(a, b); return Math.min(d, N - d); };
+
+  // Sort indices clockwise from positionSlot
+  const indices = slots.map((_, i) => i);
+  indices.sort((a, b) => (cwDist(positionSlot, slots[a]) || N) - (cwDist(positionSlot, slots[b]) || N));
+
+  const result = new Array<number>(slots.length);
+  const placed: number[] = [];
+
+  for (const i of indices) {
+    let slot = slots[i];
+
+    // Ensure minimum distance from position dot
+    if (circDist(slot, positionSlot) < 1) {
+      slot = (positionSlot + 1) % N;
+    }
+
+    // Ensure minimum distance from previously placed labels
+    for (const prev of placed) {
+      if (circDist(slot, prev) < 2) {
+        slot = (prev + 2) % N;
+      }
+    }
+
+    // Re-check position dot after nudging
+    if (circDist(slot, positionSlot) < 1) {
+      slot = (positionSlot + 1) % N;
+      for (const prev of placed) {
+        if (circDist(slot, prev) < 2) {
+          slot = (prev + 2) % N;
+        }
+      }
+    }
+
+    placed.push(slot % N);
+    result[i] = slot % N;
+  }
+
+  return result;
+}
+
 export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}) {
   // Waypoint context
   const { waypoints: userWaypoints, openCreationModal: openWaypointCreation, openEditModal: openWaypointEdit } = useWaypoints();
@@ -915,16 +977,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Tide station symbol scaling — fade in small, full size by z12
   const scaledTideStationIconSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.15 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
-    9, 0.4 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
-    12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
+    7, 0.24 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
+    9, 0.6 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
+    12, 2.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0),
   ], [displaySettings.tideStationSymbolSizeScale]);
 
   const scaledTideStationHaloSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.15 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
-    9, 0.4 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
-    12, 1.0 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
+    7, 0.12 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
+    9, 0.3 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
+    12, 0.75 * (displaySettings.tideStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.tideStationSymbolHaloScale ?? 0.1)),
   ], [displaySettings.tideStationSymbolSizeScale, displaySettings.tideStationSymbolHaloScale]);
 
   const scaledTideStationSymbolOpacity = useMemo(() => [
@@ -937,16 +999,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Current station symbol scaling — fade in small, full size by z12
   const scaledCurrentStationIconSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.15 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
-    9, 0.4 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
-    12, 1.0 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
+    7, 0.24 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
+    9, 0.6 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
+    12, 2.0 * (displaySettings.currentStationSymbolSizeScale ?? 1.0),
   ], [displaySettings.currentStationSymbolSizeScale]);
 
   const scaledCurrentStationHaloSize = useMemo(() => [
     'interpolate', ['linear'], ['zoom'],
-    7, 0.15 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
-    9, 0.4 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
-    12, 1.0 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
+    7, 0.24 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
+    9, 0.6 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
+    12, 1.5 * (displaySettings.currentStationSymbolSizeScale ?? 1.0) * (1.0 + (displaySettings.currentStationSymbolHaloScale ?? 0.1)),
   ], [displaySettings.currentStationSymbolSizeScale, displaySettings.currentStationSymbolHaloScale]);
 
   const scaledCurrentStationSymbolOpacity = useMemo(() => [
@@ -3001,7 +3063,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-lndare-outline`}
         sourceLayerID="charts"
         minZoomLevel={4}
-        filter={['==', ['get', 'OBJL'], 71]}
+        filter={['all', ['==', ['get', 'OBJL'], 71], ['==', ['geometry-type'], 'Polygon']]}
         style={{
           lineColor: s52Colors.LNDOL,
           lineWidth: 1,
@@ -3015,7 +3077,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-drgare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 46], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 46], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.DRGOL,
           lineWidth: 1.5,
@@ -3030,7 +3092,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-fairwy-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 51], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 51], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.FWYOL,
           lineWidth: 2,
@@ -3045,7 +3107,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-cblare-outline`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 20], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 20], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CABLN,
           lineWidth: scaledCableLineWidth,
@@ -3061,7 +3123,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-pipare-outline`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 92], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 92], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.PIPLN,
           lineWidth: scaledPipelineLineWidth * 0.75,
@@ -3077,7 +3139,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-resare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 112], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 112], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: [
             'match',
@@ -3102,7 +3164,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-ctnare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 27], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 27], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.CTNOL,
           lineWidth: 2,
@@ -3117,7 +3179,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-mipare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 83], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 83], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.MIPOL,
           lineWidth: 2,
@@ -3132,7 +3194,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-achare-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 4], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 4], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.ACHOL,
           lineWidth: 2,
@@ -3147,7 +3209,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-marcul-outline`}
         sourceLayerID="charts"
         minZoomLevel={0}
-        filter={['all', ['==', ['get', 'OBJL'], 82], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 82], ['==', ['geometry-type'], 'Polygon'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.MCUOL,
           lineWidth: 2,
@@ -3182,7 +3244,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           id={`${p}-contour-scale-debug`}
           sourceLayerID="charts"
           minZoomLevel={0}
-          filter={['==', ['get', 'OBJL'], 43]}
+          filter={['all', ['==', ['get', 'OBJL'], 43], ['==', ['geometry-type'], 'LineString']]}
           style={{
             lineColor: ['match', ['get', '_scaleNum'],
               1, '#ff0000', 2, '#ff8800', 3, '#ffff00',
@@ -3492,7 +3554,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-coalne-halo`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['==', ['get', 'OBJL'], 30]}
+        filter={['all', ['==', ['get', 'OBJL'], 30], ['==', ['geometry-type'], 'LineString']]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledCoastlineHaloWidth,
@@ -3507,7 +3569,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-coalne`}
         sourceLayerID="charts"
         minZoomLevel={2}
-        filter={['==', ['get', 'OBJL'], 30]}
+        filter={['all', ['==', ['get', 'OBJL'], 30], ['==', ['geometry-type'], 'LineString']]}
         style={{
           lineColor: s52Colors.CSTLN,
           lineWidth: scaledCoastlineLineWidth,
@@ -3566,7 +3628,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-lndelv`}
         sourceLayerID="charts"
         minZoomLevel={8}
-        filter={['all', ['==', ['get', 'OBJL'], 72], scaminFilter, bgFillScaleFilter]}
+        filter={['all', ['==', ['get', 'OBJL'], 72], ['==', ['geometry-type'], 'LineString'], scaminFilter, bgFillScaleFilter]}
         style={{
           lineColor: s52Colors.LDELV,
           lineWidth: 0.5,
@@ -4576,9 +4638,9 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         key={`map-${landImagery}-${s52Mode}-${mapResetKey}`}
         ref={mapRef}
         style={styles.map}
-        // DO NOT set mapStyle prop — it triggers native removeAllSourcesFromMap()
-        // which races with child VectorSource registration. Instead, we cover the
-        // default style with a BackgroundLayer (first child below).
+        // Note: intentionally NOT setting mapStyle — it triggers native removeAllSourcesFromMap()
+        // which races with child source registration. The default style (demotiles.maplibre.org)
+        // will fail to load silently when offline; our BackgroundLayer covers it regardless.
         onRegionWillChange={handleRegionWillChange}
         onRegionDidChange={handleCameraChanged}
         onRegionIsChanging={handleCameraMoving}
@@ -4834,26 +4896,26 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               style={{ fillColor: p.building, fillOpacity: p.buildingOpacity, visibility: vis }} />
             {/* Boundaries */}
             <MapLibre.LineLayer id="basemap-boundary-state" sourceLayerID="boundary"
-              filter={['==', ['get', 'admin_level'], 4]}
+              filter={['all', ['==', ['get', 'admin_level'], 4], ['==', ['geometry-type'], 'LineString']]}
               style={{ lineColor: p.grid, lineWidth: 1, lineDasharray: [3, 2], lineOpacity: p.roadNightDim * 0.6, visibility: vis }} />
             {/* Roads */}
             <MapLibre.LineLayer id="basemap-roads-motorway-casing" sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'motorway']}
+              filter={['all', ['==', ['get', 'class'], 'motorway'], ['==', ['geometry-type'], 'LineString']]}
               style={{ lineColor: p.roadCasing, lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 1, 10, 3, 14, 6], lineOpacity: p.roadNightDim, visibility: vis }} />
             <MapLibre.LineLayer id="basemap-roads-motorway" sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'motorway']}
+              filter={['all', ['==', ['get', 'class'], 'motorway'], ['==', ['geometry-type'], 'LineString']]}
               style={{ lineColor: p.road, lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 0.5, 10, 2, 14, 4], lineOpacity: p.roadNightDim, visibility: vis }} />
             <MapLibre.LineLayer id="basemap-roads-trunk" sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'trunk']}
+              filter={['all', ['==', ['get', 'class'], 'trunk'], ['==', ['geometry-type'], 'LineString']]}
               style={{ lineColor: p.road, lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 0.4, 10, 1.5, 14, 3], lineOpacity: p.roadNightDim * 0.8, visibility: vis }} />
             <MapLibre.LineLayer id="basemap-roads-primary" sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'primary']}
+              filter={['all', ['==', ['get', 'class'], 'primary'], ['==', ['geometry-type'], 'LineString']]}
               style={{ lineColor: p.road, lineWidth: ['interpolate', ['linear'], ['zoom'], 6, 0.3, 10, 1, 14, 2.5], lineOpacity: p.roadNightDim * 0.7, visibility: vis }} />
             <MapLibre.LineLayer id="basemap-roads-secondary" sourceLayerID="transportation"
-              filter={['==', ['get', 'class'], 'secondary']} minZoomLevel={9}
+              filter={['all', ['==', ['get', 'class'], 'secondary'], ['==', ['geometry-type'], 'LineString']]} minZoomLevel={9}
               style={{ lineColor: p.road, lineWidth: ['interpolate', ['linear'], ['zoom'], 9, 0.5, 14, 2], lineOpacity: p.roadNightDim * 0.6, visibility: vis }} />
             <MapLibre.LineLayer id="basemap-roads-minor" sourceLayerID="transportation"
-              filter={['any', ['==', ['get', 'class'], 'tertiary'], ['==', ['get', 'class'], 'minor'], ['==', ['get', 'class'], 'service']]}
+              filter={['all', ['any', ['==', ['get', 'class'], 'tertiary'], ['==', ['get', 'class'], 'minor'], ['==', ['get', 'class'], 'service']], ['==', ['geometry-type'], 'LineString']]}
               minZoomLevel={11}
               style={{ lineColor: p.road, lineWidth: 1, lineOpacity: p.roadNightDim * 0.5, visibility: vis }} />
             {/* Airports */}
@@ -4861,7 +4923,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               filter={['==', ['geometry-type'], 'Polygon']} minZoomLevel={10}
               style={{ fillColor: p.building, fillOpacity: p.buildingOpacity * 0.7, visibility: vis }} />
             <MapLibre.LineLayer id="basemap-aeroway-runway" sourceLayerID="aeroway"
-              filter={['==', ['get', 'class'], 'runway']} minZoomLevel={10}
+              filter={['all', ['==', ['get', 'class'], 'runway'], ['==', ['geometry-type'], 'LineString']]} minZoomLevel={10}
               style={{ lineColor: p.grid, lineWidth: ['interpolate', ['linear'], ['zoom'], 10, 2, 14, 8], lineOpacity: p.roadNightDim, visibility: vis }} />
             {/* Labels */}
             <MapLibre.SymbolLayer id="basemap-place-city" sourceLayerID="place"
@@ -4914,11 +4976,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               type: 'FeatureCollection',
               features: tideStations.map(station => {
                 const state = tideIconMap.get(station.id);
-                const heightStr = state?.currentHeight != null 
-                  ? state?.targetHeight != null
-                    ? `${state.currentHeight.toFixed(1)} ft / ${state.targetHeight.toFixed(1)} ft`
-                    : `${state.currentHeight.toFixed(1)} ft`
-                  : '';
+                // Center readout: "Rising 3.2 ft" / "Falling 1.1 ft"
+                let centerReadout = '';
+                if (state?.currentHeight != null) {
+                  const dir = state.rotation === 0 ? 'Rising' : 'Falling';
+                  centerReadout = `${dir} ${state.currentHeight.toFixed(1)} ft`;
+                }
                 return {
                   type: 'Feature',
                   geometry: {
@@ -4931,28 +4994,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     type: station.type,
                     iconName: state?.iconName || 'tide-40',
                     rotation: state?.rotation || 0,
-                    heightLabel: heightStr,
+                    centerReadout: centerReadout,
                   },
                 };
               }),
             }}
           >
-            {/* Tide station halo - white background for visibility */}
-            {/* iconAllowOverlap=true: always draw, bypass global collision grid */}
-            {/* (chart text, basemap labels, GNIS all reserve collision space that would push icons out) */}
-            {/* Visibility controlled by synthetic SCAMIN 3,000,000 via Chart Detail offset */}
-            <MapLibre.SymbolLayer
-              id="tide-stations-halo"
-              minZoomLevel={stationIconMinZoom}
-              style={{
-                iconImage: 'arrow-halo',
-                iconRotate: ['get', 'rotation'],
-                iconSize: scaledTideStationHaloSize,
-                iconOpacity: scaledTideStationSymbolOpacity,
-                iconAllowOverlap: true,
-                iconIgnorePlacement: true,
-              }}
-            />
             <MapLibre.SymbolLayer
               id="tide-stations-icon"
               minZoomLevel={stationIconMinZoom}
@@ -4965,56 +5012,175 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 iconIgnorePlacement: true,
               }}
             />
-            {/* Tide station name - at arrow head */}
-            {/* Visibility controlled by synthetic SCAMIN 120,000 via Chart Detail offset */}
+            {/* Center readout — "Rising 3.2 ft" / "Falling 1.1 ft" centered on the icon */}
             <MapLibre.SymbolLayer
-              id="tide-stations-label"
+              id="tide-stations-readout"
               minZoomLevel={stationLabelMinZoom}
               style={{
-                textField: ['get', 'name'],
-                textFont: ['Noto Sans Regular'],
-                textSize: scaledTideStationLabelSize,
-                textColor: s52Colors.TIDTX,
-                textHaloColor: s52Colors.HLCLR,
-                textHaloWidth: scaledTideStationTextHalo * 1.33,
-                textOpacity: scaledTideStationTextOpacity,
-                // Always at arrow head: flip offset direction when arrow points down (falling tide)
-                textOffset: [
-                  'case',
-                  ['==', ['get', 'rotation'], 180],
-                    ['literal', [0, 3.5]],   // Arrow down (falling): text below symbol (at head)
-                  ['literal', [0, -3.5]]     // Arrow up (rising): text above symbol (at head)
+                textField: ['get', 'centerReadout'],
+                textFont: ['Noto Sans Bold'],
+                textSize: ['interpolate', ['linear'], ['zoom'],
+                  10, 9,
+                  13, 12,
                 ],
-                textAnchor: 'center',
-                textAllowOverlap: true,
-                textIgnorePlacement: true,
-              }}
-            />
-            {/* Tide height value label - further out from arrow head */}
-            <MapLibre.SymbolLayer
-              id="tide-stations-value"
-              minZoomLevel={stationLabelMinZoom}
-              style={{
-                textField: ['get', 'heightLabel'],
-                textFont: ['Noto Sans Regular'],
-                textSize: scaledTideStationLabelSize,
-                textColor: s52Colors.TIDTX,
-                textHaloColor: s52Colors.HLCLR,
-                textHaloWidth: scaledTideStationTextHalo,
-                textOpacity: scaledTideStationTextOpacity,
-                // Further from head than station name
-                textOffset: [
-                  'case',
-                  ['==', ['get', 'rotation'], 180],
-                    ['literal', [0, 5.5]],   // Arrow down (falling): text further below
-                  ['literal', [0, -5.5]]     // Arrow up (rising): text further above
-                ],
+                textColor: '#ffffff',
+                textHaloColor: '#000000',
+                textHaloWidth: 2,
+                textOpacity: scaledTideStationSymbolOpacity,
                 textAnchor: 'center',
                 textAllowOverlap: true,
                 textIgnorePlacement: true,
               }}
             />
           </MapLibre.ShapeSource>
+          {/* Tide station tick marks — dots + labels at upcoming event positions on ring */}
+          {(() => {
+            // Ring radius = iconSize * 48px * 0.4; scale with user size preference
+            const sizeScale = displaySettings.tideStationSymbolSizeScale ?? 1.0;
+            const r7 = 0.24 * 48 * 0.4 * sizeScale;   // ~4.6 at scale 1.0
+            const r9 = 0.6 * 48 * 0.4 * sizeScale;    // ~11.5
+            const r12 = 2.0 * 48 * 0.4 * sizeScale;   // ~38.4
+            // Label offset: push text further out from ring (1.4x ring radius)
+            const lr7 = r7 * 1.4;
+            const lr9 = r9 * 1.4;
+            const lr12 = r12 * 1.4;
+            return (
+              <MapLibre.ShapeSource
+                id="tide-ticks-source"
+                shape={{
+                  type: 'FeatureCollection',
+                  features: tideStations.flatMap(station => {
+                    const state = tideIconMap.get(station.id);
+                    const features: Array<{ type: 'Feature'; geometry: { type: 'Point'; coordinates: [number, number] }; properties: Record<string, any> }> = [];
+                    // Position dot — current time on the ring
+                    if (state) {
+                      features.push({
+                        type: 'Feature',
+                        geometry: { type: 'Point', coordinates: [station.lng, station.lat] },
+                        properties: {
+                          tickSlot: state.positionSlot,
+                          isPosition: 1,
+                          isNext: 0,
+                        },
+                      });
+                    }
+                    // Event tick dots + labels (labels get deconflicted positions)
+                    if (state?.tickEvents?.length) {
+                      const labelSlots = deconflictLabelSlots(
+                        state.tickEvents.map(t => t.angleSlot),
+                        state.positionSlot,
+                      );
+                      for (let idx = 0; idx < state.tickEvents.length; idx++) {
+                        const tick = state.tickEvents[idx];
+                        features.push({
+                          type: 'Feature',
+                          geometry: { type: 'Point', coordinates: [station.lng, station.lat] },
+                          properties: {
+                            tickSlot: tick.angleSlot,
+                            labelSlot: labelSlots[idx],
+                            tickType: tick.type,
+                            tickLabel: `${tick.label}\n${tick.value ? tick.value + ' · ' : ''}${tick.time}`,
+                            isNext: idx === 0 ? 1 : 0,
+                            isPosition: 0,
+                          },
+                        });
+                      }
+                    }
+                    return features;
+                  }),
+                }}
+              >
+                {/* Position dot — current time on the ring (larger, station color, dark stroke) */}
+                {TICK_SLOTS.map(slot => (
+                  <MapLibre.CircleLayer
+                    key={`tide-pos-${slot.id}`}
+                    id={`tide-pos-${slot.id}`}
+                    minZoomLevel={10}
+                    filter={['all', ['==', ['get', 'tickSlot'], slot.id], ['==', ['get', 'isPosition'], 1]]}
+                    style={{
+                      circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 1.5, 11, 3.5, 12, 5.5],
+                      circleColor: '#3498db',
+                      circleStrokeWidth: ['interpolate', ['linear'], ['zoom'], 10, 0.5, 11, 1.5, 12, 2.5],
+                      circleStrokeColor: '#0a1628',
+                      circleTranslate: ['interpolate', ['linear'], ['zoom'],
+                        7, ['literal', [slot.dx * r7, slot.dy * r7]],
+                        9, ['literal', [slot.dx * r9, slot.dy * r9]],
+                        12, ['literal', [slot.dx * r12, slot.dy * r12]],
+                      ],
+                      circleOpacity: scaledTideStationSymbolOpacity,
+                    }}
+                  />
+                ))}
+                {/* Event tick dots */}
+                {TICK_SLOTS.map(slot => (
+                  <MapLibre.CircleLayer
+                    key={`tide-tick-${slot.id}`}
+                    id={`tide-tick-${slot.id}`}
+                    minZoomLevel={10}
+                    filter={['all', ['==', ['get', 'tickSlot'], slot.id], ['==', ['get', 'isPosition'], 0]]}
+                    style={{
+                      circleRadius: ['interpolate', ['linear'], ['zoom'],
+                        10, ['case', ['==', ['get', 'isNext'], 1], 1, 0.5],
+                        11, ['case', ['==', ['get', 'isNext'], 1], 3, 2],
+                        12, ['case', ['==', ['get', 'isNext'], 1], 5, 3.5],
+                      ],
+                      // Next upcoming event: station color (blue); others: dark navy
+                      circleColor: ['case',
+                        ['==', ['get', 'isNext'], 1], '#3498db',
+                        '#162b45',
+                      ],
+                      circleStrokeWidth: ['interpolate', ['linear'], ['zoom'],
+                        10, 0.5, 11, 1, 12, 1.5,
+                      ],
+                      circleStrokeColor: '#3498db',
+                      circleStrokeOpacity: ['case',
+                        ['==', ['get', 'isNext'], 1], 1,
+                        0.5,
+                      ],
+                      circleTranslate: ['interpolate', ['linear'], ['zoom'],
+                        7, ['literal', [slot.dx * r7, slot.dy * r7]],
+                        9, ['literal', [slot.dx * r9, slot.dy * r9]],
+                        12, ['literal', [slot.dx * r12, slot.dy * r12]],
+                      ],
+                      circleOpacity: scaledTideStationSymbolOpacity,
+                    }}
+                  />
+                ))}
+                {/* Event tick labels (not on position dot) */}
+                {TICK_SLOTS.map(slot => (
+                  <MapLibre.SymbolLayer
+                    key={`tide-tick-label-${slot.id}`}
+                    id={`tide-tick-label-${slot.id}`}
+                    minZoomLevel={stationLabelMinZoom}
+                    filter={['all', ['==', ['get', 'labelSlot'], slot.id], ['==', ['get', 'isPosition'], 0]]}
+                    style={{
+                      textField: ['get', 'tickLabel'],
+                      textFont: ['Noto Sans Bold'],
+                      textSize: ['interpolate', ['linear'], ['zoom'],
+                        10, 9,
+                        13, 12,
+                      ],
+                      textColor: '#ffffff',
+                      textHaloColor: '#000000',
+                      textHaloWidth: 2,
+                      textOpacity: ['case',
+                        ['==', ['get', 'isNext'], 1], 1,
+                        0.45,
+                      ],
+                      textAnchor: slot.textAnchor,
+                      textTranslate: ['interpolate', ['linear'], ['zoom'],
+                        7, ['literal', [slot.dx * lr7, slot.dy * lr7]],
+                        9, ['literal', [slot.dx * lr9, slot.dy * lr9]],
+                        12, ['literal', [slot.dx * lr12, slot.dy * lr12]],
+                      ],
+                      textAllowOverlap: true,
+                      textIgnorePlacement: true,
+                    }}
+                  />
+                ))}
+              </MapLibre.ShapeSource>
+            );
+          })()}
           </>
         )}
 
@@ -5027,22 +5193,21 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
               type: 'FeatureCollection',
               features: currentStations.map(station => {
                 const state = currentIconMap.get(station.id);
-                let velocityStr = '';
-                if (state?.currentVelocity != null) {
-                  const curVel = `${Math.abs(state.currentVelocity).toFixed(1)} kn`;
-                  const maxVel = state?.targetVelocity != null 
-                    ? ` / ${Math.abs(state.targetVelocity).toFixed(1)} kn` 
-                    : '';
-                  const slackStr = state?.nextSlackTime 
-                    ? ` / Next Slack: ${state.nextSlackTime}` 
-                    : '';
-                  velocityStr = `${curVel}${maxVel}${slackStr}`;
-                }
                 const rotation = state?.rotation || 0;
-                // Pre-calculate label offset to position at tail of arrow
-                const rotationRad = rotation * Math.PI / 180;
-                const labelOffsetX = -2.5 * Math.sin(rotationRad);
-                const labelOffsetY = 2.5 * Math.cos(rotationRad);
+                // Compass bearing from icon rotation (rotation = bearing - 90)
+                const bearing = Math.round(((rotation + 90) % 360 + 360) % 360);
+                // Center readout: "Flood 1.4 kt\n045°M" / "Slack"
+                let centerReadout = '';
+                if (state?.currentVelocity != null) {
+                  const absVel = Math.abs(state.currentVelocity);
+                  if (absVel < 0.1) {
+                    centerReadout = 'Slack';
+                  } else {
+                    const dir = state.currentVelocity > 0 ? 'Flood' : 'Ebb';
+                    const bearingStr = String(bearing).padStart(3, '0');
+                    centerReadout = `${dir} ${absVel.toFixed(1)} kt\n${bearingStr}°M`;
+                  }
+                }
                 return {
                   type: 'Feature',
                   geometry: {
@@ -5055,30 +5220,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     bin: station.bin,
                     iconName: state?.iconName || 'current-0',
                     rotation: rotation,
-                    velocityLabel: velocityStr,
-                    labelOffsetX: labelOffsetX,
-                    labelOffsetY: labelOffsetY,
+                    centerReadout: centerReadout,
                   },
                 };
               }),
             }}
           >
-            {/* Current station halo - white background for visibility */}
-            {/* iconAllowOverlap=true: always draw, bypass global collision grid */}
-            {/* (chart text, basemap labels, GNIS all reserve collision space that would push icons out) */}
-            {/* Visibility controlled by synthetic SCAMIN 3,000,000 via Chart Detail offset */}
-            <MapLibre.SymbolLayer
-              id="current-stations-halo"
-              minZoomLevel={stationIconMinZoom}
-              style={{
-                iconImage: 'arrow-halo',
-                iconRotate: ['get', 'rotation'],
-                iconSize: scaledCurrentStationHaloSize,
-                iconOpacity: scaledCurrentStationSymbolOpacity,
-                iconAllowOverlap: true,
-                iconIgnorePlacement: true,
-              }}
-            />
             <MapLibre.SymbolLayer
               id="current-stations-icon"
               minZoomLevel={stationIconMinZoom}
@@ -5091,57 +5238,175 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 iconIgnorePlacement: true,
               }}
             />
-            {/* Current station name - at arrow head */}
-            {/* Visibility controlled by synthetic SCAMIN 120,000 via Chart Detail offset */}
+            {/* Center readout — "Flood 1.4 kt" / "Slack" centered on the icon */}
             <MapLibre.SymbolLayer
-              id="current-stations-label"
+              id="current-stations-readout"
               minZoomLevel={stationLabelMinZoom}
               style={{
-                textField: ['get', 'name'],
-                textFont: ['Noto Sans Regular'],
-                textSize: scaledCurrentStationLabelSize,
-                textColor: s52Colors.CURTX,
-                textHaloColor: s52Colors.HLCLR,
-                textHaloWidth: scaledCurrentStationTextHalo * 1.33,
-                textOpacity: scaledCurrentStationTextOpacity,
-                // Always at arrow head: flip offset direction when arrow points down
-                textOffset: [
-                  'case',
-                  ['all', ['>=', ['get', 'rotation'], 90], ['<', ['get', 'rotation'], 270]],
-                    ['literal', [0, 3.5]],   // Arrow down: text below symbol (at head)
-                  ['literal', [0, -3.5]]     // Arrow up: text above symbol (at head)
+                textField: ['get', 'centerReadout'],
+                textFont: ['Noto Sans Bold'],
+                textSize: ['interpolate', ['linear'], ['zoom'],
+                  10, 9,
+                  13, 12,
                 ],
-                textAnchor: 'center',
-                textAllowOverlap: true,
-                textIgnorePlacement: true,
-              }}
-            />
-            {/* Current velocity label - further out from arrow head */}
-            <MapLibre.SymbolLayer
-              id="current-stations-value"
-              minZoomLevel={stationLabelMinZoom}
-              style={{
-                textField: ['get', 'velocityLabel'],
-                textFont: ['Noto Sans Regular'],
-                textSize: scaledCurrentStationLabelSize,
-                textColor: s52Colors.CURTX,
-                textHaloColor: s52Colors.HLCLR,
-                textHaloWidth: scaledCurrentStationTextHalo,
-                textOpacity: scaledCurrentStationTextOpacity,
-                textMaxWidth: 50,  // Prevent line wrapping (50 ems is very wide)
-                // Further from head than station name
-                textOffset: [
-                  'case',
-                  ['all', ['>=', ['get', 'rotation'], 90], ['<', ['get', 'rotation'], 270]],
-                    ['literal', [0, 5.5]],   // Arrow down: text further below
-                  ['literal', [0, -5.5]]     // Arrow up: text further above
-                ],
+                textColor: '#ffffff',
+                textHaloColor: '#000000',
+                textHaloWidth: 2,
+                textOpacity: scaledCurrentStationSymbolOpacity,
                 textAnchor: 'center',
                 textAllowOverlap: true,
                 textIgnorePlacement: true,
               }}
             />
           </MapLibre.ShapeSource>
+          {/* Current station tick marks — dots + labels at upcoming event positions on ring */}
+          {(() => {
+            // Ring radius = iconSize * 48px * 0.4; scale with user size preference
+            const sizeScale = displaySettings.currentStationSymbolSizeScale ?? 1.0;
+            const r7 = 0.24 * 48 * 0.4 * sizeScale;   // ~4.6 at scale 1.0
+            const r9 = 0.6 * 48 * 0.4 * sizeScale;    // ~11.5
+            const r12 = 2.0 * 48 * 0.4 * sizeScale;   // ~38.4
+            // Label offset: push text further out from ring (1.4x ring radius)
+            const lr7 = r7 * 1.4;
+            const lr9 = r9 * 1.4;
+            const lr12 = r12 * 1.4;
+            return (
+              <MapLibre.ShapeSource
+                id="current-ticks-source"
+                shape={{
+                  type: 'FeatureCollection',
+                  features: currentStations.flatMap(station => {
+                    const state = currentIconMap.get(station.id);
+                    const features: Array<{ type: 'Feature'; geometry: { type: 'Point'; coordinates: [number, number] }; properties: Record<string, any> }> = [];
+                    // Position dot — current time on the ring
+                    if (state) {
+                      features.push({
+                        type: 'Feature',
+                        geometry: { type: 'Point', coordinates: [station.lng, station.lat] },
+                        properties: {
+                          tickSlot: state.positionSlot,
+                          isPosition: 1,
+                          isNext: 0,
+                        },
+                      });
+                    }
+                    // Event tick dots + labels (labels get deconflicted positions)
+                    if (state?.tickEvents?.length) {
+                      const labelSlots = deconflictLabelSlots(
+                        state.tickEvents.map(t => t.angleSlot),
+                        state.positionSlot,
+                      );
+                      for (let idx = 0; idx < state.tickEvents.length; idx++) {
+                        const tick = state.tickEvents[idx];
+                        features.push({
+                          type: 'Feature',
+                          geometry: { type: 'Point', coordinates: [station.lng, station.lat] },
+                          properties: {
+                            tickSlot: tick.angleSlot,
+                            labelSlot: labelSlots[idx],
+                            tickType: tick.type,
+                            tickLabel: `${tick.label}\n${tick.value ? tick.value + ' · ' : ''}${tick.time}`,
+                            isNext: idx === 0 ? 1 : 0,
+                            isPosition: 0,
+                          },
+                        });
+                      }
+                    }
+                    return features;
+                  }),
+                }}
+              >
+                {/* Position dot — current time on the ring (larger, station color, dark stroke) */}
+                {TICK_SLOTS.map(slot => (
+                  <MapLibre.CircleLayer
+                    key={`current-pos-${slot.id}`}
+                    id={`current-pos-${slot.id}`}
+                    minZoomLevel={10}
+                    filter={['all', ['==', ['get', 'tickSlot'], slot.id], ['==', ['get', 'isPosition'], 1]]}
+                    style={{
+                      circleRadius: ['interpolate', ['linear'], ['zoom'], 10, 1.5, 11, 3.5, 12, 5.5],
+                      circleColor: '#e67e22',
+                      circleStrokeWidth: ['interpolate', ['linear'], ['zoom'], 10, 0.5, 11, 1.5, 12, 2.5],
+                      circleStrokeColor: '#0a1628',
+                      circleTranslate: ['interpolate', ['linear'], ['zoom'],
+                        7, ['literal', [slot.dx * r7, slot.dy * r7]],
+                        9, ['literal', [slot.dx * r9, slot.dy * r9]],
+                        12, ['literal', [slot.dx * r12, slot.dy * r12]],
+                      ],
+                      circleOpacity: scaledCurrentStationSymbolOpacity,
+                    }}
+                  />
+                ))}
+                {/* Event tick dots */}
+                {TICK_SLOTS.map(slot => (
+                  <MapLibre.CircleLayer
+                    key={`current-tick-${slot.id}`}
+                    id={`current-tick-${slot.id}`}
+                    minZoomLevel={10}
+                    filter={['all', ['==', ['get', 'tickSlot'], slot.id], ['==', ['get', 'isPosition'], 0]]}
+                    style={{
+                      circleRadius: ['interpolate', ['linear'], ['zoom'],
+                        10, ['case', ['==', ['get', 'isNext'], 1], 1, 0.5],
+                        11, ['case', ['==', ['get', 'isNext'], 1], 3, 2],
+                        12, ['case', ['==', ['get', 'isNext'], 1], 5, 3.5],
+                      ],
+                      // Next upcoming event: station color; others: dark navy
+                      circleColor: ['case',
+                        ['==', ['get', 'isNext'], 1], '#e67e22',
+                        '#162b45',
+                      ],
+                      circleStrokeWidth: ['interpolate', ['linear'], ['zoom'],
+                        10, 0.5, 11, 1, 12, 1.5,
+                      ],
+                      circleStrokeColor: '#e67e22',
+                      circleStrokeOpacity: ['case',
+                        ['==', ['get', 'isNext'], 1], 1,
+                        0.5,
+                      ],
+                      circleTranslate: ['interpolate', ['linear'], ['zoom'],
+                        7, ['literal', [slot.dx * r7, slot.dy * r7]],
+                        9, ['literal', [slot.dx * r9, slot.dy * r9]],
+                        12, ['literal', [slot.dx * r12, slot.dy * r12]],
+                      ],
+                      circleOpacity: scaledCurrentStationSymbolOpacity,
+                    }}
+                  />
+                ))}
+                {/* Event tick labels (not on position dot) */}
+                {TICK_SLOTS.map(slot => (
+                  <MapLibre.SymbolLayer
+                    key={`current-tick-label-${slot.id}`}
+                    id={`current-tick-label-${slot.id}`}
+                    minZoomLevel={stationLabelMinZoom}
+                    filter={['all', ['==', ['get', 'labelSlot'], slot.id], ['==', ['get', 'isPosition'], 0]]}
+                    style={{
+                      textField: ['get', 'tickLabel'],
+                      textFont: ['Noto Sans Bold'],
+                      textSize: ['interpolate', ['linear'], ['zoom'],
+                        10, 9,
+                        13, 12,
+                      ],
+                      textColor: '#ffffff',
+                      textHaloColor: '#000000',
+                      textHaloWidth: 2,
+                      textOpacity: ['case',
+                        ['==', ['get', 'isNext'], 1], 1,
+                        0.45,
+                      ],
+                      textAnchor: slot.textAnchor,
+                      textTranslate: ['interpolate', ['linear'], ['zoom'],
+                        7, ['literal', [slot.dx * lr7, slot.dy * lr7]],
+                        9, ['literal', [slot.dx * lr9, slot.dy * lr9]],
+                        12, ['literal', [slot.dx * lr12, slot.dy * lr12]],
+                      ],
+                      textAllowOverlap: true,
+                      textIgnorePlacement: true,
+                    }}
+                  />
+                ))}
+              </MapLibre.ShapeSource>
+            );
+          })()}
           </>
         )}
 

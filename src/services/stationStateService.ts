@@ -32,6 +32,8 @@ export interface TideStationState {
   rotation: number;     // 0 = up/rising, 180 = down/falling
   currentHeight: number | null;  // Current interpolated height
   targetHeight: number | null;   // Next extreme: next High if rising, next Low if falling
+  tickEvents?: Array<{ type: 'H' | 'L'; angleSlot: number; label: string; time: string; value: string }>;
+  positionSlot: number;   // Current time mapped to 12-slot clock face (0-11)
 }
 
 export interface CurrentStationState {
@@ -42,6 +44,8 @@ export interface CurrentStationState {
   currentVelocity: number | null;  // Current interpolated velocity
   targetVelocity: number | null;   // Peak velocity it's heading towards
   nextSlackTime: string | null;    // Next slack time as "HH:MM" display string
+  tickEvents?: Array<{ type: 'slack' | 'flood' | 'ebb'; angleSlot: number; label: string; time: string; value: string }>;  // Up to 4 upcoming cycle events for ring tick marks
+  positionSlot: number;   // Current time mapped to 12-slot clock face (0-11)
 }
 
 export interface AllStationStates {
@@ -112,7 +116,7 @@ export async function calculateTideStationState(
     );
     
     if (!predictions || predictions.length < 2) {
-      // Return default state if no predictions
+      const defHours = now.getHours() + now.getMinutes() / 60;
       return {
         stationId: station.id,
         direction: 'rising',
@@ -121,6 +125,7 @@ export async function calculateTideStationState(
         rotation: 0,
         currentHeight: null,
         targetHeight: null,
+        positionSlot: Math.round(((defHours % 12) / 12 * 360) / 30) % 12,
       };
     }
     
@@ -181,7 +186,37 @@ export async function calculateTideStationState(
     const iconName = `tide-${quantizedFill}`;
     // Rotation: 0 = up (rising), 180 = down (falling)
     const rotation = direction === 'rising' ? 0 : 180;
-    
+
+    // Compute tick events: next 4 High/Low events mapped to 12 clock-face slots
+    const tickEvents: Array<{ type: 'H' | 'L'; angleSlot: number; label: string; time: string; value: string }> = [];
+    try {
+      let tickCount = 0;
+      for (const evt of events) {
+        if (evt.timestamp! > nowTs && tickCount < 4) {
+          const eventDate = new Date(evt.timestamp!);
+          const hours = eventDate.getHours() + eventDate.getMinutes() / 60;
+          const angleDeg = (hours % 12) / 12 * 360;
+          const angleSlot = Math.round(angleDeg / 30) % 12;
+          const label = evt.type === 'H' ? 'High' : 'Low';
+          const h = eventDate.getHours();
+          const m = String(eventDate.getMinutes()).padStart(2, '0');
+          const ampm = h >= 12 ? 'PM' : 'AM';
+          const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+          const time = `${h12}:${m} ${ampm}`;
+          const value = `${evt.height.toFixed(1)} ft`;
+          tickEvents.push({ type: evt.type, angleSlot, label, time, value });
+          tickCount++;
+        }
+      }
+    } catch (e) {
+      // Non-critical
+    }
+
+    // Current position on 12-hour clock face
+    const nowHours = now.getHours() + now.getMinutes() / 60;
+    const positionAngle = (nowHours % 12) / 12 * 360;
+    const positionSlot = Math.round(positionAngle / 30) % 12;
+
     return {
       stationId: station.id,
       direction,
@@ -190,6 +225,8 @@ export async function calculateTideStationState(
       rotation,
       currentHeight,
       targetHeight,
+      tickEvents: tickEvents.length > 0 ? tickEvents : undefined,
+      positionSlot,
     };
   } catch (error) {
     console.error(`[StationState] Error calculating tide state for ${station.id}:`, error);
@@ -220,7 +257,7 @@ export async function calculateCurrentStationState(
     );
     
     if (!predictions || predictions.length < 2) {
-      // Return default state if no predictions
+      const defHours = now.getHours() + now.getMinutes() / 60;
       return {
         stationId: station.id,
         fillPercent: 0,
@@ -229,6 +266,7 @@ export async function calculateCurrentStationState(
         currentVelocity: null,
         targetVelocity: null,
         nextSlackTime: null,
+        positionSlot: Math.round(((defHours % 12) / 12 * 360) / 30) % 12,
       };
     }
     
@@ -257,9 +295,10 @@ export async function calculateCurrentStationState(
       }
     }
     
-    // Rotation in degrees (0=North, clockwise) - default to 0 if no direction
-    const rotation = nearestEvent.direction !== undefined 
-      ? normalizeDegrees(nearestEvent.direction) 
+    // Rotation in degrees - arrow icon points right (east) at 0°, so subtract 90°
+    // to convert from compass bearing (0=North) to icon rotation
+    const rotation = nearestEvent.direction !== undefined
+      ? normalizeDegrees(nearestEvent.direction - 90)
       : 0;
     
     // Calculate fill percentage based on max velocity in the data
@@ -295,9 +334,46 @@ export async function calculateCurrentStationState(
       console.warn(`[StationState] Could not determine target/slack for ${station.id}:`, e);
     }
     
+    // Compute tick events: next 4 upcoming events mapped to 12 clock-face slots
+    // Database stores full words: 'slack', 'flood', 'ebb'
+    const tickEvents: Array<{ type: 'slack' | 'flood' | 'ebb'; angleSlot: number; label: string; time: string; value: string }> = [];
+    try {
+      let tickCount = 0;
+      for (const event of events) {
+        if (event.timestamp! > nowTs && tickCount < 4) {
+          const t = event.type;
+          if (t === 'slack' || t === 'flood' || t === 'ebb') {
+            // Map event time to angle on 12-hour clock face
+            const eventDate = new Date(event.timestamp!);
+            const hours = eventDate.getHours() + eventDate.getMinutes() / 60;
+            const angleDeg = (hours % 12) / 12 * 360;
+            // Quantize to nearest of 12 slots (0-11, each 30°)
+            const angleSlot = Math.round(angleDeg / 30) % 12;
+            // Display strings for ring labels
+            const label = t === 'slack' ? 'Slack' : t === 'flood' ? 'Max Flood' : 'Max Ebb';
+            const h = eventDate.getHours();
+            const m = String(eventDate.getMinutes()).padStart(2, '0');
+            const ampm = h >= 12 ? 'PM' : 'AM';
+            const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+            const time = `${h12}:${m} ${ampm}`;
+            const value = t !== 'slack' ? `${Math.abs(event.velocity).toFixed(1)} kt` : '';
+            tickEvents.push({ type: t, angleSlot, label, time, value });
+            tickCount++;
+          }
+        }
+      }
+    } catch (e) {
+      // Non-critical: tick events are optional visual enhancement
+    }
+
     // Icon name is fill percentage (rotation handled separately)
     const iconName = `current-${fillPercent}`;
-    
+
+    // Current position on 12-hour clock face
+    const nowHours = now.getHours() + now.getMinutes() / 60;
+    const positionAngle = (nowHours % 12) / 12 * 360;
+    const positionSlot = Math.round(positionAngle / 30) % 12;
+
     return {
       stationId: station.id,
       fillPercent,
@@ -306,6 +382,8 @@ export async function calculateCurrentStationState(
       currentVelocity,
       targetVelocity,
       nextSlackTime,
+      tickEvents: tickEvents.length > 0 ? tickEvents : undefined,
+      positionSlot,
     };
   } catch (error) {
     console.error(`[StationState] Error calculating current state for ${station.id}:`, error);
@@ -365,18 +443,20 @@ export async function calculateAllStationStates(
  * Get a map of station ID to icon state for quick lookup
  */
 export function createIconNameMap(states: AllStationStates): {
-  tides: Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null }>;
-  currents: Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null }>;
+  tides: Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null; positionSlot: number; tickEvents?: Array<{ type: 'H' | 'L'; angleSlot: number; label: string; time: string; value: string }> }>;
+  currents: Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null; positionSlot: number; tickEvents?: Array<{ type: 'slack' | 'flood' | 'ebb'; angleSlot: number; label: string; time: string; value: string }> }>;
 } {
-  const tideMap = new Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null }>();
-  const currentMap = new Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null }>();
-  
+  const tideMap = new Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null; positionSlot: number; tickEvents?: Array<{ type: 'H' | 'L'; angleSlot: number; label: string; time: string; value: string }> }>();
+  const currentMap = new Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null; positionSlot: number; tickEvents?: Array<{ type: 'slack' | 'flood' | 'ebb'; angleSlot: number; label: string; time: string; value: string }> }>();
+
   for (const state of states.tides) {
     tideMap.set(state.stationId, {
       iconName: state.iconName,
       rotation: state.rotation,
       currentHeight: state.currentHeight,
       targetHeight: state.targetHeight,
+      positionSlot: state.positionSlot,
+      tickEvents: state.tickEvents,
     });
   }
 
@@ -387,8 +467,10 @@ export function createIconNameMap(states: AllStationStates): {
       currentVelocity: state.currentVelocity,
       targetVelocity: state.targetVelocity,
       nextSlackTime: state.nextSlackTime,
+      positionSlot: state.positionSlot,
+      tickEvents: state.tickEvents,
     });
   }
-  
+
   return { tides: tideMap, currents: currentMap };
 }
