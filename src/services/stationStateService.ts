@@ -321,10 +321,6 @@ export async function calculateAllStationStates(
   tideStations: TideStation[],
   currentStations: CurrentStation[]
 ): Promise<AllStationStates> {
-  console.log(`[StationState] Calculating states for ${tideStations.length} tide and ${currentStations.length} current stations...`);
-  
-  const startTime = Date.now();
-  
   // Process tide stations (in batches to avoid overwhelming the database)
   const tideStates: TideStationState[] = [];
   const BATCH_SIZE = 20;
@@ -357,10 +353,7 @@ export async function calculateAllStationStates(
       }
     }
   }
-  
-  const elapsed = Date.now() - startTime;
-  console.log(`[StationState] Calculated ${tideStates.length} tide and ${currentStates.length} current states in ${elapsed}ms`);
-  
+
   return {
     tides: tideStates,
     currents: currentStates,
@@ -378,32 +371,24 @@ export function createIconNameMap(states: AllStationStates): {
   const tideMap = new Map<string, { iconName: string; rotation: number; currentHeight: number | null; targetHeight: number | null }>();
   const currentMap = new Map<string, { iconName: string; rotation: number; currentVelocity: number | null; targetVelocity: number | null; nextSlackTime: string | null }>();
   
-  let tideWithTarget = 0;
   for (const state of states.tides) {
-    tideMap.set(state.stationId, { 
-      iconName: state.iconName, 
+    tideMap.set(state.stationId, {
+      iconName: state.iconName,
       rotation: state.rotation,
       currentHeight: state.currentHeight,
       targetHeight: state.targetHeight,
     });
-    if (state.targetHeight != null) tideWithTarget++;
   }
-  
-  let currentWithTarget = 0;
-  let currentWithSlack = 0;
+
   for (const state of states.currents) {
-    currentMap.set(state.stationId, { 
-      iconName: state.iconName, 
+    currentMap.set(state.stationId, {
+      iconName: state.iconName,
       rotation: state.rotation,
       currentVelocity: state.currentVelocity,
       targetVelocity: state.targetVelocity,
       nextSlackTime: state.nextSlackTime,
     });
-    if (state.targetVelocity != null) currentWithTarget++;
-    if (state.nextSlackTime != null) currentWithSlack++;
   }
-  
-  console.log(`[StationState] Icon map stats: tides=${tideMap.size} (${tideWithTarget} with targetHeight), currents=${currentMap.size} (${currentWithTarget} with targetVelocity, ${currentWithSlack} with nextSlack)`);
   
   return { tides: tideMap, currents: currentMap };
 }
