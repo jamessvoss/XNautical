@@ -42,6 +42,7 @@ import {
   areMarineZonesDownloaded,
   clearMarineZones,
 } from '../services/marineZoneService';
+import { useOverlay } from '../contexts/OverlayContext';
 import type { Region, SatelliteResolution } from '../config/regionData';
 import { SATELLITE_OPTIONS } from '../config/regionData';
 import type { District, DistrictDownloadPack, PackDownloadStatus } from '../types/chartPack';
@@ -73,7 +74,8 @@ interface DownloadCategory {
 
 export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: Props) {
   console.log('[DownloadPanel] Component rendering, region:', region?.firestoreId);
-  
+  const { requestMapReset } = useOverlay();
+
   const [loading, setLoading] = useState(true);
   const [districtData, setDistrictData] = useState<District | null>(null);
   const [installedPackIds, setInstalledPackIds] = useState<string[]>([]);
@@ -635,6 +637,9 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
         hasTerrain: installed.some(id => id === 'terrain' || id.startsWith('terrain-') || id.includes('_terrain')),
       });
 
+      // Flush tile server caches and force MapLibre remount
+      await requestMapReset();
+
       Alert.alert('Complete', 'All data downloaded successfully.');
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Download failed');
@@ -695,6 +700,16 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               setPackDownloadStatus(null);
             }
             setCurrentDownloadItem('');
+
+            // Fetch/refresh points.mbtiles (lights, soundings, rocks, buoys, etc.)
+            if (category.id === 'charts' || category.packs.some(p => p.type === 'charts')) {
+              try {
+                await chartPackService.fetchPoints(firestoreId);
+              } catch (e) {
+                console.warn('[DownloadPanel] Points fetch failed (non-critical):', e);
+              }
+            }
+
             const installed = await chartPackService.getInstalledPackIds(firestoreId);
             setInstalledPackIds(installed);
             // Register/update district in region registry
@@ -707,6 +722,9 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               hasOcean: installed.some(id => id === 'ocean' || id.startsWith('ocean-') || id.includes('_ocean')),
               hasTerrain: installed.some(id => id === 'terrain' || id.startsWith('terrain-') || id.includes('_terrain')),
             });
+
+            // Reset tile server to pick up new/replaced files
+            await requestMapReset();
           },
         },
       ]
@@ -949,13 +967,16 @@ export default function DownloadPanel({ region, onBack, selectedOptionalMaps }: 
               
               // Delete all region files
               const result = await chartPackService.deleteRegion(firestoreId, otherDistrictIds);
-              
+
+              // Reset tile server — release file handles to deleted files and flush caches
+              await requestMapReset();
+
               // Clear buoy data
               await clearBuoys(firestoreId);
-              
+
               // Clear marine zone boundaries
               await clearMarineZones(firestoreId);
-              
+
               // Unregister from the region registry
               await unregisterDistrict(firestoreId);
               

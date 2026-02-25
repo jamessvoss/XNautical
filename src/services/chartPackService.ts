@@ -306,7 +306,8 @@ const DISTRICT_PREFIXES: Record<string, string> = {
   '13cgd': 'd13',
   '14cgd': 'd14',
   '17cgd': 'd17',
-  '017cgd-test': '017-test',
+  '17cgd-test': '17-test',
+  '07cgd-wflorida': '07-wflorida',
 };
 
 /**
@@ -322,7 +323,8 @@ const GNIS_FILENAMES: Record<string, string> = {
   '13cgd': 'gnis_names_pnw.mbtiles',
   '14cgd': 'gnis_names_hi.mbtiles',
   '17cgd': 'gnis_names_ak.mbtiles',
-  '017cgd-test': 'gnis_names_ak.mbtiles',
+  '17cgd-test': 'gnis_names_ak.mbtiles',
+  '07cgd-wflorida': 'gnis_names_se.mbtiles',
 };
 
 /**
@@ -338,7 +340,8 @@ const BASEMAP_FILENAMES: Record<string, string> = {
   '13cgd': 'd13_basemap.mbtiles',
   '14cgd': 'd14_basemap.mbtiles',
   '17cgd': 'd17_basemap.mbtiles',
-  '017cgd-test': 'd17_basemap.mbtiles',
+  '17cgd-test': '17-test_basemap.mbtiles',
+  '07cgd-wflorida': '07-wflorida_basemap.mbtiles',
 };
 
 /**
@@ -354,7 +357,8 @@ const DISTRICT_BOUNDS: Record<string, { south: number; west: number; north: numb
   '13cgd': { south: 35.0, west: -127.0, north: 49.5, east: -122.0 },
   '14cgd': { south: 18.0, west: -162.0, north: 23.0, east: -154.0 },
   '17cgd': { south: 51.0, west: -180.0, north: 71.5, east: -130.0 },
-  '017cgd-test': { south: 57.6, west: -153.6, north: 62.4, east: -144.0 },
+  '17cgd-test': { south: 57.6, west: -153.6, north: 62.4, east: -144.0 },
+  '07cgd-wflorida': { south: 27.398773, west: -83.448076, north: 28.33599, east: -82.063799 },
 };
 
 /**
@@ -496,6 +500,22 @@ export async function downloadPack(
     }
     
     console.log(`[ChartPackService] Extracting ${compressedPath} to ${mbtilesDir}...`);
+
+    // If the target file already exists, close all databases before overwriting.
+    // The tile server memory-maps SQLite files; overwriting without closing first
+    // can cause corrupted reads or stale/missing features.
+    const existingFile = await FileSystem.getInfoAsync(finalPath);
+    if (existingFile.exists) {
+      console.log(`[ChartPackService] ${localFilename} already exists — closing databases before overwrite`);
+      try {
+        const { closeAllDatabases } = await import('./mbtilesReader');
+        await closeAllDatabases();
+      } catch (e) {
+        console.warn('[ChartPackService] Error closing databases before overwrite:', e);
+      }
+      // Delete old file before extraction to avoid partial-overwrite states
+      await FileSystem.deleteAsync(finalPath, { idempotent: true });
+    }
 
     // Snapshot files before extraction so we can detect what was added
     const filesBefore = new Set(await FileSystem.readDirectoryAsync(mbtilesDir));
@@ -1055,6 +1075,19 @@ export async function fetchPoints(districtId: string): Promise<boolean> {
     const dirInfo = await FileSystem.getInfoAsync(mbtilesDir);
     if (!dirInfo.exists) {
       await FileSystem.makeDirectoryAsync(mbtilesDir, { intermediates: true });
+    }
+
+    // If the target file already exists, close databases before overwriting
+    const existingPoints = await FileSystem.getInfoAsync(finalPath);
+    if (existingPoints.exists) {
+      console.log(`[ChartPackService] ${localFilename} already exists — closing databases before overwrite`);
+      try {
+        const { closeAllDatabases } = await import('./mbtilesReader');
+        await closeAllDatabases();
+      } catch (e) {
+        console.warn('[ChartPackService] Error closing databases before points overwrite:', e);
+      }
+      await FileSystem.deleteAsync(finalPath, { idempotent: true });
     }
 
     // Snapshot files before extraction
