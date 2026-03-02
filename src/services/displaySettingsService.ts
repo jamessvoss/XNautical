@@ -311,7 +311,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   timeFormat: '12h',
   // Map display
   landImagery: 'satellite',
-  marineImagery: 'noaa-chart',
+  marineImagery: 'relief',
 };
 
 // In-memory cache

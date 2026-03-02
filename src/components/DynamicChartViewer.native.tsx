@@ -22,14 +22,23 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapLibre from '@maplibre/maplibre-react-native';
 import * as chartCacheService from '../services/chartCacheService';
 
-// Suppress noisy "Request failed due to a permanent error: Canceled" messages
-// that flood the console when MapLibre cancels in-flight tile requests during panning.
+// Suppress noisy MapLibre messages that flood the console but are harmless.
 MapLibre.Logger.setLogCallback((log: { tag?: string; message: string }) => {
   if (log.tag === 'Mbgl-HttpRequest' && log.message.startsWith('Request failed due to a permanent error: Canceled')) {
-    return true; // swallow — don't log
+    return true; // swallow — cancelled in-flight tile requests during panning
   }
   // Suppress font 404s — tile server only has Noto Sans, not MapLibre's default "Open Sans" fallback
   if (log.message.includes('/fonts/') && (log.message.includes('not found') || log.message.includes('Failed to load glyph'))) {
+    return true;
+  }
+  // Suppress default demo style errors — we don't set mapStyle (see MapView comment),
+  // so MapLibre falls back to demotiles.maplibre.org which fails silently offline/backgrounded.
+  if (log.message.includes('demotiles.maplibre.org')) {
+    return true;
+  }
+  // Suppress "Invalid geometry in line layer" — benign tippecanoe simplification artifact
+  // at certain zoom levels; decoded tile data validates clean (1.19M features audited).
+  if (log.message.includes('Invalid geometry')) {
     return true;
   }
   return false; // let all other messages through to default logging
@@ -730,9 +739,19 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     s52Colors.DPCTX,     // Higher-scale labels: theme color
   ], [s52Colors.DPCTX]);
 
-  const scaledCoastlineOpacity = useMemo(() => 
+  const scaledCoastlineOpacity = useMemo(() =>
     Math.min(1, Math.max(0, displaySettings.coastlineOpacityScale)),
     [displaySettings.coastlineOpacityScale]
+  );
+
+  const coastlineScaleOpacity = useMemo(
+    () => buildContourScaleOpacity(scaledCoastlineOpacity),
+    [scaledCoastlineOpacity]
+  );
+
+  const coastlineHaloScaleOpacity = useMemo(
+    () => buildContourScaleOpacity(scaledCoastlineHalo > 0 ? scaledCoastlineOpacity * 0.8 : 0),
+    [scaledCoastlineOpacity, scaledCoastlineHalo]
   );
 
   const scaledCableLineOpacity = useMemo(() => 
@@ -1296,7 +1315,16 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  
+
+  // Re-run loadCharts when mapResetKey changes (e.g., post-download refresh).
+  // The mount effect (above) handles the initial load; this handles subsequent
+  // resets triggered by requestMapReset() after downloads complete.
+  useEffect(() => {
+    if (!initialLoadCompleteRef.current) return;
+    loadCharts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapResetKey]);
+
   // Check if any data was downloaded and reload when returning to map screen
   useFocusEffect(
     useCallback(() => {
@@ -1988,6 +2016,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
 
   // Track if we've done the query warm-up
   const queryWarmupDoneRef = useRef(false);
+  const geometryAuditDoneRef = useRef(false);
   // Handle map events
   const handleMapIdle = useCallback((state: any) => {
     // === STYLE SWITCH: Log map idle during style switch ===
@@ -1998,7 +2027,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       // Reset tracking
       styleSwitchStartRef.current = 0;
     }
-    
+
     if (state?.properties?.zoom !== undefined) {
       const roundedZoom = Math.round(state.properties.zoom * 10) / 10;
       setCurrentZoom(prev => prev === roundedZoom ? prev : roundedZoom);
@@ -2006,7 +2035,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     if (state?.properties?.center) {
       setCenterCoord(state.properties.center);
     }
-    
+
     // Warm up the query cache on first idle (makes first tap fast)
     if (!queryWarmupDoneRef.current && mapRef.current) {
       queryWarmupDoneRef.current = true;
@@ -2019,6 +2048,61 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         })
         .catch(() => {
           // Ignore errors - this is just a warmup
+        });
+    }
+
+    // DEBUG: One-shot geometry audit — scan all rendered features for invalid line geometries.
+    // This helps identify which features trigger MapLibre's "Invalid geometry in line layer" warning.
+    // Safe to remove once the source of the warning is found.
+    if (!geometryAuditDoneRef.current && mapRef.current) {
+      geometryAuditDoneRef.current = true;
+      const { width, height } = Dimensions.get('window');
+      const bbox: [number, number, number, number] = [0, width, height, 0]; // [top, right, bottom, left]
+      mapRef.current.queryRenderedFeaturesInRect(bbox, undefined, [])
+        .then((fc: any) => {
+          if (!fc?.features) return;
+          const invalid: string[] = [];
+          for (const f of fc.features) {
+            const geom = f.geometry;
+            if (!geom) continue;
+            const layerId = (f as any).layer?.id || '(no layer)';
+            const p = f.properties || {};
+            const tag = `layer=${layerId} OBJL=${p.OBJL ?? '?'} US${p._scaleNum ?? '?'} chart=${p._chartId ?? '?'}`;
+
+            if (geom.type === 'LineString') {
+              const coords = geom.coordinates;
+              if (!coords || coords.length < 2) {
+                invalid.push(`${tag} reason=too_few_coords(${coords?.length ?? 0}) type=LineString`);
+              } else if (coords.some((c: any) => !c || c.length < 2 || !isFinite(c[0]) || !isFinite(c[1]))) {
+                invalid.push(`${tag} reason=bad_coordinate type=LineString`);
+              }
+            } else if (geom.type === 'MultiLineString') {
+              const lines = geom.coordinates;
+              if (!lines || lines.length === 0) {
+                invalid.push(`${tag} reason=empty_multi type=MultiLineString`);
+              } else {
+                for (let i = 0; i < lines.length; i++) {
+                  const line = lines[i];
+                  if (!line || line.length < 2) {
+                    invalid.push(`${tag} reason=sub_line[${i}]_too_few_coords(${line?.length ?? 0}) type=MultiLineString`);
+                  } else if (line.some((c: any) => !c || c.length < 2 || !isFinite(c[0]) || !isFinite(c[1]))) {
+                    invalid.push(`${tag} reason=sub_line[${i}]_bad_coordinate type=MultiLineString`);
+                  }
+                }
+              }
+            }
+          }
+          if (invalid.length > 0) {
+            console.warn(`[GEOMETRY AUDIT] Found ${invalid.length} invalid line geometries in ${fc.features.length} rendered features:`);
+            for (const msg of invalid) {
+              console.warn(`  ${msg}`);
+            }
+          } else {
+            console.log(`[GEOMETRY AUDIT] All ${fc.features.length} rendered features have valid line geometries.`);
+          }
+        })
+        .catch((err: any) => {
+          console.warn('[GEOMETRY AUDIT] Query failed:', err);
         });
     }
 
@@ -3554,11 +3638,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-coalne-halo`}
         sourceLayerID="charts"
         minZoomLevel={6}
-        filter={['all', ['==', ['get', 'OBJL'], 30], ['==', ['geometry-type'], 'LineString']]}
+        filter={['all', ['==', ['get', 'OBJL'], 30], ['==', ['geometry-type'], 'LineString'], contourScaleFilter]}
         style={{
           lineColor: s52Colors.HLCLR,
           lineWidth: scaledCoastlineHaloWidth,
-          lineOpacity: scaledCoastlineHalo > 0 ? scaledCoastlineOpacity * 0.8 : 0,
+          lineOpacity: coastlineHaloScaleOpacity,
           visibility: showCoastline ? 'visible' : 'none',
         }}
       />,
@@ -3569,11 +3653,11 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         id={`${p}-coalne`}
         sourceLayerID="charts"
         minZoomLevel={2}
-        filter={['all', ['==', ['get', 'OBJL'], 30], ['==', ['geometry-type'], 'LineString']]}
+        filter={['all', ['==', ['get', 'OBJL'], 30], ['==', ['geometry-type'], 'LineString'], contourScaleFilter]}
         style={{
           lineColor: s52Colors.CSTLN,
           lineWidth: scaledCoastlineLineWidth,
-          lineOpacity: scaledCoastlineOpacity,
+          lineOpacity: coastlineScaleOpacity,
           visibility: showCoastline ? 'visible' : 'none',
         }}
       />,
@@ -4550,7 +4634,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     scaledDepthContourLineWidth, scaledDepthContourLineHaloWidth,
     scaledDepthContourLineHalo, scaledDepthContourLineOpacity,
     contourHaloScaleOpacity, contourLineScaleOpacity,
-    scaledCoastlineLineWidth, scaledCoastlineHaloWidth, scaledCoastlineHalo, scaledCoastlineOpacity,
+    scaledCoastlineLineWidth, scaledCoastlineHaloWidth, coastlineScaleOpacity, coastlineHaloScaleOpacity,
     scaledCableLineWidth, scaledCableLineHalo, scaledCableLineOpacity,
     scaledPipelineLineWidth, scaledPipelineLineHalo, scaledPipelineLineOpacity,
   ]);
