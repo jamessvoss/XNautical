@@ -7,15 +7,16 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import { unzip } from 'react-native-zip-archive';
-import { 
-  ChartPackManifest, 
-  ChartPack, 
-  InstalledChartPack, 
+import {
+  ChartPackManifest,
+  ChartPack,
+  InstalledChartPack,
   BasePack,
   District,
   DistrictDownloadPack,
   PackDownloadStatus,
 } from '../types/chartPack';
+import { STORAGE_BUCKET } from '../config/firebase';
 
 // Use internal storage (documentDirectory) for mbtiles
 // This is always writable and doesn't require permissions
@@ -214,10 +215,10 @@ export async function getDistrict(districtId: string): Promise<District | null> 
     // Try to load pre-generated metadata from Storage first
     try {
       // Use direct public URL to avoid getDownloadURL auth issues
-      const bucketName = 'xnautical-8a296.firebasestorage.app';
+      // STORAGE_BUCKET from config/firebase.ts — single source of truth (see config/regions.json)
       const metadataPath = `${districtId}/download-metadata.json`;
       const encodedPath = encodeURIComponent(metadataPath);
-      const metadataUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
+      const metadataUrl = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodedPath}?alt=media`;
       
       const response = await fetch(metadataUrl);
 
@@ -238,6 +239,8 @@ export async function getDistrict(districtId: string): Promise<District | null> 
           bounds: districtData.bounds || { west: 0, east: 0, south: 0, north: 0 },
           states: districtData.states || [],
           downloadPacks: metadata.downloadPacks || [],
+          completeness: metadata.completeness ?? 1.0,
+          regionBoundary: districtData.regionBoundary,
           us1ChartBounds: districtData.us1ChartBounds,
           metadata: metadata.metadata, // Include metadata for buoy/zone counts and prediction sizes
         };
@@ -295,6 +298,7 @@ export async function getAvailableDistricts(): Promise<{ id: string; name: strin
 /**
  * District prefix mapping.
  * Maps Firestore district IDs to local filename prefixes for chart files.
+ * NOTE: Derived from config/regions.json (source of truth). Run scripts/check-region-consistency.js to detect drift.
  */
 const DISTRICT_PREFIXES: Record<string, string> = {
   '01cgd': 'd01',
@@ -307,6 +311,12 @@ const DISTRICT_PREFIXES: Record<string, string> = {
   '14cgd': 'd14',
   '17cgd': 'd17',
   '17cgd-test': '17-test',
+  '17cgd-Juneau': '17-juneau',
+  '17cgd-Anchorage': '17-anchorage',
+  '17cgd-Kodiak': '17-kodiak',
+  '17cgd-DutchHarbor': '17-dutchharbor',
+  '17cgd-Nome': '17-nome',
+  '17cgd-Barrow': '17-barrow',
   '07cgd-wflorida': '07-wflorida',
 };
 
@@ -324,6 +334,12 @@ const GNIS_FILENAMES: Record<string, string> = {
   '14cgd': 'gnis_names_hi.mbtiles',
   '17cgd': 'gnis_names_ak.mbtiles',
   '17cgd-test': 'gnis_names_ak.mbtiles',
+  '17cgd-Juneau': 'gnis_names_ak.mbtiles',
+  '17cgd-Anchorage': 'gnis_names_ak.mbtiles',
+  '17cgd-Kodiak': 'gnis_names_ak.mbtiles',
+  '17cgd-DutchHarbor': 'gnis_names_ak.mbtiles',
+  '17cgd-Nome': 'gnis_names_ak.mbtiles',
+  '17cgd-Barrow': 'gnis_names_ak.mbtiles',
   '07cgd-wflorida': 'gnis_names_se.mbtiles',
 };
 
@@ -341,13 +357,26 @@ const BASEMAP_FILENAMES: Record<string, string> = {
   '14cgd': 'd14_basemap.mbtiles',
   '17cgd': 'd17_basemap.mbtiles',
   '17cgd-test': '17-test_basemap.mbtiles',
+  '17cgd-Juneau': '17-juneau_basemap.mbtiles',
+  '17cgd-Anchorage': '17-anchorage_basemap.mbtiles',
+  '17cgd-Kodiak': '17-kodiak_basemap.mbtiles',
+  '17cgd-DutchHarbor': '17-dutchharbor_basemap.mbtiles',
+  '17cgd-Nome': '17-nome_basemap.mbtiles',
+  '17cgd-Barrow': '17-barrow_basemap.mbtiles',
   '07cgd-wflorida': '07-wflorida_basemap.mbtiles',
 };
 
 /**
- * District bounds mapping for manifest generation.
+ * Single bound rect type.
  */
-const DISTRICT_BOUNDS: Record<string, { south: number; west: number; north: number; east: number }> = {
+type BoundsRect = { south: number; west: number; north: number; east: number };
+
+/**
+ * District bounds mapping for manifest generation.
+ * Values may be an array (antimeridian-crossing regions like DutchHarbor, 17cgd).
+ * Source of truth: config/regions.json
+ */
+const DISTRICT_BOUNDS: Record<string, BoundsRect | BoundsRect[]> = {
   '01cgd': { south: 39.5, west: -74.5, north: 47.5, east: -65.5 },
   '05cgd': { south: 33.0, west: -81.0, north: 41.0, east: -73.5 },
   '07cgd': { south: 17.0, west: -83.5, north: 34.0, east: -64.0 },
@@ -356,10 +385,37 @@ const DISTRICT_BOUNDS: Record<string, { south: number; west: number; north: numb
   '11cgd': { south: 32.0, west: -123.5, north: 37.5, east: -117.0 },
   '13cgd': { south: 35.0, west: -127.0, north: 49.5, east: -122.0 },
   '14cgd': { south: 18.0, west: -162.0, north: 23.0, east: -154.0 },
-  '17cgd': { south: 51.0, west: -180.0, north: 71.5, east: -130.0 },
+  '17cgd': [
+    { south: 51.0, west: -180.0, north: 71.5, east: -130.0 },
+    { south: 50.0, west: 170.0, north: 65.0, east: 180.0 },
+  ],
   '17cgd-test': { south: 57.6, west: -153.6, north: 62.4, east: -144.0 },
+  '17cgd-Juneau': { south: 54.5, west: -145.5, north: 61, east: -130 },
+  '17cgd-Anchorage': { south: 56, west: -157, north: 62, east: -140 },
+  '17cgd-Kodiak': { south: 54, west: -168, north: 60, east: -150 },
+  '17cgd-DutchHarbor': [
+    { south: 51, west: -180, north: 60, east: -164 },
+    { south: 51, west: 170, north: 56, east: 180 },
+  ],
+  '17cgd-Nome': { south: 59, west: -176, north: 67, east: -158 },
+  '17cgd-Barrow': { south: 65, west: -170, north: 72, east: -140 },
   '07cgd-wflorida': { south: 27.398773, west: -83.448076, north: 28.33599, east: -82.063799 },
 };
+
+/**
+ * Merge array bounds into a single bounding rect (min south/west, max north/east).
+ * For antimeridian-crossing regions the merged rect may span >360 degrees —
+ * the tile server only needs a rough envelope so this is acceptable.
+ */
+function mergeBounds(bounds: BoundsRect | BoundsRect[]): BoundsRect {
+  if (!Array.isArray(bounds)) return bounds;
+  return bounds.reduce((acc, b) => ({
+    south: Math.min(acc.south, b.south),
+    west: Math.min(acc.west, b.west),
+    north: Math.max(acc.north, b.north),
+    east: Math.max(acc.east, b.east),
+  }));
+}
 
 /**
  * Get the file prefix for a district.
@@ -384,6 +440,9 @@ function getLocalFilename(pack: DistrictDownloadPack, districtId: string): strin
 
   // Unified charts pack (no band) or per-scale charts
   if (pack.type === 'charts') {
+    if (pack.id === 'points') {
+      return `points-${prefix}.mbtiles`;
+    }
     if (pack.band) {
       return `${prefix}_${pack.band}.mbtiles`;
     }
@@ -397,6 +456,13 @@ function getLocalFilename(pack: DistrictDownloadPack, districtId: string): strin
   
   // Basemap files - use district-specific filenames
   if (pack.type === 'basemap') {
+    // Per-zoom basemap packs: use the prefixed filename from storage path
+    if (pack.id !== 'basemap') {
+      if (baseFilename.startsWith(BASEMAP_FILENAMES[districtId]?.replace('.mbtiles', '') || '')) {
+        return baseFilename;
+      }
+      return baseFilename;
+    }
     return BASEMAP_FILENAMES[districtId] || baseFilename;
   }
   
@@ -535,6 +601,14 @@ export async function downloadPack(
     const filesAfter = await FileSystem.readDirectoryAsync(mbtilesDir);
     const newFiles = filesAfter.filter(f => !filesBefore.has(f) && f.endsWith('.mbtiles'));
 
+    // ZIP path traversal guard — reject filenames with path separators or parent refs
+    for (const f of newFiles) {
+      if (f.includes('..') || f.includes('/') || f.includes('\\')) {
+        await FileSystem.deleteAsync(`${mbtilesDir}${f}`, { idempotent: true });
+        throw new Error(`Zip contained suspicious filename: ${f}`);
+      }
+    }
+
     if (!fileInfo.exists && newFiles.length === 1) {
       // Expected file missing — rename the extracted file to the canonical name
       const extractedPath = `${mbtilesDir}${newFiles[0]}`;
@@ -552,7 +626,23 @@ export async function downloadPack(
       console.warn(`[ChartPackService] Expected ${localFilename} not found after extraction`);
       console.log(`[ChartPackService] New files: ${newFiles.join(', ')}`);
     }
-    
+
+    // Post-download integrity checks
+    const verifyInfo = await FileSystem.getInfoAsync(finalPath);
+    if (!verifyInfo.exists || (verifyInfo as any).size < 1024) {
+      throw new Error(`Downloaded pack appears corrupt or empty: ${finalPath}`);
+    }
+
+    // Validate MBTiles SQLite header for .mbtiles files
+    if (localFilename.endsWith('.mbtiles')) {
+      const { validateMBTilesSchema } = await import('../utils/integrity');
+      const validSchema = await validateMBTilesSchema(finalPath);
+      if (!validSchema) {
+        await FileSystem.deleteAsync(finalPath, { idempotent: true });
+        throw new Error(`Downloaded pack failed SQLite validation: ${finalPath}`);
+      }
+    }
+
     // Update status: completed
     onProgress?.({
       packId: pack.id,
@@ -616,27 +706,42 @@ export async function getInstalledPackIds(districtId: string): Promise<string[]>
       if (file === `${prefix}_charts.mbtiles`) {
         installedPackIds.push('charts');
       }
+      // Check for points file (soundings, lights, buoys, hazards)
+      else if (file === `points-${prefix}.mbtiles`) {
+        installedPackIds.push('points');
+      }
       // Check for per-scale chart files (e.g., d17_US4.mbtiles -> charts-US4)
       else if (file.startsWith(`${prefix}_US`)) {
         const band = file.replace(`${prefix}_`, '').replace('.mbtiles', '');
         installedPackIds.push(`charts-${band}`);
       }
-      // Check for basemap (any district basemap file)
-      else if (file.startsWith('basemap') && file.endsWith('.mbtiles')) {
-        // Check if this basemap belongs to the requested district
+      // Check for basemap (combined or per-zoom)
+      else if (
+        (file.startsWith('basemap') && file.endsWith('.mbtiles')) ||
+        (BASEMAP_FILENAMES[districtId] && file.startsWith(BASEMAP_FILENAMES[districtId].replace('.mbtiles', '')) && file.endsWith('.mbtiles'))
+      ) {
         const expectedBasemap = BASEMAP_FILENAMES[districtId];
         if (file === expectedBasemap || file === 'basemap.mbtiles') {
           installedPackIds.push('basemap');
+        } else {
+          const basemapBase = expectedBasemap?.replace('.mbtiles', '');
+          if (basemapBase && file.startsWith(`${basemapBase}_z`)) {
+            const zoomPart = file.replace(`${basemapBase}_`, '').replace('.mbtiles', '');
+            installedPackIds.push(`basemap-${zoomPart}`);
+          }
         }
       }
       // Check for GNIS (canonical filename, shared across all districts)
       else if (file === 'gnis_names.mbtiles') {
         installedPackIds.push('gnis');
       }
-      // Check for satellite files: {prefix}_satellite_z*.mbtiles -> satellite-z*
+      // Check for satellite files: {prefix}_satellite_z*.mbtiles -> satellite-z* OR {prefix}_satellite.mbtiles -> satellite
       else if (file.startsWith(`${prefix}_satellite_z`) && file.endsWith('.mbtiles')) {
         const zoomPart = file.replace(`${prefix}_satellite_`, '').replace('.mbtiles', '');
         installedPackIds.push(`satellite-${zoomPart}`);
+      }
+      else if (file === `${prefix}_satellite.mbtiles`) {
+        installedPackIds.push('satellite');
       }
       // Check for ocean files: {prefix}_ocean_z*.mbtiles -> ocean-z* OR {prefix}_ocean.mbtiles -> ocean
       else if (file.startsWith(`${prefix}_ocean_z`) && file.endsWith('.mbtiles')) {
@@ -742,7 +847,8 @@ export async function generateManifest(): Promise<void> {
     
     // Scan for chart packs from ALL known districts
     for (const [districtId, prefix] of Object.entries(DISTRICT_PREFIXES)) {
-      const bounds = DISTRICT_BOUNDS[districtId] || { south: -90, west: -180, north: 90, east: 180 };
+      const rawBounds = DISTRICT_BOUNDS[districtId] || { south: -90, west: -180, north: 90, east: 180 };
+      const bounds = mergeBounds(rawBounds);
 
       // Check for unified charts file first: {prefix}_charts.mbtiles
       const unifiedFile = `${prefix}_charts.mbtiles`;
@@ -792,7 +898,8 @@ export async function generateManifest(): Promise<void> {
 
     // Scan for points MBTiles from ALL known districts
     for (const [districtId, prefix] of Object.entries(DISTRICT_PREFIXES)) {
-      const bounds = DISTRICT_BOUNDS[districtId] || { south: -90, west: -180, north: 90, east: 180 };
+      const rawBounds = DISTRICT_BOUNDS[districtId] || { south: -90, west: -180, north: 90, east: 180 };
+      const bounds = mergeBounds(rawBounds);
       const pointsFile = `points-${prefix}.mbtiles`;
       if (files.includes(pointsFile)) {
         const filePath = `${mbtilesDir}${pointsFile}`;
@@ -875,8 +982,8 @@ export function getDistrictFilePatterns(districtId: string): {
       (f: string) => f === `${prefix}_charts.mbtiles`,
       // Per-scale chart packs: d17_US1.mbtiles, d07_US1.mbtiles, etc.
       (f: string) => f.startsWith(`${prefix}_US`) && f.endsWith('.mbtiles'),
-      // Basemap: d17_basemap.mbtiles, d07_basemap.mbtiles, etc.
-      (f: string) => expectedBasemap ? f === expectedBasemap : false,
+      // Basemap: d17_basemap.mbtiles or d17_basemap_z10.mbtiles, etc.
+      (f: string) => expectedBasemap ? (f === expectedBasemap || f.startsWith(expectedBasemap.replace('.mbtiles', '_z'))) : false,
       // Satellite: d17_satellite_z0-5.mbtiles, d07_satellite_z8.mbtiles, etc.
       (f: string) => f.startsWith(`${prefix}_satellite_`) && f.endsWith('.mbtiles'),
       // Ocean: d07_ocean.mbtiles or d07_ocean_z0-5.mbtiles
@@ -1057,10 +1164,17 @@ export async function fetchPoints(districtId: string): Promise<boolean> {
   const compressedPath = `${FileSystem.cacheDirectory}${zipFilename}`;
 
   try {
-    const bucketName = 'xnautical-8a296.firebasestorage.app';
+    // Skip if already downloaded as a regular pack
+    const existingCheck = await FileSystem.getInfoAsync(finalPath);
+    if (existingCheck.exists && (existingCheck as any).size > 1024) {
+      console.log(`[ChartPackService] points.mbtiles already exists for ${districtId}, skipping fetch`);
+      return true;
+    }
+
+    // STORAGE_BUCKET from config/firebase.ts — single source of truth (see config/regions.json)
     const storagePath = `${districtId}/charts/points.mbtiles.zip`;
     const encodedPath = encodeURIComponent(storagePath);
-    const url = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media`;
+    const url = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodedPath}?alt=media`;
 
     console.log(`[ChartPackService] Downloading points.mbtiles for ${districtId}...`);
     const { downloadAsync } = FileSystem;
@@ -1103,6 +1217,14 @@ export async function fetchPoints(districtId: string): Promise<boolean> {
     // Rename extracted file if needed (zip may contain 'points.mbtiles')
     const filesAfter = await FileSystem.readDirectoryAsync(mbtilesDir);
     const newFiles = filesAfter.filter(f => !filesBefore.has(f) && f.endsWith('.mbtiles'));
+
+    // ZIP path traversal guard — reject filenames with path separators or parent refs
+    for (const f of newFiles) {
+      if (f.includes('..') || f.includes('/') || f.includes('\\')) {
+        await FileSystem.deleteAsync(`${mbtilesDir}${f}`, { idempotent: true });
+        throw new Error(`Zip contained suspicious filename: ${f}`);
+      }
+    }
 
     const fileInfo = await FileSystem.getInfoAsync(finalPath);
     if (!fileInfo.exists && newFiles.length === 1) {

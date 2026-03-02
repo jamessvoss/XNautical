@@ -151,4 +151,7 @@ export function getAuth() {
   return nativeAuthInstance;
 }
 
+/** Firebase Storage bucket name — single source of truth for direct URL construction. */
+export const STORAGE_BUCKET = 'xnautical-8a296.firebasestorage.app';
+
 export { app, storage, firestore, jsAuth, nativeAuth };

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <base href="/trails/" />
+  <title>Trail Explorer — 49North Alaskan Adventures</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Header overlay -->
+  <div id="header">
+    <div class="logo">49North</div>
+    <div class="header-actions">
+      <button id="overview-btn" class="header-btn" title="Show all trails">All Trails</button>
+      <button id="tour-btn" class="header-btn tour">Take the Tour</button>
+    </div>
+  </div>
+
+  <!-- Map controls legend -->
+  <div id="controls-legend">
+    <div class="legend-row"><kbd>Scroll</kbd> Zoom</div>
+    <div class="legend-row"><kbd>Drag</kbd> Pan</div>
+    <div class="legend-row"><kbd>Right-drag</kbd> Rotate</div>
+    <div class="legend-row"><kbd>Ctrl+drag</kbd> Tilt</div>
+  </div>
+
+  <!-- 3D Map -->
+  <div id="map"></div>
+
+  <!-- Bottom gradient for card readability -->
+  <div class="bottom-gradient"></div>
+
+  <!-- Trail Cards (bottom bar) -->
+  <div id="trail-cards"></div>
+
+  <!-- Trail Info Panel (right side) -->
+  <div id="info-panel"></div>
+
+  <!-- Elevation Profile (bottom overlay when trail selected) -->
+  <canvas id="elevation-profile"></canvas>
+
+  <!-- Tour overlay text -->
+  <div id="tour-overlay"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

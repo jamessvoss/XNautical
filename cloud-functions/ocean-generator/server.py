@@ -12,20 +12,14 @@ onto the coastal band.
 
 Endpoints:
   POST /generate  - Generate ocean tiles for a region
+  POST /package   - Combine and zip existing per-zoom packs
   GET  /estimate  - Estimate tile counts and sizes for a region
   GET  /status    - Get generation status for a region
   GET  /          - Health check
 
-Request body for /generate:
-  {
-    "regionId": "17cgd",
-    "bufferNm": 25          // optional, default 25 nautical miles
-  }
-
 Generates per-zoom MBTiles files uploaded to Firebase Storage:
   {regionId}/ocean/ocean_z0-5.mbtiles
   {regionId}/ocean/ocean_z6.mbtiles
-  {regionId}/ocean/ocean_z7.mbtiles
   ...
   {regionId}/ocean/ocean_z14.mbtiles
 
@@ -33,563 +27,48 @@ Data Source: ESRI World Ocean Base (free with attribution)
 """
 
 import os
-import sys
-import time
 import math
-import json
-import sqlite3
+import time
+import shutil
 import logging
-import asyncio
 import tempfile
-import zipfile
 from pathlib import Path
-from datetime import datetime, timezone
 
 from flask import Flask, request, jsonify
 from google.cloud import storage, firestore
 
-import aiohttp
-import shapefile
-from shapely.geometry import shape, box as shapely_box
-from shapely.ops import unary_union
-from shapely.prepared import prep
+from config import (
+    BUCKET_NAME, REGION_BOUNDS, STANDARD_ZOOM_PACKS,
+    get_district_prefix,
+)
+from tile_utils import (
+    get_all_tiles_for_region, download_and_store_tiles, check_pack_exists,
+    zip_and_upload_pack, update_generator_status, combine_and_zip,
+    format_bytes, LAND_SHAPEFILE, COASTAL_BUFFER_MIN_ZOOM, TileDownloadError,
+)
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# Configuration
+# Ocean-specific configuration
 # ============================================================================
 
-BUCKET_NAME = os.environ.get('STORAGE_BUCKET', 'xnautical-8a296.firebasestorage.app')
-
-# ESRI World Ocean Base tile server
 TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}"
-
-# Download settings
 MAX_CONCURRENT = 30
-REQUEST_DELAY = 0.05  # 50ms delay to reduce load on ESRI CDN
-REQUEST_TIMEOUT = 30  # seconds per tile
-
-# Natural Earth land data (bundled in Docker image)
-LAND_SHAPEFILE = Path('/app/data/ne_10m_land/ne_10m_land.shp')
-
-# Default coastal buffer in nautical miles
+REQUEST_DELAY = 0.05        # 50ms delay to reduce load on ESRI CDN
 DEFAULT_BUFFER_NM = 25
-
-# Zoom level threshold: below this, download full bounding box
-# (tile counts are trivially small at low zoom levels)
-COASTAL_BUFFER_MIN_ZOOM = 6
-
-# App-side filename prefixes per district (must match app's DISTRICT_PREFIXES)
-DISTRICT_PREFIXES = {
-    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
-    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
-    '17cgd': 'd17', '17cgd-test': '17-test',
-}
-
-def get_district_prefix(region_id: str) -> str:
-    """Get the app-side filename prefix for a district."""
-    return DISTRICT_PREFIXES.get(region_id, region_id.replace('cgd', ''))
-
-# Region bounds definitions [west, south, east, north]
-REGION_BOUNDS = {
-    '01cgd': {'name': 'Northeast', 'bounds': [
-        {'west': -76, 'south': 39, 'east': -65, 'north': 48},
-    ]},
-    '05cgd': {'name': 'East', 'bounds': [
-        {'west': -82, 'south': 32, 'east': -72, 'north': 42},
-    ]},
-    '07cgd': {'name': 'Southeast', 'bounds': [
-        {'west': -85, 'south': 23, 'east': -63, 'north': 35},
-    ]},
-    '08cgd': {'name': 'Heartland', 'bounds': [
-        {'west': -100, 'south': 23, 'east': -80, 'north': 33},
-    ]},
-    '09cgd': {'name': 'Great Lakes', 'bounds': [
-        {'west': -94, 'south': 40, 'east': -75, 'north': 50},
-    ]},
-    '11cgd': {'name': 'Southwest', 'bounds': [
-        {'west': -126, 'south': 30, 'east': -114, 'north': 39},
-    ]},
-    '13cgd': {'name': 'Northwest', 'bounds': [
-        {'west': -130, 'south': 33, 'east': -119, 'north': 50},
-    ]},
-    '14cgd': {'name': 'Oceania', 'bounds': [
-        {'west': -162, 'south': 17, 'east': -153, 'north': 24},
-    ]},
-    '17cgd': {'name': 'Arctic', 'bounds': [
-        # Split across antimeridian
-        {'west': -180, 'south': 50, 'east': -129, 'north': 72},
-        {'west': 170, 'south': 50, 'east': 180, 'north': 65},
-    ]},
-    '17cgd-test': {'name': 'Arctic (Test)', 'bounds': [
-        {'west': -154, 'south': 57, 'east': -144, 'north': 63},
-    ]},
-}
-
-# Per-zoom pack definitions
-ZOOM_PACKS = {
-    'z0-5':  {'minZoom': 0,  'maxZoom': 5,  'filename': 'ocean_z0-5.mbtiles'},
-    'z6':    {'minZoom': 6,  'maxZoom': 6,  'filename': 'ocean_z6.mbtiles'},
-    'z7':    {'minZoom': 7,  'maxZoom': 7,  'filename': 'ocean_z7.mbtiles'},
-    'z8':    {'minZoom': 8,  'maxZoom': 8,  'filename': 'ocean_z8.mbtiles'},
-    'z9':    {'minZoom': 9,  'maxZoom': 9,  'filename': 'ocean_z9.mbtiles'},
-    'z10':   {'minZoom': 10, 'maxZoom': 10, 'filename': 'ocean_z10.mbtiles'},
-    'z11':   {'minZoom': 11, 'maxZoom': 11, 'filename': 'ocean_z11.mbtiles'},
-    'z12':   {'minZoom': 12, 'maxZoom': 12, 'filename': 'ocean_z12.mbtiles'},
-    'z13':   {'minZoom': 13, 'maxZoom': 13, 'filename': 'ocean_z13.mbtiles'},
-    'z14':   {'minZoom': 14, 'maxZoom': 14, 'filename': 'ocean_z14.mbtiles'},
-}
-
-
-# ============================================================================
-# Tile math
-# ============================================================================
-
-def lon_to_tile_x(lon, zoom):
-    return int((lon + 180.0) / 360.0 * (1 << zoom))
-
-def lat_to_tile_y(lat, zoom):
-    lat_rad = math.radians(lat)
-    n = 1 << zoom
-    return int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
-
-def tile_y_to_tms(y, zoom):
-    return (1 << zoom) - 1 - y
-
-def tile_to_bounds(z, x, y):
-    """Convert XYZ tile coordinates to (west, south, east, north)."""
-    n = 1 << z
-    west = x / n * 360.0 - 180.0
-    east = (x + 1) / n * 360.0 - 180.0
-    north = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
-    south = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 1) / n))))
-    return (west, south, east, north)
-
-def get_tiles_for_bounds(bounds, zoom):
-    """Get set of (z, x, y) XYZ tiles covering the bounds at a single zoom."""
-    tiles = set()
-    x_min = lon_to_tile_x(bounds['west'], zoom)
-    x_max = lon_to_tile_x(bounds['east'], zoom)
-    y_min = lat_to_tile_y(bounds['north'], zoom)
-    y_max = lat_to_tile_y(bounds['south'], zoom)
-
-    for x in range(x_min, x_max + 1):
-        for y in range(y_min, y_max + 1):
-            tiles.add((zoom, x, y))
-    return tiles
-
-
-def format_bytes(size):
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
-
-
-# ============================================================================
-# Coastal buffer filtering using Natural Earth land polygons
-# ============================================================================
-
-# Cache the loaded land geometry per region to avoid re-loading
-_land_cache = {}
-
-def load_ocean_zone_for_region(region_id, buffer_nm=DEFAULT_BUFFER_NM):
-    """
-    Load Natural Earth land polygons, clip to region bounds, and create
-    an ocean zone: all water areas + buffer_nm onto land.
-
-    Returns a prepared Shapely geometry representing the ocean zone
-    (water + buffer_nm nautical miles inland from coastline).
-    """
-    cache_key = f'{region_id}_ocean_{buffer_nm}'
-    if cache_key in _land_cache:
-        return _land_cache[cache_key]
-
-    region = REGION_BOUNDS.get(region_id)
-    if not region:
-        return None
-
-    logger.info(f'Loading Natural Earth land data for {region_id} (ocean zone)...')
-    start = time.time()
-
-    # Create region clip box (union of all bounds for this region)
-    # Expand by buffer to ensure we get land features near the edges
-    buffer_deg = buffer_nm / 60.0 + 1.0  # Extra degree margin
-    clip_boxes = []
-    for b in region['bounds']:
-        clip_boxes.append(shapely_box(
-            b['west'] - buffer_deg,
-            b['south'] - buffer_deg,
-            b['east'] + buffer_deg,
-            b['north'] + buffer_deg,
-        ))
-    clip_region = unary_union(clip_boxes)
-
-    # Load shapefile and collect intersecting polygons
-    reader = shapefile.Reader(str(LAND_SHAPEFILE))
-    land_geometries = []
-
-    for shape_rec in reader.iterShapeRecords():
-        try:
-            geom = shape(shape_rec.shape.__geo_interface__)
-            if not geom.is_valid:
-                geom = geom.buffer(0)
-            if clip_region.intersects(geom):
-                clipped = geom.intersection(clip_region)
-                if not clipped.is_empty:
-                    land_geometries.append(clipped)
-        except Exception as e:
-            continue
-
-    if not land_geometries:
-        # No land in region = entire region is water → return full clip region
-        logger.info(f'  No land features found for {region_id} — entire region is water')
-        prepared = prep(clip_region)
-        _land_cache[cache_key] = prepared
-        return prepared
-
-    logger.info(f'  Found {len(land_geometries)} land features for {region_id}')
-
-    # Union all land features
-    land = unary_union(land_geometries)
-
-    # Invert: water = clip region minus land
-    water = clip_region.difference(land)
-
-    # Buffer water areas onto land by the requested distance
-    # 1 nautical mile = 1/60 degree of latitude
-    buffer_deg = buffer_nm / 60.0
-    ocean_zone = water.buffer(buffer_deg)
-
-    # Prepare for fast intersection tests
-    prepared = prep(ocean_zone)
-
-    load_time = time.time() - start
-    logger.info(f'  Ocean zone prepared in {load_time:.1f}s '
-                f'(buffer: {buffer_nm}nm = {buffer_deg:.4f}° onto land)')
-
-    _land_cache[cache_key] = prepared
-    return prepared
-
-
-def get_coastal_tiles_for_bounds(bounds, zoom, prepared_zone):
-    """
-    Get tiles covering a bounding box, filtered to only those
-    that intersect the coastal zone.
-    """
-    tiles = set()
-    x_min = lon_to_tile_x(bounds['west'], zoom)
-    x_max = lon_to_tile_x(bounds['east'], zoom)
-    y_min = lat_to_tile_y(bounds['north'], zoom)
-    y_max = lat_to_tile_y(bounds['south'], zoom)
-
-    checked = 0
-    for x in range(x_min, x_max + 1):
-        for y in range(y_min, y_max + 1):
-            west, south, east, north = tile_to_bounds(zoom, x, y)
-            tile_box = shapely_box(west, south, east, north)
-            if prepared_zone.intersects(tile_box):
-                tiles.add((zoom, x, y))
-            checked += 1
-
-    return tiles, checked
-
-
-def get_all_tiles_for_region(region_id, min_zoom, max_zoom, buffer_nm=DEFAULT_BUFFER_NM):
-    """
-    Get all tiles needed for a region across zoom levels.
-
-    For zoom < COASTAL_BUFFER_MIN_ZOOM: full bounding box (trivial counts)
-    For zoom >= COASTAL_BUFFER_MIN_ZOOM: ocean zone filtering
-    """
-    region = REGION_BOUNDS.get(region_id)
-    if not region:
-        return set()
-
-    # Load ocean zone geometry (cached after first call)
-    coastal_zone = load_ocean_zone_for_region(region_id, buffer_nm)
-
-    all_tiles = set()
-
-    for z in range(min_zoom, max_zoom + 1):
-        if z < COASTAL_BUFFER_MIN_ZOOM or coastal_zone is None:
-            # Low zoom or no ocean zone data: full bounding box
-            for bounds in region['bounds']:
-                all_tiles.update(get_tiles_for_bounds(bounds, z))
-            zoom_count = sum(1 for t in all_tiles if t[0] == z)
-            logger.info(f'  z{z}: {zoom_count:,} tiles (full bbox)')
-        else:
-            # Higher zoom: filter by ocean zone
-            zoom_tiles = set()
-            total_checked = 0
-            for bounds in region['bounds']:
-                filtered, checked = get_coastal_tiles_for_bounds(bounds, z, coastal_zone)
-                zoom_tiles.update(filtered)
-                total_checked += checked
-            all_tiles.update(zoom_tiles)
-            pct = len(zoom_tiles) / total_checked * 100 if total_checked > 0 else 0
-            logger.info(f'  z{z}: {len(zoom_tiles):,} / {total_checked:,} tiles '
-                        f'({pct:.1f}% of bbox, ocean zone)')
-
-    return all_tiles
-
-
-# ============================================================================
-# MBTiles management
-# ============================================================================
-
-def init_mbtiles(db_path, min_zoom, max_zoom, name, region_bounds):
-    """Initialize an MBTiles database."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS metadata (
-            name TEXT PRIMARY KEY, value TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS tiles (
-            zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER,
-            tile_data BLOB,
-            PRIMARY KEY (zoom_level, tile_column, tile_row)
-        )
-    ''')
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS tiles_idx
-        ON tiles (zoom_level, tile_column, tile_row)
-    ''')
-
-    west = min(b['west'] for b in region_bounds)
-    south = min(b['south'] for b in region_bounds)
-    east = max(b['east'] for b in region_bounds)
-    north = max(b['north'] for b in region_bounds)
-    center_lon = (west + east) / 2
-    center_lat = (south + north) / 2
-
-    metadata = {
-        'name': name,
-        'type': 'baselayer',
-        'version': '1.0',
-        'description': 'ESRI Ocean Basemap tiles',
-        'format': 'png',
-        'bounds': f'{west},{south},{east},{north}',
-        'center': f'{center_lon},{center_lat},{min_zoom}',
-        'minzoom': str(min_zoom),
-        'maxzoom': str(max_zoom),
-        'attribution': 'Source: Esri, GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org, and other contributors',
-    }
-
-    for key, value in metadata.items():
-        cursor.execute('INSERT OR REPLACE INTO metadata (name, value) VALUES (?, ?)', (key, value))
-
-    conn.commit()
-    return conn
-
-
-# ============================================================================
-# Async tile downloader
-# ============================================================================
-
-async def download_tile(session, z, x, y, semaphore, stats):
-    """Download a single tile. Returns (z, x, y, tile_data) or None."""
-    async with semaphore:
-        url = TILE_URL.format(z=z, y=y, x=x)
-        retries = 2
-        for attempt in range(retries + 1):
-            try:
-                await asyncio.sleep(REQUEST_DELAY)
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        data = await response.read()
-                        stats['completed'] += 1
-                        stats['bytes'] += len(data)
-                        return (z, x, y, data)
-                    elif response.status == 429:
-                        # Rate limited - back off
-                        await asyncio.sleep(2 ** attempt)
-                        continue
-                    else:
-                        stats['failed'] += 1
-                        return None
-            except Exception:
-                if attempt < retries:
-                    await asyncio.sleep(1)
-                    continue
-                stats['failed'] += 1
-                return None
-
-
-async def download_tiles_async(tiles, stats):
-    """Download all tiles asynchronously. Returns list of (z, x, y, data)."""
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT, connect=10)
-    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT * 2)
-    headers = {
-        'User-Agent': 'XNautical/1.0 (Offline Nautical Charts)',
-        'Referer': 'https://xnautical.app',
-    }
-
-    results = []
-    async with aiohttp.ClientSession(timeout=timeout, connector=connector, headers=headers) as session:
-        batch_size = 5000
-        tile_list = list(tiles)
-
-        for i in range(0, len(tile_list), batch_size):
-            batch = tile_list[i:i + batch_size]
-            tasks = [download_tile(session, z, x, y, semaphore, stats) for z, x, y in batch]
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for r in batch_results:
-                if r and not isinstance(r, Exception):
-                    results.append(r)
-
-            logger.info(f'  Batch {i // batch_size + 1}: '
-                        f'{stats["completed"]}/{stats["total"]} downloaded, '
-                        f'{stats["failed"]} failed, '
-                        f'{format_bytes(stats["bytes"])}')
-
-    return results
-
-
-def download_and_store_tiles(tiles, db_path, min_zoom, max_zoom, name, region_bounds):
-    """Download tiles and store in MBTiles. Returns (file_size, stats)."""
-    conn = init_mbtiles(db_path, min_zoom, max_zoom, name, region_bounds)
-
-    stats = {'total': len(tiles), 'completed': 0, 'failed': 0, 'bytes': 0}
-
-    logger.info(f'Downloading {len(tiles):,} tiles for {name}...')
-
-    loop = asyncio.new_event_loop()
-    try:
-        results = loop.run_until_complete(download_tiles_async(tiles, stats))
-    finally:
-        loop.close()
-
-    # Store tiles in MBTiles (TMS y-coordinate)
-    logger.info(f'Storing {len(results):,} tiles in MBTiles...')
-    cursor = conn.cursor()
-
-    # Use a transaction for faster inserts
-    cursor.execute('BEGIN TRANSACTION')
-    for z, x, y, data in results:
-        tms_y = tile_y_to_tms(y, z)
-        cursor.execute(
-            'INSERT OR REPLACE INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?)',
-            (z, x, tms_y, data)
-        )
-    cursor.execute('COMMIT')
-
-    conn.close()
-
-    file_size = db_path.stat().st_size if db_path.exists() else 0
-    return file_size, stats
-
-
-# ============================================================================
-# Firestore helpers
-# ============================================================================
-
-def update_status(db, region_id, status):
-    """Write ocean generation status to Firestore."""
-    try:
-        doc_ref = db.collection('districts').document(region_id)
-        doc_ref.set({'oceanStatus': status}, merge=True)
-    except Exception as e:
-        logger.warning(f'Failed to update Firestore status: {e}')
-
-
-# ============================================================================
-# Combine + zip helper (used by both /generate and /package)
-# ============================================================================
-
-def _combine_and_zip(bucket, region_id, layer_name, region_bounds, db, work_dir, logger):
-    """
-    Download per-zoom MBTiles from storage one at a time, combine into
-    a single MBTiles, zip it, and upload. Keeps memory low by processing
-    one file at a time.
-    """
-    import shutil as _shutil
-
-    prefix = f'{region_id}/{layer_name}/'
-    blobs = list(bucket.list_blobs(prefix=prefix))
-    mbtiles_blobs = [b for b in blobs if b.name.endswith('.mbtiles')]
-
-    if not mbtiles_blobs:
-        logger.warning(f'  No {layer_name} MBTiles found at {prefix}, skipping zip')
-        return
-
-    # Use a separate temp dir so we can clean up independently
-    pkg_dir = tempfile.mkdtemp(prefix=f'pkg_{layer_name}_{region_id}_')
-
-    try:
-        combined_path = Path(pkg_dir) / f'{layer_name}.mbtiles'
-        init_mbtiles(combined_path, 0, 14, f'{region_id} {layer_name.title()}', region_bounds)
-
-        logger.info(f'Combining {len(mbtiles_blobs)} {layer_name} packs from storage...')
-        update_status(db, region_id, {
-            'state': 'packaging',
-            'message': f'Combining {len(mbtiles_blobs)} {layer_name} packs...',
-        })
-
-        for blob in sorted(mbtiles_blobs, key=lambda b: b.name):
-            local_path = Path(pkg_dir) / ('src_' + os.path.basename(blob.name))
-            logger.info(f'  Downloading {blob.name} ({blob.size / 1024 / 1024:.1f} MB)...')
-            blob.download_to_filename(str(local_path))
-
-            src_conn = sqlite3.connect(str(local_path))
-            combined_conn = sqlite3.connect(str(combined_path))
-            cursor = src_conn.execute('SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles')
-            while True:
-                batch = cursor.fetchmany(1000)
-                if not batch:
-                    break
-                combined_conn.executemany('INSERT OR REPLACE INTO tiles VALUES (?, ?, ?, ?)', batch)
-            combined_conn.commit()
-            combined_conn.close()
-            src_conn.close()
-
-            # Free memory immediately
-            local_path.unlink()
-
-        combined_size = combined_path.stat().st_size / 1024 / 1024
-        logger.info(f'  Combined: {combined_size:.1f} MB, zipping...')
-        update_status(db, region_id, {
-            'state': 'packaging',
-            'message': f'Zipping combined {layer_name} ({combined_size:.0f} MB)...',
-        })
-
-        district_prefix = get_district_prefix(region_id)
-        zip_internal_name = f'{district_prefix}_{layer_name}.mbtiles'
-        zip_path = Path(pkg_dir) / f'{layer_name}.mbtiles.zip'
-        with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.write(str(combined_path), zip_internal_name)
-
-        # Delete combined to free memory before upload
-        combined_path.unlink()
-
-        zip_size = zip_path.stat().st_size / 1024 / 1024
-        logger.info(f'  Compressed: {combined_size:.1f} MB → {zip_size:.1f} MB (internal: {zip_internal_name})')
-
-        zip_storage_path = f'{region_id}/{layer_name}/{zip_internal_name}.zip'
-        logger.info(f'  Uploading to {zip_storage_path}...')
-        update_status(db, region_id, {
-            'state': 'uploading',
-            'message': f'Uploading combined {layer_name} zip ({zip_size:.0f} MB)...',
-        })
-
-        blob = bucket.blob(zip_storage_path)
-        blob.upload_from_filename(str(zip_path), timeout=1200)
-        logger.info(f'  Combined {layer_name} zip uploaded.')
-
-    finally:
-        _shutil.rmtree(pkg_dir, ignore_errors=True)
+GEOMETRY_MODE = 'ocean'     # water + buffer onto land
+LAYER_NAME = 'ocean'
+STORAGE_FOLDER = 'ocean'
+STATUS_FIELD = 'oceanStatus'
+DATA_FIELD = 'oceanData'
+TILE_FORMAT = 'png'
+DESCRIPTION = 'ESRI Ocean Basemap tiles'
+ATTRIBUTION = 'Source: Esri, GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org, and other contributors'
+ZOOM_PACKS = STANDARD_ZOOM_PACKS
+AVG_TILE_KB = 25            # Average tile size estimate for /estimate
 
 
 # ============================================================================
@@ -604,33 +83,18 @@ def generate_ocean():
     Request body:
       {
         "regionId": "17cgd",
-        "bufferNm": 25    // optional, nautical miles from coastline
+        "bufferNm": 25    // optional, nautical miles onto land from coastline
       }
-
-    Generates per-zoom MBTiles files with coastal buffer filtering,
-    and uploads them to Firebase Storage.
     """
     data = request.get_json(silent=True) or {}
     region_id = data.get('regionId', '').strip()
     buffer_nm = float(data.get('bufferNm', DEFAULT_BUFFER_NM))
-
-    # Accept optional custom bounds for ad-hoc test districts
-    custom_bounds = data.get('bounds')
-    if custom_bounds and region_id not in REGION_BOUNDS:
-        bounds_list = [custom_bounds] if isinstance(custom_bounds, dict) else custom_bounds
-        REGION_BOUNDS[region_id] = {
-            'name': data.get('name', region_id),
-            'bounds': bounds_list,
-        }
-        if region_id not in DISTRICT_PREFIXES:
-            DISTRICT_PREFIXES[region_id] = region_id.replace('cgd', '')
-        logger.info(f'Registered custom region {region_id} with bounds {bounds_list}')
+    if math.isnan(buffer_nm) or math.isinf(buffer_nm) or not (1 <= buffer_nm <= 200):
+        return jsonify({'error': f'bufferNm must be between 1 and 200, got {buffer_nm}'}), 400
+    skip_existing = data.get('skipExisting', True)
 
     if region_id not in REGION_BOUNDS:
-        return jsonify({
-            'error': f'Invalid regionId: {region_id}',
-            'valid': sorted(REGION_BOUNDS.keys()),
-        }), 400
+        return jsonify({'error': f'Unknown regionId: {region_id}'}), 400
 
     region = REGION_BOUNDS[region_id]
     start_time = time.time()
@@ -638,70 +102,87 @@ def generate_ocean():
     logger.info(f'=== Starting ocean generation for {region_id} ({region["name"]}) ===')
     logger.info(f'  Ocean zone: water + {buffer_nm}nm buffer onto land')
 
-    # Initialize clients
     storage_client = storage.Client()
     bucket = storage_client.bucket(BUCKET_NAME)
     db = firestore.Client()
 
-    # Create temp working directory
     work_dir = tempfile.mkdtemp(prefix=f'ocean_{region_id}_')
 
     try:
-        update_status(db, region_id, {
+        update_generator_status(db, region_id, STATUS_FIELD, {
             'state': 'generating',
             'startedAt': firestore.SERVER_TIMESTAMP,
             'message': f'Generating ocean tiles for {region["name"]} '
                        f'(water + {buffer_nm}nm onto land)...',
         })
 
-        # Pre-load ocean zone (shared across all packs)
-        logger.info('Pre-loading ocean zone geometry...')
-        load_ocean_zone_for_region(region_id, buffer_nm)
-
         pack_results = {}
 
-        for pack_name, pack_config in ZOOM_PACKS.items():
-            min_zoom = pack_config['minZoom']
-            max_zoom = pack_config['maxZoom']
-            filename = pack_config['filename']
+        for pack_id, pack_cfg in ZOOM_PACKS.items():
+            min_zoom = pack_cfg['minZoom']
+            max_zoom = pack_cfg['maxZoom']
+            filename = f'{LAYER_NAME}_{pack_id}.mbtiles'
 
-            logger.info(f'--- Generating {pack_name} pack (z{min_zoom}-z{max_zoom}) ---')
+            logger.info(f'--- Generating {pack_id} pack (z{min_zoom}-z{max_zoom}) ---')
 
-            # Calculate tiles with coastal filtering
-            all_tiles = get_all_tiles_for_region(region_id, min_zoom, max_zoom, buffer_nm)
-            total_count = len(all_tiles)
-            logger.info(f'  Total tiles (after coastal filter): {total_count:,}')
-
-            if total_count == 0:
-                logger.warning(f'  No tiles to download for {pack_name}, skipping')
+            # Check if pack already exists in storage
+            storage_path = f'{region_id}/{STORAGE_FOLDER}/{filename}'
+            if skip_existing and check_pack_exists(bucket, storage_path):
+                logger.info(f'  {pack_id} already exists at {storage_path}, skipping')
                 continue
 
-            # Download and store
-            db_path = Path(work_dir) / filename
-            mbtiles_name = f'{region_id} Ocean ({pack_name})'
-
-            file_size, stats = download_and_store_tiles(
-                all_tiles, db_path, min_zoom, max_zoom, mbtiles_name, region['bounds']
+            # Calculate tiles with ocean zone filtering
+            all_tiles = get_all_tiles_for_region(
+                region['bounds'], min_zoom, max_zoom,
+                buffer_nm=buffer_nm, geometry_mode=GEOMETRY_MODE,
             )
+            total_count = len(all_tiles)
+            logger.info(f'  Total tiles (after ocean zone filter): {total_count:,}')
+
+            if total_count == 0:
+                logger.warning(f'  No tiles to download for {pack_id}, skipping')
+                continue
+
+            # Download and stream into MBTiles
+            db_path = Path(work_dir) / filename
+            mbtiles_name = f'{region_id} Ocean ({pack_id})'
+
+            try:
+                file_size, stats = download_and_store_tiles(
+                    all_tiles, db_path, min_zoom, max_zoom, mbtiles_name,
+                    region['bounds'],
+                    tile_url=TILE_URL,
+                    max_concurrent=MAX_CONCURRENT,
+                    request_delay=REQUEST_DELAY,
+                    description=DESCRIPTION,
+                    format_=TILE_FORMAT,
+                    attribution=ATTRIBUTION,
+                )
+            except TileDownloadError as e:
+                logger.error(f'  {pack_id} aborted: {e}')
+                continue
 
             size_mb = file_size / 1024 / 1024
-
-            logger.info(f'  {pack_name}: {stats["completed"]}/{stats["total"]} tiles, '
+            logger.info(f'  {pack_id}: {stats["completed"]}/{stats["total"]} tiles, '
                         f'{size_mb:.1f} MB, {stats["failed"]} failed')
 
-            # Upload to Firebase Storage
-            storage_path = f'{region_id}/ocean/{filename}'
+            # Upload raw MBTiles
             logger.info(f'  Uploading to {storage_path} ({size_mb:.1f} MB)...')
-
-            update_status(db, region_id, {
+            update_generator_status(db, region_id, STATUS_FIELD, {
                 'state': 'uploading',
-                'message': f'Uploading {pack_name} ocean pack ({size_mb:.0f} MB)...',
+                'message': f'Uploading {pack_id} ocean pack ({size_mb:.0f} MB)...',
             })
 
             blob = bucket.blob(storage_path)
             blob.upload_from_filename(str(db_path), timeout=600)
 
-            pack_results[pack_name] = {
+            # Zip and upload for app download
+            district_prefix = get_district_prefix(region_id)
+            zip_internal_name = f'{district_prefix}_{LAYER_NAME}_{pack_id}.mbtiles'
+            zip_and_upload_pack(bucket, region_id, STORAGE_FOLDER,
+                                db_path, zip_internal_name, work_dir)
+
+            pack_results[pack_id] = {
                 'filename': filename,
                 'storagePath': storage_path,
                 'sizeMB': round(size_mb, 1),
@@ -712,63 +193,65 @@ def generate_ocean():
                 'maxZoom': max_zoom,
             }
 
-            # Delete local file to free disk
+            # Free disk
             db_path.unlink(missing_ok=True)
+            logger.info(f'  {pack_id} complete and uploaded.')
 
-            logger.info(f'  {pack_name} complete and uploaded.')
+        # Combine per-zoom packs into single zip (best-effort)
+        try:
+            district_prefix = get_district_prefix(region_id)
+            combine_and_zip(
+                bucket, region_id, LAYER_NAME, STORAGE_FOLDER,
+                region['bounds'], db, STATUS_FIELD,
+                get_zip_internal_name=lambda rid: f'{get_district_prefix(rid)}_{LAYER_NAME}.mbtiles',
+            )
+        except Exception as e:
+            logger.warning(f'  Combined zip failed (per-zoom zips still available): {e}')
 
-        # Package: combine per-zoom packs from storage into single zip
-        # Done separately to keep memory low (downloads one file at a time)
-        _combine_and_zip(bucket, region_id, 'ocean', region['bounds'], db, work_dir, logger)
-
-        # Update Firestore with results
+        # Update Firestore with final results
         total_duration = time.time() - start_time
-
         doc_ref = db.collection('districts').document(region_id)
         doc_ref.set({
-            'oceanData': {
+            DATA_FIELD: {
                 'lastGenerated': firestore.SERVER_TIMESTAMP,
                 'region': region['name'],
                 'bufferNm': buffer_nm,
                 'packs': pack_results,
                 'generationDurationSeconds': round(total_duration, 1),
             },
-            'oceanStatus': {
+            STATUS_FIELD: {
                 'state': 'complete',
                 'message': f'Ocean generation complete for {region["name"]}',
                 'completedAt': firestore.SERVER_TIMESTAMP,
             },
         }, merge=True)
 
-        summary = {
+        logger.info(f'=== Ocean generation complete for {region_id}: '
+                     f'{total_duration:.1f}s ===')
+
+        return jsonify({
             'status': 'success',
             'regionId': region_id,
             'regionName': region['name'],
             'bufferNm': buffer_nm,
             'packs': pack_results,
             'durationSeconds': round(total_duration, 1),
-        }
-
-        logger.info(f'=== Ocean generation complete for {region_id}: '
-                     f'{total_duration:.1f}s ===')
-
-        return jsonify(summary), 200
+        }), 200
 
     except Exception as e:
         logger.error(f'Error generating ocean for {region_id}: {e}', exc_info=True)
-        update_status(db, region_id, {
+        update_generator_status(db, region_id, STATUS_FIELD, {
             'state': 'error',
             'message': str(e)[:500],
             'failedAt': firestore.SERVER_TIMESTAMP,
         })
         return jsonify({
             'status': 'error',
-            'error': str(e),
+            'error': 'Internal generation error. Check logs for details.',
             'regionId': region_id,
         }), 500
 
     finally:
-        import shutil
         if os.path.exists(work_dir):
             logger.info(f'Cleaning up: {work_dir}')
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -803,7 +286,11 @@ def package_ocean():
     db = firestore.Client()
 
     try:
-        _combine_and_zip(bucket, region_id, 'ocean', region['bounds'], db, None, logger)
+        combine_and_zip(
+            bucket, region_id, LAYER_NAME, STORAGE_FOLDER,
+            region['bounds'], db, STATUS_FIELD,
+            get_zip_internal_name=lambda rid: f'{get_district_prefix(rid)}_{LAYER_NAME}.mbtiles',
+        )
 
         duration = time.time() - start_time
         logger.info(f'=== Ocean packaging complete for {region_id}: {duration:.1f}s ===')
@@ -826,7 +313,7 @@ def package_ocean():
 @app.route('/estimate', methods=['GET'])
 def estimate():
     """
-    Estimate tile counts and sizes for a region (with coastal filtering).
+    Estimate tile counts and sizes for a region (with ocean zone filtering).
 
     Query params: ?regionId=17cgd&bufferNm=25
     """
@@ -839,32 +326,34 @@ def estimate():
             'valid': sorted(REGION_BOUNDS.keys()),
         }), 400
 
+    region = REGION_BOUNDS[region_id]
     estimates = {}
-    for pack_name, pack_config in ZOOM_PACKS.items():
+
+    for pack_id, pack_cfg in ZOOM_PACKS.items():
         tiles = get_all_tiles_for_region(
-            region_id, pack_config['minZoom'], pack_config['maxZoom'], buffer_nm
+            region['bounds'], pack_cfg['minZoom'], pack_cfg['maxZoom'],
+            buffer_nm=buffer_nm, geometry_mode=GEOMETRY_MODE,
         )
         tile_count = len(tiles)
-        est_size_mb = tile_count * 25 / 1024  # ~25 KB avg per tile
+        est_size_mb = tile_count * AVG_TILE_KB / 1024
 
-        # Per-zoom breakdown
         zoom_breakdown = {}
-        for z in range(pack_config['minZoom'], pack_config['maxZoom'] + 1):
+        for z in range(pack_cfg['minZoom'], pack_cfg['maxZoom'] + 1):
             zc = sum(1 for t in tiles if t[0] == z)
             if zc > 0:
                 zoom_breakdown[f'z{z}'] = zc
 
-        estimates[pack_name] = {
+        estimates[pack_id] = {
             'tileCount': tile_count,
             'estimatedSizeMB': round(est_size_mb, 1),
-            'minZoom': pack_config['minZoom'],
-            'maxZoom': pack_config['maxZoom'],
+            'minZoom': pack_cfg['minZoom'],
+            'maxZoom': pack_cfg['maxZoom'],
             'zoomBreakdown': zoom_breakdown,
         }
 
     return jsonify({
         'regionId': region_id,
-        'regionName': REGION_BOUNDS[region_id]['name'],
+        'regionName': region['name'],
         'bufferNm': buffer_nm,
         'estimates': estimates,
     })
@@ -892,15 +381,15 @@ def get_status():
         if not doc.exists:
             return jsonify({
                 'regionId': region_id,
-                'oceanStatus': None,
-                'oceanData': None,
+                STATUS_FIELD: None,
+                DATA_FIELD: None,
             })
 
         data = doc.to_dict()
         return jsonify({
             'regionId': region_id,
-            'oceanStatus': data.get('oceanStatus'),
-            'oceanData': data.get('oceanData'),
+            STATUS_FIELD: data.get(STATUS_FIELD),
+            DATA_FIELD: data.get(DATA_FIELD),
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500

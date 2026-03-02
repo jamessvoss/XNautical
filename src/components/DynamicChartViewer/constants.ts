@@ -93,8 +93,9 @@ export const NAV_SYMBOLS: Record<string, any> = {
   'current-60': require('../../../assets/symbols/png/current-60.png'),
   'current-80': require('../../../assets/symbols/png/current-80.png'),
   'current-100': require('../../../assets/symbols/png/current-100.png'),
-  // Shared halo for tide and current icons
-  'arrow-halo': require('../../../assets/symbols/png/arrow-halo.png'),
+  // Halos for tide and current icons (white circle for visibility)
+  'tide-halo': require('../../../assets/symbols/png/tide-halo.png'),
+  'current-halo': require('../../../assets/symbols/png/current-halo.png'),
   // Live Buoys
   'livebuoy': require('../../../assets/symbols/Custom Symbols/LiveBuoy.png'),
   'livebuoy-halo': require('../../../assets/symbols/Custom Symbols/LiveBuoy-halo.png'),

@@ -1,9 +1,10 @@
 /**
  * district-config.js
- * 
+ *
  * Single source of truth for USCG Coast Guard District metadata.
- * Used by all data discovery and processing scripts to ensure consistency.
- * 
+ * Reads from config/regions.json (the master config) and provides
+ * helper functions for all data discovery and processing scripts.
+ *
  * This module provides:
  *   - Canonical district definitions (name, code, bounds)
  *   - Helper function to ensure districts exist in Firestore with complete metadata
@@ -11,71 +12,33 @@
  */
 
 const admin = require('firebase-admin');
+const fs = require('fs');
+const path = require('path');
 
 // ============================================================================
-// District Configuration (Single Source of Truth)
+// Load Master Config
 // ============================================================================
 
-const DISTRICTS = {
-  '01cgd': {
-    name: 'Northeast',
-    code: '01 CGD',
-    bounds: { west: -76, south: 39, east: -65, north: 48 },
-    description: 'New England and Northern Mid-Atlantic',
-  },
-  '05cgd': {
-    name: 'East',
-    code: '05 CGD',
-    bounds: { west: -82, south: 32, east: -72, north: 42 },
-    description: 'Mid-Atlantic',
-  },
-  '07cgd': {
-    name: 'Southeast',
-    code: '07 CGD',
-    bounds: { west: -85, south: 23, east: -63, north: 35 },
-    description: 'Florida, Georgia, South Carolina, Puerto Rico, USVI',
-  },
-  '08cgd': {
-    name: 'Heartland',
-    code: '08 CGD',
-    bounds: { west: -100, south: 23, east: -80, north: 33 },
-    description: 'Gulf Coast',
-  },
-  '09cgd': {
-    name: 'Great Lakes',
-    code: '09 CGD',
-    bounds: { west: -94, south: 40, east: -75, north: 50 },
-    description: 'Great Lakes region',
-  },
-  '11cgd': {
-    name: 'Southwest',
-    code: '11 CGD',
-    bounds: { west: -126, south: 30, east: -114, north: 39 },
-    description: 'Southern California',
-  },
-  '13cgd': {
-    name: 'Northwest',
-    code: '13 CGD',
-    bounds: { west: -130, south: 33, east: -119, north: 50 },
-    description: 'Pacific Northwest',
-  },
-  '14cgd': {
-    name: 'Oceania',
-    code: '14 CGD',
-    bounds: { west: -162, south: 17, east: -153, north: 24 },
-    description: 'Hawaii and Pacific Islands',
-  },
-  '17cgd': {
-    name: 'Arctic',
-    code: '17 CGD',
-    // Alaska spans the dateline, so it has multiple bounds regions
-    // Using primary bounds here - scripts can handle multiple bounds if needed
-    bounds: { west: -180, south: 50, east: -129, north: 72 },
-    // Full bounds including dateline crossing:
-    // [{ west: -180, south: 50, east: -129, north: 72 }, { west: 170, south: 50, east: 180, north: 65 }]
-    description: 'Alaska and Arctic',
-  },
-};
+const MASTER_CONFIG_PATH = path.join(__dirname, '..', '..', 'config', 'regions.json');
+
+let masterConfig;
+try {
+  masterConfig = JSON.parse(fs.readFileSync(MASTER_CONFIG_PATH, 'utf-8'));
+} catch (error) {
+  console.error(`Failed to load master config from ${MASTER_CONFIG_PATH}: ${error.message}`);
+  process.exit(1);
+}
+
+// Build DISTRICTS from master config (same shape as before for backward compat)
+const DISTRICTS = {};
+for (const [id, region] of Object.entries(masterConfig.regions)) {
+  DISTRICTS[id] = {
+    name: region.name,
+    code: region.code,
+    bounds: region.bounds,
+    description: region.description,
+  };
+}
 
 // ============================================================================
 // Helper Functions
@@ -84,7 +47,7 @@ const DISTRICTS = {
 /**
  * Ensure a district document exists in Firestore with complete metadata.
  * Creates or updates the district with name, code, and bounds.
- * 
+ *
  * @param {admin.firestore.Firestore} db - Firestore instance
  * @param {string} districtId - District ID (e.g., '01cgd')
  * @param {Object} options - Options
@@ -94,7 +57,7 @@ const DISTRICTS = {
  */
 async function ensureDistrictExists(db, districtId, options = {}) {
   const { silent = false } = options;
-  
+
   const config = DISTRICTS[districtId];
   if (!config) {
     throw new Error(`Unknown district ID: ${districtId}. Valid districts: ${Object.keys(DISTRICTS).join(', ')}`);
@@ -134,7 +97,7 @@ async function ensureDistrictExists(db, districtId, options = {}) {
 
 /**
  * Get district configuration by ID.
- * 
+ *
  * @param {string} districtId - District ID (e.g., '01cgd')
  * @returns {Object|null} District config or null if not found
  */
@@ -143,8 +106,18 @@ function getDistrictConfig(districtId) {
 }
 
 /**
+ * Get full region config (all fields) by ID.
+ *
+ * @param {string} regionId - Region ID (e.g., '01cgd', '17cgd-Juneau')
+ * @returns {Object|null} Full region config or null if not found
+ */
+function getRegionConfig(regionId) {
+  return masterConfig.regions[regionId] || null;
+}
+
+/**
  * Get all district IDs.
- * 
+ *
  * @returns {string[]} Array of district IDs
  */
 function getAllDistrictIds() {
@@ -153,7 +126,7 @@ function getAllDistrictIds() {
 
 /**
  * Check if coordinates fall within a district's bounds.
- * 
+ *
  * @param {number} lat - Latitude
  * @param {number} lng - Longitude
  * @param {string} districtId - District ID to check
@@ -164,29 +137,32 @@ function isWithinDistrict(lat, lng, districtId) {
   if (!config) return false;
 
   const { bounds } = config;
-  
-  // Handle longitude wrapping (dateline crossing)
-  if (bounds.west > bounds.east) {
-    // District crosses dateline (e.g., Alaska)
-    return lat >= bounds.south && lat <= bounds.north &&
-           (lng >= bounds.west || lng <= bounds.east);
-  } else {
+
+  // Normalize to array (some regions like 17cgd use array of bounds for antimeridian crossing)
+  const boundsList = Array.isArray(bounds) ? bounds : [bounds];
+
+  return boundsList.some(b => {
+    if (b.west > b.east) {
+      // District crosses dateline (e.g., Alaska)
+      return lat >= b.south && lat <= b.north &&
+             (lng >= b.west || lng <= b.east);
+    }
     // Normal bounds
-    return lat >= bounds.south && lat <= bounds.north &&
-           lng >= bounds.west && lng <= bounds.east;
-  }
+    return lat >= b.south && lat <= b.north &&
+           lng >= b.west && lng <= b.east;
+  });
 }
 
 /**
  * Find which district(s) contain the given coordinates.
  * Some coordinates may fall in multiple overlapping districts.
- * 
+ *
  * @param {number} lat - Latitude
  * @param {number} lng - Longitude
  * @returns {string[]} Array of district IDs containing the coordinates
  */
 function findDistrictsForCoordinates(lat, lng) {
-  return Object.keys(DISTRICTS).filter(districtId => 
+  return Object.keys(DISTRICTS).filter(districtId =>
     isWithinDistrict(lat, lng, districtId)
   );
 }
@@ -199,6 +175,7 @@ module.exports = {
   DISTRICTS,
   ensureDistrictExists,
   getDistrictConfig,
+  getRegionConfig,
   getAllDistrictIds,
   isWithinDistrict,
   findDistrictsForCoordinates,

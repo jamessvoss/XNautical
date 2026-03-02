@@ -67,7 +67,10 @@ Charts are organized by NOAA scale prefix: US1 (overview) through US6 (berthing)
 {district}cgd/charts/{US1-US6}.mbtiles                 — Final merged scale packs
 {district}cgd/charts/manifest.json                     — Pack metadata for the app
 {district}cgd/charts/conversion-report.json            — Detailed conversion report
+{district}/marine-zones/{zoneId}.geojson               — Marine zone geometry (GeoJSON)
 ```
+
+Sub-region storage paths use the Firestore ID as prefix (e.g., `17cgd-Juneau/charts/...`).
 
 ### GCP Configuration
 
@@ -77,6 +80,52 @@ Charts are organized by NOAA scale prefix: US1 (overview) through US6 (berthing)
 - **Service image**: `gcr.io/xnautical-8a296/enc-converter:latest`
 - **Merge job name**: `enc-converter-merge`
 - Valid districts: 01, 05, 07, 08, 09, 11, 13, 14, 17
+- Alaska sub-regions: 17cgd-Juneau, 17cgd-Anchorage, 17cgd-Kodiak, 17cgd-DutchHarbor, 17cgd-Nome, 17cgd-Barrow
+- Special sub-regions: 07cgd-wflorida (Tampa Bay area)
+- Total regions: 17 (9 standard CGDs + 6 Alaska sub-regions + 1 Florida sub-region + 1 test)
+
+### Shared Generator Modules
+
+All four imagery/tile generators (basemap, ocean, terrain, satellite) share common code via `generators-base/`:
+
+```
+cloud-functions/generators-base/
+├── config.py       # Region bounds, zoom packs, district prefixes (single source of truth)
+└── tile_utils.py   # Tile math, coastal filtering, download, MBTiles packaging
+```
+
+The `build-generator.sh` script copies these shared modules into each generator's directory before Docker build, then cleans up after. It includes trap-based cleanup on interrupt.
+
+```bash
+# Build and deploy a specific generator
+./build-generator.sh satellite-generator
+./build-generator.sh terrain-generator
+./build-generator.sh ocean-generator
+./build-generator.sh basemap-orchestrator
+```
+
+Master region config lives at `config/regions.json` — this is the canonical source for all region definitions including bounds, prefixes, GNIS filenames, and display metadata.
+
+### Batch Provisioning
+
+`create_alaska_regions.py` provisions multiple regions in parallel. Each region gets its own thread that spawns `create_test_district.py`, which fires off independent Cloud Run instances. Region definitions are loaded from `config/regions.json`.
+
+```bash
+python3 create_alaska_regions.py                           # Alaska sub-regions only (6 in parallel)
+python3 create_alaska_regions.py --all                     # ALL 15+ regions in parallel
+python3 create_alaska_regions.py --districts 01cgd 07cgd   # Specific districts
+python3 create_alaska_regions.py --region 17cgd-Juneau     # Single region
+python3 create_alaska_regions.py --dry-run                 # Discovery only
+python3 create_alaska_regions.py --skip-provisioning       # Re-run discovery + metadata only
+```
+
+Key reliability features in `create_test_district.py`:
+- **Retry with exponential backoff**: `call_service()` retries transient HTTP errors (429, 500, 502, 503, 504)
+- **Auth token refresh**: Thread-safe token caching with 45-minute auto-refresh
+- **Parallel execution**: Setup tasks (chart copy, GNIS, Firestore doc) run in parallel; generators (ENC, imagery, predictions) run in parallel
+- **NOAA rate stagger**: `--prediction-delay` flag staggers prediction requests across districts
+- **Resume capability**: `--resume` flag skips already-completed phases; state tracked in `.pipeline-state-*.json`
+- **Exit code propagation**: Non-zero exit on any phase failure
 
 ### Memory and Large Dataset Constraints
 

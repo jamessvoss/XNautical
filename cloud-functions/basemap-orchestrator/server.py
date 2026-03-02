@@ -68,6 +68,9 @@ TIMEOUTS = {
 VALID_REGIONS = {
     '01cgd', '05cgd', '07cgd', '08cgd', '09cgd',
     '11cgd', '13cgd', '14cgd', '17cgd',
+    '17cgd-Juneau', '17cgd-Anchorage', '17cgd-Kodiak',
+    '17cgd-DutchHarbor', '17cgd-Nome', '17cgd-Barrow',
+    '17cgd-test', '07cgd-wflorida',
 }
 
 # Pipeline steps in order
@@ -101,7 +104,7 @@ def call_service(service_name, endpoint, body, timeout=None):
     timeout = timeout or TIMEOUTS.get(service_name, 600)
 
     logger.info(f'  POST {full_url}')
-    logger.info(f'  Body: {json.dumps(body)}')
+    logger.info(f'  Body: regionId={body.get("regionId")}, keys={sorted(body.keys())}')
 
     start = time.time()
     try:
@@ -211,13 +214,8 @@ def pipeline():
     if not region_id:
         return jsonify({'error': 'regionId is required'}), 400
 
-    # Dynamically register unknown regions when custom bounds are provided
-    if custom_bounds and region_id not in VALID_REGIONS:
-        VALID_REGIONS.add(region_id)
-        logger.info(f'Registered custom region {region_id} with bounds {custom_bounds}')
-
     if region_id not in VALID_REGIONS:
-        return jsonify({'error': f'Invalid regionId. Valid: {sorted(VALID_REGIONS)}'}), 400
+        return jsonify({'error': f'Unknown regionId: {region_id}', 'valid_regions': sorted(VALID_REGIONS)}), 400
 
     invalid_steps = [s for s in steps if s not in PIPELINE_STEPS]
     if invalid_steps:
@@ -265,7 +263,9 @@ def pipeline():
     # --- Step 3: Tile Generators (parallel) ---
     if 'tile-generators' in steps:
         logger.info(f'--- Step 3: Tile Generators (parallel) for {region_id} ---')
+        skip_existing = data.get('skipExisting', True)
         gen_body = {'regionId': region_id}
+        gen_body['skipExisting'] = skip_existing
         if buffer_nm is not None:
             gen_body['bufferNm'] = buffer_nm
         if custom_bounds:
@@ -378,11 +378,8 @@ def generate_all():
     if not region_id:
         return jsonify({'error': 'regionId is required'}), 400
 
-    if custom_bounds and region_id not in VALID_REGIONS:
-        VALID_REGIONS.add(region_id)
-
     if region_id not in VALID_REGIONS:
-        return jsonify({'error': f'Invalid regionId. Valid: {sorted(VALID_REGIONS)}'}), 400
+        return jsonify({'error': f'Unknown regionId: {region_id}', 'valid_regions': sorted(VALID_REGIONS)}), 400
 
     invalid = [t for t in types if t not in TILE_GENERATOR_TYPES]
     if invalid:
@@ -449,11 +446,8 @@ def generate_single():
     if not region_id:
         return jsonify({'error': 'regionId is required'}), 400
 
-    if custom_bounds and region_id not in VALID_REGIONS:
-        VALID_REGIONS.add(region_id)
-
     if region_id not in VALID_REGIONS:
-        return jsonify({'error': f'Invalid regionId. Valid: {sorted(VALID_REGIONS)}'}), 400
+        return jsonify({'error': f'Unknown regionId: {region_id}', 'valid_regions': sorted(VALID_REGIONS)}), 400
     if not gen_type:
         return jsonify({'error': f'type is required. Valid: {sorted(TILE_GENERATOR_TYPES)}'}), 400
     if gen_type not in TILE_GENERATOR_TYPES:
@@ -492,9 +486,8 @@ def status():
 
     if not region_id:
         return jsonify({'error': 'regionId query parameter is required'}), 400
-    # Allow querying status for any region (custom test districts included)
     if region_id not in VALID_REGIONS:
-        VALID_REGIONS.add(region_id)
+        return jsonify({'error': f'Unknown regionId: {region_id}', 'valid_regions': sorted(VALID_REGIONS)}), 400
 
     if gen_type:
         if gen_type not in TILE_GENERATOR_TYPES:

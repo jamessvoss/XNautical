@@ -39,6 +39,7 @@ Contains:
 
 from flask import Flask, request, jsonify
 from google.cloud import firestore, storage
+import json
 import os
 import logging
 from datetime import datetime, timezone
@@ -48,27 +49,27 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Firebase configuration
-BUCKET_NAME = os.environ.get('BUCKET_NAME', 'xnautical-8a296.firebasestorage.app')
+BUCKET_NAME = os.environ.get('STORAGE_BUCKET', 'xnautical-8a296.firebasestorage.app')
 PROJECT_ID = os.environ.get('GCP_PROJECT', 'xnautical-8a296')
 
-# Must match app's DISTRICT_PREFIXES
-DISTRICT_PREFIXES = {
-    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
-    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
-    '17cgd': 'd17', '17cgd-test': '17-test',
-}
-
-# Must match app's BASEMAP_FILENAMES
-BASEMAP_FILENAMES = {
-    '01cgd': 'd01_basemap', '05cgd': 'd05_basemap', '07cgd': 'd07_basemap',
-    '08cgd': 'd08_basemap', '09cgd': 'd09_basemap', '11cgd': 'd11_basemap',
-    '13cgd': 'd13_basemap', '14cgd': 'd14_basemap', '17cgd': 'd17_basemap',
-    '17cgd-test': '17-test_basemap',
-}
+# Load region config from bundled regions.json
+_REGIONS_PATH = os.path.join(os.path.dirname(__file__), 'regions.json')
+if os.path.exists(_REGIONS_PATH):
+    with open(_REGIONS_PATH) as _f:
+        _master_config = json.load(_f)
+    DISTRICT_PREFIXES = {k: v['prefix'] for k, v in _master_config['regions'].items()}
+    BASEMAP_FILENAMES = {k: f"{v['prefix']}_basemap" for k, v in _master_config['regions'].items()}
+    REGION_GNIS_FILES = {k: v.get('gnisFile', 'gnis_names.mbtiles') for k, v in _master_config['regions'].items()}
+else:
+    # Fallback - should not happen in production (regions.json must be in Docker image)
+    logger.error('regions.json not found, using empty config')
+    DISTRICT_PREFIXES = {}
+    BASEMAP_FILENAMES = {}
+    REGION_GNIS_FILES = {}
 
 
 def get_district_prefix(district_id: str) -> str:
-    return DISTRICT_PREFIXES.get(district_id, district_id.replace('cgd', ''))
+    return DISTRICT_PREFIXES.get(district_id, district_id.replace('cgd', '').lower())
 
 
 def get_file_size(bucket, storage_path):
@@ -80,6 +81,17 @@ def get_file_size(bucket, storage_path):
     except Exception as e:
         logger.warning(f'Could not get size for {storage_path}: {e}')
         return 0
+
+
+def get_blob_md5(bucket, storage_path):
+    """Get the base64-encoded MD5 hash of a file in Firebase Storage"""
+    try:
+        blob = bucket.get_blob(storage_path)
+        if blob and blob.md5_hash:
+            return blob.md5_hash  # base64-encoded MD5
+    except Exception as e:
+        logger.warning(f'Could not get MD5 for {storage_path}: {e}')
+    return None
 
 
 def get_buoy_count(db, district_id):
@@ -153,11 +165,16 @@ def generate_metadata():
             return jsonify({'error': f'District {district_id} not found'}), 404
         
         district_data = district_snap.to_dict()
-        
+
+        # Read chart-level metadata from Firestore (written by compose_job.py)
+        chart_data = district_data.get('chartData', {})
+        chart_completeness = chart_data.get('completeness', 1.0)
+        chart_md5 = chart_data.get('md5Checksum', None)
+
         # Prepare metadata
         download_packs = []
         total_size = 0
-        
+
         # Unified chart pack (single file with all scales, deduplicated)
         prefix = get_district_prefix(district_id)
         charts_path = f'{district_id}/charts/{prefix}_charts.mbtiles.zip'
@@ -172,17 +189,40 @@ def generate_metadata():
                 'sizeBytes': charts_size,
                 'sizeMB': round(charts_size / 1024 / 1024, 1),
                 'required': True,
+                'checksum': chart_md5,
+                'checksumAlgorithm': 'md5' if chart_md5 else None,
             })
             total_size += charts_size
-        
+
+        # Points pack (soundings, nav aids, hazards — separate from charts)
+        points_path = f'{district_id}/charts/points.mbtiles.zip'
+        points_size = get_file_size(bucket, points_path)
+        if points_size > 0:
+            points_md5 = get_blob_md5(bucket, points_path)
+            download_packs.append({
+                'id': 'points',
+                'type': 'charts',
+                'name': 'Navigation Points',
+                'description': 'Soundings, lights, buoys, and hazards',
+                'storagePath': points_path,
+                'sizeBytes': points_size,
+                'sizeMB': round(points_size / 1024 / 1024, 1),
+                'required': True,
+                'checksum': points_md5,
+                'checksumAlgorithm': 'md5' if points_md5 else None,
+            })
+            total_size += points_size
+
         # GNIS place names — check per-district first, then fall back to global
-        gnis_path = f'{district_id}/gnis/gnis_names.mbtiles.zip'
+        gnis_filename = REGION_GNIS_FILES.get(district_id, 'gnis_names.mbtiles')
+        gnis_path = f'{district_id}/gnis/{gnis_filename}.zip'
         gnis_size = get_file_size(bucket, gnis_path)
         if gnis_size == 0:
             # Fall back to a global/shared GNIS file
             gnis_path = 'global/gnis/gnis_names.mbtiles.zip'
             gnis_size = get_file_size(bucket, gnis_path)
         if gnis_size > 0:
+            gnis_md5 = get_blob_md5(bucket, gnis_path)
             download_packs.append({
                 'id': 'gnis',
                 'type': 'gnis',
@@ -192,14 +232,31 @@ def generate_metadata():
                 'sizeBytes': gnis_size,
                 'sizeMB': round(gnis_size / 1024 / 1024, 1),
                 'required': True,
+                'checksum': gnis_md5,
+                'checksumAlgorithm': 'md5' if gnis_md5 else None,
             })
             total_size += gnis_size
         
+        # Per-zoom levels used by basemap, ocean, terrain generators
+        imagery_zoom_levels = [
+            ('z0-5', 'Overview', 'Zoom levels 0-5'),
+            ('z6', 'Zoom 6', 'Zoom level 6'),
+            ('z7', 'Zoom 7', 'Zoom level 7'),
+            ('z8', 'Region', 'Zoom level 8'),
+            ('z9', 'Area', 'Zoom level 9'),
+            ('z10', 'City', 'Zoom level 10'),
+            ('z11', 'Town', 'Zoom level 11'),
+            ('z12', 'Neighborhood', 'Zoom level 12'),
+            ('z13', 'Street', 'Zoom level 13'),
+            ('z14', 'Detail', 'Zoom level 14'),
+        ]
+
         # Basemap
         basemap_name = BASEMAP_FILENAMES.get(district_id, 'basemap')
         basemap_path = f'{district_id}/basemaps/{basemap_name}.mbtiles.zip'
         basemap_size = get_file_size(bucket, basemap_path)
         if basemap_size > 0:
+            basemap_md5 = get_blob_md5(bucket, basemap_path)
             download_packs.append({
                 'id': 'basemap',
                 'type': 'basemap',
@@ -209,13 +266,36 @@ def generate_metadata():
                 'sizeBytes': basemap_size,
                 'sizeMB': round(basemap_size / 1024 / 1024, 1),
                 'required': False,
+                'checksum': basemap_md5,
+                'checksumAlgorithm': 'md5' if basemap_md5 else None,
             })
             total_size += basemap_size
-        
+        else:
+            # Per-zoom fallback
+            for zoom_id, zoom_name, zoom_desc in imagery_zoom_levels:
+                bm_path = f'{district_id}/basemaps/{basemap_name}_{zoom_id}.mbtiles.zip'
+                bm_size = get_file_size(bucket, bm_path)
+                if bm_size > 0:
+                    bm_md5 = get_blob_md5(bucket, bm_path)
+                    download_packs.append({
+                        'id': f'basemap-{zoom_id}',
+                        'type': 'basemap',
+                        'name': f'Land Basemap ({zoom_name})',
+                        'description': zoom_desc,
+                        'storagePath': bm_path,
+                        'sizeBytes': bm_size,
+                        'sizeMB': round(bm_size / 1024 / 1024, 1),
+                        'required': False,
+                        'checksum': bm_md5,
+                        'checksumAlgorithm': 'md5' if bm_md5 else None,
+                    })
+                    total_size += bm_size
+
         # Ocean basemap
         ocean_path = f'{district_id}/ocean/{prefix}_ocean.mbtiles.zip'
         ocean_size = get_file_size(bucket, ocean_path)
         if ocean_size > 0:
+            ocean_md5 = get_blob_md5(bucket, ocean_path)
             download_packs.append({
                 'id': 'ocean',
                 'type': 'ocean',
@@ -225,13 +305,36 @@ def generate_metadata():
                 'sizeBytes': ocean_size,
                 'sizeMB': round(ocean_size / 1024 / 1024, 1),
                 'required': False,
+                'checksum': ocean_md5,
+                'checksumAlgorithm': 'md5' if ocean_md5 else None,
             })
             total_size += ocean_size
-        
+        else:
+            # Per-zoom fallback
+            for zoom_id, zoom_name, zoom_desc in imagery_zoom_levels:
+                oc_path = f'{district_id}/ocean/{prefix}_ocean_{zoom_id}.mbtiles.zip'
+                oc_size = get_file_size(bucket, oc_path)
+                if oc_size > 0:
+                    oc_md5 = get_blob_md5(bucket, oc_path)
+                    download_packs.append({
+                        'id': f'ocean-{zoom_id}',
+                        'type': 'ocean',
+                        'name': f'Ocean Map ({zoom_name})',
+                        'description': zoom_desc,
+                        'storagePath': oc_path,
+                        'sizeBytes': oc_size,
+                        'sizeMB': round(oc_size / 1024 / 1024, 1),
+                        'required': False,
+                        'checksum': oc_md5,
+                        'checksumAlgorithm': 'md5' if oc_md5 else None,
+                    })
+                    total_size += oc_size
+
         # Terrain map
         terrain_path = f'{district_id}/terrain/{prefix}_terrain.mbtiles.zip'
         terrain_size = get_file_size(bucket, terrain_path)
         if terrain_size > 0:
+            terrain_md5 = get_blob_md5(bucket, terrain_path)
             download_packs.append({
                 'id': 'terrain',
                 'type': 'terrain',
@@ -241,8 +344,30 @@ def generate_metadata():
                 'sizeBytes': terrain_size,
                 'sizeMB': round(terrain_size / 1024 / 1024, 1),
                 'required': False,
+                'checksum': terrain_md5,
+                'checksumAlgorithm': 'md5' if terrain_md5 else None,
             })
             total_size += terrain_size
+        else:
+            # Per-zoom fallback
+            for zoom_id, zoom_name, zoom_desc in imagery_zoom_levels:
+                tr_path = f'{district_id}/terrain/{prefix}_terrain_{zoom_id}.mbtiles.zip'
+                tr_size = get_file_size(bucket, tr_path)
+                if tr_size > 0:
+                    tr_md5 = get_blob_md5(bucket, tr_path)
+                    download_packs.append({
+                        'id': f'terrain-{zoom_id}',
+                        'type': 'terrain',
+                        'name': f'Terrain Map ({zoom_name})',
+                        'description': zoom_desc,
+                        'storagePath': tr_path,
+                        'sizeBytes': tr_size,
+                        'sizeMB': round(tr_size / 1024 / 1024, 1),
+                        'required': False,
+                        'checksum': tr_md5,
+                        'checksumAlgorithm': 'md5' if tr_md5 else None,
+                    })
+                    total_size += tr_size
         
         # Satellite imagery (check for single file or zoom-level files)
         satellite_path = f'{district_id}/satellite/{prefix}_satellite.mbtiles.zip'
@@ -250,6 +375,7 @@ def generate_metadata():
         
         if satellite_size > 0:
             # Single satellite file
+            satellite_md5 = get_blob_md5(bucket, satellite_path)
             download_packs.append({
                 'id': 'satellite',
                 'type': 'satellite',
@@ -259,6 +385,8 @@ def generate_metadata():
                 'sizeBytes': satellite_size,
                 'sizeMB': round(satellite_size / 1024 / 1024, 1),
                 'required': False,
+                'checksum': satellite_md5,
+                'checksumAlgorithm': 'md5' if satellite_md5 else None,
             })
             total_size += satellite_size
         else:
@@ -274,11 +402,12 @@ def generate_metadata():
                 ('z13', 'Street', 'Zoom level 13 - Street-level view'),
                 ('z14', 'Detail', 'Zoom level 14 - High detail view'),
             ]
-            
+
             for zoom_id, zoom_name, zoom_desc in zoom_levels:
                 sat_path = f'{district_id}/satellite/{prefix}_satellite_{zoom_id}.mbtiles.zip'
                 sat_size = get_file_size(bucket, sat_path)
                 if sat_size > 0:
+                    sat_md5 = get_blob_md5(bucket, sat_path)
                     download_packs.append({
                         'id': f'satellite-{zoom_id}',
                         'type': 'satellite',
@@ -288,9 +417,20 @@ def generate_metadata():
                         'sizeBytes': sat_size,
                         'sizeMB': round(sat_size / 1024 / 1024, 1),
                         'required': False,
+                        'checksum': sat_md5,
+                        'checksumAlgorithm': 'md5' if sat_md5 else None,
                     })
                     total_size += sat_size
         
+        # Charts are required — if no charts file exists, return an error
+        has_charts = any(p['type'] == 'charts' for p in download_packs)
+        if not has_charts:
+            logger.error(f'No charts file found for district {district_id} at {charts_path}')
+            return jsonify({
+                'error': f'No charts file found for district {district_id}',
+                'detail': f'Expected charts at: {charts_path}',
+            }), 404
+
         # Get metadata counts
         buoy_count = get_buoy_count(db, district_id)
         marine_zone_count = get_marine_zone_count(db, district_id)
@@ -301,13 +441,14 @@ def generate_metadata():
             'districtId': district_id,
             'name': district_data.get('name', district_id),
             'code': district_data.get('code', ''),
+            'completeness': chart_completeness,
             'downloadPacks': download_packs,
             'metadata': {
                 'buoyCount': buoy_count,
                 'marineZoneCount': marine_zone_count,
                 'predictionSizes': prediction_sizes,
                 'predictionSizeMB': {
-                    k: round(v / 1024 / 1024, 1) 
+                    k: round(v / 1024 / 1024, 1)
                     for k, v in prediction_sizes.items()
                 },
             },
@@ -318,9 +459,9 @@ def generate_metadata():
         }
         
         # Save to Storage
-        import json
         metadata_path = f'{district_id}/download-metadata.json'
         metadata_blob = bucket.blob(metadata_path)
+        metadata_blob.cache_control = 'public, max-age=3600'
         metadata_blob.upload_from_string(
             json.dumps(metadata, indent=2),
             content_type='application/json'
@@ -336,7 +477,10 @@ def generate_metadata():
             'totalDownloadSizeBytes': total_size,
             'metadataPath': metadata_path,
             'metadataGeneratedAt': firestore.SERVER_TIMESTAMP,
-            'conversionStatus': 'completed',  # Mark district as fully converted
+            'conversionStatus': {
+                'state': 'completed',
+                'message': 'All data generated and metadata published',
+            },
         }, merge=True)
         
         return jsonify({
@@ -350,32 +494,6 @@ def generate_metadata():
     except Exception as e:
         logger.error(f'Error generating district metadata: {e}', exc_info=True)
         return jsonify({'error': str(e)}), 500
-
-
-def get_scale_name(scale):
-    """Get human-readable name for chart scale"""
-    names = {
-        'US1': 'Overview Charts',
-        'US2': 'General Charts',
-        'US3': 'Coastal Charts',
-        'US4': 'Approach Charts',
-        'US5': 'Harbor Charts',
-        'US6': 'Berthing Charts',
-    }
-    return names.get(scale, scale)
-
-
-def get_scale_description(scale):
-    """Get description for chart scale"""
-    descriptions = {
-        'US1': 'Scales 1:1,500,001 and smaller - Ocean planning',
-        'US2': 'Scales 1:600,001 to 1:1,500,000 - Offshore navigation',
-        'US3': 'Scales 1:150,001 to 1:600,000 - Coastal approach',
-        'US4': 'Scales 1:50,001 to 1:150,000 - Harbor approach',
-        'US5': 'Scales 1:12,001 to 1:50,000 - Harbors and anchorages',
-        'US6': 'Scales 1:12,000 and larger - Detailed berthing',
-    }
-    return descriptions.get(scale, '')
 
 
 if __name__ == '__main__':

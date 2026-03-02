@@ -99,6 +99,9 @@ charts/
 __pycache__/
 *.pyc
 
+# Pipeline state files (per-district resume tracking)
+.pipeline-state-*.json
+
 # Large data files (bathymetry, satellite, test data)
 data/
 *.tif

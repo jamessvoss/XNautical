@@ -188,22 +188,29 @@ Health check endpoint.
 
 ## Valid Regions
 
-- `01cgd` - First Coast Guard District
-- `05cgd` - Fifth Coast Guard District  
-- `07cgd` - Seventh Coast Guard District
-- `08cgd` - Eighth Coast Guard District
-- `09cgd` - Ninth Coast Guard District
-- `11cgd` - Eleventh Coast Guard District
-- `13cgd` - Thirteenth Coast Guard District
-- `14cgd` - Fourteenth Coast Guard District
-- `17cgd` - Seventeenth Coast Guard District
+Standard CGDs:
+- `01cgd` - First Coast Guard District (Northeast)
+- `05cgd` - Fifth Coast Guard District (Mid-Atlantic)
+- `07cgd` - Seventh Coast Guard District (Southeast)
+- `08cgd` - Eighth Coast Guard District (Gulf Coast)
+- `09cgd` - Ninth Coast Guard District (Great Lakes)
+- `11cgd` - Eleventh Coast Guard District (Southern California)
+- `13cgd` - Thirteenth Coast Guard District (Pacific Northwest)
+- `14cgd` - Fourteenth Coast Guard District (Hawaii)
+- `17cgd` - Seventeenth Coast Guard District (Alaska)
+
+Alaska sub-regions (use `allowCustomRegion: true`):
+- `17cgd-Juneau`, `17cgd-Anchorage`, `17cgd-Kodiak`, `17cgd-DutchHarbor`, `17cgd-Nome`, `17cgd-Barrow`
+
+Other sub-regions:
+- `07cgd-wflorida` - West Florida / Tampa Bay area
 
 ## Configuration
 
 ### Environment Variables
 
 - `PORT` - HTTP port (default: 8080, set by Cloud Run)
-- `BUCKET_NAME` - Firebase Storage bucket (default: `xnautical-8a296.firebasestorage.app`)
+- `STORAGE_BUCKET` - Firebase Storage bucket (default: `xnautical-8a296.firebasestorage.app`)
 
 ### NOAA Rate Limiting
 

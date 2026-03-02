@@ -28,7 +28,7 @@ set -e
 JOB_NAME="prediction-generator-job"
 REGION="us-central1"
 SERVICE_URL="https://prediction-generator-653355603694.us-central1.run.app"
-VALID_REGIONS=("01cgd" "05cgd" "07cgd" "08cgd" "09cgd" "11cgd" "13cgd" "14cgd" "17cgd")
+VALID_REGIONS=("01cgd" "05cgd" "07cgd" "07cgd-wflorida" "08cgd" "09cgd" "11cgd" "13cgd" "14cgd" "17cgd" "17cgd-Juneau" "17cgd-Anchorage" "17cgd-Kodiak" "17cgd-DutchHarbor" "17cgd-Nome" "17cgd-Barrow")
 
 # Colors for output
 RED='\033[0;31m'
@@ -152,7 +152,7 @@ trigger_generation() {
     # Execute the job with --wait (blocks until completion)
     gcloud run jobs execute $JOB_NAME \
         --region $REGION \
-        --update-env-vars "$env_vars" \
+        --set-env-vars "$env_vars" \
         --wait
     
     local exit_code=$?

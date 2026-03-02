@@ -82,11 +82,11 @@ export const SATELLITE_OPTIONS: SatelliteOption[] = [
 export const REGIONS: Region[] = [
   {
     id: 'arctic',
-    name: 'Arctic',
+    name: 'All Alaska',
     formerDistrict: '17',
     formerDistrictLabel: '17 CGD',
     firestoreId: '17cgd',
-    description: 'Alaska & Arctic',
+    description: 'All Alaska regions',
     center: [62.0, -153.0],
     color: '#06b6d4',
     status: 'converted',
@@ -250,6 +250,90 @@ export const REGIONS: Region[] = [
     ],
   },
   {
+    id: 'alaska_southeast',
+    name: 'SE Alaska',
+    formerDistrict: '17',
+    formerDistrictLabel: '17 CGD',
+    firestoreId: '17cgd-Juneau',
+    description: 'Inside Passage: Ketchikan to Katalla',
+    center: [57.75, -137.75],
+    color: '#22c55e',
+    status: 'converted',
+    mapBounds: [-145.5, 54.5, -130, 61],
+    estimatedChartSizeMB: 2200,
+    us1Charts: [],
+  },
+  {
+    id: 'alaska_southcentral',
+    name: 'Southcentral AK',
+    formerDistrict: '17',
+    formerDistrictLabel: '17 CGD',
+    firestoreId: '17cgd-Anchorage',
+    description: 'Kenai Peninsula to Prince William Sound',
+    center: [59.0, -148.5],
+    color: '#3b82f6',
+    status: 'converted',
+    mapBounds: [-157, 56, -140, 62],
+    estimatedChartSizeMB: 2100,
+    us1Charts: [],
+  },
+  {
+    id: 'alaska_southwest',
+    name: 'SW Alaska',
+    formerDistrict: '17',
+    formerDistrictLabel: '17 CGD',
+    firestoreId: '17cgd-Kodiak',
+    description: 'Kodiak Island and Alaska Peninsula',
+    center: [57.0, -159.0],
+    color: '#a855f7',
+    status: 'converted',
+    mapBounds: [-168, 54, -150, 60],
+    estimatedChartSizeMB: 2700,
+    us1Charts: [],
+  },
+  {
+    id: 'alaska_aleutians',
+    name: 'Aleutians',
+    formerDistrict: '17',
+    formerDistrictLabel: '17 CGD',
+    firestoreId: '17cgd-DutchHarbor',
+    description: 'Aleutian Islands chain',
+    center: [55.5, -172.0],
+    color: '#ef4444',
+    status: 'converted',
+    mapBounds: [-180, 51, -164, 60],
+    estimatedChartSizeMB: 1500,
+    us1Charts: [],
+  },
+  {
+    id: 'alaska_western',
+    name: 'Western AK',
+    formerDistrict: '17',
+    formerDistrictLabel: '17 CGD',
+    firestoreId: '17cgd-Nome',
+    description: 'Norton Sound and Bering Sea coast',
+    center: [63.0, -167.0],
+    color: '#eab308',
+    status: 'converted',
+    mapBounds: [-176, 59, -158, 67],
+    estimatedChartSizeMB: 900,
+    us1Charts: [],
+  },
+  {
+    id: 'alaska_arctic',
+    name: 'Arctic AK',
+    formerDistrict: '17',
+    formerDistrictLabel: '17 CGD',
+    firestoreId: '17cgd-Barrow',
+    description: 'North Slope and Arctic coast',
+    center: [68.5, -155.0],
+    color: '#06b6d4',
+    status: 'converted',
+    mapBounds: [-170, 65, -140, 72],
+    estimatedChartSizeMB: 900,
+    us1Charts: [],
+  },
+  {
     id: 'southeast_wflorida',
     name: 'W. Florida',
     formerDistrict: '07',
@@ -332,21 +416,37 @@ export function getUS1ChartsGeoJSON(regionId: string): GeoJSON.FeatureCollection
  * western Bering Sea / Pacific sectors) to avoid the bbox spanning
  * the entire globe. Falls back to mapBounds when no charts exist.
  */
+/**
+ * Compute a bounding box [west, south, east, north] that encloses all US1 charts for a region.
+ * Antimeridian-aware: charts with positive longitudes (eastern hemisphere, e.g., Bering Sea)
+ * are included in the bbox by keeping the separate hemispheres and using mapBounds when both
+ * sides of the antimeridian are present.
+ *
+ * NOTE: Region data is derived from config/regions.json (source of truth).
+ * Run scripts/check-region-consistency.js to detect drift.
+ */
 export function getRegionBBox(regionId: string): [number, number, number, number] {
   const region = getRegionById(regionId);
   if (!region) return [-180, 17, -50, 72]; // US overview fallback
 
-  // Filter to western-hemisphere charts only (negative longitudes)
-  // to avoid antimeridian issues with Bering Sea/Pacific charts
-  const usableCharts = region.us1Charts.filter(c => c.west < 0 && c.east < 0);
-
-  if (usableCharts.length === 0) {
-    // No usable charts - use the static mapBounds fallback
+  if (region.us1Charts.length === 0) {
     return region.mapBounds;
   }
 
+  // Separate charts by hemisphere to detect antimeridian crossings
+  const westernCharts = region.us1Charts.filter(c => c.west < 0);
+  const easternCharts = region.us1Charts.filter(c => c.west >= 0);
+
+  // If charts exist on both sides of the antimeridian, use the static mapBounds
+  // which are curated for correct display (e.g., Alaska, Aleutians)
+  if (westernCharts.length > 0 && easternCharts.length > 0) {
+    return region.mapBounds;
+  }
+
+  // All charts on one side — compute a simple bbox
+  const charts = region.us1Charts;
   let minLng = 180, maxLng = -180, minLat = 90, maxLat = -90;
-  for (const chart of usableCharts) {
+  for (const chart of charts) {
     if (chart.west < minLng) minLng = chart.west;
     if (chart.east > maxLng) maxLng = chart.east;
     if (chart.south < minLat) minLat = chart.south;

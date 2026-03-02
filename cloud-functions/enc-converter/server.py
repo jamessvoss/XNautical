@@ -26,6 +26,7 @@ import os
 import sys
 import time
 import json
+import random
 import shutil
 import sqlite3
 import logging
@@ -71,16 +72,8 @@ SCALE_DISPLAY_ZOOMS = {
 # Number of parallel conversion workers (match vCPU count)
 NUM_WORKERS = int(os.environ.get('NUM_WORKERS', '4'))
 
-# App-side filename prefixes per district (must match app's DISTRICT_PREFIXES)
-DISTRICT_PREFIXES = {
-    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
-    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
-    '17cgd': 'd17',
-}
-
-def get_district_prefix(district_label: str) -> str:
-    """Get the app-side filename prefix for a district."""
-    return DISTRICT_PREFIXES.get(district_label, district_label.replace('cgd', ''))
+# App-side filename prefixes per district (loaded from regions.json)
+from region_config import DISTRICT_PREFIXES, get_district_prefix
 
 
 # ============================================================================
@@ -666,7 +659,10 @@ def convert_district():
 
         # Delete source files to free disk space
         logger.info('Freeing disk: removing source files...')
-        shutil.rmtree(source_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(source_dir)
+        except Exception as e:
+            logger.warning(f'Cleanup failed for {source_dir}: {e}')
 
         # ------------------------------------------------------------------
         # Phase 3: Merge into scale packs using tile-join
@@ -702,7 +698,10 @@ def convert_district():
                     }
 
         # Clean up all per-chart dirs after all merges complete
-        shutil.rmtree(per_chart_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(per_chart_dir)
+        except Exception as e:
+            logger.warning(f'Cleanup failed for {per_chart_dir}: {e}')
 
         merge_duration = time.time() - merge_start
         logger.info(f'Merge complete in {merge_duration:.1f}s')
@@ -853,7 +852,10 @@ def convert_district():
         # Clean up temp directory
         if os.path.exists(work_dir):
             logger.info(f'Cleaning up temp directory: {work_dir}')
-            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(work_dir)
+            except Exception as e:
+                logger.warning(f'Cleanup failed for {work_dir}: {e}')
 
 
 # ============================================================================
@@ -924,6 +926,8 @@ def convert_batch():
 
     # Allow districtLabel override for testing
     district_label = data.get('districtLabel')
+    if district_label and district_label not in DISTRICT_PREFIXES:
+        return jsonify({'error': f'Invalid districtLabel: {district_label}'}), 400
     if not district_label:
         if district_id not in VALID_DISTRICTS:
             return jsonify({
@@ -1098,7 +1102,10 @@ def convert_batch():
         # Clean up temp directory
         if os.path.exists(work_dir):
             logger.info(f'Cleaning up batch temp directory: {work_dir}')
-            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(work_dir)
+            except Exception as e:
+                logger.warning(f'Cleanup failed for {work_dir}: {e}')
 
 
 # ============================================================================
@@ -1150,12 +1157,20 @@ def convert_district_parallel():
     """
     data = request.get_json(silent=True) or {}
     district_id = str(data.get('districtId', '')).zfill(2)
-    batch_size = int(data.get('batchSize', 40))
-    max_parallel = int(data.get('maxParallel', 80))
+    try:
+        batch_size = max(1, min(100, int(data.get('batchSize', 40))))
+    except (ValueError, TypeError):
+        batch_size = 40
+    try:
+        max_parallel = max(1, min(100, int(data.get('maxParallel', 80))))
+    except (ValueError, TypeError):
+        max_parallel = 80
     trace_features = data.get('traceFeatures', '')  # Pass to compose job
 
     # Allow districtLabel override for testing (e.g. "017cgd_test")
     district_label = data.get('districtLabel')
+    if district_label and district_label not in DISTRICT_PREFIXES:
+        return jsonify({'error': f'Invalid districtLabel: {district_label}'}), 400
     if district_label:
         logger.info(f'Using custom districtLabel: {district_label}')
     else:
@@ -1269,8 +1284,10 @@ def convert_district_parallel():
             conversion_start = time.time()
 
             # Get service URL
-            service_url = os.environ.get('SERVICE_URL', 'https://enc-converter-653355603694.us-central1.run.app')
-            logger.info(f'  Using service URL: {service_url}')
+            service_url = os.environ.get('SERVICE_URL')
+            if not service_url:
+                return jsonify({'error': 'SERVICE_URL environment variable not set'}), 500
+            logger.debug(f'  Using service URL: {service_url}')
 
             # Fire parallel batch conversions using ThreadPoolExecutor
             batch_results = []
@@ -1281,7 +1298,6 @@ def convert_district_parallel():
             MAX_RETRIES = 8
             RETRY_BASE_DELAY = 5  # seconds
             INITIAL_CONCURRENCY = 10  # ramp up gradually to avoid 429 thundering herd
-            import random
 
             def execute_batch_sync(batch, url):
                 """Execute a single batch with retry logic for 429 rate limits."""
@@ -1669,7 +1685,10 @@ def convert_district_parallel():
         # Clean up temp directory
         if os.path.exists(work_dir):
             logger.info(f'Cleaning up temp directory: {work_dir}')
-            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(work_dir)
+            except Exception as e:
+                logger.warning(f'Cleanup failed for {work_dir}: {e}')
 
 
 # ============================================================================

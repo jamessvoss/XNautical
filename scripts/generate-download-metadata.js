@@ -18,10 +18,9 @@ const https = require('https');
 // Cloud Run service URL (update after deployment)
 const SERVICE_URL = 'https://generate-district-metadata-653355603694.us-central1.run.app';
 
-const DISTRICTS = [
-  '01cgd', '05cgd', '07cgd', '08cgd', '09cgd',
-  '11cgd', '13cgd', '14cgd', '17cgd'
-];
+// Derive district list from master config, excluding test regions
+const masterConfig = require('../config/regions.json');
+const DISTRICTS = Object.keys(masterConfig.regions).filter(id => !id.includes('test'));
 
 async function generateMetadata(districtId) {
   return new Promise((resolve, reject) => {

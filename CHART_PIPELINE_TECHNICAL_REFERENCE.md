@@ -411,9 +411,11 @@ ${DocumentDirectory}/mbtiles/
   d{NN}_charts.mbtiles          # Downloaded unified chart pack
   points-d{NN}.mbtiles          # Downloaded point features
   manifest.json                  # Pack metadata
-  basemap*.mbtiles              # Vector basemap tiles
-  satellite_z{N}.mbtiles        # Satellite imagery tiles
-  ocean_z{N}.mbtiles            # Ocean bathymetry tiles
-  terrain_z{N}.mbtiles          # Terrain/hillshade tiles
-  gnis_names.mbtiles            # USGS place names
+  {prefix}_basemap.mbtiles      # Vector basemap tiles
+  {prefix}_satellite.mbtiles    # Satellite imagery tiles
+  {prefix}_ocean.mbtiles        # ESRI Ocean basemap tiles
+  {prefix}_terrain.mbtiles      # OpenTopoMap terrain tiles
+  {prefix}_gnis.mbtiles         # USGS place names (GNIS)
 ```
+
+Where `{prefix}` is the district filename prefix (e.g., `d01`, `d17`, `17-juneau`). Prefixes are defined in `generators-base/config.py` DISTRICT_PREFIXES.

@@ -16,6 +16,7 @@ Usage:
     python compose_job.py
 """
 
+import copy
 import math
 import os
 import sys
@@ -34,6 +35,9 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 import sqlite3
+import google.auth
+import google.auth.transport.requests
+import google.oauth2.id_token
 
 from osgeo import ogr
 from google.cloud import storage, firestore
@@ -46,12 +50,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# App-side filename prefixes per district (must match app's DISTRICT_PREFIXES)
-DISTRICT_PREFIXES = {
-    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
-    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
-    '17cgd': 'd17',
-}
+def fail_compose(message, db=None, district_label=None):
+    """Log error, update Firestore status, and exit."""
+    logger.error(f'COMPOSE FAILED: {message}')
+    if db and district_label:
+        try:
+            db.collection('districts').document(district_label).set({
+                'chartData': {
+                    'composeError': message[:500],
+                    'composeFailedAt': firestore.SERVER_TIMESTAMP,
+                }
+            }, merge=True)
+        except Exception as e:
+            logger.warning(f'Failed to write error to Firestore: {e}')
+    sys.exit(1)
+
+
+# App-side filename prefixes per district (loaded from regions.json)
+from region_config import DISTRICT_PREFIXES
 
 # Zoom ranges per scale number (matching convert.py get_tippecanoe_settings)
 # These define the TILE GENERATION range (tippecanoe -Z/-z) per scale.
@@ -887,7 +903,10 @@ def tippecanoe_worker():
 
     finally:
         if os.path.exists(work_dir):
-            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(work_dir)
+            except Exception as e:
+                logger.warning(f'Cleanup failed for {work_dir}: {e}')
 
 
 class FeatureTracer:
@@ -978,7 +997,8 @@ def main():
     bucket = storage_client.bucket(bucket_name)
     db = firestore.Client()
 
-    # Create working directory
+    # Cleanup strategy: Each compose run cleans stale work directories from prior runs.
+    # Cloud Run's tmpfs is volatile (RAM-backed), so artifacts are lost on instance recycle anyway.
     work_dir = tempfile.mkdtemp(prefix=f'enc_compose_{district_label}_')
     geojson_dir = os.path.join(work_dir, 'geojson')
     output_dir = os.path.join(work_dir, 'output')
@@ -1020,11 +1040,11 @@ def main():
             if b.name.endswith('.geojson'):
                 geojson_blobs.append((b, f'{chart_id}.geojson'))
 
-        logger.info(f'Found {len(geojson_blobs)} GeoJSON files in chart-geojson cache')
+        total_charts_found = len(geojson_blobs)
+        logger.info(f'Found {total_charts_found} GeoJSON files in chart-geojson cache')
 
         if not geojson_blobs:
-            logger.error('No GeoJSON files found in chart-geojson cache')
-            sys.exit(1)
+            fail_compose('No GeoJSON files found in chart-geojson cache', db, district_label)
 
         # Download in parallel
         def _download_blob(args):
@@ -1050,8 +1070,7 @@ def main():
             for p in download_problems:
                 logger.warning(f"  Download problem: {p['chartId']} - {p['reason']}")
         if not local_paths:
-            logger.error('Gate 2 FAILED: No valid GeoJSON files after download')
-            sys.exit(1)
+            fail_compose('Gate 2 FAILED: No valid GeoJSON files after download', db, district_label)
         logger.info(f'Gate 2 passed: {len(local_paths)} files validated')
 
         # ─── Pass 1: Build dedup index (streaming, one chart at a time) ───
@@ -1434,7 +1453,7 @@ def main():
                                             tracer.log(tmatch, 'MCOVR-TRIMMED', f'partially clipped by higher-scale coverage (chart={chart_id} US{scale_num})', feature)
                                     # Write unclipped copy for tile-level gap zooms
                                     if gap_maxz >= my_scamin_minz and scale_num in scale_geojson:
-                                        gap_feature = dict(feature)
+                                        gap_feature = copy.deepcopy(feature)
                                         gap_geom = feature['geometry']
                                         # Simplify heavyweight polygon gap fillers for low-zoom tiles
                                         if objl in SKIN_OF_EARTH_OBJLS and gap_maxz <= 5:
@@ -1466,7 +1485,7 @@ def main():
                                             else:
                                                 filler_json = _filter_line_fragments(filler_json)
                                             if filler_json:
-                                                filler_feature = dict(feature)
+                                                filler_feature = copy.deepcopy(feature)
                                                 filler_feature['geometry'] = filler_json
                                                 filler_feature['tippecanoe'] = {
                                                     'minzoom': scamin_filler_minz,
@@ -1495,7 +1514,7 @@ def main():
                                             tracer.log(tmatch, 'MCOVR-CLIPPED', f'Difference produced empty geometry, removed (chart={chart_id} US{scale_num})', feature)
                                     # Write unclipped copy for tile-level gap zooms
                                     if gap_maxz >= my_scamin_minz and scale_num in scale_geojson:
-                                        gap_feature = dict(feature)
+                                        gap_feature = copy.deepcopy(feature)
                                         gap_geom = feature['geometry']
                                         # Simplify heavyweight polygon gap fillers for low-zoom tiles
                                         if objl in SKIN_OF_EARTH_OBJLS and gap_maxz <= 5:
@@ -1516,7 +1535,7 @@ def main():
                                         scale_counts[scale_num] += 1
                                     # Write SCAMIN filler
                                     if scamin_filler_maxz >= scamin_filler_minz and scale_num in scale_geojson:
-                                        filler_feature = dict(feature)
+                                        filler_feature = copy.deepcopy(feature)
                                         filler_feature['tippecanoe'] = {
                                             'minzoom': scamin_filler_minz,
                                             'maxzoom': scamin_filler_maxz,
@@ -1752,12 +1771,10 @@ def main():
                 logger.info(f'Running tippecanoe for navaid.mbtiles: {" ".join(tippecanoe_navaid_cmd)}')
                 proc = subprocess.run(tippecanoe_navaid_cmd, capture_output=True, text=True)
                 if proc.returncode != 0:
-                    logger.error(f'tippecanoe (navaid) failed: {proc.stderr[:500]}')
-                    sys.exit(1)
+                    fail_compose(f'tippecanoe (navaid) failed: {proc.stderr[:500]}', db, district_label)
                 skipped = [l for l in proc.stderr.splitlines() if 'Skipping this tile' in l]
                 if skipped:
-                    logger.error(f'tippecanoe (navaid) DROPPED {len(skipped)} TILES!')
-                    sys.exit(1)
+                    fail_compose(f'tippecanoe (navaid) DROPPED {len(skipped)} TILES!', db, district_label)
                 logger.info(f'navaid.mbtiles: {os.path.getsize(navaid_mbtiles_path) / 1024 / 1024:.1f} MB')
 
             # Run tippecanoe for soundings: --drop-densest-as-needed for auto-thinning
@@ -1775,8 +1792,7 @@ def main():
                 logger.info(f'Running tippecanoe for soundings.mbtiles: {" ".join(tippecanoe_sounding_cmd)}')
                 proc = subprocess.run(tippecanoe_sounding_cmd, capture_output=True, text=True)
                 if proc.returncode != 0:
-                    logger.error(f'tippecanoe (soundings) failed: {proc.stderr[:500]}')
-                    sys.exit(1)
+                    fail_compose(f'tippecanoe (soundings) failed: {proc.stderr[:500]}', db, district_label)
                 logger.info(f'soundings.mbtiles: {os.path.getsize(soundings_mbtiles_path) / 1024 / 1024:.1f} MB')
 
             # Run tippecanoe for hazards: --drop-densest-as-needed for auto-thinning
@@ -1795,8 +1811,7 @@ def main():
                 logger.info(f'Running tippecanoe for hazards.mbtiles: {" ".join(tippecanoe_hazard_cmd)}')
                 proc = subprocess.run(tippecanoe_hazard_cmd, capture_output=True, text=True)
                 if proc.returncode != 0:
-                    logger.error(f'tippecanoe (hazards) failed: {proc.stderr[:500]}')
-                    sys.exit(1)
+                    fail_compose(f'tippecanoe (hazards) failed: {proc.stderr[:500]}', db, district_label)
                 logger.info(f'hazards.mbtiles: {os.path.getsize(hazards_mbtiles_path) / 1024 / 1024:.1f} MB')
 
             # Merge nav aids + soundings + hazards into points.mbtiles via tile-join
@@ -1818,8 +1833,7 @@ def main():
                 logger.info(f'Running tile-join for points.mbtiles: {" ".join(tile_join_cmd)}')
                 proc = subprocess.run(tile_join_cmd, capture_output=True, text=True)
                 if proc.returncode != 0:
-                    logger.error(f'tile-join (points) failed: {proc.stderr[:500]}')
-                    sys.exit(1)
+                    fail_compose(f'tile-join (points) failed: {proc.stderr[:500]}', db, district_label)
 
             points_mbtiles_mb = os.path.getsize(points_mbtiles_path) / 1024 / 1024
             logger.info(f'points.mbtiles: {points_mbtiles_mb:.1f} MB')
@@ -1827,8 +1841,7 @@ def main():
             # Validate points.mbtiles
             error = validate_mbtiles(points_mbtiles_path, 'points.mbtiles', logger)
             if error:
-                logger.error(f'points.mbtiles validation FAILED: {error}')
-                sys.exit(1)
+                fail_compose(f'points.mbtiles validation FAILED: {error}', db, district_label)
 
             # Embed sector light index in points.mbtiles metadata
             if sector_lights_index:
@@ -1898,7 +1911,10 @@ def main():
 
         # Free per-chart GeoJSON from tmpfs — no longer needed after Pass 2
         geojson_freed = sum(os.path.getsize(p) for p in local_paths) / 1024 / 1024
-        shutil.rmtree(geojson_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(geojson_dir)
+        except Exception as e:
+            logger.warning(f'Cleanup failed for {geojson_dir}: {e}')
         logger.info(f'Freed {geojson_freed:.0f} MB of per-chart GeoJSON from tmpfs')
 
         # ─── Tippecanoe: zoom-band fan-out to parallel Cloud Run Job executions ───
@@ -1949,8 +1965,8 @@ def main():
         for b in stale_blobs:
             try:
                 b.delete()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f'Cleanup: {e}')
         if stale_blobs:
             logger.info(f'  Deleted {len(stale_blobs)} stale artifacts')
 
@@ -2016,8 +2032,7 @@ def main():
                 zoom_label = f'z{z_lo}-{z_hi}' if z_lo != z_hi else f'z{z_lo}'
                 logger.info(f'  Launched US{sn} {zoom_label}')
             except Exception as e:
-                logger.error(f'  Failed to launch US{sn} z{z_lo}-{z_hi}: {e}')
-                sys.exit(1)
+                fail_compose(f'Failed to launch US{sn} z{z_lo}-{z_hi}: {e}', db, district_label)
 
         # (d) Poll, download, and tree-merge as workers complete.
         #     We can't download all mbtiles at once — total output can be 40+ GB
@@ -2085,15 +2100,13 @@ def main():
                 # Gate 3B: Validate downloaded worker .mbtiles
                 error = validate_mbtiles(local_path, key, logger)
                 if error:
-                    logger.error(f'Gate 3B FAILED: {error}')
-                    sys.exit(1)
+                    fail_compose(f'Gate 3B FAILED: {error}', db, district_label)
 
                 merger.add(local_path)
                 downloaded.add(key)
 
             if merger.error:
-                logger.error(f'TreeMerger error: {merger.error}')
-                sys.exit(1)
+                fail_compose(f'TreeMerger error: {merger.error}', db, district_label)
 
             if elapsed - last_log >= log_interval:
                 remaining = len(expected_blobs) - len(detected)
@@ -2107,9 +2120,8 @@ def main():
 
         if len(downloaded) < len(expected_blobs):
             missing = sorted(k for k in expected_blobs if k not in detected)
-            logger.error(f'Timeout after {max_wait}s waiting for {len(missing)} workers: '
-                        f'{", ".join(missing[:10])}')
-            sys.exit(1)
+            fail_compose(f'Timeout after {max_wait}s waiting for {len(missing)} workers: '
+                        f'{", ".join(missing[:10])}', db, district_label)
 
         logger.info(f'All {len(expected_blobs)} worker outputs downloaded in {elapsed}s, '
                    f'waiting for tree merge to complete...')
@@ -2124,8 +2136,7 @@ def main():
         logger.info('Gate 4: Validating merged MBTiles...')
         error = validate_merged_mbtiles(output_mbtiles, len(features_per_chart), logger)
         if error:
-            logger.error(f'Gate 4 FAILED: {error}')
-            sys.exit(1)
+            fail_compose(f'Gate 4 FAILED: {error}', db, district_label)
         logger.info('Gate 4 passed')
 
         # ─── Upload unified MBTiles (raw + zip in parallel) ───
@@ -2169,7 +2180,7 @@ def main():
         if errors:
             for e in errors:
                 logger.error(f'Gate 5 FAILED: {e}')
-            sys.exit(1)
+            fail_compose(f'Gate 5 FAILED: {errors[0]}', db, district_label)
         logger.info('Gate 5 passed')
 
         # Read bounds from MBTiles metadata
@@ -2212,6 +2223,7 @@ def main():
             'maxZoom': 15,
             'dedupStats': dedup_stats,
             'durationSeconds': round(total_duration, 1),
+            'completeness': len(features_per_chart) / total_charts_found if total_charts_found > 0 else 0.0,
         }
         if bounds:
             chart_data['bounds'] = bounds
@@ -2240,11 +2252,15 @@ def main():
             logger.info('Triggering metadata regeneration...')
             try:
                 import requests as req_lib
+                metadata_endpoint = f'{metadata_url.rstrip("/")}/generateMetadata'
+                auth_req = google.auth.transport.requests.Request()
+                token = google.oauth2.id_token.fetch_id_token(auth_req, metadata_url)
+                headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
                 resp = req_lib.post(
-                    f'{metadata_url.rstrip("/")}/generateMetadata',
+                    metadata_endpoint,
                     json={'districtId': district_label},
                     timeout=120,
-                    headers={'Content-Type': 'application/json'},
+                    headers=headers,
                 )
                 if resp.status_code == 200:
                     meta_result = resp.json()
@@ -2280,8 +2296,8 @@ def main():
             try:
                 temp_blob.delete()
                 deleted_count += 1
-            except Exception:
-                pass  # Already deleted or doesn't exist
+            except Exception as e:
+                logger.debug(f'Cleanup: {e}')
         logger.info(f'  Deleted {deleted_count}/{len(temp_blobs)} temp files')
 
         # Delete _manifest.json (transient, only needed for this compose run)
@@ -2290,20 +2306,22 @@ def main():
             manifest_blob = bucket.blob(f'{district_label}/chart-geojson/_manifest.json')
             manifest_blob.delete()
             logger.info('  Deleted _manifest.json')
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f'Cleanup: {e}')
 
         sys.exit(0)
 
     except Exception as e:
-        logger.error(f'Error in compose job: {e}', exc_info=True)
-        sys.exit(1)
+        fail_compose(f'Error in compose job: {e}', db, district_label)
 
     finally:
         # Clean up working directory
         if os.path.exists(work_dir):
             logger.info(f'Cleaning up working directory: {work_dir}')
-            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(work_dir)
+            except Exception as e:
+                logger.warning(f'Cleanup failed for {work_dir}: {e}')
 
 
 if __name__ == '__main__':

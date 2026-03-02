@@ -9,6 +9,13 @@ Replaces hardcoded size estimates with real file sizes from Firebase Storage.
 3. **App Fetch**: App downloads one small JSON file (~10 KB) instead of querying Storage/Firestore multiple times
 4. **Fast Display**: Download sizes are instantly available without any computation
 
+## Configuration
+
+- **Environment Variable**: `STORAGE_BUCKET` — Firebase Storage bucket name (matches the env var used by all generators)
+- **Charts-required guard**: Metadata generation requires at least one chart pack (US1-US6) to exist; skips districts with no chart data
+- **Per-zoom fallback**: Scans for both combined zip files and per-zoom pack files (e.g., `satellite_overview.mbtiles.zip`, `satellite_detail_z6.mbtiles.zip`)
+- **District prefixes**: Uses `DISTRICT_PREFIXES` mapping (synced from `generators-base/config.py`) for prefixed filenames
+
 ## Architecture
 
 ```
@@ -100,7 +107,7 @@ Add this to the end of each data generation script:
 # After successful chart conversion
 import requests
 
-metadata_service_url = 'https://generate-district-metadata-XXXX.run.app/generateMetadata'
+metadata_service_url = 'https://district-metadata-XXXX.run.app/generateMetadata'
 try:
     response = requests.post(metadata_service_url, json={'districtId': district_id})
     if response.ok:
@@ -117,7 +124,7 @@ except Exception as e:
 # After successful satellite generation
 import requests
 
-metadata_service_url = 'https://generate-district-metadata-XXXX.run.app/generateMetadata'
+metadata_service_url = 'https://district-metadata-XXXX.run.app/generateMetadata'
 try:
     response = requests.post(metadata_service_url, json={'districtId': region_id})
     logger.info(f'Triggered metadata regeneration for {region_id}')
@@ -185,7 +192,7 @@ The metadata service should be called at the end of each data generation Cloud R
 
 Check logs:
 ```bash
-gcloud run services logs read generate-district-metadata --region us-central1
+gcloud run services logs read district-metadata --region us-central1
 ```
 
 Check metadata file:
@@ -195,7 +202,7 @@ gsutil cat gs://xnautical-8a296.firebasestorage.app/17cgd/download-metadata.json
 
 ## Cost
 
-- **Storage**: ~10 KB per district = negligible
+- **Storage**: ~10 KB per region × 17 regions = negligible
 - **Cloud Run**: Only runs on-demand when triggered = minimal
 - **Bandwidth**: App downloads one small JSON file = ~10 KB
 - **Total**: < $0.01/month for typical usage
@@ -211,5 +218,5 @@ gsutil cat gs://xnautical-8a296.firebasestorage.app/17cgd/download-metadata.json
 - Check Storage bucket name in deploy script
 
 ### Service not responding
-- Check deployment: `gcloud run services describe generate-district-metadata --region us-central1`
-- Check logs: `gcloud run services logs read generate-district-metadata --region us-central1`
+- Check deployment: `gcloud run services describe district-metadata --region us-central1`
+- Check logs: `gcloud run services logs read district-metadata --region us-central1`

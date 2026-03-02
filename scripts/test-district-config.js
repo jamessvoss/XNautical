@@ -42,15 +42,15 @@ async function runTests() {
   let passed = 0;
   let failed = 0;
 
-  // Test 1: DISTRICTS object is populated
-  console.log('Test 1: DISTRICTS object contains all 9 districts');
+  // Test 1: DISTRICTS object is populated (9 standard + 6 Alaska sub-regions + W. Florida + test = 17)
+  console.log('Test 1: DISTRICTS object contains all regions');
   const districtIds = Object.keys(DISTRICTS);
-  if (districtIds.length === 9) {
-    console.log('  ✅ PASS: 9 districts found');
+  if (districtIds.length >= 9 && districtIds.includes('01cgd') && districtIds.includes('17cgd')) {
+    console.log(`  ✅ PASS: ${districtIds.length} districts found`);
     console.log(`     ${districtIds.join(', ')}`);
     passed++;
   } else {
-    console.log(`  ❌ FAIL: Expected 9 districts, found ${districtIds.length}`);
+    console.log(`  ❌ FAIL: Expected at least 9 districts, found ${districtIds.length}`);
     failed++;
   }
 
@@ -73,8 +73,8 @@ async function runTests() {
   // Test 3: getAllDistrictIds()
   console.log('\nTest 3: getAllDistrictIds() returns correct array');
   const allIds = getAllDistrictIds();
-  if (allIds.length === 9 && allIds.includes('01cgd') && allIds.includes('17cgd')) {
-    console.log('  ✅ PASS: getAllDistrictIds() works correctly');
+  if (allIds.length >= 9 && allIds.includes('01cgd') && allIds.includes('17cgd') && allIds.includes('17cgd-Juneau')) {
+    console.log(`  ✅ PASS: getAllDistrictIds() returns ${allIds.length} districts`);
     passed++;
   } else {
     console.log('  ❌ FAIL: getAllDistrictIds() returned incorrect result');
@@ -84,7 +84,7 @@ async function runTests() {
   // Test 4: getDistrictConfig()
   console.log('\nTest 4: getDistrictConfig() retrieves district data');
   const config = getDistrictConfig('17cgd');
-  if (config && config.name === 'Arctic' && config.code === '17 CGD') {
+  if (config && config.name === 'All Alaska' && config.code === '17 CGD') {
     console.log('  ✅ PASS: getDistrictConfig() works correctly');
     console.log(`     17cgd: ${config.name} (${config.code})`);
     passed++;

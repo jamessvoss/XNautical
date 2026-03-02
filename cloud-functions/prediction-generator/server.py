@@ -49,6 +49,7 @@ Firebase Storage uploads:
 """
 
 import os
+import re
 import sys
 import gc
 import time
@@ -64,6 +65,9 @@ from pathlib import Path
 from datetime import datetime, date, timedelta, timezone
 from dateutil.relativedelta import relativedelta
 
+import shutil
+
+import requests as req_lib
 import aiohttp
 from flask import Flask, request, jsonify
 from google.cloud import storage, firestore
@@ -87,7 +91,21 @@ NOAA_INTER_REQUEST_DELAY = 1.0  # seconds between requests (NOAA rate limit ~1 r
 NOAA_INTER_STATION_DELAY = 0.5  # seconds between stations
 
 # Valid region IDs
-VALID_REGIONS = ['01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd', '17cgd-test']
+VALID_REGIONS = [
+    '01cgd', '05cgd', '07cgd', '07cgd-wflorida', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd', '17cgd-test',
+    '17cgd-Juneau', '17cgd-Anchorage', '17cgd-Kodiak', '17cgd-DutchHarbor', '17cgd-Nome', '17cgd-Barrow',
+]
+
+
+# ============================================================================
+# Validation helpers
+# ============================================================================
+
+def sanitize_station_id(sid):
+    """Validate station ID before using as Firestore document path."""
+    if not sid or '/' in sid or len(sid) > 100:
+        raise ValueError(f'Invalid station ID: {sid!r}')
+    return sid
 
 
 # ============================================================================
@@ -122,20 +140,22 @@ async def fetch_tide_chunk(session, station_id, begin_date, end_date, semaphore)
         'interval': 'hilo',
     }
 
+    backoff_delay = 0
     for attempt in range(3):
+        if backoff_delay > 0:
+            await asyncio.sleep(backoff_delay)
+            backoff_delay = 0
         async with semaphore:
             await asyncio.sleep(NOAA_INTER_REQUEST_DELAY)
             try:
                 async with session.get(NOAA_API_BASE, params=params) as resp:
                     if resp.status in (429, 403):
-                        backoff = (2 ** attempt) * 5 + 5  # 10s, 15s, 25s
-                        logger.warning(f'HTTP {resp.status} for tide {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, backing off {backoff}s')
-                        await asyncio.sleep(backoff)
+                        backoff_delay = (2 ** attempt) * 5 + 5  # 10s, 15s, 25s
+                        logger.warning(f'HTTP {resp.status} for tide {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, backing off {backoff_delay}s')
                         continue
                     if resp.status >= 500:
-                        backoff = (2 ** attempt) * 3 + 2  # 5s, 8s, 14s
-                        logger.warning(f'HTTP {resp.status} for tide {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff}s')
-                        await asyncio.sleep(backoff)
+                        backoff_delay = (2 ** attempt) * 3 + 2  # 5s, 8s, 14s
+                        logger.warning(f'HTTP {resp.status} for tide {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff_delay}s')
                         continue
                     if resp.status != 200:
                         logger.warning(f'HTTP {resp.status} for tide {station_id} ({begin_date}-{end_date}), not retryable')
@@ -146,9 +166,8 @@ async def fetch_tide_chunk(session, station_id, begin_date, end_date, semaphore)
                     if 'error' in data:
                         err_msg = data['error'].get('message', str(data['error'])) if isinstance(data['error'], dict) else str(data['error'])
                         if attempt < 2:
-                            backoff = (2 ** attempt) * 2 + 1  # 3s, 5s
-                            logger.warning(f'NOAA error for tide {station_id} ({begin_date}-{end_date}): {err_msg}, attempt {attempt+1}/3, retrying in {backoff}s')
-                            await asyncio.sleep(backoff)
+                            backoff_delay = (2 ** attempt) * 2 + 1  # 3s, 5s
+                            logger.warning(f'NOAA error for tide {station_id} ({begin_date}-{end_date}): {err_msg}, attempt {attempt+1}/3, retrying in {backoff_delay}s')
                             continue
                         logger.warning(f'NOAA error for tide {station_id} ({begin_date}-{end_date}): {err_msg}, giving up after 3 attempts')
                         return None
@@ -172,15 +191,13 @@ async def fetch_tide_chunk(session, station_id, begin_date, end_date, semaphore)
                         })
                     return by_date
             except asyncio.TimeoutError:
-                backoff = (2 ** attempt) * 3 + 2
-                logger.warning(f'Timeout for tide {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff}s')
-                await asyncio.sleep(backoff)
+                backoff_delay = (2 ** attempt) * 3 + 2
+                logger.warning(f'Timeout for tide {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff_delay}s')
                 continue
             except Exception as e:
-                backoff = (2 ** attempt) * 2 + 1
+                backoff_delay = (2 ** attempt) * 2 + 1
                 logger.warning(f'Error fetching tide {station_id} ({begin_date}-{end_date}): {e}, attempt {attempt+1}/3')
                 if attempt < 2:
-                    await asyncio.sleep(backoff)
                     continue
                 return None
     logger.warning(f'All 3 attempts failed for tide {station_id} ({begin_date}-{end_date})')
@@ -205,20 +222,22 @@ async def fetch_current_chunk(session, station_id, bin_num, begin_date, end_date
         'bin': str(bin_num),
     }
 
+    backoff_delay = 0
     for attempt in range(3):
+        if backoff_delay > 0:
+            await asyncio.sleep(backoff_delay)
+            backoff_delay = 0
         async with semaphore:
             await asyncio.sleep(NOAA_INTER_REQUEST_DELAY)
             try:
                 async with session.get(NOAA_API_BASE, params=params) as resp:
                     if resp.status in (429, 403):
-                        backoff = (2 ** attempt) * 5 + 5  # 10s, 15s, 25s
-                        logger.warning(f'HTTP {resp.status} for current {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, backing off {backoff}s')
-                        await asyncio.sleep(backoff)
+                        backoff_delay = (2 ** attempt) * 5 + 5  # 10s, 15s, 25s
+                        logger.warning(f'HTTP {resp.status} for current {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, backing off {backoff_delay}s')
                         continue
                     if resp.status >= 500:
-                        backoff = (2 ** attempt) * 3 + 2  # 5s, 8s, 14s
-                        logger.warning(f'HTTP {resp.status} for current {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff}s')
-                        await asyncio.sleep(backoff)
+                        backoff_delay = (2 ** attempt) * 3 + 2  # 5s, 8s, 14s
+                        logger.warning(f'HTTP {resp.status} for current {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff_delay}s')
                         continue
                     if resp.status != 200:
                         logger.warning(f'HTTP {resp.status} for current {station_id} ({begin_date}-{end_date}), not retryable')
@@ -229,9 +248,8 @@ async def fetch_current_chunk(session, station_id, bin_num, begin_date, end_date
                     if 'error' in data:
                         err_msg = data['error'].get('message', str(data['error'])) if isinstance(data['error'], dict) else str(data['error'])
                         if attempt < 2:
-                            backoff = (2 ** attempt) * 2 + 1  # 3s, 5s
-                            logger.warning(f'NOAA error for current {station_id} ({begin_date}-{end_date}): {err_msg}, attempt {attempt+1}/3, retrying in {backoff}s')
-                            await asyncio.sleep(backoff)
+                            backoff_delay = (2 ** attempt) * 2 + 1  # 3s, 5s
+                            logger.warning(f'NOAA error for current {station_id} ({begin_date}-{end_date}): {err_msg}, attempt {attempt+1}/3, retrying in {backoff_delay}s')
                             continue
                         logger.warning(f'NOAA error for current {station_id} ({begin_date}-{end_date}): {err_msg}, giving up after 3 attempts')
                         return []
@@ -250,15 +268,13 @@ async def fetch_current_chunk(session, station_id, bin_num, begin_date, end_date
                         logger.warning(f'  Debug {station_id}: unexpected response format: {list(data.keys())}')
                     return []
             except asyncio.TimeoutError:
-                backoff = (2 ** attempt) * 3 + 2
-                logger.warning(f'Timeout for current {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff}s')
-                await asyncio.sleep(backoff)
+                backoff_delay = (2 ** attempt) * 3 + 2
+                logger.warning(f'Timeout for current {station_id} ({begin_date}-{end_date}), attempt {attempt+1}/3, retrying in {backoff_delay}s')
                 continue
             except Exception as e:
-                backoff = (2 ** attempt) * 2 + 1
+                backoff_delay = (2 ** attempt) * 2 + 1
                 logger.warning(f'Error fetching current {station_id} ({begin_date}-{end_date}): {e}, attempt {attempt+1}/3')
                 if attempt < 2:
-                    await asyncio.sleep(backoff)
                     continue
                 return []
     logger.warning(f'All 3 attempts failed for current {station_id} ({begin_date}-{end_date})')
@@ -463,90 +479,98 @@ def init_current_database(region_id, work_dir):
 def write_station_to_tide_db(db_path, station_id, station_name, lat, lng, predictions):
     """Write a single station's tide predictions directly to SQLite."""
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    # Insert station metadata
-    cursor.execute(
-        'INSERT OR IGNORE INTO stations (id, name, lat, lng) VALUES (?, ?, ?, ?)',
-        (station_id, station_name, lat, lng)
-    )
-    
-    # Insert all predictions for this station
-    event_count = 0
-    for date_key, events in predictions.items():
-        for event in events:
-            cursor.execute(
-                'INSERT OR IGNORE INTO tide_predictions (station_id, date, time, type, height) VALUES (?, ?, ?, ?, ?)',
-                (station_id, date_key, event['time'], event['type'], event['height'])
-            )
-            event_count += 1
-    
-    conn.commit()
-    conn.close()
-    return event_count
+    try:
+        cursor = conn.cursor()
+
+        # Insert station metadata
+        cursor.execute(
+            'INSERT OR IGNORE INTO stations (id, name, lat, lng) VALUES (?, ?, ?, ?)',
+            (station_id, station_name, lat, lng)
+        )
+
+        # Insert all predictions for this station
+        event_count = 0
+        for date_key, events in predictions.items():
+            for event in events:
+                cursor.execute(
+                    'INSERT OR IGNORE INTO tide_predictions (station_id, date, time, type, height) VALUES (?, ?, ?, ?, ?)',
+                    (station_id, date_key, event['time'], event['type'], event['height'])
+                )
+                event_count += 1
+
+        conn.commit()
+        return event_count
+    finally:
+        conn.close()
 
 
 def write_station_to_current_db(db_path, station_id, station_name, lat, lng, noaa_type, monthly_predictions):
     """Write a single station's current predictions directly to SQLite."""
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    # Insert station metadata
-    weak_and_variable = 1 if noaa_type == 'W' else 0
-    cursor.execute(
-        'INSERT OR IGNORE INTO stations (id, name, lat, lng, noaa_type, weak_and_variable) VALUES (?, ?, ?, ?, ?, ?)',
-        (station_id, station_name, lat, lng, noaa_type, weak_and_variable)
-    )
-    
-    # Insert all predictions for this station
-    event_count = 0
-    for month_key, daily_preds in monthly_predictions.items():
-        for date_str, predictions in daily_preds.items():
-            for pred in predictions:
-                cursor.execute(
-                    'INSERT OR IGNORE INTO current_predictions '
-                    '(station_id, date, time, type, velocity, direction) '
-                    'VALUES (?, ?, ?, ?, ?, ?)',
-                    (station_id, date_str, pred['time'], pred['type'],
-                     pred['velocity'], pred.get('direction'))
-                )
-                event_count += 1
-    
-    conn.commit()
-    conn.close()
-    return event_count
+    try:
+        cursor = conn.cursor()
+
+        # Insert station metadata
+        weak_and_variable = 1 if noaa_type == 'W' else 0
+        cursor.execute(
+            'INSERT OR IGNORE INTO stations (id, name, lat, lng, noaa_type, weak_and_variable) VALUES (?, ?, ?, ?, ?, ?)',
+            (station_id, station_name, lat, lng, noaa_type, weak_and_variable)
+        )
+
+        # Insert all predictions for this station
+        event_count = 0
+        for month_key, daily_preds in monthly_predictions.items():
+            for date_str, predictions in daily_preds.items():
+                for pred in predictions:
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO current_predictions '
+                        '(station_id, date, time, type, velocity, direction) '
+                        'VALUES (?, ?, ?, ?, ?, ?)',
+                        (station_id, date_str, pred['time'], pred['type'],
+                         pred['velocity'], pred.get('direction'))
+                    )
+                    event_count += 1
+
+        conn.commit()
+        return event_count
+    finally:
+        conn.close()
 
 
 def finalize_tide_database(db_path, station_count, event_count):
     """Finalize tide database with metadata and optimization."""
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('generated', ?)", (datetime.utcnow().isoformat(),))
-    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('stations', ?)", (str(station_count),))
-    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('events', ?)", (str(event_count),))
-    
-    conn.commit()
-    cursor.execute('VACUUM')
-    cursor.execute('ANALYZE')
-    conn.close()
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('generated', ?)", (datetime.now(timezone.utc).isoformat(),))
+        cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('stations', ?)", (str(station_count),))
+        cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('events', ?)", (str(event_count),))
+
+        conn.commit()
+        cursor.execute('VACUUM')
+        cursor.execute('ANALYZE')
+    finally:
+        conn.close()
     logger.info(f'  Finalized tide database: {station_count} stations, {event_count} events')
 
 
 def finalize_current_database(db_path, station_count, weak_count, event_count):
     """Finalize current database with metadata and optimization."""
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('generated', ?)", (datetime.utcnow().isoformat(),))
-    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('stations', ?)", (str(station_count),))
-    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('stations_weak', ?)", (str(weak_count),))
-    cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('events', ?)", (str(event_count),))
-    
-    conn.commit()
-    cursor.execute('VACUUM')
-    cursor.execute('ANALYZE')
-    conn.close()
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('generated', ?)", (datetime.now(timezone.utc).isoformat(),))
+        cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('stations', ?)", (str(station_count),))
+        cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('stations_weak', ?)", (str(weak_count),))
+        cursor.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES ('events', ?)", (str(event_count),))
+
+        conn.commit()
+        cursor.execute('VACUUM')
+        cursor.execute('ANALYZE')
+    finally:
+        conn.close()
     logger.info(f'  Finalized current database: {station_count} stations ({weak_count} weak & variable), {event_count} events')
 
 
@@ -583,13 +607,18 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
 
             # Check for termination flag every 10 stations
             if i > 0 and i % 10 == 0:
-                district_ref = db_client.collection('districts').document(region_id)
-                district_doc = district_ref.get()
-                if district_doc.exists:
-                    pred_status = district_doc.to_dict().get('predictionStatus', {})
-                    if pred_status.get('terminate', False):
-                        logger.warning(f'  [TIDES {region_id}] Termination requested at station {i}/{len(stations)}')
-                        raise Exception(f'Generation terminated by user request at station {i}/{len(stations)}')
+                try:
+                    district_ref = db_client.collection('districts').document(region_id)
+                    district_doc = district_ref.get(timeout=10)
+                    if district_doc.exists:
+                        pred_status = district_doc.to_dict().get('predictionStatus', {})
+                        if pred_status.get('terminate', False):
+                            logger.warning(f'  [TIDES {region_id}] Termination requested at station {i}/{len(stations)}')
+                            raise Exception(f'Generation terminated by user request at station {i}/{len(stations)}')
+                except Exception as e:
+                    if 'terminated by user' in str(e):
+                        raise
+                    pass  # Continue processing if Firestore check fails
 
             station_id = station['id']
             station_name = station.get('name', station_id)
@@ -627,7 +656,7 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
 
             # Write lightweight metadata to Firestore (for getStationLocations)
             doc_ref = (db_client.collection('districts').document(region_id)
-                       .collection('tidal-stations').document(station_id))
+                       .collection('tidal-stations').document(sanitize_station_id(station_id)))
 
             doc_ref.set({
                 'id': station_id,
@@ -669,7 +698,7 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
     
     Checks for termination flag every 10 stations to allow graceful stopping.
 
-    Returns (stations_processed, total_months, stations_failed, stations_weak).
+    Returns (stations_processed, total_months, stations_failed, stations_weak, total_events).
     """
     semaphore = asyncio.Semaphore(NOAA_CONCURRENT_CHUNKS)
     timeout = aiohttp.ClientTimeout(total=NOAA_REQUEST_TIMEOUT, connect=10)
@@ -679,6 +708,7 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
     stations_failed = 0
     stations_weak = 0
     total_months = 0
+    total_events = 0
 
     chunks = date_range_chunks(start_date, end_date)
 
@@ -690,13 +720,18 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
 
             # Check for termination flag every 10 stations
             if i > 0 and i % 10 == 0:
-                district_ref = db_client.collection('districts').document(region_id)
-                district_doc = district_ref.get()
-                if district_doc.exists:
-                    pred_status = district_doc.to_dict().get('predictionStatus', {})
-                    if pred_status.get('terminate', False):
-                        logger.warning(f'  [CURRENTS {region_id}] Termination requested at station {i}/{len(stations)}')
-                        raise Exception(f'Generation terminated by user request at station {i}/{len(stations)}')
+                try:
+                    district_ref = db_client.collection('districts').document(region_id)
+                    district_doc = district_ref.get(timeout=10)
+                    if district_doc.exists:
+                        pred_status = district_doc.to_dict().get('predictionStatus', {})
+                        if pred_status.get('terminate', False):
+                            logger.warning(f'  [CURRENTS {region_id}] Termination requested at station {i}/{len(stations)}')
+                            raise Exception(f'Generation terminated by user request at station {i}/{len(stations)}')
+                except Exception as e:
+                    if 'terminated by user' in str(e):
+                        raise
+                    pass  # Continue processing if Firestore check fails
 
             station_id = station['id']
             station_name = station.get('name', station_id)
@@ -714,7 +749,7 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
 
                 # Write lightweight metadata to Firestore
                 station_doc_ref = (db_client.collection('districts').document(region_id)
-                                  .collection('current-stations').document(station_id))
+                                  .collection('current-stations').document(sanitize_station_id(station_id)))
 
                 station_doc_ref.set({
                     'id': station_id,
@@ -771,6 +806,7 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
                 station.get('lat', 0), station.get('lng', 0),
                 noaa_type, all_monthly
             )
+            total_events += event_count
             months_count = len(all_monthly)
             month_keys = sorted(all_monthly.keys())
             all_monthly.clear()  # Free memory immediately
@@ -778,7 +814,7 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
 
             # Write lightweight metadata to Firestore (no predictions, no flood/ebb dirs)
             station_doc_ref = (db_client.collection('districts').document(region_id)
-                              .collection('current-stations').document(station_id))
+                              .collection('current-stations').document(sanitize_station_id(station_id)))
 
             station_doc_ref.set({
                 'id': station_id,
@@ -801,10 +837,10 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
             total_months += months_count
             stations_processed += 1
             instance_id = os.environ.get('K_REVISION', 'unknown')
-            logger.info(f'  [CURRENTS {region_id}] [{i+1}/{len(stations)}] {station_name}: {months_count} months (revision: {instance_id})')
+            logger.info(f'  [CURRENTS {region_id}] [{i+1}/{len(stations)}] {station_name}: {event_count} events, {months_count} months (revision: {instance_id})')
 
 
-    return stations_processed, total_months, stations_failed, stations_weak
+    return stations_processed, total_months, stations_failed, stations_weak, total_events
 
 
 # ============================================================================
@@ -1062,17 +1098,153 @@ def compress_and_upload(db_path, storage_path, storage_client):
 
 
 # ============================================================================
+# Auto-discover NOAA stations when predictionConfig is missing
+# ============================================================================
+
+NOAA_METADATA_BASE = 'https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi'
+
+
+def _point_in_bounds(lat, lng, bounds_list, buffer=0.5):
+    """Check if a point falls within any bounding box (with buffer). Handles antimeridian."""
+    for b in bounds_list:
+        s, n = b['south'] - buffer, b['north'] + buffer
+        w, e = b['west'] - buffer, b['east'] + buffer
+        if lat < s or lat > n:
+            continue
+        if w <= e:
+            if w <= lng <= e:
+                return True
+        else:  # antimeridian crossing
+            if lng >= w or lng <= e:
+                return True
+    return False
+
+
+def discover_stations_for_region(db_client, region_id, region_data):
+    """
+    Auto-discover NOAA tide and current stations for a region.
+
+    Mirrors the logic of scripts/discover-noaa-stations.js:
+      1. Fetch all tide/current stations from NOAA metadata API
+      2. Filter to region bounds (with 0.5° buffer)
+      3. Write predictionConfig to Firestore
+      4. Return the discovered station lists
+
+    Returns dict with tideStations and currentStations lists.
+    """
+    # Resolve region bounds (priority order matches discover-noaa-stations.js)
+    bounds = region_data.get('stationBounds') or region_data.get('satelliteBounds')
+    if not bounds:
+        # Single bounds dict fallback — wrap in array
+        single = region_data.get('bounds') or region_data.get('regionBoundary')
+        if single and isinstance(single, dict):
+            bounds = [single]
+    if not bounds or not isinstance(bounds, list):
+        logger.error(f'No usable bounds found for {region_id} — cannot discover stations')
+        return {'tideStations': [], 'currentStations': []}
+
+    logger.info(f'Auto-discovering stations for {region_id} using {len(bounds)} bounds...')
+
+    # --- Fetch tide stations ---
+    tide_stations = []
+    try:
+        url = f'{NOAA_METADATA_BASE}/stations.json?type=tidepredictions&units=english'
+        resp = req_lib.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        for s in data.get('stations', []):
+            lat = float(s.get('lat', 'nan'))
+            lng = float(s.get('lng', 'nan'))
+            if math.isnan(lat) or math.isnan(lng):
+                continue
+            if _point_in_bounds(lat, lng, bounds):
+                tide_stations.append({
+                    'id': str(s['id']),
+                    'name': s.get('name', ''),
+                    'lat': lat,
+                    'lng': lng,
+                })
+        logger.info(f'  Tide: {len(tide_stations)} stations in bounds')
+    except Exception as e:
+        logger.error(f'Failed to fetch tide stations from NOAA: {e}')
+
+    # --- Fetch current stations ---
+    current_stations = []
+    try:
+        url = f'{NOAA_METADATA_BASE}/stations.json?type=currentpredictions&units=english'
+        resp = req_lib.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        raw = data.get('stations') or data.get('currentPredictionStations') or []
+
+        # Deduplicate by base station ID, keeping lowest bin (surface)
+        station_map = {}
+        for s in raw:
+            lat = float(s.get('lat', 'nan'))
+            lng = float(s.get('lng', 'nan'))
+            if math.isnan(lat) or math.isnan(lng):
+                continue
+            if not _point_in_bounds(lat, lng, bounds):
+                continue
+
+            sid = str(s['id'])
+            base_id = re.sub(r'_\d+$', '', sid)
+            bin_num = int(s.get('bin') or s.get('currbin') or '1') or 1
+            depth = float(s['depth']) if s.get('depth') else None
+            depth_type = s.get('depthType') or s.get('depth_type') or 'surface'
+            noaa_type = s.get('type') or 'S'
+
+            entry = {
+                'id': sid,
+                'name': s.get('name', ''),
+                'lat': lat,
+                'lng': lng,
+                'bin': bin_num,
+                'depth': depth,
+                'depthType': depth_type,
+                'noaaType': noaa_type,
+            }
+
+            if base_id not in station_map or bin_num < station_map[base_id]['bin']:
+                station_map[base_id] = entry
+
+        current_stations = list(station_map.values())
+        logger.info(f'  Current: {len(raw)} raw entries in bounds → {len(current_stations)} unique stations (surface bins)')
+    except Exception as e:
+        logger.error(f'Failed to fetch current stations from NOAA: {e}')
+
+    # --- Write to Firestore ---
+    pred_config = {
+        'tideStations': tide_stations,
+        'currentStations': current_stations,
+        'lastDiscovered': firestore.SERVER_TIMESTAMP,
+        'tideStationCount': len(tide_stations),
+        'currentStationCount': len(current_stations),
+        'autoDiscovered': True,
+    }
+
+    try:
+        doc_ref = db_client.collection('districts').document(region_id)
+        doc_ref.set({'predictionConfig': pred_config}, merge=True)
+        logger.info(f'  Written predictionConfig to Firestore: {len(tide_stations)} tide, {len(current_stations)} current')
+    except Exception as e:
+        logger.error(f'Failed to write predictionConfig to Firestore: {e}')
+
+    return {'tideStations': tide_stations, 'currentStations': current_stations}
+
+
+# ============================================================================
 # Main generation endpoint
 # ============================================================================
 
 def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2, max_stations=None):
     """
     Core prediction generation logic (can be called from Flask endpoint or Job).
-    
+
     Runs EITHER tides OR currents (not both). Each type is a completely independent
     operation that fetches data, exports metadata, compresses, and uploads.
-    
-    Returns: dict with results or raises exception on error
+
+    Returns: (dict, status_code) tuple — caller is responsible for jsonify() if needed.
     """
     if gen_type not in ('tides', 'currents'):
         raise ValueError(f'gen_type must be "tides" or "currents", not "{gen_type}"')
@@ -1125,15 +1297,15 @@ def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2
                 # If job has completedAt but state isn't 'complete', it's a stale lock
                 if completed_at:
                     logger.warning(f'Found stale lock with completedAt set but state={status.get("state")}. Clearing...')
-                # Check if lastUpdated is stale (>10 minutes with no update = crashed)
+                # Check if lastUpdated is stale (>20 minutes with no update = crashed)
                 elif last_updated and isinstance(last_updated, datetime):
                     idle_seconds = (datetime.now(timezone.utc) - last_updated).total_seconds()
-                    if idle_seconds > 600:  # 10 minutes
+                    if idle_seconds > 1200:  # 20 minutes
                         logger.warning(f'Found stale lock with no updates for {round(idle_seconds/60, 1)} minutes. Assuming crashed. Clearing...')
                 # If started_at is too recent, reject
                 elif started_at and isinstance(started_at, datetime):
                     elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
-                    if elapsed < 4500:  # 75 minutes
+                    if elapsed < 7200:  # 120 minutes
                         raise RuntimeError(json.dumps({
                             'error': 'Generation already in progress',
                             'currentState': status.get('state'),
@@ -1162,20 +1334,28 @@ def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2
         except RuntimeError as e:
             # Lock conflict - another job is running
             error_data = json.loads(str(e))
-            return jsonify(error_data), 409
+            return error_data, 409
         except ValueError as e:
-            return jsonify({'error': str(e)}), 404
+            return {'error': str(e)}, 404
         
-        # 2. Read station list
+        # 2. Read station list (auto-discover from NOAA if missing)
         pred_config = region_data.get('predictionConfig', {})
 
         tide_stations = pred_config.get('tideStations', []) if do_tides else []
         current_stations = pred_config.get('currentStations', []) if do_currents else []
 
         if not tide_stations and not current_stations:
-            return jsonify({
-                'error': f'No stations in predictionConfig for {region_id} (type={gen_type}). Run discover-noaa-stations.js first.',
-            }), 400
+            # Auto-discover from NOAA metadata API
+            logger.info(f'No predictionConfig for {region_id} — auto-discovering stations...')
+            update_status(db_client, region_id, {
+                'state': 'discovering_stations',
+                'message': 'Discovering NOAA stations for this region...',
+            })
+            discovered = discover_stations_for_region(db_client, region_id, region_data)
+            tide_stations = discovered.get('tideStations', []) if do_tides else []
+            current_stations = discovered.get('currentStations', []) if do_currents else []
+            if not tide_stations and not current_stations:
+                return {'error': f'No NOAA stations found within bounds of {region_id}.'}, 400
 
         # Limit stations if maxStations specified (for testing)
         if max_stations is not None:
@@ -1230,7 +1410,7 @@ def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2
             logger.info(f'  Tides complete: {processed} stations, {events} events, {failed} failed ({elapsed:.0f}s)')
 
         # 4. Fetch current predictions from NOAA (stream directly to SQLite)
-        current_stats = {'stationsProcessed': 0, 'totalMonths': 0, 'stationsFailed': 0, 'stationsWeakAndVariable': 0}
+        current_stats = {'stationsProcessed': 0, 'totalMonths': 0, 'totalEvents': 0, 'stationsFailed': 0, 'stationsWeakAndVariable': 0}
         if current_stations:
             weak_station_count = sum(1 for s in current_stations if s.get('noaaType') == 'W')
             predictable_count = len(current_stations) - weak_station_count
@@ -1242,7 +1422,7 @@ def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2
 
             loop = asyncio.new_event_loop()
             try:
-                processed, months, failed, weak = loop.run_until_complete(
+                processed, months, failed, weak, events = loop.run_until_complete(
                     process_all_current_stations(db_client, region_id, current_stations, start_date, end_date, current_db_path)
                 )
             finally:
@@ -1251,11 +1431,12 @@ def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2
             current_stats = {
                 'stationsProcessed': processed,
                 'totalMonths': months,
+                'totalEvents': events,
                 'stationsFailed': failed,
                 'stationsWeakAndVariable': weak,
             }
             elapsed = time.time() - start_time
-            logger.info(f'  Currents complete: {processed} stations, {months} months, {failed} failed, {weak} weak & variable ({elapsed:.0f}s)')
+            logger.info(f'  Currents complete: {processed} stations, {events} events, {months} months, {failed} failed, {weak} weak & variable ({elapsed:.0f}s)')
 
         # 5. Finalize databases and write JSON files (read from SQLite)
         logger.info('\n--- Finalizing databases and writing JSON files ---')
@@ -1277,7 +1458,7 @@ def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2
                 current_db_path,
                 current_stats['stationsProcessed'],
                 current_stats['stationsWeakAndVariable'],
-                current_stats.get('totalMonths', 0) * 30  # Approximate event count
+                current_stats.get('totalEvents', 0)
             )
             write_current_json_files(current_db_path, region_id, work_dir, storage_client)
             gc.collect()
@@ -1365,7 +1546,7 @@ def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2
         }
 
         logger.info(f'\n=== Prediction generation ({gen_type}) complete for {region_id}: {total_duration:.1f}s ===')
-        return jsonify(summary), 200
+        return summary, 200
 
     except Exception as e:
         logger.error(f'Error generating predictions for {region_id}: {e}', exc_info=True)
@@ -1374,17 +1555,19 @@ def run_prediction_generation(region_id, gen_type, years_back=1, years_forward=2
             'message': str(e)[:500],
             'failedAt': firestore.SERVER_TIMESTAMP,
         })
-        return jsonify({
+        return {
             'status': 'error',
             'error': str(e),
             'regionId': region_id,
-        }), 500
+        }, 500
 
     finally:
-        import shutil
         if os.path.exists(work_dir):
             logger.info(f'Cleaning up: {work_dir}')
-            shutil.rmtree(work_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(work_dir)
+            except Exception as e:
+                logger.warning(f'Cleanup failed for {work_dir}: {e}')
 
 
 # ============================================================================
@@ -1406,11 +1589,10 @@ def generate():
     
     NOTE: Tides and currents must be run as SEPARATE jobs to avoid timeout.
     """
-    try:
-        body = request.get_json(force=True) or {}
-    except Exception:
-        return jsonify({'error': 'Invalid JSON body'}), 400
-    
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({'error': 'Invalid or missing JSON body'}), 400
+
     region_id = body.get('regionId', '').strip()
     gen_type = body.get('type', '').strip().lower()
     years_back = int(body.get('yearsBack', 1))
@@ -1429,8 +1611,9 @@ def generate():
             'valid': ['tides', 'currents'],
         }), 400
     
-    # Call the core generation function
-    return run_prediction_generation(region_id, gen_type, years_back, years_forward, max_stations)
+    # Call the core generation function and wrap result for Flask
+    result, status_code = run_prediction_generation(region_id, gen_type, years_back, years_forward, max_stations)
+    return jsonify(result), status_code
 
 
 # ============================================================================
@@ -1477,17 +1660,16 @@ def get_status():
 @app.route('/clear-lock', methods=['POST'])
 def clear_lock():
     """Manually clear a stale lock for a region.
-    
+
     Use this when a generation has crashed/hung and you want to force-clear
-    the lock without waiting for the 75-minute timeout.
+    the lock without waiting for the 120-minute timeout.
     
     POST body: {"regionId": "07cgd"}
     """
-    try:
-        body = request.get_json(force=True) or {}
-    except Exception:
-        return jsonify({'error': 'Invalid JSON body'}), 400
-    
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({'error': 'Invalid or missing JSON body'}), 400
+
     region_id = body.get('regionId', '').strip()
 
     if region_id not in VALID_REGIONS and not body.get('allowCustomRegion'):

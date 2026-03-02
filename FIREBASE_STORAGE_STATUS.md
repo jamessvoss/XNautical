@@ -4,7 +4,7 @@
 
 ## Executive Summary
 
-All 9 Coast Guard districts have their **required files** in place:
+All 9 standard Coast Guard districts have their **required files** in place (note: the system now supports 17 regions total including Alaska sub-regions and 07cgd-wflorida):
 - ✅ Charts (US4 & US5 - required scales)
 - ✅ GNIS place names  
 - ✅ Tide predictions

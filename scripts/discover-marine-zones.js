@@ -28,9 +28,9 @@ const AdmZip = require('adm-zip');
 const shapefile = require('shapefile');
 const { DISTRICTS, ensureDistrictExists, getAllDistrictIds } = require('./lib/district-config');
 
-// NOAA Marine Zone Shapefile URLs (March 2026 versions)
-const COASTAL_ZONES_URL = 'https://www.weather.gov/source/gis/Shapefiles/WSOM/mz03mr26.zip';
-const OFFSHORE_ZONES_URL = 'https://www.weather.gov/source/gis/Shapefiles/WSOM/oz03mr26.zip';
+// NOAA Marine Zone Shapefile URLs (March 2025 versions — 2026 update delayed to April 16, 2026)
+const COASTAL_ZONES_URL = 'https://www.weather.gov/source/gis/Shapefiles/WSOM/mz18mr25.zip';
+const OFFSHORE_ZONES_URL = 'https://www.weather.gov/source/gis/Shapefiles/WSOM/oz18mr25.zip';
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -60,6 +60,7 @@ try {
   process.exit(1);
 }
 const db = admin.firestore();
+const bucket = admin.storage().bucket('xnautical-8a296.firebasestorage.app');
 
 /**
  * Download a file from URL
@@ -229,15 +230,23 @@ async function uploadZonesToFirestore(zones, targetDistricts) {
       const docRef = db.collection('districts').doc(districtId)
         .collection('marine-zones').doc(zone.id);
       
+      const geometryStr = JSON.stringify(zone.geometry);
+      const storagePath = `${districtId}/marine-zones/${zone.id}.geojson`;
+
+      // Always upload geometry to Cloud Storage
+      if (!DRY_RUN) {
+        await bucket.file(storagePath).save(geometryStr, { contentType: 'application/json' });
+      }
+
       const data = {
         id: zone.id,
         name: zone.name,
         wfo: zone.wfo,
         centroid: zone.centroid,
-        geometryJson: JSON.stringify(zone.geometry),
         districtId: districtId,
+        geometryStoragePath: storagePath,
       };
-      
+
       if (DRY_RUN) {
         console.log(`   [DRY RUN] Would upload: ${districtId}/${zone.id} (${zone.name})`);
         stats[districtId].uploaded++;
@@ -245,7 +254,7 @@ async function uploadZonesToFirestore(zones, targetDistricts) {
         try {
           await docRef.set(data);
           stats[districtId].uploaded++;
-          
+
           const total = Object.values(stats).reduce((sum, s) => sum + s.uploaded, 0);
           if (total % 25 === 0) {
             console.log(`   ✓ Uploaded ${total} zones...`);
@@ -273,7 +282,9 @@ async function main() {
   console.log('╚═══════════════════════════════════════════════════════════════╝');
   
   const startTime = Date.now();
-  const tempDir = path.join(__dirname, '.temp-marine-zones');
+  // Use a unique temp dir per process to avoid collisions when running in parallel
+  const suffix = TARGET_DISTRICT ? `-${TARGET_DISTRICT}` : `-${process.pid}`;
+  const tempDir = path.join(__dirname, `.temp-marine-zones${suffix}`);
   
   // Determine target districts
   const targetDistricts = ALL_DISTRICTS 
@@ -291,11 +302,11 @@ async function main() {
     console.log('\n📥 Downloading NOAA shapefiles...');
     
     // Download coastal zones
-    const coastalZip = path.join(tempDir, 'mz03mr26.zip');
+    const coastalZip = path.join(tempDir, path.basename(COASTAL_ZONES_URL));
     await downloadFile(COASTAL_ZONES_URL, coastalZip);
-    
+
     // Download offshore zones
-    const offshoreZip = path.join(tempDir, 'oz03mr26.zip');
+    const offshoreZip = path.join(tempDir, path.basename(OFFSHORE_ZONES_URL));
     await downloadFile(OFFSHORE_ZONES_URL, offshoreZip);
     
     console.log('\n📦 Extracting shapefiles...');

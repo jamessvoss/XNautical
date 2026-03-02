@@ -12,7 +12,8 @@
  */
 
 import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
-import { firestore } from '../config/firebase';
+import { ref, getDownloadURL } from 'firebase/storage';
+import { firestore, storage } from '../config/firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 
@@ -70,6 +71,47 @@ const LEGACY_ZONES_KEY = (districtId: string) => `@XNautical:marineZones:${distr
 const zonesCache: Record<string, MarineZone[]> = {};
 const zonesCacheTime: Record<string, number> = {};
 const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
+
+/**
+ * Resolve geometry from a Firestore zone document.
+ * Primary: fetches from Cloud Storage via geometryStoragePath.
+ * Fallback: parses inline geometryJson (legacy data).
+ */
+async function resolveGeometry(
+  data: Record<string, any>,
+  zoneId: string,
+  districtId: string,
+): Promise<GeoJSON.Polygon | GeoJSON.MultiPolygon | null> {
+  if (data.geometryStoragePath) {
+    try {
+      const storageRef = ref(storage, data.geometryStoragePath);
+      const url = await getDownloadURL(storageRef);
+      const response = await fetch(url);
+      const geom = await response.json();
+      if (!geom || !geom.type || !geom.coordinates ||
+          (geom.type !== 'Polygon' && geom.type !== 'MultiPolygon')) {
+        console.warn(`[MarineZone] Invalid GeoJSON for zone ${zoneId}: type=${geom?.type}`);
+        return null;
+      }
+      return geom;
+    } catch (error) {
+      console.warn(`[Marine] Failed to fetch geometry from Storage for ${zoneId} in ${districtId}:`, error);
+      return null;
+    }
+  }
+
+  // Legacy fallback: inline geometry in Firestore
+  if (data.geometryJson) {
+    try {
+      return JSON.parse(data.geometryJson);
+    } catch {
+      console.warn(`[Marine] Invalid geometryJson for zone ${zoneId} in ${districtId}`);
+      return null;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Get all marine zones (summaries without full geometry) for a district
@@ -131,15 +173,7 @@ export async function getMarineZones(districtId: string): Promise<MarineZone[]> 
     const zones: MarineZone[] = [];
     for (const d of snapshot.docs) {
       const data = d.data();
-      let geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon | null = null;
-      if (data.geometryJson) {
-        try {
-          geometry = JSON.parse(data.geometryJson);
-        } catch {
-          console.warn(`[Marine] Invalid geometryJson for zone ${d.id} in ${districtId}`);
-          continue;
-        }
-      }
+      const geometry = await resolveGeometry(data, d.id, districtId);
       if (!geometry) continue;
       zones.push({
         id: data.id || d.id,
@@ -187,13 +221,10 @@ export async function getMarineZone(districtId: string, zoneId: string): Promise
     }
     
     const data = docSnap.data();
-    let geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon | null = null;
-    if (data.geometryJson) {
-      try {
-        geometry = JSON.parse(data.geometryJson);
-      } catch {
-        console.warn(`[Marine] Invalid geometryJson for zone ${zoneId} in ${districtId}`);
-      }
+    const geometry = await resolveGeometry(data, zoneId, districtId);
+    if (!geometry) {
+      console.warn(`[MarineZone] No geometry resolved for zone ${zoneId}`);
+      return null;
     }
 
     return {
@@ -201,7 +232,7 @@ export async function getMarineZone(districtId: string, zoneId: string): Promise
       name: data.name || zoneId,
       wfo: data.wfo || '',
       centroid: data.centroid,
-      geometry: geometry!,
+      geometry,
       districtId: districtId
     };
   } catch (error) {
@@ -301,15 +332,7 @@ export async function downloadMarineZones(
     const zones: MarineZone[] = [];
     for (const d of snapshot.docs) {
       const data = d.data();
-      let geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon | null = null;
-      if (data.geometryJson) {
-        try {
-          geometry = JSON.parse(data.geometryJson);
-        } catch {
-          console.warn(`[Marine] Invalid geometryJson for zone ${d.id} in ${districtId}, skipping`);
-          continue;
-        }
-      }
+      const geometry = await resolveGeometry(data, d.id, districtId);
       if (!geometry) continue;
       zones.push({
         id: data.id || d.id,

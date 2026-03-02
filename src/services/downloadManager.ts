@@ -396,8 +396,11 @@ class DownloadManager {
     }
 
     try {
-      await download.resumable.pauseAsync();
+      // Set status BEFORE calling pauseAsync so that executeDownload's
+      // null-result check sees 'paused' (pauseAsync causes downloadAsync
+      // to resolve with null before pauseAsync itself resolves).
       download.status = 'paused';
+      await download.resumable.pauseAsync();
       
       this.notifyProgress(id, {
         id,
@@ -457,6 +460,7 @@ class DownloadManager {
     const activeCount = Array.from(this.activeDownloads.values()).filter(d => d.status === 'downloading').length;
     if (activeCount > 0) {
       console.log(`[DownloadManager] Pausing ${activeCount} active downloads`);
+      console.log(`[DownloadManager] pauseAll caller:`, new Error().stack);
     }
     const pausePromises: Promise<void>[] = [];
 

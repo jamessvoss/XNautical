@@ -130,6 +130,12 @@ export interface DistrictDownloadPack {
   
   /** Whether this pack is required for basic functionality */
   required: boolean;
+
+  /** MD5 checksum of the compressed file (base64-encoded) */
+  checksum?: string;
+
+  /** Checksum algorithm used */
+  checksumAlgorithm?: 'md5';
 }
 
 /** District information from Firestore */
@@ -159,7 +165,10 @@ export interface District {
   
   /** Available download packs */
   downloadPacks: DistrictDownloadPack[];
-  
+
+  /** Chart conversion completeness (0.0-1.0). Values < 1.0 mean some charts failed conversion. */
+  completeness?: number;
+
   /** Union bounding box of all chart scales (auto-computed during ENC conversion) */
   regionBoundary?: { west: number; south: number; east: number; north: number };
 

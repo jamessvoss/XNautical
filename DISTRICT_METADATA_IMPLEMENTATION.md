@@ -6,11 +6,13 @@ Successfully implemented both short-term and long-term solutions for managing US
 
 ## Problem Solved
 
-8 out of 9 districts in Firestore were missing optional but useful fields:
+8 out of 9 original districts in Firestore were missing optional but useful fields:
 - `code` (e.g., "01 CGD")
 - `bounds` (geographic boundaries: `{ west, south, east, north }`)
 
 Only district `17cgd` had these fields from the original `setup-district-firestore.js` script.
+
+> **Note (Feb 2026):** The system has since expanded from 9 standard CGDs to 17 regions, including 6 Alaska sub-regions (17cgd-Juneau, 17cgd-Anchorage, etc.) and 07cgd-wflorida. The master region config now lives at `config/regions.json`, which includes all region definitions with bounds, prefixes, GNIS filenames, and display metadata. The Python provisioning pipeline (`cloud-functions/enc-converter/create_alaska_regions.py`) reads from this master config.
 
 ## Short-Term Solution (Immediate Fix)
 
@@ -128,7 +130,7 @@ await ensureDistrictExists(db, districtId, { silent: true });
 Comprehensive test suite to verify the shared module works correctly:
 
 **Test Coverage:**
-1. ✅ DISTRICTS object contains all 9 districts
+1. ✅ DISTRICTS object contains all 9 standard CGDs (note: `config/regions.json` covers all 17 regions)
 2. ✅ All districts have required fields (name, code, bounds)
 3. ✅ `getAllDistrictIds()` returns correct array
 4. ✅ `getDistrictConfig()` retrieves district data
@@ -172,6 +174,8 @@ For future development:
 4. ✅ **Completed:** Updated `discover-marine-zones.js` to use shared config
 5. **Future:** Update any other scripts that reference district bounds to use shared config
 6. **Future:** Consider syncing `src/config/regionData.ts` with the shared config
+7. ✅ **Completed:** Master region config at `config/regions.json` covers all 17 regions (9 CGDs + 6 Alaska sub-regions + wflorida + test)
+8. ✅ **Completed:** Python provisioning pipeline reads from `config/regions.json` for region definitions
 
 ## Impact
 

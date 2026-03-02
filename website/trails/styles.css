@@ -1,0 +1,456 @@
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  overflow: hidden;
+}
+
+#map {
+  width: 100vw;
+  height: 100vh;
+  background: #0f172a;
+}
+
+#header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 10;
+}
+
+.logo {
+  color: #f8fafc;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.header-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.header-btn {
+  padding: 10px 20px;
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f8fafc;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s;
+}
+
+.header-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+  transform: scale(1.03);
+}
+
+.header-btn.tour {
+  background: rgba(37, 99, 235, 0.8);
+}
+
+.header-btn.tour:hover {
+  background: rgba(37, 99, 235, 1);
+}
+
+.header-btn.tour.active {
+  background: rgba(239, 68, 68, 0.8);
+}
+
+.header-btn.tour.active:hover {
+  background: rgba(239, 68, 68, 1);
+}
+
+/* Controls legend */
+#controls-legend {
+  position: fixed;
+  bottom: 24px;
+  left: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 8px;
+  z-index: 6;
+}
+
+.legend-row {
+  color: #94a3b8;
+  font-size: 11px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-row kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 10px;
+  color: #cbd5e1;
+  min-width: 32px;
+  text-align: center;
+}
+
+/* Trail Cards */
+#trail-cards {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  z-index: 5;
+  padding: 0 24px;
+}
+
+.trail-card {
+  width: 220px;
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  border: 2px solid transparent;
+  flex-shrink: 0;
+}
+
+.trail-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.trail-card.active {
+  border-color: var(--trail-color);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--trail-color) 40%, transparent);
+}
+
+.trail-card-image {
+  width: 100%;
+  height: 100px;
+  object-fit: cover;
+}
+
+.trail-card-body {
+  padding: 10px 12px;
+  color: #f8fafc;
+}
+
+.trail-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  line-height: 1.3;
+}
+
+.trail-card-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.difficulty-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Info Panel */
+#info-panel {
+  position: fixed;
+  top: 0;
+  right: -420px;
+  width: 400px;
+  max-width: 90vw;
+  height: 100vh;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  overflow-y: auto;
+  z-index: 15;
+  transition: right 0.3s ease;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.5);
+}
+
+#info-panel.open {
+  right: 0;
+}
+
+.panel-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(15, 23, 42, 0.8);
+  color: #f8fafc;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  transition: background 0.2s;
+}
+
+.panel-close:hover {
+  background: rgba(30, 41, 59, 0.9);
+}
+
+.panel-image {
+  width: 100%;
+  height: 220px;
+  object-fit: cover;
+}
+
+.panel-content {
+  padding: 20px;
+}
+
+.panel-content h2 {
+  color: #f8fafc;
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  line-height: 1.3;
+}
+
+.panel-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 16px;
+  background: rgba(30, 41, 59, 0.6);
+  border-radius: 10px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-value {
+  color: #38bdf8;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.stat-label {
+  color: #94a3b8;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.panel-description {
+  color: #cbd5e1;
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 16px 0;
+}
+
+.panel-highlights {
+  margin: 16px 0;
+}
+
+.panel-highlights h3 {
+  color: #f8fafc;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.panel-highlights ul {
+  list-style: none;
+  padding: 0;
+}
+
+.panel-highlights li {
+  color: #cbd5e1;
+  font-size: 13px;
+  padding: 6px 0;
+  padding-left: 20px;
+  position: relative;
+}
+
+.panel-highlights li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--trail-color, #38bdf8);
+}
+
+.panel-cta {
+  display: block;
+  width: 100%;
+  padding: 14px;
+  margin-top: 20px;
+  background: #2563eb;
+  color: #ffffff;
+  text-align: center;
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 10px;
+  transition: background 0.2s;
+}
+
+.panel-cta:hover {
+  background: #1d4ed8;
+}
+
+/* Elevation Profile */
+#elevation-profile {
+  position: fixed;
+  bottom: 200px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 400px;
+  height: 120px;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 12px;
+  z-index: 6;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  padding: 12px;
+}
+
+#elevation-profile.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Tour Overlay */
+#tour-overlay {
+  position: fixed;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #ffffff;
+  font-size: 36px;
+  font-weight: 700;
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.7), 0 0 40px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  pointer-events: none;
+  z-index: 20;
+  text-align: center;
+  letter-spacing: 0.01em;
+  max-width: 80vw;
+}
+
+#tour-overlay.visible {
+  opacity: 1;
+}
+
+/* Opening animation - fade in UI elements */
+#trail-cards, #header {
+  opacity: 0;
+  transition: opacity 0.8s ease;
+}
+
+#trail-cards.visible, #header.visible {
+  opacity: 1;
+}
+
+/* Bottom gradient for card readability */
+.bottom-gradient {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 200px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.4) 0%, transparent 100%);
+  pointer-events: none;
+  z-index: 4;
+}
+
+@media (max-width: 768px) {
+  #trail-cards {
+    left: 0;
+    transform: none;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    padding: 0 12px;
+    bottom: 12px;
+    width: 100%;
+  }
+  .trail-card {
+    scroll-snap-align: start;
+    min-width: 180px;
+    width: 180px;
+  }
+
+  #info-panel {
+    top: auto;
+    right: 0;
+    bottom: -100%;
+    left: 0;
+    width: 100%;
+    max-width: 100%;
+    height: 70vh;
+    border-radius: 16px 16px 0 0;
+    transition: bottom 0.3s ease;
+  }
+  #info-panel.open {
+    bottom: 0;
+  }
+
+  #elevation-profile {
+    width: calc(100% - 24px);
+    bottom: 210px;
+    height: 100px;
+  }
+
+  #tour-overlay {
+    font-size: 24px;
+  }
+
+  #controls-legend {
+    display: none;
+  }
+}

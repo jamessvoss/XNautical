@@ -6,7 +6,7 @@ Replaced all hardcoded download size estimates with **real file sizes** from Fir
 
 ## What Changed
 
-### ✅ Created `generate-district-metadata` Cloud Run Service
+### ✅ Created `district-metadata` Cloud Run Service
 
 **Location:** `/cloud-functions/district-metadata/`
 
@@ -50,7 +50,7 @@ When charts, satellite imagery, or any data is generated:
 ```python
 # At end of conversion/generation
 import requests
-metadata_url = 'https://generate-district-metadata-XXX.run.app/generateMetadata'
+metadata_url = 'https://district-metadata-XXX.run.app/generateMetadata'
 requests.post(metadata_url, json={'districtId': district_id})
 ```
 
@@ -150,7 +150,7 @@ chmod +x deploy.sh
 
 Edit `scripts/generate-download-metadata.js`:
 ```javascript
-const SERVICE_URL = 'https://generate-district-metadata-XXXXX-uc.a.run.app';
+const SERVICE_URL = 'https://district-metadata-XXXXX-uc.a.run.app';
 ```
 
 ### 3. Generate Metadata for All Districts
@@ -183,7 +183,7 @@ Add to end of each data generator (`enc-converter`, `satellite-generator`, etc.)
 # Trigger metadata regeneration
 import requests
 try:
-    metadata_url = 'https://generate-district-metadata-XXX.run.app/generateMetadata'
+    metadata_url = 'https://district-metadata-XXX.run.app/generateMetadata'
     response = requests.post(metadata_url, json={'districtId': district_id})
     logger.info(f'Generated download metadata for {district_id}')
 except Exception as e:
@@ -216,7 +216,7 @@ gsutil ls -l gs://xnautical-8a296.firebasestorage.app/17cgd/charts/
 
 - **Metadata Generation:** ~5 seconds per district
 - **App Fetch:** ~200ms (downloads 10 KB JSON)
-- **Storage Cost:** ~10 KB × 9 districts = negligible
+- **Storage Cost:** ~10 KB × 17 regions = negligible
 - **Total Cost:** < $0.01/month
 
 ## Future Enhancements

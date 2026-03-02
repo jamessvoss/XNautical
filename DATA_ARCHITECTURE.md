@@ -29,23 +29,39 @@ All downloadable tile data and databases stored as compressed files.
 │   ├── US5.mbtiles.zip    (General charts - smaller scale)
 │   └── US6.mbtiles.zip    (Overview charts)
 ├── satellite/
-│   └── satellite.mbtiles.zip  (Satellite imagery tiles)
+│   ├── satellite_overview.mbtiles       (z0-5 raw pack)
+│   ├── satellite_detail_z{N}.mbtiles    (per-zoom raw packs z6-z14)
+│   ├── {prefix}_satellite_overview.mbtiles.zip
+│   ├── {prefix}_satellite_detail_z{N}.mbtiles.zip
+│   └── {prefix}_satellite.mbtiles.zip   (combined all-zoom pack)
 ├── gnis/
-│   └── gnis.mbtiles.zip       (Place names overlay)
+│   └── {prefix}_gnis.mbtiles.zip        (Place names overlay)
 ├── basemap/
-│   └── basemap.mbtiles.zip    (Base terrain/water tiles)
+│   ├── basemap_overview.mbtiles         (z0-5 raw pack)
+│   ├── basemap_detail_z{N}.mbtiles      (per-zoom raw packs z6-z14)
+│   ├── {prefix}_basemap_overview.mbtiles.zip
+│   ├── {prefix}_basemap_detail_z{N}.mbtiles.zip
+│   └── {prefix}_basemap.mbtiles.zip     (combined all-zoom pack)
 ├── ocean/
-│   └── ocean.mbtiles.zip      (ESRI Ocean Basemap)
-└── terrain/
-    └── terrain.mbtiles.zip     (OpenTopoMap terrain)
+│   ├── (same per-zoom pack structure as basemap)
+│   └── {prefix}_ocean.mbtiles.zip       (combined all-zoom pack)
+├── terrain/
+│   ├── (same per-zoom pack structure as basemap)
+│   └── {prefix}_terrain.mbtiles.zip     (combined all-zoom pack)
+└── predictions/
+    ├── tides.db.zip      (~24 MB - SQLite database with 1yr historical + 2yr future)
+    └── currents.db.zip   (~24 MB - SQLite database with 1yr historical + 2yr future)
 ```
 
-#### Global Predictions:
-```
-predictions/
-├── tides.db.zip      (~24 MB - SQLite database with 1yr historical + 2yr future)
-└── currents.db.zip   (~24 MB - SQLite database with 1yr historical + 2yr future)
-```
+Where `{prefix}` is the district filename prefix (e.g., `d01` for 01cgd, `17-juneau` for 17cgd-Juneau). Prefixes are defined in `generators-base/config.py` DISTRICT_PREFIXES.
+
+All four imagery generators (satellite, basemap, ocean, terrain) produce per-zoom MBTiles packs for incremental downloads, plus a combined zip for full-region download. They share common code via `generators-base/` (config.py + tile_utils.py).
+
+#### Districts and Sub-Regions:
+
+Standard CGDs: 01cgd, 05cgd, 07cgd, 08cgd, 09cgd, 11cgd, 13cgd, 14cgd, 17cgd
+Alaska sub-regions: 17cgd-Juneau, 17cgd-Anchorage, 17cgd-Kodiak, 17cgd-DutchHarbor, 17cgd-Nome, 17cgd-Barrow
+Special sub-regions: 07cgd-wflorida
 
 **Total Storage Per District:** ~0.5-5 GB depending on region size and selected resolution
 

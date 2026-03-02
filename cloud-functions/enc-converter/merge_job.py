@@ -38,16 +38,8 @@ logger = logging.getLogger(__name__)
 # Constants
 SCALE_PREFIXES = ['US1', 'US2', 'US3', 'US4', 'US5', 'US6']
 
-# App-side filename prefixes per district (must match app's DISTRICT_PREFIXES)
-DISTRICT_PREFIXES = {
-    '01cgd': 'd01', '05cgd': 'd05', '07cgd': 'd07', '08cgd': 'd08',
-    '09cgd': 'd09', '11cgd': 'd11', '13cgd': 'd13', '14cgd': 'd14',
-    '17cgd': 'd17',
-}
-
-def get_district_prefix(district_label: str) -> str:
-    """Get the app-side filename prefix for a district."""
-    return DISTRICT_PREFIXES.get(district_label, district_label.replace('cgd', ''))
+# App-side filename prefixes per district (loaded from regions.json)
+from region_config import DISTRICT_PREFIXES, get_district_prefix
 
 
 def main():

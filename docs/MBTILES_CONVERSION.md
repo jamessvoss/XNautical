@@ -71,7 +71,7 @@ All S-57 data is preserved in the MBTiles. The app controls what is displayed th
 | **Cloud Run Job** | `enc-converter-merge` (compose + legacy merge) |
 | **Service image** | `gcr.io/xnautical-8a296/enc-converter:latest` |
 | **Base image** | `gcr.io/xnautical-8a296/enc-converter-base:latest` |
-| **District Metadata Service** | `generate-district-metadata` (regenerates download-metadata.json) |
+| **District Metadata Service** | `district-metadata` (regenerates download-metadata.json) |
 | **Job resources** | 32Gi memory, 8 vCPU, 2-hour timeout |
 
 ### Valid Districts
@@ -474,7 +474,7 @@ The enc-converter service requires the following env var for automatic metadata 
 ```bash
 # Set on the enc-converter Cloud Run Service (one-time)
 gcloud run services update enc-converter \
-  --set-env-vars METADATA_GENERATOR_URL=https://generate-district-metadata-f2plukcj3a-uc.a.run.app \
+  --set-env-vars METADATA_GENERATOR_URL=https://district-metadata-XXXXX-uc.a.run.app \
   --region us-central1 --project xnautical-8a296
 ```
 

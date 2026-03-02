@@ -37,13 +37,12 @@ import {
   downloadMarineZones,
   areMarineZonesDownloaded,
 } from '../services/marineZoneService';
+import type { SatelliteResolution } from '../config/regionData';
 
 interface Region {
   firestoreId: string;
   name: string;
 }
-
-type SatelliteResolution = 'low' | 'medium' | 'high' | 'ultra';
 
 interface DownloadProgressViewProps {
   region: Region;
@@ -301,7 +300,8 @@ export default function DownloadProgressView({
     const packs = data.downloadPacks;
 
     // Charts - separate item for each scale (US1-US6)
-    const chartPacks = packs.filter(p => p.type === 'charts');
+    // Exclude points pack (handled separately below)
+    const chartPacks = packs.filter(p => p.type === 'charts' && p.id !== 'points');
     chartPacks.forEach(pack => {
       const scale = pack.id.replace('charts-', '').toUpperCase();
       items.push({
@@ -311,6 +311,17 @@ export default function DownloadProgressView({
         packId: pack.id,
       });
     });
+
+    // Points pack (soundings, lights, buoys, hazards — separate MBTiles)
+    const pointsPack = packs.find(p => p.id === 'points');
+    if (pointsPack) {
+      items.push({
+        id: 'chart-points',
+        label: 'Navigation Points',
+        type: 'chart',
+        packId: pointsPack.id,
+      });
+    }
 
     // Predictions - separate for tides and currents
     items.push({
@@ -382,38 +393,38 @@ export default function DownloadProgressView({
     // Optional maps
     if (selectedOptionalMaps?.has('basemap')) {
       const basemapPacks = packs.filter(p => p.type === 'basemap');
-      if (basemapPacks.length > 0) {
+      basemapPacks.forEach((pack, i) => {
         items.push({
-          id: 'basemap',
-          label: 'Basemap',
+          id: `basemap-${pack.id}`,
+          label: basemapPacks.length > 1 ? `Basemap (${i + 1}/${basemapPacks.length})` : 'Basemap',
           type: 'basemap',
-          packId: basemapPacks[0].id,
+          packId: pack.id,
         });
-      }
+      });
     }
 
     if (selectedOptionalMaps?.has('ocean')) {
       const oceanPacks = packs.filter(p => p.type === 'ocean');
-      if (oceanPacks.length > 0) {
+      oceanPacks.forEach((pack, i) => {
         items.push({
-          id: 'ocean',
-          label: 'Ocean Map',
+          id: `ocean-${pack.id}`,
+          label: oceanPacks.length > 1 ? `Ocean Map (${i + 1}/${oceanPacks.length})` : 'Ocean Map',
           type: 'ocean',
-          packId: oceanPacks[0].id,
+          packId: pack.id,
         });
-      }
+      });
     }
 
     if (selectedOptionalMaps?.has('terrain')) {
       const terrainPacks = packs.filter(p => p.type === 'terrain');
-      if (terrainPacks.length > 0) {
+      terrainPacks.forEach((pack, i) => {
         items.push({
-          id: 'terrain',
-          label: 'Terrain Map',
+          id: `terrain-${pack.id}`,
+          label: terrainPacks.length > 1 ? `Terrain Map (${i + 1}/${terrainPacks.length})` : 'Terrain Map',
           type: 'terrain',
-          packId: terrainPacks[0].id,
+          packId: pack.id,
         });
-      }
+      });
     }
 
     return items;
@@ -477,6 +488,8 @@ export default function DownloadProgressView({
 
     addConsoleEntry('__start__', `Downloading ${downloadItems.length} items for ${region.name}...`, 'info');
 
+    const failedItems: string[] = [];
+
     try {
       for (let i = 0; i < downloadItems.length; i++) {
         if (isCancelledRef.current) {
@@ -508,6 +521,7 @@ export default function DownloadProgressView({
           console.error(`[DownloadProgressView] ❌ Error downloading ${item.label}:`, itemError);
           console.error('[DownloadProgressView] Error stack:', itemError.stack);
           updateItemStatus(item.id, 'error', 0, itemError.message);
+          failedItems.push(item.label);
           // Don't stop the loop - continue with other items
         }
       }
@@ -539,7 +553,14 @@ export default function DownloadProgressView({
         // Flush tile server caches and force MapLibre remount
         await requestMapReset();
 
-        Alert.alert('Complete', 'All data downloaded successfully.');
+        if (failedItems.length > 0) {
+          Alert.alert(
+            'Partial Download',
+            `${downloadItems.length - failedItems.length} items downloaded successfully, ${failedItems.length} failed:\n${failedItems.join(', ')}`
+          );
+        } else {
+          Alert.alert('Complete', 'All data downloaded successfully.');
+        }
         onComplete();
       }
     } catch (error: any) {
@@ -593,8 +614,7 @@ export default function DownloadProgressView({
       reportItemBytes(item.id, pack.sizeBytes);
       console.log(`  [Chart] ${item.label} complete`);
     } else if (!isCancelledRef.current) {
-      console.error(`  [Chart] ${item.label} failed`);
-      updateItemStatus(item.id, 'error', 0, 'Download failed');
+      throw new Error(`Chart download failed: ${item.label}`);
     }
   };
 
@@ -732,8 +752,7 @@ export default function DownloadProgressView({
       reportItemBytes(item.id, pack.sizeBytes);
       console.log(`  [Pack] ${item.label} complete`);
     } else if (!isCancelledRef.current) {
-      console.error(`  [Pack] ${item.label} failed`);
-      updateItemStatus(item.id, 'error', 0, 'Download failed');
+      throw new Error(`Pack download failed: ${item.label}`);
     }
   };
 

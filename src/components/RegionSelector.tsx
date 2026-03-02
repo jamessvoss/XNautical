@@ -797,7 +797,36 @@ export default function RegionSelector({ visible, onClose }: Props) {
         <Text style={styles.panelSectionTitle}>NOAA REGIONS</Text>
 
         <View style={styles.chipGrid}>
-          {REGIONS.map(region => {
+          {REGIONS.filter(r => !r.firestoreId.startsWith('17cgd-') || r.firestoreId === '17cgd-test').map(region => {
+            const isSelected = selectedRegionId === region.id;
+            const installed = isRegionInstalled(region);
+
+            return (
+              <TouchableOpacity
+                key={region.id}
+                style={[
+                  styles.chip,
+                  installed && !isSelected && styles.chipInstalled,
+                  isSelected && { backgroundColor: region.color, borderColor: region.color },
+                ]}
+                onPress={() => handleRegionSelect(region.id)}
+                activeOpacity={0.7}
+              >
+                {installed && (
+                  <Ionicons name="checkmark-circle" size={14} color={isSelected ? '#ffffff' : '#4CAF50'} style={{ marginRight: 4 }} />
+                )}
+                <Text style={[styles.chipText, isSelected && styles.chipTextSelected]}>
+                  {region.name}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        <Text style={[styles.panelSectionTitle, { marginTop: 12 }]}>ALASKA REGIONS</Text>
+
+        <View style={styles.chipGrid}>
+          {REGIONS.filter(r => r.firestoreId.startsWith('17cgd-') && r.firestoreId !== '17cgd-test').map(region => {
             const isSelected = selectedRegionId === region.id;
             const installed = isRegionInstalled(region);
 
