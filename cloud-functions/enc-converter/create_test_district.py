@@ -163,9 +163,17 @@ _service_url_lock = threading.Lock()
 def _populate_service_url_cache():
     """Fetch all Cloud Run service URLs at once via gcloud run services list.
     Thread-safe — only one thread will populate the cache.
+    If CLOUD_RUN_SERVICE_URLS env var is set (by parent create_alaska_regions.py),
+    uses that directly to avoid concurrent gcloud subprocess storms.
     Retries up to 3 times on SIGSEGV (Python 3.14 + gcloud subprocess instability)."""
     with _service_url_lock:
         if _service_url_cache:
+            return
+        # Check for pre-resolved URLs from parent process
+        env_urls = os.environ.get('CLOUD_RUN_SERVICE_URLS')
+        if env_urls:
+            _service_url_cache.update(json.loads(env_urls))
+            logger.info(f'  Using {len(_service_url_cache)} pre-resolved service URLs')
             return
         for attempt in range(3):
             try:
@@ -213,10 +221,20 @@ def get_auth_token(force_refresh=False):
 
     Caches token for 45 minutes (tokens expire after 60 min).
     Thread-safe for concurrent use from ThreadPoolExecutor.
+    If CLOUD_RUN_AUTH_TOKEN env var is set (by parent create_alaska_regions.py),
+    uses that as initial seed to avoid concurrent gcloud subprocess storms.
     Retries up to 3 times on SIGSEGV (Python 3.14 + gcloud subprocess instability).
     """
     global _auth_token, _auth_token_time
     with _auth_lock:
+        # Seed from parent's pre-resolved token on first call
+        if not _auth_token and not force_refresh:
+            env_token = os.environ.get('CLOUD_RUN_AUTH_TOKEN')
+            if env_token:
+                _auth_token = env_token
+                _auth_token_time = time.time()
+                logger.info('  Using pre-resolved auth token')
+                return _auth_token
         if not force_refresh and _auth_token and (time.time() - _auth_token_time) < 2700:
             return _auth_token
         for attempt in range(3):

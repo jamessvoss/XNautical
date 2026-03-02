@@ -33,6 +33,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
@@ -100,10 +101,73 @@ NDBC_BUOYS_SCRIPT = os.path.join(PROJECT_ROOT, 'scripts', 'discover-ndbc-buoys.j
 
 
 # ============================================================================
+# Pre-resolve gcloud calls (run once in parent, pass to children via env vars)
+# ============================================================================
+
+GCP_PROJECT = 'xnautical-8a296'
+GCP_REGION = 'us-central1'
+
+
+def _resolve_service_urls():
+    """Call `gcloud run services list` once and return {service_name: url} dict.
+    Retries up to 3 times on SIGSEGV (Python 3.14 + gcloud subprocess instability)."""
+    for attempt in range(3):
+        try:
+            output = subprocess.check_output([
+                'gcloud', 'run', 'services', 'list',
+                '--region', GCP_REGION,
+                '--project', GCP_PROJECT,
+                '--format', 'csv[no-heading](SERVICE,URL)',
+            ], text=True).strip()
+            urls = {}
+            for line in output.splitlines():
+                if ',' in line:
+                    name, url = line.split(',', 1)
+                    urls[name.strip()] = url.strip()
+            logger.info(f'Pre-resolved {len(urls)} Cloud Run service URLs')
+            return urls
+        except subprocess.CalledProcessError as e:
+            if e.returncode < 0 and attempt < 2:
+                logger.warning(f'gcloud crashed (signal {-e.returncode}), retry {attempt+1}/3...')
+                time.sleep(2)
+                continue
+            logger.error(f'Failed to list Cloud Run services: {e}')
+            return {}
+        except FileNotFoundError as e:
+            logger.error(f'gcloud not found: {e}')
+            return {}
+    return {}
+
+
+def _get_identity_token():
+    """Call `gcloud auth print-identity-token` once and return the token string.
+    Retries up to 3 times on SIGSEGV."""
+    for attempt in range(3):
+        try:
+            token = subprocess.check_output(
+                ['gcloud', 'auth', 'print-identity-token'],
+                text=True,
+            ).strip()
+            logger.info('Pre-resolved auth identity token')
+            return token
+        except subprocess.CalledProcessError as e:
+            if e.returncode < 0 and attempt < 2:
+                logger.warning(f'gcloud auth crashed (signal {-e.returncode}), retry {attempt+1}/3...')
+                time.sleep(2)
+                continue
+            logger.error(f'Failed to get identity token: {e}')
+            return None
+        except FileNotFoundError as e:
+            logger.error(f'gcloud not found: {e}')
+            return None
+    return None
+
+
+# ============================================================================
 # Execution helpers
 # ============================================================================
 
-def run_command(cmd, description, dry_run=False):
+def run_command(cmd, description, dry_run=False, extra_env=None):
     """Run a shell command with logging."""
     logger.info(f'  → {description}')
     logger.info(f'    $ {" ".join(cmd)}')
@@ -112,12 +176,17 @@ def run_command(cmd, description, dry_run=False):
         logger.info('    [DRY RUN - skipped]')
         return 0
 
+    env = None
+    if extra_env:
+        env = {**os.environ, **extra_env}
+
     try:
         result = subprocess.run(
             cmd,
             cwd=PROJECT_ROOT,
             capture_output=False,
             text=True,
+            env=env,
         )
         if result.returncode != 0:
             logger.error(f'    ✗ Command failed with exit code {result.returncode}')
@@ -127,7 +196,7 @@ def run_command(cmd, description, dry_run=False):
         return 1
 
 
-def provision_region(region_id, region_config, args, index=0):
+def provision_region(region_id, region_config, args, index=0, extra_env=None):
     """Run the full provisioning pipeline for a single region.
 
     Designed to run in its own thread — each region gets its own
@@ -169,7 +238,7 @@ def provision_region(region_id, region_config, args, index=0):
     if prediction_delay > 0:
         cmd.extend(['--prediction-delay', str(prediction_delay)])
 
-    rc = run_command(cmd, f'create_test_district.py for {region_id}')
+    rc = run_command(cmd, f'create_test_district.py for {region_id}', extra_env=extra_env)
     if rc != 0:
         logger.error(f'Failed to provision {region_id} (exit code {rc})')
         return region_id, False
@@ -390,6 +459,16 @@ def main():
     logger.info(f'Started: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
     logger.info(f'========================================')
 
+    # Pre-resolve gcloud calls once to avoid N×gcloud subprocess storms (SIGSEGV under parallel load)
+    child_env = {}
+    if not args.skip_provisioning and not args.dry_run:
+        service_urls = _resolve_service_urls()
+        if service_urls:
+            child_env['CLOUD_RUN_SERVICE_URLS'] = json.dumps(service_urls)
+        auth_token = _get_identity_token()
+        if auth_token:
+            child_env['CLOUD_RUN_AUTH_TOKEN'] = auth_token
+
     # Phase 1: Provision each region via create_test_district.py
     results = {}
 
@@ -400,7 +479,7 @@ def main():
         logger.info(f'Launching {len(regions_to_process)} regions in parallel...')
         with ThreadPoolExecutor(max_workers=len(regions_to_process)) as executor:
             futures = {
-                executor.submit(provision_region, rid, rcfg, args, index=i): rid
+                executor.submit(provision_region, rid, rcfg, args, index=i, extra_env=child_env): rid
                 for i, (rid, rcfg) in enumerate(regions_to_process.items())
             }
             for future in as_completed(futures):
@@ -413,7 +492,7 @@ def main():
                     results[region_id] = False
     else:
         for i, (region_id, region_config) in enumerate(regions_to_process.items()):
-            _, success = provision_region(region_id, region_config, args, index=i)
+            _, success = provision_region(region_id, region_config, args, index=i, extra_env=child_env)
             results[region_id] = success
             if not success and not args.dry_run:
                 logger.error(f'Stopping after failure on {region_id}')
