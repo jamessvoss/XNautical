@@ -162,24 +162,34 @@ _service_url_lock = threading.Lock()
 
 def _populate_service_url_cache():
     """Fetch all Cloud Run service URLs at once via gcloud run services list.
-    Thread-safe — only one thread will populate the cache."""
+    Thread-safe — only one thread will populate the cache.
+    Retries up to 3 times on SIGSEGV (Python 3.14 + gcloud subprocess instability)."""
     with _service_url_lock:
         if _service_url_cache:
             return
-        try:
-            output = subprocess.check_output([
-                'gcloud', 'run', 'services', 'list',
-                '--region', GCP_REGION,
-                '--project', GCP_PROJECT,
-                '--format', 'csv[no-heading](SERVICE,URL)',
-            ], text=True).strip()
-            for line in output.splitlines():
-                if ',' in line:
-                    name, url = line.split(',', 1)
-                    _service_url_cache[name.strip()] = url.strip()
-            logger.info(f'  Discovered {len(_service_url_cache)} Cloud Run services')
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            logger.error(f'Failed to list Cloud Run services: {e}')
+        for attempt in range(3):
+            try:
+                output = subprocess.check_output([
+                    'gcloud', 'run', 'services', 'list',
+                    '--region', GCP_REGION,
+                    '--project', GCP_PROJECT,
+                    '--format', 'csv[no-heading](SERVICE,URL)',
+                ], text=True).strip()
+                for line in output.splitlines():
+                    if ',' in line:
+                        name, url = line.split(',', 1)
+                        _service_url_cache[name.strip()] = url.strip()
+                logger.info(f'  Discovered {len(_service_url_cache)} Cloud Run services')
+                return
+            except subprocess.CalledProcessError as e:
+                if e.returncode < 0 and attempt < 2:
+                    logger.warning(f'  gcloud crashed (signal {-e.returncode}), retry {attempt+1}/3...')
+                    time.sleep(2)
+                    continue
+                logger.error(f'Failed to list Cloud Run services: {e}')
+            except FileNotFoundError as e:
+                logger.error(f'Failed to list Cloud Run services: {e}')
+                return
 
 
 def get_service_url(service_key):
@@ -203,21 +213,30 @@ def get_auth_token(force_refresh=False):
 
     Caches token for 45 minutes (tokens expire after 60 min).
     Thread-safe for concurrent use from ThreadPoolExecutor.
+    Retries up to 3 times on SIGSEGV (Python 3.14 + gcloud subprocess instability).
     """
     global _auth_token, _auth_token_time
     with _auth_lock:
         if not force_refresh and _auth_token and (time.time() - _auth_token_time) < 2700:
             return _auth_token
-        try:
-            _auth_token = subprocess.check_output(
-                ['gcloud', 'auth', 'print-identity-token'],
-                text=True,
-            ).strip()
-            _auth_token_time = time.time()
-            return _auth_token
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            logger.error(f'Failed to get auth token: {e}')
-            return None
+        for attempt in range(3):
+            try:
+                _auth_token = subprocess.check_output(
+                    ['gcloud', 'auth', 'print-identity-token'],
+                    text=True,
+                ).strip()
+                _auth_token_time = time.time()
+                return _auth_token
+            except subprocess.CalledProcessError as e:
+                if e.returncode < 0 and attempt < 2:
+                    logger.warning(f'  gcloud auth crashed (signal {-e.returncode}), retry {attempt+1}/3...')
+                    time.sleep(2)
+                    continue
+                logger.error(f'Failed to get auth token: {e}')
+                return None
+            except FileNotFoundError as e:
+                logger.error(f'Failed to get auth token: {e}')
+                return None
 
 
 def call_service(service_key, endpoint, body, timeout=7200, max_retries=3, retry_delay=30):
@@ -265,23 +284,23 @@ def call_service(service_key, endpoint, body, timeout=7200, max_retries=3, retry
                     return {'status': 'error', 'http_status': 400, 'error': resp.text[:500]}
             if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
                 delay = retry_delay * (2 ** attempt)
-                logger.warning(f'  HTTP {resp.status_code}, retry {attempt+1}/{max_retries} in {delay}s...')
+                logger.warning(f'  [{service_key}] HTTP {resp.status_code}, retry {attempt+1}/{max_retries} in {delay}s...')
                 time.sleep(delay)
                 continue
             logger.error(f'  HTTP {resp.status_code}: {resp.text[:500]}')
             return None
         except requests.exceptions.Timeout:
             if attempt < max_retries:
-                logger.warning(f'  Timeout after {timeout}s, retry {attempt+1}/{max_retries}...')
+                logger.warning(f'  [{service_key}] Timeout after {timeout}s, retry {attempt+1}/{max_retries}...')
                 continue
-            logger.error(f'  Request timed out after {timeout}s (all retries exhausted)')
+            logger.error(f'  [{service_key}] Request timed out after {timeout}s (all retries exhausted)')
             return None
         except Exception as e:
             if attempt < max_retries:
-                logger.warning(f'  Error: {e}, retry {attempt+1}/{max_retries} in {retry_delay}s...')
+                logger.warning(f'  [{service_key}] Error: {e}, retry {attempt+1}/{max_retries} in {retry_delay}s...')
                 time.sleep(retry_delay)
                 continue
-            logger.error(f'  Request failed: {e}')
+            logger.error(f'  [{service_key}] Request failed: {e}')
             return None
     return None
 
@@ -733,6 +752,57 @@ def create_firestore_doc(source_district, test_name, bounds):
 # Phase 6: Trigger ENC Conversion
 # ============================================================================
 
+def _poll_compose_completion(district_label, timeout=7200):
+    """Poll Firestore for compose job completion.
+
+    The compose Cloud Run Job writes chartData.composedAt when it finishes.
+    We poll for that field (or an error state) to determine completion.
+    """
+    db = get_firestore_client()
+    doc_ref = db.collection('districts').document(district_label)
+    start = time.time()
+    poll_interval = 15
+
+    while time.time() - start < timeout:
+        time.sleep(poll_interval)
+        elapsed = int(time.time() - start)
+
+        try:
+            doc = doc_ref.get()
+            if not doc.exists:
+                continue
+            data = doc.to_dict()
+
+            # Check for compose completion (compose job writes composedAt)
+            chart_data = data.get('chartData', {})
+            composed_at = chart_data.get('composedAt')
+            if composed_at:
+                try:
+                    composed_epoch = composed_at.timestamp() if hasattr(composed_at, 'timestamp') else composed_at
+                except Exception:
+                    composed_epoch = 0
+
+                if composed_epoch >= start - 30:
+                    total = chart_data.get('totalCharts', '?')
+                    size = chart_data.get('totalSizeMB', 0)
+                    logger.info(f'  Compose complete: {total} charts, {size:.1f} MB ({elapsed}s)')
+                    return True
+
+            # Check for error state
+            status = data.get('conversionStatus', {})
+            if status.get('state') == 'error':
+                logger.error(f'  Compose failed: {status.get("message", "unknown")}')
+                return False
+        except Exception as e:
+            logger.warning(f'  Error polling Firestore: {e}')
+
+        if elapsed % 60 < poll_interval:
+            logger.info(f'  Waiting on compose job ({elapsed}s)...')
+
+    logger.error(f'  Compose timed out after {timeout}s')
+    return False
+
+
 def trigger_enc_conversion(test_name, timeout=7200):
     """Trigger ENC conversion and poll for completion."""
     logger.info(f'\nPhase 6: Triggering ENC conversion...')
@@ -767,6 +837,11 @@ def trigger_enc_conversion(test_name, timeout=7200):
             return True
         logger.warning(f'  ENC conversion conflict: {conflict_msg or "in progress"}')
         return False
+    # Compose job launched — poll Firestore locally (no Cloud Run timeout limit)
+    if result.get('composeStatus') == 'launched':
+        charts = result.get('summary', {}).get('successfulCharts', '?')
+        logger.info(f'  Batch conversion done ({charts} charts), compose job launched — polling Firestore...')
+        return _poll_compose_completion(test_name, timeout=timeout)
     total_charts = result.get('total_charts', result.get('report', {}).get('total_charts', '?'))
     logger.info(f'  ENC conversion complete: {total_charts} charts')
     return True

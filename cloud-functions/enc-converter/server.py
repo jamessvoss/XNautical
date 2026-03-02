@@ -1500,93 +1500,24 @@ def convert_district_parallel():
             logger.error(f'  Compose job failed to start: {e}')
             compose_result = {'error': f'Job launch failed: {str(e)[:200]}'}
 
-        # Poll Firestore for compose completion
-        poll_interval = 10  # seconds
-        max_wait = 7200  # allow up to 2h for large districts (D17 compose took 3679s)
-        elapsed = 0
-        launch_time = time.time()
-        compose_done = bool(compose_result.get('error'))
-
-        logger.info(f'  Polling Firestore for compose completion...')
-
-        while not compose_done and elapsed < max_wait:
-            time.sleep(poll_interval)
-            elapsed += poll_interval
-
-            try:
-                doc_ref = db.collection('districts').document(district_label)
-                doc_snap = doc_ref.get()
-
-                if doc_snap.exists:
-                    chart_data = doc_snap.to_dict().get('chartData', {})
-                    composed_at = chart_data.get('composedAt')
-
-                    if composed_at:
-                        try:
-                            composed_epoch = composed_at.timestamp() if hasattr(composed_at, 'timestamp') else composed_at
-                        except Exception:
-                            composed_epoch = 0
-
-                        if composed_epoch >= launch_time - 30:
-                            compose_result = {
-                                'totalCharts': chart_data.get('totalCharts', 0),
-                                'sizeMB': chart_data.get('totalSizeMB', 0),
-                                'storagePath': chart_data.get('unifiedStoragePath'),
-                                'bounds': chart_data.get('bounds'),
-                                'dedupStats': chart_data.get('dedupStats'),
-                                'error': None,
-                            }
-                            compose_duration_s = composed_epoch - launch_time
-                            logger.info(f'  Compose complete - '
-                                       f'{compose_result.get("totalCharts")} charts, '
-                                       f'{compose_result.get("sizeMB", 0):.1f} MB in {compose_duration_s:.0f}s')
-                            compose_done = True
-            except Exception as e:
-                logger.warning(f'  Error polling Firestore: {e}')
-
-            if not compose_done and elapsed % 60 < poll_interval:
-                # Check if job execution terminally failed
-                try:
-                    list_request = run_v2.ListExecutionsRequest(parent=job_path)
-                    executions_list = list(executions_client.list_executions(request=list_request))
-
-                    compose_executions = []
-                    for execution in executions_list:
-                        try:
-                            for container in (execution.template.containers or []):
-                                for env_var in (container.env or []):
-                                    if env_var.name == 'JOB_TYPE' and env_var.value == 'compose':
-                                        compose_executions.append(execution)
-                        except Exception:
-                            pass
-
-                    if compose_executions:
-                        all_done = all(e.completion_time for e in compose_executions)
-                        any_succeeded = any(e.succeeded_count and e.succeeded_count > 0 for e in compose_executions)
-                        if all_done and not any_succeeded:
-                            compose_result = {'error': f'All {len(compose_executions)} compose execution(s) failed'}
-                            logger.error(f'  Compose: {compose_result["error"]}')
-                            compose_done = True
-                except Exception as e:
-                    logger.warning(f'  Error checking execution status: {e}')
-
-            if not compose_done and elapsed % 30 < poll_interval:
-                logger.info(f'  Still waiting on compose job ({elapsed}s elapsed)')
-
-        if not compose_done:
-            compose_result = {'error': f'Compose job timeout after {max_wait}s'}
-            logger.error(f'  Compose job timed out after {max_wait}s')
+        # Return immediately — client will poll Firestore for compose completion
+        if not compose_result.get('error'):
+            compose_result = {'status': 'launched'}
+            logger.info(f'  Compose job launched — client will poll for completion')
 
         compose_duration = time.time() - compose_start
-        logger.info(f'Compose phase complete in {compose_duration:.1f}s')
+        logger.info(f'Compose launch phase complete in {compose_duration:.1f}s')
 
         # Phase 4: Generate report
         total_duration = time.time() - start_time
         output_size_mb = compose_result.get('sizeMB', 0)
 
+        compose_launched = compose_result.get('status') == 'launched'
+
         report = {
             'district': district_label,
-            'status': 'success' if not compose_result.get('error') else 'error',
+            'composeStatus': 'launched' if compose_launched else None,
+            'status': 'composing' if compose_launched else ('error' if compose_result.get('error') else 'success'),
             'architecture': 'unified',
             'startTime': datetime.fromtimestamp(start_time, timezone.utc).isoformat(),
             'endTime': datetime.fromtimestamp(time.time(), timezone.utc).isoformat(),
@@ -1643,15 +1574,23 @@ def convert_district_parallel():
         blob = bucket.blob(report_path)
         blob.upload_from_string(json.dumps(report, indent=2), content_type='application/json')
 
-        # Update Firestore with final results (compose job writes its own chartData;
+        # Update Firestore with results (compose job writes its own chartData;
         # we add the conversion report and status here)
         doc_ref = db.collection('districts').document(district_label)
+        if compose_launched:
+            firestore_state = 'composing'
+            firestore_message = f'Compose job launched: {len(completed_charts)} charts converted, awaiting compose'
+        elif compose_result.get('error'):
+            firestore_state = 'error'
+            firestore_message = compose_result['error']
+        else:
+            firestore_state = 'complete'
+            firestore_message = f'Unified conversion complete: {len(completed_charts)} charts, {output_size_mb:.1f} MB'
         firestore_data = {
             'conversionStatus': {
-                'state': 'complete' if not compose_result.get('error') else 'error',
-                'message': f'Unified conversion complete: {len(completed_charts)} charts, {output_size_mb:.1f} MB'
-                           if not compose_result.get('error') else compose_result['error'],
-                'completedAt': firestore.SERVER_TIMESTAMP,
+                'state': firestore_state,
+                'message': firestore_message,
+                'completedAt': firestore.SERVER_TIMESTAMP if firestore_state != 'composing' else None,
             },
             'conversionReport': report,
         }
@@ -1662,8 +1601,9 @@ def convert_district_parallel():
         # job finishes, cleaning temp would delete .mbtiles files that workers
         # uploaded and that the compose job still needs to download.
 
-        logger.info(f'=== PARALLEL conversion complete for {district_label}: '
-                   f'{len(completed_charts)} charts, {output_size_mb:.1f} MB, '
+        compose_msg = 'compose launched' if compose_launched else f'{output_size_mb:.1f} MB'
+        logger.info(f'=== PARALLEL conversion for {district_label}: '
+                   f'{len(completed_charts)} charts, {compose_msg}, '
                    f'{total_duration:.1f}s ===')
         
         return jsonify(report), 200
