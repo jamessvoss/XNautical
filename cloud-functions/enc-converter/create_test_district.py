@@ -872,49 +872,122 @@ def trigger_enc_conversion(test_name, timeout=7200):
 def trigger_imagery_generators(test_name, bounds, timeout=7200):
     """Trigger basemap, satellite, ocean, terrain generators in parallel.
 
+    Phase 1: Launch all 4 generators (each returns immediately after launching
+    a Cloud Run Job). Phase 2: Poll Firestore for all 4 status fields until
+    all complete or error.
+
     Returns dict of {generator_name: bool} indicating success/failure per generator.
     """
     logger.info(f'\nPhase 7: Triggering imagery generators...')
 
     generators = ['basemap', 'satellite', 'ocean', 'terrain']
+    status_fields = {
+        'basemap': 'basemapStatus',
+        'satellite': 'satelliteStatus',
+        'ocean': 'oceanStatus',
+        'terrain': 'terrainStatus',
+    }
     body = {
         'regionId': test_name,
         'bounds': bounds,
     }
 
-    results = {}
+    # Phase 1: Launch all 4 (they return immediately with status: 'launched' or 'complete')
+    launch_results = {}
 
-    def run_generator(gen_type):
-        logger.info(f'  Starting {gen_type}...')
-        result = call_service(gen_type, '/generate', body.copy(), timeout=timeout)
+    def launch_generator(gen_type):
+        logger.info(f'  Launching {gen_type}...')
+        result = call_service(gen_type, '/generate', body.copy(), timeout=120)
         return gen_type, result
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        gen_futures = {pool.submit(run_generator, g): g for g in generators}
-
-        # Heartbeat for imagery generators
-        hb_stop = threading.Event()
-
-        def _imagery_heartbeat():
-            start = time.time()
-            while not hb_stop.wait(60):
-                done_gens = set(results.keys())
-                pending = [g for g in generators if g not in done_gens]
-                if not pending:
-                    break
-                elapsed = int(time.time() - start)
-                logger.info(f'  [imagery] {elapsed}s elapsed — waiting on: {", ".join(pending)}')
-
-        hb_thread = threading.Thread(target=_imagery_heartbeat, daemon=True)
-        hb_thread.start()
-
-        for future in as_completed(gen_futures):
+        futures = {pool.submit(launch_generator, g): g for g in generators}
+        for future in as_completed(futures):
             gen_type, result = future.result()
-            results[gen_type] = result is not None
-            status = 'OK' if result else 'FAILED'
-            logger.info(f'  {gen_type}: {status}')
+            launch_results[gen_type] = result
+            if result:
+                status = result.get('status', 'unknown')
+                logger.info(f'  {gen_type}: launch response = {status}')
+            else:
+                logger.error(f'  {gen_type}: launch FAILED (no response)')
 
-        hb_stop.set()
+    # Determine which generators need polling vs already done
+    results = {}
+    pending = []
+    for gen in generators:
+        lr = launch_results.get(gen)
+        if lr is None:
+            results[gen] = False
+        elif lr.get('status') == 'complete':
+            results[gen] = True
+            logger.info(f'  {gen}: already complete (all packs existed)')
+        elif lr.get('status') == 'launched':
+            pending.append(gen)
+        else:
+            # Unexpected status (error, etc.)
+            results[gen] = False
+            logger.error(f'  {gen}: unexpected launch status: {lr.get("status")}')
+
+    if not pending:
+        succeeded = sum(1 for ok in results.values() if ok)
+        logger.info(f'  Imagery generators: {succeeded}/{len(generators)} succeeded (no polling needed)')
+        return results
+
+    # Phase 2: Poll Firestore for completion
+    logger.info(f'  Polling Firestore for {len(pending)} generators: {", ".join(pending)}')
+    db = get_firestore_client()
+    doc_ref = db.collection('districts').document(test_name)
+    poll_start = time.time()
+    poll_interval = 30
+
+    while pending and (time.time() - poll_start) < timeout:
+        time.sleep(poll_interval)
+        elapsed = int(time.time() - poll_start)
+
+        try:
+            doc = doc_ref.get()
+            if not doc.exists:
+                if elapsed % 60 < poll_interval:
+                    logger.info(f'  [imagery] {elapsed}s — doc not found, waiting...')
+                continue
+            data = doc.to_dict()
+
+            newly_done = []
+            for gen in pending:
+                sf = status_fields[gen]
+                status = data.get(sf, {})
+                state = status.get('state', '')
+                if state == 'complete':
+                    results[gen] = True
+                    newly_done.append(gen)
+                    packs = status.get('completedPacks', '?')
+                    total = status.get('totalPacks', '?')
+                    logger.info(f'  {gen}: complete ({packs}/{total} packs) [{elapsed}s]')
+                elif state == 'error':
+                    results[gen] = False
+                    newly_done.append(gen)
+                    msg = status.get('message', 'unknown')
+                    logger.error(f'  {gen}: error — {msg} [{elapsed}s]')
+                else:
+                    # Still generating — log progress
+                    completed = status.get('completedPacks', 0)
+                    total = status.get('totalPacks', '?')
+                    if elapsed % 60 < poll_interval:
+                        logger.info(f'  {gen}: {state} ({completed}/{total} packs) [{elapsed}s]')
+
+            for gen in newly_done:
+                pending.remove(gen)
+
+        except Exception as e:
+            logger.warning(f'  Error polling Firestore: {e}')
+
+        if elapsed % 60 < poll_interval and pending:
+            logger.info(f'  [imagery] {elapsed}s elapsed — waiting on: {", ".join(pending)}')
+
+    # Mark any still-pending as failed (timeout)
+    for gen in pending:
+        results[gen] = False
+        logger.error(f'  {gen}: timed out after {timeout}s')
 
     succeeded = sum(1 for ok in results.values() if ok)
     logger.info(f'  Imagery generators: {succeeded}/{len(generators)} succeeded')

@@ -6,3 +6,4 @@ aiohttp==3.9.0
 numpy<2
 shapely==2.0.0
 pyshp==2.3.0
+google-cloud-run==0.10.12

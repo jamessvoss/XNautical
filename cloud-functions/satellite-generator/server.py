@@ -20,15 +20,15 @@ Data Source: ESRI World Imagery (free with attribution)
 """
 
 import os
+import json
 import math
 import time
-import shutil
 import logging
-import tempfile
 from pathlib import Path
 
 from flask import Flask, request, jsonify
 from google.cloud import storage, firestore
+from google.cloud import run_v2
 
 from config import (
     BUCKET_NAME, REGION_BOUNDS, SATELLITE_ZOOM_PACKS,
@@ -36,9 +36,8 @@ from config import (
 )
 from tile_utils import (
     LAND_SHAPEFILE, COASTAL_BUFFER_MIN_ZOOM,
-    get_all_tiles_for_region, download_and_store_tiles,
-    check_pack_exists, zip_and_upload_pack, combine_and_zip,
-    update_generator_status, format_bytes, TileDownloadError,
+    get_all_tiles_for_region, check_pack_exists,
+    combine_and_zip, update_generator_status,
 )
 
 app = Flask(__name__)
@@ -65,6 +64,10 @@ EST_TILE_SIZE_KB = 25
 
 ZOOM_PACKS = SATELLITE_ZOOM_PACKS
 
+PROJECT_ID = 'xnautical-8a296'
+REGION = 'us-central1'
+JOB_NAME = f'{LAYER_NAME}-generator-job'
+
 
 # ============================================================================
 # Main generation endpoint
@@ -72,7 +75,7 @@ ZOOM_PACKS = SATELLITE_ZOOM_PACKS
 
 @app.route('/generate', methods=['POST'])
 def generate_satellite():
-    """Generate satellite MBTiles packs for a region."""
+    """Launch satellite tile generation as a Cloud Run Job."""
     data = request.get_json(silent=True) or {}
     region_id = data.get('regionId', '').strip()
     buffer_nm = float(data.get('bufferNm', DEFAULT_BUFFER_NM))
@@ -84,160 +87,107 @@ def generate_satellite():
         return jsonify({'error': f'Unknown regionId: {region_id}'}), 400
 
     region = REGION_BOUNDS[region_id]
-    start_time = time.time()
-
-    logger.info(f'=== Starting satellite generation for {region_id} ({region["name"]}) ===')
-    logger.info(f'  Coastal buffer: +/- {buffer_nm}nm from coastline')
+    logger.info(f'=== Launching satellite job for {region_id} ({region["name"]}) ===')
 
     storage_client = storage.Client()
     bucket = storage_client.bucket(BUCKET_NAME)
     db = firestore.Client()
-    work_dir = tempfile.mkdtemp(prefix=f'satellite_{region_id}_')
 
-    try:
-        update_generator_status(db, region_id, STATUS_FIELD, {
-            'state': 'generating',
-            'startedAt': firestore.SERVER_TIMESTAMP,
-            'message': f'Generating satellite tiles for {region["name"]} '
-                       f'(+/- {buffer_nm}nm coastal buffer)...',
+    # Build list of packs that need generation
+    packs_to_generate = []
+    for pack_id, pack_config in ZOOM_PACKS.items():
+        filename = f'{LAYER_NAME}_{pack_id}.mbtiles'
+        storage_path = f'{region_id}/{STORAGE_FOLDER}/{filename}'
+        if skip_existing and check_pack_exists(bucket, storage_path):
+            logger.info(f'  {pack_id}: exists, skipping')
+            continue
+        packs_to_generate.append({
+            'packId': pack_id,
+            'minZoom': pack_config['minZoom'],
+            'maxZoom': pack_config['maxZoom'],
         })
 
-        pack_results = {}
-        district_prefix = get_district_prefix(region_id)
-
-        for pack_id, pack_config in ZOOM_PACKS.items():
-            min_zoom = pack_config['minZoom']
-            max_zoom = pack_config['maxZoom']
-            filename = f'satellite_{pack_id}.mbtiles'
-
-            # Skip if already exists in Storage
-            storage_path = f'{region_id}/{STORAGE_FOLDER}/{filename}'
-            if skip_existing and check_pack_exists(bucket, storage_path):
-                logger.info(f'  {pack_id}: already exists at {storage_path}, skipping')
-                continue
-
-            logger.info(f'--- Generating {pack_id} (z{min_zoom}-z{max_zoom}) ---')
-
-            # Calculate tiles with coastal filtering
-            all_tiles = get_all_tiles_for_region(
-                region['bounds'], min_zoom, max_zoom,
-                buffer_nm=buffer_nm, geometry_mode=GEOMETRY_MODE)
-            total_count = len(all_tiles)
-            logger.info(f'  Total tiles (after coastal filter): {total_count:,}')
-
-            if total_count == 0:
-                logger.warning(f'  No tiles to download for {pack_id}, skipping')
-                continue
-
-            # Download with streaming writes
-            db_path = Path(work_dir) / filename
-            mbtiles_name = f'{region_id} Satellite ({pack_id})'
-
-            try:
-                file_size, stats = download_and_store_tiles(
-                    all_tiles, db_path, min_zoom, max_zoom, mbtiles_name,
-                    region['bounds'],
-                    tile_url=TILE_URL,
-                    max_concurrent=MAX_CONCURRENT,
-                    request_delay=REQUEST_DELAY,
-                    description=DESCRIPTION,
-                    format_=TILE_FORMAT,
-                    attribution=ATTRIBUTION,
-                )
-            except TileDownloadError as e:
-                logger.error(f'  {pack_id} aborted: {e}')
-                db_path.unlink(missing_ok=True)
-                continue
-
-            size_mb = file_size / 1024 / 1024
-            logger.info(f'  {pack_id}: {stats["completed"]}/{stats["total"]} tiles, '
-                        f'{size_mb:.1f} MB, {stats["failed"]} failed')
-
-            # Upload raw MBTiles
-            logger.info(f'  Uploading to {storage_path} ({size_mb:.1f} MB)...')
-            update_generator_status(db, region_id, STATUS_FIELD, {
-                'state': 'uploading',
-                'message': f'Uploading {pack_id} satellite pack ({size_mb:.0f} MB)...',
-            })
-            blob = bucket.blob(storage_path)
-            blob.upload_from_filename(str(db_path), timeout=600)
-
-            # Zip and upload
-            zip_internal_name = f'{district_prefix}_satellite_{pack_id}.mbtiles'
-            zip_and_upload_pack(bucket, region_id, STORAGE_FOLDER, db_path,
-                                zip_internal_name, work_dir)
-
-            pack_results[pack_id] = {
-                'filename': filename,
-                'storagePath': storage_path,
-                'sizeMB': round(size_mb, 1),
-                'sizeBytes': file_size,
-                'tileCount': stats['completed'],
-                'failedTiles': stats['failed'],
-                'minZoom': min_zoom,
-                'maxZoom': max_zoom,
-            }
-
-            db_path.unlink(missing_ok=True)
-            logger.info(f'  {pack_id} complete and uploaded.')
-
-        # Combine per-zoom packs into single zip (best-effort)
-        try:
-            combine_and_zip(
-                bucket, region_id, LAYER_NAME, STORAGE_FOLDER,
-                region['bounds'], db, STATUS_FIELD,
-                get_zip_internal_name=lambda rid: f'{get_district_prefix(rid)}_{LAYER_NAME}.mbtiles',
-            )
-        except Exception as e:
-            logger.warning(f'  Combined zip failed (per-zoom zips still available): {e}')
-
-        # Update Firestore with results
-        total_duration = time.time() - start_time
-        doc_ref = db.collection('districts').document(region_id)
-        doc_ref.set({
-            DATA_FIELD: {
-                'lastGenerated': firestore.SERVER_TIMESTAMP,
-                'region': region['name'],
-                'bufferNm': buffer_nm,
-                'packs': pack_results,
-                'generationDurationSeconds': round(total_duration, 1),
-            },
-            STATUS_FIELD: {
-                'state': 'complete',
-                'message': f'Satellite generation complete for {region["name"]}',
-                'completedAt': firestore.SERVER_TIMESTAMP,
-            },
-        }, merge=True)
-
-        logger.info(f'=== Satellite generation complete for {region_id}: '
-                     f'{total_duration:.1f}s ===')
-
-        return jsonify({
-            'status': 'success',
-            'regionId': region_id,
-            'regionName': region['name'],
-            'bufferNm': buffer_nm,
-            'packs': pack_results,
-            'durationSeconds': round(total_duration, 1),
-        }), 200
-
-    except Exception as e:
-        logger.error(f'Error generating satellite for {region_id}: {e}', exc_info=True)
+    if not packs_to_generate:
+        logger.info(f'  All packs exist, marking complete')
         update_generator_status(db, region_id, STATUS_FIELD, {
-            'state': 'error',
-            'message': str(e)[:500],
-            'failedAt': firestore.SERVER_TIMESTAMP,
+            'state': 'complete',
+            'message': f'All satellite packs already exist for {region["name"]}',
+            'completedAt': firestore.SERVER_TIMESTAMP,
         })
-        return jsonify({
-            'status': 'error',
-            'error': 'Internal generation error. Check logs for details.',
-            'regionId': region_id,
-        }), 500
+        return jsonify({'status': 'complete', 'regionId': region_id,
+                        'message': 'All packs already exist'}), 200
 
-    finally:
-        if os.path.exists(work_dir):
-            logger.info(f'Cleaning up: {work_dir}')
-            shutil.rmtree(work_dir, ignore_errors=True)
+    # Upload manifest
+    manifest = {
+        'regionId': region_id,
+        'regionName': region['name'],
+        'bounds': region['bounds'],
+        'bufferNm': buffer_nm,
+        'config': {
+            'tileUrl': TILE_URL,
+            'maxConcurrent': MAX_CONCURRENT,
+            'requestDelay': REQUEST_DELAY,
+            'geometryMode': GEOMETRY_MODE,
+            'format': TILE_FORMAT,
+            'description': DESCRIPTION,
+            'attribution': ATTRIBUTION,
+            'layerName': LAYER_NAME,
+            'storageFolder': STORAGE_FOLDER,
+            'statusField': STATUS_FIELD,
+            'dataField': DATA_FIELD,
+        },
+        'packs': packs_to_generate,
+    }
+
+    manifest_path = f'{region_id}/{STORAGE_FOLDER}/_manifest.json'
+    bucket.blob(manifest_path).upload_from_string(
+        json.dumps(manifest), content_type='application/json')
+
+    # Clean stale job results
+    for blob in bucket.list_blobs(prefix=f'{region_id}/{STORAGE_FOLDER}/_job_results/'):
+        blob.delete()
+
+    # Set Firestore status
+    update_generator_status(db, region_id, STATUS_FIELD, {
+        'state': 'generating',
+        'startedAt': firestore.SERVER_TIMESTAMP,
+        'message': f'Launching {len(packs_to_generate)} satellite tasks for {region["name"]}...',
+        'totalPacks': len(packs_to_generate),
+        'completedPacks': 0,
+    })
+
+    # Launch Cloud Run Job
+    task_count = len(packs_to_generate)
+    _launch_job(manifest_path, task_count)
+
+    pack_ids = [p['packId'] for p in packs_to_generate]
+    logger.info(f'=== Satellite job launched: {task_count} tasks for {region_id} ===')
+    return jsonify({
+        'status': 'launched', 'regionId': region_id,
+        'taskCount': task_count, 'packs': pack_ids,
+    }), 200
+
+
+def _launch_job(manifest_path, task_count):
+    """Launch a Cloud Run Job with the given manifest and task count."""
+    client = run_v2.JobsClient()
+    job_name = f'projects/{PROJECT_ID}/locations/{REGION}/jobs/{JOB_NAME}'
+
+    override = run_v2.types.RunJobRequest.Overrides(
+        task_count=task_count,
+        container_overrides=[
+            run_v2.types.RunJobRequest.Overrides.ContainerOverride(
+                env=[
+                    run_v2.types.EnvVar(name='MANIFEST_PATH', value=manifest_path),
+                    run_v2.types.EnvVar(name='BUCKET_NAME', value=BUCKET_NAME),
+                ],
+            ),
+        ],
+    )
+
+    req = run_v2.types.RunJobRequest(name=job_name, overrides=override)
+    operation = client.run_job(request=req)
+    logger.info(f'  Job launched: {operation.metadata.name if hasattr(operation, "metadata") else "ok"}')
 
 
 # ============================================================================

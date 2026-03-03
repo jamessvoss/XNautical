@@ -85,6 +85,7 @@ Sub-region storage paths use the Firestore ID as prefix (e.g., `17cgd-Juneau/cha
 - **Service image**: `gcr.io/xnautical-8a296/enc-converter:latest`
 - **Merge job name**: `enc-converter-merge`
 - **Batch convert job name**: `enc-batch-converter` (2 CPU / 4Gi, task-timeout=1800, max-retries=2)
+- **Imagery generator jobs**: `basemap-generator-job`, `satellite-generator-job`, `ocean-generator-job`, `terrain-generator-job` (2 CPU / 2Gi, task-timeout=7200, max-retries=1)
 - Valid districts: 01, 05, 07, 08, 09, 11, 13, 14, 17
 - Alaska sub-regions: 17cgd-Juneau, 17cgd-Anchorage, 17cgd-Kodiak, 17cgd-DutchHarbor, 17cgd-Nome, 17cgd-Barrow
 - Special sub-regions: 07cgd-wflorida (Tampa Bay area)
@@ -97,20 +98,48 @@ All four imagery/tile generators (basemap, ocean, terrain, satellite) share comm
 ```
 cloud-functions/generators-base/
 ├── config.py       # Region bounds, zoom packs, district prefixes (single source of truth)
-└── tile_utils.py   # Tile math, coastal filtering, download, MBTiles packaging
+├── tile_utils.py   # Tile math, coastal filtering, download, MBTiles packaging
+└── tile_job.py     # Cloud Run Job entry point (shared by all 4 generators)
 ```
 
 The `build-generator.sh` script copies these shared modules into each generator's directory before Docker build, then cleans up after. It includes trap-based cleanup on interrupt.
 
 ```bash
-# Build and deploy a specific generator
-./build-generator.sh satellite-generator
-./build-generator.sh terrain-generator
-./build-generator.sh ocean-generator
-./build-generator.sh basemap-orchestrator
+# Build and deploy a specific generator (updates both service + job)
+./build-generator.sh satellite-generator --deploy
+./build-generator.sh terrain-generator --deploy
+./build-generator.sh ocean-generator --deploy
+./build-generator.sh basemap-generator --deploy
+./build-generator.sh all --deploy          # all 4
 ```
 
 Master region config lives at `config/regions.json` — this is the canonical source for all region definitions including bounds, prefixes, GNIS filenames, and display metadata.
+
+### Imagery Generator Cloud Run Jobs
+
+Each imagery generator has a corresponding Cloud Run Job for parallel tile generation. The HTTP `/generate` endpoint is a lightweight launcher that returns immediately; actual tile downloading happens in parallel job tasks with no HTTP timeout constraint.
+
+**Cloud Run Jobs** (one per generator, all use the same image as the service):
+- **`basemap-generator-job`** — 2 CPU / 2Gi, task-timeout=7200, max-retries=1
+- **`satellite-generator-job`** — 2 CPU / 2Gi, task-timeout=7200, max-retries=1
+- **`ocean-generator-job`** — 2 CPU / 2Gi, task-timeout=7200, max-retries=1
+- **`terrain-generator-job`** — 2 CPU / 2Gi, task-timeout=7200, max-retries=1
+
+**Flow**: `POST /generate` → upload manifest to Storage → launch job (task_count = number of zoom packs) → return HTTP 200 immediately. Each job task reads the manifest, processes one zoom pack, uploads results, atomically increments Firestore `completedPacks`. The last task to finish runs finalization (combine_and_zip, write final Firestore status).
+
+**One-time job creation** (already done, only needed if creating from scratch):
+```bash
+for gen in basemap satellite ocean terrain; do
+    gcloud run jobs create ${gen}-generator-job \
+        --image=gcr.io/xnautical-8a296/${gen}-generator:latest \
+        --region=us-central1 --project=xnautical-8a296 \
+        --task-timeout=7200 --max-retries=1 \
+        --memory=2Gi --cpu=2 \
+        --command=python3,/app/tile_job.py
+done
+```
+
+**Client polling**: `create_test_district.py` launches all 4 generators, then polls Firestore `districts/{regionId}` for `{basemap,satellite,ocean,terrain}Status.state` until all report `complete` or `error`.
 
 ### Batch Provisioning
 

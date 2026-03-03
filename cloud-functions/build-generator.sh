@@ -77,7 +77,8 @@ build_generator() {
     # Copy shared code (registered for cleanup on interrupt)
     cp "$SHARED_DIR/tile_utils.py" "$gen_dir/"
     cp "$SHARED_DIR/config.py" "$gen_dir/"
-    _cleanup_files+=("$gen_dir/tile_utils.py" "$gen_dir/config.py")
+    cp "$SHARED_DIR/tile_job.py" "$gen_dir/"
+    _cleanup_files+=("$gen_dir/tile_utils.py" "$gen_dir/config.py" "$gen_dir/tile_job.py")
 
     # Build via Cloud Build
     (cd "$gen_dir" && gcloud builds submit --config=cloudbuild.yaml \
@@ -85,7 +86,7 @@ build_generator() {
     local rc=$?
 
     # Clean up shared code copies
-    rm -f "$gen_dir/tile_utils.py" "$gen_dir/config.py"
+    rm -f "$gen_dir/tile_utils.py" "$gen_dir/config.py" "$gen_dir/tile_job.py"
 
     if [ $rc -ne 0 ]; then
         echo "ERROR: Build failed for $gen"
@@ -101,7 +102,15 @@ build_generator() {
             --image="gcr.io/$PROJECT_ID/$gen:latest" \
             --region="$REGION" \
             --project="$PROJECT_ID"
-        echo "=== Deployed: $gen ==="
+
+        # Update the corresponding Cloud Run Job
+        local job_name="${gen}-job"
+        echo "  Updating job: $job_name"
+        gcloud run jobs update "$job_name" \
+            --image="gcr.io/$PROJECT_ID/$gen:latest" \
+            --region="$REGION" \
+            --project="$PROJECT_ID"
+        echo "=== Deployed: $gen (service + job) ==="
     fi
 }
 

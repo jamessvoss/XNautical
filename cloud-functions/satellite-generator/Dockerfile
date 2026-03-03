@@ -33,6 +33,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy shared modules first (from generators-base, copied by build script)
 COPY tile_utils.py /app/tile_utils.py
 COPY config.py /app/config.py
+COPY tile_job.py /app/tile_job.py
 
 # Copy application
 COPY server.py /app/server.py
