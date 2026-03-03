@@ -203,10 +203,21 @@ Firestore document updated with composition metadata, bounds, checksums, dedup s
 }
 
 // Points source — separate for soundings, nav-aids, hazards
+// Gated by tileServerReady to prevent rendering against a stopped server
 {
   tileUrl: 'http://127.0.0.1:8765/tiles/points-d07/{z}/{x}/{y}.pbf',
 }
 ```
+
+### Post-Download Refresh Flow
+
+When the user downloads new chart packs, `DownloadProgressView` calls `requestMapReset()` which stops the tile server, clears the tile cache, and bumps `mapResetKey`. The refresh flow ensures all data sources reload cleanly:
+
+1. **Tile server reset**: `loadCharts()` sets `tileServerReady = false` at the start, unmounting all VectorSources (including the points source). This prevents MapLibre from caching connection-refused errors against the stopped server. The tile server restarts and `tileServerReady` flips back to `true` once ready.
+
+2. **Station data reload**: `useStationData(reloadTrigger)` accepts `mapResetKey` as a reload trigger. When the key changes, it clears the station cache and reloads tide/current stations from the freshly downloaded prediction databases. Without this, stations only loaded on initial mount.
+
+3. **Chart pack detection**: `useChartLoading` re-runs on `mapResetKey` change, re-scanning the mbtiles directory for newly downloaded files.
 
 ---
 

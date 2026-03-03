@@ -119,9 +119,17 @@ python3 create_alaska_regions.py --dry-run                 # Discovery only
 python3 create_alaska_regions.py --skip-provisioning       # Re-run discovery + metadata only
 ```
 
+When running multiple districts in parallel, gcloud subprocess storms can cause SIGSEGV crashes (Python 3.14 + gcloud instability). To avoid this, the parent pre-resolves service URLs and auth token once, passing them to children via environment variables:
+
+- **`CLOUD_RUN_SERVICE_URLS`**: JSON dict of `{service_name: url}` — children skip `gcloud run services list` entirely
+- **`CLOUD_RUN_AUTH_TOKEN`**: Identity token string — children use as initial seed, still refresh after 45-minute expiry
+
+Children fall back to normal gcloud calls when these env vars are absent (standalone usage preserved).
+
 Key reliability features in `create_test_district.py`:
 - **Retry with exponential backoff**: `call_service()` retries transient HTTP errors (429, 500, 502, 503, 504)
-- **Auth token refresh**: Thread-safe token caching with 45-minute auto-refresh
+- **Auth token refresh**: Thread-safe token caching with 45-minute auto-refresh; seeded from `CLOUD_RUN_AUTH_TOKEN` env var when available
+- **Pre-resolved service URLs**: Reads `CLOUD_RUN_SERVICE_URLS` env var to skip gcloud subprocess; falls back to gcloud if absent
 - **Parallel execution**: Setup tasks (chart copy, GNIS, Firestore doc) run in parallel; generators (ENC, imagery, predictions) run in parallel
 - **NOAA rate stagger**: `--prediction-delay` flag staggers prediction requests across districts
 - **Resume capability**: `--resume` flag skips already-completed phases; state tracked in `.pipeline-state-*.json`

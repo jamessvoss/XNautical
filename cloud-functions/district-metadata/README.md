@@ -13,7 +13,7 @@ Replaces hardcoded size estimates with real file sizes from Firebase Storage.
 
 - **Environment Variable**: `STORAGE_BUCKET` — Firebase Storage bucket name (matches the env var used by all generators)
 - **Charts-required guard**: Metadata generation requires at least one chart pack (US1-US6) to exist; skips districts with no chart data
-- **Per-zoom fallback**: Scans for both combined zip files and per-zoom pack files (e.g., `satellite_overview.mbtiles.zip`, `satellite_detail_z6.mbtiles.zip`)
+- **Satellite pack resolution**: Prefers per-zoom satellite packs (e.g., `satellite-z6`, `satellite-z8`) over a single combined pack. Per-zoom packs are scanned first; only falls back to the combined `satellite` pack if no per-zoom files exist. This is required because the app's download panel filters satellite packs by zoom regex `z(\d+)` — a combined pack with no zoom suffix would be invisible to the resolution selector.
 - **District prefixes**: Uses `DISTRICT_PREFIXES` mapping (synced from `generators-base/config.py`) for prefixed filenames
 
 ## Architecture

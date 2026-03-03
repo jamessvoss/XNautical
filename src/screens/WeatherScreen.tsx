@@ -36,6 +36,8 @@ import {
   formatForecastTime,
   getWfoName,
 } from '../services/marineZoneService';
+import { getInstalledDistricts } from '../services/regionRegistryService';
+import { getRegionByFirestoreId } from '../config/regionData';
 import {
   getBuoysCatalog,
   getBuoy,
@@ -71,9 +73,9 @@ const SIDEBAR_OPTIONS: SidebarOption[] = [
   { id: 'buoys', label: 'Buoys', icon: '📡' },
 ];
 
-// Initial camera position — centered on SE US/Caribbean (07cgd)
-const INITIAL_CENTER: [number, number] = [-78.0, 27.0]; // [lon, lat]
-const INITIAL_ZOOM = 4;
+// Default camera position — US overview; overridden once installed districts are known
+const DEFAULT_CENTER: [number, number] = [-98.0, 39.0]; // [lon, lat] — center of US
+const DEFAULT_ZOOM = 3;
 
 // Minimal MapLibre style - dark ocean blue background
 const MAP_STYLE = JSON.stringify({
@@ -98,17 +100,13 @@ export default function WeatherScreen() {
     return () => unsubscribe();
   }, []);
   
-  // TODO: Determine current district from map viewport or installed districts
-  // For now, default to Southeast (07cgd) — the currently downloaded region.
-  // Multi-region support: this should eventually iterate or auto-detect.
-  const [currentDistrict] = useState<string>('07cgd');
-  
   // Marine zones state
   const [zones, setZones] = useState<MarineZone[]>([]);
   const [loadingZones, setLoadingZones] = useState(false);
   const [selectedZone, setSelectedZone] = useState<MarineZone | null>(null);
   const [zoneForecast, setZoneForecast] = useState<MarineForecast | null>(null);
   const [loadingForecast, setLoadingForecast] = useState(false);
+  const [mapBounds, setMapBounds] = useState<[number, number, number, number] | null>(null);
   
   // Buoys state
   const [buoys, setBuoys] = useState<BuoySummary[]>([]);
@@ -117,7 +115,7 @@ export default function WeatherScreen() {
   const [buoyDetail, setBuoyDetail] = useState<Buoy | null>(null);
   const [loadingBuoyDetail, setLoadingBuoyDetail] = useState(false);
   
-  // Load zones with full geometry on mount
+  // Load zones from ALL installed districts that have marine zones
   useEffect(() => {
     loadZones();
   }, []);
@@ -133,9 +131,44 @@ export default function WeatherScreen() {
     setLoadingZones(true);
     try {
       await waitForAuth();
-      const zoneList = await getMarineZones(currentDistrict);
-      console.log(`[Weather] Loaded ${zoneList.length} zones for ${currentDistrict}`);
-      setZones(zoneList);
+      const installed = await getInstalledDistricts();
+      const districtsWithZones = installed.filter(d => d.hasMarineZones);
+
+      if (districtsWithZones.length === 0) {
+        console.log('[Weather] No installed districts with marine zones');
+        setZones([]);
+        setLoadingZones(false);
+        return;
+      }
+
+      // Load zones from all installed districts in parallel
+      const allZones: MarineZone[] = [];
+      const allBounds: [number, number, number, number][] = [];
+
+      await Promise.all(districtsWithZones.map(async (district) => {
+        const zoneList = await getMarineZones(district.districtId);
+        allZones.push(...zoneList);
+
+        // Collect mapBounds from regionData for camera positioning
+        const region = getRegionByFirestoreId(district.districtId);
+        if (region) {
+          allBounds.push(region.mapBounds);
+        }
+      }));
+
+      console.log(`[Weather] Loaded ${allZones.length} zones from ${districtsWithZones.length} districts`);
+      setZones(allZones);
+
+      // Compute combined bounds across all districts
+      if (allBounds.length > 0) {
+        const combined: [number, number, number, number] = [
+          Math.min(...allBounds.map(b => b[0])),
+          Math.min(...allBounds.map(b => b[1])),
+          Math.max(...allBounds.map(b => b[2])),
+          Math.max(...allBounds.map(b => b[3])),
+        ];
+        setMapBounds(combined);
+      }
     } catch (error) {
       console.error('Error loading marine zones:', error);
     }
@@ -158,7 +191,8 @@ export default function WeatherScreen() {
     setSelectedZone(zone);
     setLoadingForecast(true);
     try {
-      const forecast = await getMarineForecast(currentDistrict, zone.id);
+      const districtId = zone.districtId || '07cgd';
+      const forecast = await getMarineForecast(districtId, zone.id);
       setZoneForecast(forecast);
     } catch (error) {
       console.error('Error loading forecast:', error);
@@ -281,9 +315,17 @@ export default function WeatherScreen() {
         <MapLibre.Camera
           ref={cameraRef}
           defaultSettings={{
-            centerCoordinate: INITIAL_CENTER,
-            zoomLevel: INITIAL_ZOOM,
+            centerCoordinate: DEFAULT_CENTER,
+            zoomLevel: DEFAULT_ZOOM,
           }}
+          bounds={mapBounds ? {
+            ne: [mapBounds[2], mapBounds[3]],
+            sw: [mapBounds[0], mapBounds[1]],
+            paddingLeft: 60,
+            paddingRight: 20,
+            paddingTop: 20,
+            paddingBottom: 20,
+          } : undefined}
         />
 
         {/* Marine Zone Polygons */}
@@ -421,9 +463,17 @@ export default function WeatherScreen() {
       >
         <MapLibre.Camera
           defaultSettings={{
-            centerCoordinate: INITIAL_CENTER,
-            zoomLevel: INITIAL_ZOOM,
+            centerCoordinate: DEFAULT_CENTER,
+            zoomLevel: DEFAULT_ZOOM,
           }}
+          bounds={mapBounds ? {
+            ne: [mapBounds[2], mapBounds[3]],
+            sw: [mapBounds[0], mapBounds[1]],
+            paddingLeft: 60,
+            paddingRight: 20,
+            paddingTop: 20,
+            paddingBottom: 20,
+          } : undefined}
         />
 
         {/* Buoy icon registration */}
