@@ -890,12 +890,31 @@ def trigger_imagery_generators(test_name, bounds, timeout=7200):
         return gen_type, result
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(run_generator, g): g for g in generators}
-        for future in as_completed(futures):
+        gen_futures = {pool.submit(run_generator, g): g for g in generators}
+
+        # Heartbeat for imagery generators
+        hb_stop = threading.Event()
+
+        def _imagery_heartbeat():
+            start = time.time()
+            while not hb_stop.wait(60):
+                done_gens = set(results.keys())
+                pending = [g for g in generators if g not in done_gens]
+                if not pending:
+                    break
+                elapsed = int(time.time() - start)
+                logger.info(f'  [imagery] {elapsed}s elapsed — waiting on: {", ".join(pending)}')
+
+        hb_thread = threading.Thread(target=_imagery_heartbeat, daemon=True)
+        hb_thread.start()
+
+        for future in as_completed(gen_futures):
             gen_type, result = future.result()
             results[gen_type] = result is not None
             status = 'OK' if result else 'FAILED'
             logger.info(f'  {gen_type}: {status}')
+
+        hb_stop.set()
 
     succeeded = sum(1 for ok in results.values() if ok)
     logger.info(f'  Imagery generators: {succeeded}/{len(generators)} succeeded')
@@ -1316,6 +1335,21 @@ def main():
             if not marine_zones_ok:
                 futures['marine_zones'] = pool.submit(discover_marine_zones, args.name)
 
+            # Heartbeat thread — logs which phases are still running every 60s
+            heartbeat_stop = threading.Event()
+
+            def _heartbeat():
+                start = time.time()
+                while not heartbeat_stop.wait(60):
+                    pending = [name for name, f in futures.items() if not f.done()]
+                    if not pending:
+                        break
+                    elapsed = int(time.time() - start)
+                    logger.info(f'  [heartbeat] {elapsed}s elapsed — waiting on: {", ".join(pending)}')
+
+            hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+            hb_thread.start()
+
             # Collect ENC result
             if 'enc' in futures:
                 try:
@@ -1366,6 +1400,8 @@ def main():
                     marine_zones_ok = False
                 if marine_zones_ok:
                     mark_phase_done(state, args.name, 'marine_zones')
+
+            heartbeat_stop.set()
     else:
         logger.info('\nAll generators already complete (resuming)')
 
