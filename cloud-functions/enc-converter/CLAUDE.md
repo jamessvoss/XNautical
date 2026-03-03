@@ -15,9 +15,10 @@ gcloud builds submit --config=cloudbuild.yaml --project=xnautical-8a296
 # Rebuild base image (only when dependencies change: tippecanoe, GDAL, requirements.txt)
 gcloud builds submit --config=cloudbuild-base.yaml --project=xnautical-8a296
 
-# Deploy service and merge job after image rebuild
+# Deploy service and jobs after image rebuild
 gcloud run services update enc-converter --image=gcr.io/xnautical-8a296/enc-converter:latest --region=us-central1 --project=xnautical-8a296
 gcloud run jobs update enc-converter-merge --image=gcr.io/xnautical-8a296/enc-converter:latest --region=us-central1 --project=xnautical-8a296
+gcloud run jobs update enc-batch-converter --image=gcr.io/xnautical-8a296/enc-converter:latest --region=us-central1 --project=xnautical-8a296
 
 # Local conversion of a single chart (requires gdal, tippecanoe installed locally)
 python3 convert.py <input.000> [output_dir]
@@ -34,10 +35,12 @@ The system has two runtime modes sharing one Docker image:
 
 **Cloud Run Service** (`server.py` via gunicorn) — Flask HTTP server with three conversion endpoints:
 - `/convert` — Monolithic single-instance conversion (download → convert → merge → upload)
-- `/convert-batch` — Converts a small batch of charts (5-10), used by parallel workers
-- `/convert-district-parallel` — Orchestrator that splits a district into batches, fans out to `/convert-batch` across many Cloud Run instances, then launches Cloud Run Jobs for merging
+- `/convert-batch` — Converts a small batch of charts (5-10), standalone/debugging use
+- `/convert-district-parallel` — Orchestrator that discovers charts, launches a Cloud Run Job for batch S-57→GeoJSON conversion, then launches a compose job for unified MBTiles
 
-**Cloud Run Job** (`merge_job.py`) — Standalone job that downloads per-chart MBTiles from temp storage, merges them with `tile-join` into a single scale pack, and uploads the result. One job execution per scale (US1-US6). Launched by the parallel orchestrator.
+**Cloud Run Job: `enc-batch-converter`** (`batch_convert_job.py` via `merge_job.py` routing) — Fan-out batch conversion. Each task reads a shared manifest from Storage, downloads its assigned charts, converts S-57→GeoJSON, and uploads results. Isolated task containers eliminate the 429 contention that HTTP fan-out caused.
+
+**Cloud Run Job: `enc-converter-merge`** (`merge_job.py` / `compose_job.py`) — Standalone job for merging per-chart MBTiles into scale packs or running the unified compose pipeline. Launched by the parallel orchestrator after batch conversion completes.
 
 ### Conversion Pipeline (per chart)
 
@@ -62,6 +65,8 @@ Charts are organized by NOAA scale prefix: US1 (overview) through US6 (berthing)
 ```
 {district}cgd/enc-source/{chartId}/{chartId}.000      — S-57 source files
 {district}cgd/chart-geojson/{chartId}/{chartId}.geojson — Cached per-chart GeoJSON (persistent)
+{district}cgd/chart-geojson/_batch_manifest.json       — Batch job task manifest (transient)
+{district}cgd/chart-geojson/_batch_results/            — Per-task conversion results (transient)
 {district}cgd/chart-geojson/_manifest.json            — Valid chart list for compose (transient)
 {district}cgd/charts/temp/compose/                     — Tippecanoe fan-out artifacts (cleaned up)
 {district}cgd/charts/{US1-US6}.mbtiles                 — Final merged scale packs
@@ -79,6 +84,7 @@ Sub-region storage paths use the Firestore ID as prefix (e.g., `17cgd-Juneau/cha
 - **Storage bucket**: `xnautical-8a296.firebasestorage.app`
 - **Service image**: `gcr.io/xnautical-8a296/enc-converter:latest`
 - **Merge job name**: `enc-converter-merge`
+- **Batch convert job name**: `enc-batch-converter` (2 CPU / 4Gi, task-timeout=1800, max-retries=2)
 - Valid districts: 01, 05, 07, 08, 09, 11, 13, 14, 17
 - Alaska sub-regions: 17cgd-Juneau, 17cgd-Anchorage, 17cgd-Kodiak, 17cgd-DutchHarbor, 17cgd-Nome, 17cgd-Barrow
 - Special sub-regions: 07cgd-wflorida (Tampa Bay area)

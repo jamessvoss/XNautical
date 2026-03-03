@@ -10,6 +10,7 @@ COPY batch_convert.py /app/batch_convert.py
 COPY server.py /app/server.py
 COPY merge_job.py /app/merge_job.py
 COPY compose_job.py /app/compose_job.py
+COPY batch_convert_job.py /app/batch_convert_job.py
 COPY merge_utils.py /app/merge_utils.py
 COPY region_config.py /app/region_config.py
 
@@ -17,7 +18,7 @@ COPY region_config.py /app/region_config.py
 COPY regions.json /app/regions.json
 
 # Make job scripts executable
-RUN chmod +x /app/merge_job.py /app/compose_job.py
+RUN chmod +x /app/merge_job.py /app/compose_job.py /app/batch_convert_job.py
 
 # TypeScript S-57 parser: install deps and compile
 COPY src/ /app/src/

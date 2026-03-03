@@ -26,7 +26,6 @@ import os
 import sys
 import time
 import json
-import random
 import shutil
 import sqlite3
 import logging
@@ -1283,132 +1282,109 @@ def convert_district_parallel():
 
             conversion_start = time.time()
 
-            # Get service URL
-            service_url = os.environ.get('SERVICE_URL')
-            if not service_url:
-                return jsonify({'error': 'SERVICE_URL environment variable not set'}), 500
-            logger.debug(f'  Using service URL: {service_url}')
+            # Upload batch manifest for Cloud Run Job tasks
+            manifest_path = f'{district_label}/chart-geojson/_batch_manifest.json'
+            bucket.blob(manifest_path).upload_from_string(
+                json.dumps(batches), content_type='application/json')
+            logger.info(f'  Uploaded batch manifest ({len(batches)} batches) to {manifest_path}')
 
-            # Fire parallel batch conversions using ThreadPoolExecutor
+            # Clean stale result files
+            stale_results = list(bucket.list_blobs(
+                prefix=f'{district_label}/chart-geojson/_batch_results/'))
+            if stale_results:
+                for blob in stale_results:
+                    blob.delete()
+                logger.info(f'  Cleaned {len(stale_results)} stale batch result files')
+
+            # Launch Cloud Run Job for batch conversion
+            from google.cloud import run_v2
+            from google.protobuf import duration_pb2
+
+            batch_jobs_client = run_v2.JobsClient()
+            batch_executions_client = run_v2.ExecutionsClient()
+
+            batch_job_name = 'enc-batch-converter'
+            project_id = os.environ.get('GCP_PROJECT', 'xnautical-8a296')
+            gcp_region = 'us-central1'
+            batch_job_path = f'projects/{project_id}/locations/{gcp_region}/jobs/{batch_job_name}'
+
+            logger.info(f'  Launching batch convert job: {len(batches)} tasks')
+
+            batch_timeout = duration_pb2.Duration()
+            batch_timeout.seconds = 1800  # 30 min per task
+
+            run_request = run_v2.RunJobRequest(
+                name=batch_job_path,
+                overrides=run_v2.RunJobRequest.Overrides(
+                    container_overrides=[
+                        run_v2.RunJobRequest.Overrides.ContainerOverride(
+                            env=[
+                                run_v2.EnvVar(name='DISTRICT_ID', value=district_id),
+                                run_v2.EnvVar(name='DISTRICT_LABEL', value=district_label),
+                                run_v2.EnvVar(name='BUCKET_NAME', value=BUCKET_NAME),
+                                run_v2.EnvVar(name='BATCH_MANIFEST_PATH', value=manifest_path),
+                                run_v2.EnvVar(name='JOB_TYPE', value='batch-convert'),
+                            ],
+                        )
+                    ],
+                    task_count=len(batches),
+                    timeout=batch_timeout,
+                ),
+            )
+
+            operation = batch_jobs_client.run_job(request=run_request)
+            logger.info(f'  Batch convert job launched, waiting for completion...')
+
+            # Extract execution name from the operation metadata
+            execution_name = operation.metadata.name
+
+            # Poll execution status until complete (max 90 minutes)
             batch_results = []
             completed_charts = set()
-            scales_merged = set()
-            merge_results = {}
+            MAX_POLL_SECONDS = 90 * 60
+            POLL_INTERVAL = 15
+            poll_start = time.time()
 
-            MAX_RETRIES = 8
-            RETRY_BASE_DELAY = 5  # seconds
-            INITIAL_CONCURRENCY = 10  # ramp up gradually to avoid 429 thundering herd
+            while (time.time() - poll_start) < MAX_POLL_SECONDS:
+                time.sleep(POLL_INTERVAL)
+                execution = batch_executions_client.get_execution(name=execution_name)
 
-            def execute_batch_sync(batch, url):
-                """Execute a single batch with retry logic for 429 rate limits."""
-                import requests as req_lib
-                import google.auth
-                import google.auth.transport.requests
-                from google.oauth2 import id_token
+                succeeded = execution.succeeded_count
+                failed_count = execution.failed_count
+                running = execution.running_count
 
-                payload = {
-                    'districtId': district_id,
-                    'districtLabel': district_label,
-                    'chartIds': batch['chartIds'],
-                    'batchId': batch['batchId']
-                }
+                logger.info(f'  Job status: {succeeded} succeeded, {failed_count} failed, '
+                           f'{running} running (of {len(batches)} tasks)')
 
-                for attempt in range(MAX_RETRIES + 1):
+                update_status(db, district_label, {
+                    'completedBatches': succeeded,
+                    'message': f'Converting: {succeeded}/{len(batches)} batches complete'
+                               f'{f", {failed_count} failed" if failed_count else ""}'
+                               f'{f", {running} running" if running else ""}',
+                })
+
+                if execution.completion_time is not None:
+                    logger.info(f'  Job completed at {execution.completion_time}')
+                    break
+            else:
+                logger.error(f'  Batch convert job timed out after {MAX_POLL_SECONDS}s')
+
+            # Gather results from Storage
+            logger.info('  Gathering batch results from Storage...')
+            result_blobs = list(bucket.list_blobs(
+                prefix=f'{district_label}/chart-geojson/_batch_results/'))
+
+            for blob in result_blobs:
+                if blob.name.endswith('.json'):
                     try:
-                        # Get fresh ID token each attempt (tokens expire)
-                        auth_req = google.auth.transport.requests.Request()
-                        token = id_token.fetch_id_token(auth_req, url)
-
-                        headers = {
-                            'Authorization': f'Bearer {token}',
-                            'Content-Type': 'application/json'
-                        }
-
-                        response = req_lib.post(
-                            f'{url}/convert-batch',
-                            json=payload,
-                            headers=headers,
-                            timeout=600
-                        )
-
-                        logger.info(f"  Batch {batch['batchId']}: HTTP {response.status_code} (attempt {attempt + 1})")
-
-                        # Handle retryable status codes (429 rate limit, 500/503 scaling errors)
-                        if response.status_code in (429, 500, 502, 503):
-                            if attempt < MAX_RETRIES:
-                                delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 3)
-                                logger.warning(f"  Batch {batch['batchId']}: HTTP {response.status_code}, retrying in {delay:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
-                                time.sleep(delay)
-                                continue
-                            else:
-                                logger.error(f"  Batch {batch['batchId']}: HTTP {response.status_code}, all {MAX_RETRIES} retries exhausted")
-                                return {
-                                    'status': 'error',
-                                    'error': f'HTTP {response.status_code} after all retries',
-                                    'batchId': batch['batchId']
-                                }
-
-                        response.raise_for_status()
-                        return response.json()
-
-                    except req_lib.exceptions.RequestException as e:
-                        response_text = getattr(e.response, 'text', str(e)) if hasattr(e, 'response') else str(e)
-                        status_code = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
-
-                        # Retry on 429, 500, 502, 503 (scaling/rate limit errors)
-                        if status_code in (429, 500, 502, 503) and attempt < MAX_RETRIES:
-                            delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 3)
-                            logger.warning(f"  Batch {batch['batchId']}: HTTP {status_code}, retrying in {delay:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})")
-                            time.sleep(delay)
-                            continue
-
-                        logger.error(f"  Batch {batch['batchId']} HTTP error (attempt {attempt + 1}): {response_text[:200]}")
-                        return {
-                            'status': 'error',
-                            'error': f'HTTP error: {response_text[:500]}',
-                            'batchId': batch['batchId']
-                        }
+                        result_data = json.loads(blob.download_as_text())
+                        batch_results.append(result_data)
+                        if result_data.get('status') == 'success':
+                            for chart_result in result_data.get('perChartResults', []):
+                                if chart_result.get('success'):
+                                    completed_charts.add(chart_result['chartId'])
                     except Exception as e:
-                        logger.error(f"  Batch {batch['batchId']} error (attempt {attempt + 1}): {e}")
-                        if attempt < MAX_RETRIES:
-                            delay = RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 3)
-                            time.sleep(delay)
-                            continue
-                        return {
-                            'status': 'error',
-                            'error': str(e),
-                            'batchId': batch['batchId']
-                        }
-
-                return {'status': 'error', 'error': 'Unexpected retry loop exit', 'batchId': batch['batchId']}
-
-            # Launch batches with controlled concurrency to avoid overwhelming Cloud Run
-            # INITIAL_CONCURRENCY limits in-flight requests so Cloud Run can scale up
-            # gradually instead of 429-ing a wall of simultaneous requests.
-            effective_concurrency = min(INITIAL_CONCURRENCY, max_parallel, len(batches))
-            logger.info(f'  Launching {len(batches)} batches ({effective_concurrency} concurrent, {MAX_RETRIES} retries with jittered exponential backoff)...')
-            with ThreadPoolExecutor(max_workers=effective_concurrency) as executor:
-                futures = {executor.submit(execute_batch_sync, batch, service_url): batch for batch in batches}
-
-                for future in as_completed(futures):
-                    result = future.result()
-                    batch_results.append(result)
-
-                    # Track completed charts
-                    if result.get('status') == 'success':
-                        for chart_result in result.get('perChartResults', []):
-                            if chart_result.get('success'):
-                                completed_charts.add(chart_result['chartId'])
-
-                    # Update progress
-                    logger.info(f"  Batch {result.get('batchId')} complete: "
-                               f"{result.get('successfulCharts', 0)}/{result.get('totalCharts', 0)} charts "
-                               f"[{len(batch_results)}/{len(batches)} batches done, {len(completed_charts)} charts total]")
-
-                    update_status(db, district_label, {
-                        'completedBatches': len(batch_results),
-                        'completedCharts': len(completed_charts),
-                    })
+                        logger.warning(f'  Failed to read result {blob.name}: {e}')
 
             conversion_duration = time.time() - conversion_start
             successful_batches = sum(1 for r in batch_results if r.get('status') == 'success')

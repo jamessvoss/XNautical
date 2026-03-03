@@ -254,5 +254,8 @@ if __name__ == '__main__':
         # Route to tippecanoe worker for fan-out execution
         from compose_job import tippecanoe_worker
         tippecanoe_worker()
+    elif job_type == 'batch-convert':
+        from batch_convert_job import main as batch_convert_main
+        batch_convert_main()
     else:
         main()
