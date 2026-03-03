@@ -4177,8 +4177,11 @@ export const fetchMarineForecasts = functions
   .schedule('every 15 minutes')
   .timeZone('UTC')  // Use UTC as base timezone
   .onRun(async (context) => {
-    // Active districts with marine zones - all 9 districts now have zones
-    const activeDistricts = ['01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd'];
+    // Active districts and sub-regions with marine zones
+    const activeDistricts = [
+      '01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd',
+      '17cgd-Juneau', '17cgd-Anchorage', '17cgd-Kodiak', '17cgd-DutchHarbor', '17cgd-Nome', '17cgd-Barrow',
+    ];
     
     console.log('Checking marine forecast update windows for all districts...');
     
@@ -4492,8 +4495,11 @@ export const refreshMarineForecasts = functions
         });
       } else {
         console.log('Manual marine forecast refresh triggered for all districts');
-        
-        const activeDistricts = ['01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd'];
+
+        const activeDistricts = [
+          '01cgd', '05cgd', '07cgd', '08cgd', '09cgd', '11cgd', '13cgd', '14cgd', '17cgd',
+          '17cgd-Juneau', '17cgd-Anchorage', '17cgd-Kodiak', '17cgd-DutchHarbor', '17cgd-Nome', '17cgd-Barrow',
+        ];
         const results = [];
         
         for (const district of activeDistricts) {
