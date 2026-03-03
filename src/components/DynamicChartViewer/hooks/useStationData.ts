@@ -36,7 +36,7 @@ function filterHighestBinCurrents(currents: CurrentStation[]): CurrentStation[] 
   return result;
 }
 
-export function useStationData() {
+export function useStationData(reloadTrigger: number = 0) {
   // Tide and current station data
   const [tideStations, setTideStations] = useState<TideStation[]>([]);
   const [currentStations, setCurrentStations] = useState<CurrentStation[]>([]);
@@ -76,9 +76,14 @@ export function useStationData() {
   };
 
   // Load tide and current stations from prediction databases on startup
+  // and whenever reloadTrigger changes (e.g. mapResetKey after download).
   useEffect(() => {
     const loadStations = async () => {
       try {
+        // Clear cache on re-runs so freshly downloaded databases are picked up
+        if (reloadTrigger > 0) {
+          clearStationCache();
+        }
         await loadStationsFromDatabases();
 
         const tides = getCachedTideStations();
@@ -104,7 +109,7 @@ export function useStationData() {
     };
 
     loadStations();
-  }, []);
+  }, [reloadTrigger]);
 
   // Calculate station icon states (runs every 15 minutes)
   useEffect(() => {

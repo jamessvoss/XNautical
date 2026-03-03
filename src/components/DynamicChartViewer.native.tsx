@@ -166,6 +166,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   const { activeRoute, addPointToActiveRoute, startNewRoute, showRoutesModal, openRoutesModal, closeRoutesModal, navigation } = useRoutes();
   const insets = useSafeAreaInsets();
   // Phase 2: Extracted hooks
+  const { mapResetKey } = useOverlay();
   const { displaySettings, setDisplaySettings } = useDisplaySettings();
   const {
     tideStations, currentStations, liveBuoys,
@@ -175,7 +176,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     detailChartTideStationId, setDetailChartTideStationId,
     detailChartCurrentStationId, setDetailChartCurrentStationId,
     handleBuoyClick, reloadStations,
-  } = useStationData();
+  } = useStationData(mapResetKey);
   const {
     s52Mode, setS52Mode, uiTheme, s52Colors, depthFillExpression,
     landImagery, setLandImagery, marineImagery, setMarineImagery,
@@ -1171,7 +1172,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   
   
   // GPS and Navigation state - overlay visibility from context (rendered in App.tsx)
-  const { showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails, showDebugMap, setShowDebugMap, showNavData, setShowNavData, mapResetKey } = useOverlay();
+  const { showCompass, compassMode, cycleCompassMode, updateGPSData, setShowTideDetails: setContextTideDetails, setShowCurrentDetails: setContextCurrentDetails, showDebugMap, setShowDebugMap, showNavData, setShowNavData } = useOverlay();
   const [followGPS, setFollowGPS] = useState(true); // Follow mode - center map on position
   const followGPSRef = useRef(true); // Ref for immediate follow mode check (avoids race condition)
   const isProgrammaticCameraMove = useRef(false); // Flag to distinguish programmatic vs user camera moves
@@ -1470,6 +1471,13 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   }, [followGPS]);
 
   const loadCharts = async () => {
+    // Reset tile server state so all VectorSources unmount while the server restarts.
+    // Without this, a post-download requestMapReset() remounts the MapView with
+    // tileServerReady=true and stale URLs pointing at the stopped server — MapLibre
+    // gets connection refused and enters an error state that persists even after
+    // the server restarts (because React sees no state change to trigger re-render).
+    setTileServerReady(false);
+
     // Start performance tracking
     performanceTracker.beginStartup();
     logger.setStartupParam('storagePath', 'file:///storage/emulated/0/Android/data/com.xnautical.app/files/mbtiles');
@@ -4911,7 +4919,7 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
         {/* buoys, beacons, wrecks, rocks, etc.) from points.mbtiles.      */}
         {/* Single VectorSource, SCAMIN-based visibility, native tile IO.  */}
         {/* ================================================================== */}
-        {pointsTileUrl && (
+        {tileServerReady && pointsTileUrl && (
           <MapLibre.VectorSource
             id="points"
             tileUrlTemplates={[pointsTileUrl]}

@@ -369,58 +369,61 @@ def generate_metadata():
                     })
                     total_size += tr_size
         
-        # Satellite imagery (check for single file or zoom-level files)
-        satellite_path = f'{district_id}/satellite/{prefix}_satellite.mbtiles.zip'
-        satellite_size = get_file_size(bucket, satellite_path)
-        
-        if satellite_size > 0:
-            # Single satellite file
-            satellite_md5 = get_blob_md5(bucket, satellite_path)
-            download_packs.append({
-                'id': 'satellite',
-                'type': 'satellite',
-                'name': 'Satellite Imagery',
-                'description': 'Satellite imagery tiles',
-                'storagePath': satellite_path,
-                'sizeBytes': satellite_size,
-                'sizeMB': round(satellite_size / 1024 / 1024, 1),
-                'required': False,
-                'checksum': satellite_md5,
-                'checksumAlgorithm': 'md5' if satellite_md5 else None,
-            })
-            total_size += satellite_size
-        else:
-            # Check for zoom-level files
-            zoom_levels = [
-                ('z0-5', 'Overview', 'Zoom levels 0-5 - Global to regional view'),
-                ('z6-7', 'State', 'Zoom levels 6-7 - State-wide view'),
-                ('z8', 'Region', 'Zoom level 8 - Regional view'),
-                ('z9', 'Area', 'Zoom level 9 - Area view'),
-                ('z10', 'City', 'Zoom level 10 - City-scale view'),
-                ('z11', 'Town', 'Zoom level 11 - Town-scale view'),
-                ('z12', 'Neighborhood', 'Zoom level 12 - Neighborhood view'),
-                ('z13', 'Street', 'Zoom level 13 - Street-level view'),
-                ('z14', 'Detail', 'Zoom level 14 - High detail view'),
-            ]
+        # Satellite imagery — prefer per-zoom packs (the download panel's resolution
+        # selector needs per-zoom IDs like satellite-z0-5 to filter by zoom).
+        # Fall back to the combined zip only if no per-zoom files exist.
+        satellite_zoom_levels = [
+            ('z0-5', 'Overview', 'Zoom levels 0-5 - Global to regional view'),
+            ('z6-7', 'State', 'Zoom levels 6-7 - State-wide view'),
+            ('z8', 'Region', 'Zoom level 8 - Regional view'),
+            ('z9', 'Area', 'Zoom level 9 - Area view'),
+            ('z10', 'City', 'Zoom level 10 - City-scale view'),
+            ('z11', 'Town', 'Zoom level 11 - Town-scale view'),
+            ('z12', 'Neighborhood', 'Zoom level 12 - Neighborhood view'),
+            ('z13', 'Street', 'Zoom level 13 - Street-level view'),
+            ('z14', 'Detail', 'Zoom level 14 - High detail view'),
+        ]
 
-            for zoom_id, zoom_name, zoom_desc in zoom_levels:
-                sat_path = f'{district_id}/satellite/{prefix}_satellite_{zoom_id}.mbtiles.zip'
-                sat_size = get_file_size(bucket, sat_path)
-                if sat_size > 0:
-                    sat_md5 = get_blob_md5(bucket, sat_path)
-                    download_packs.append({
-                        'id': f'satellite-{zoom_id}',
-                        'type': 'satellite',
-                        'name': f'Satellite ({zoom_name})',
-                        'description': zoom_desc,
-                        'storagePath': sat_path,
-                        'sizeBytes': sat_size,
-                        'sizeMB': round(sat_size / 1024 / 1024, 1),
-                        'required': False,
-                        'checksum': sat_md5,
-                        'checksumAlgorithm': 'md5' if sat_md5 else None,
-                    })
-                    total_size += sat_size
+        satellite_per_zoom_found = False
+        for zoom_id, zoom_name, zoom_desc in satellite_zoom_levels:
+            sat_path = f'{district_id}/satellite/{prefix}_satellite_{zoom_id}.mbtiles.zip'
+            sat_size = get_file_size(bucket, sat_path)
+            if sat_size > 0:
+                satellite_per_zoom_found = True
+                sat_md5 = get_blob_md5(bucket, sat_path)
+                download_packs.append({
+                    'id': f'satellite-{zoom_id}',
+                    'type': 'satellite',
+                    'name': f'Satellite ({zoom_name})',
+                    'description': zoom_desc,
+                    'storagePath': sat_path,
+                    'sizeBytes': sat_size,
+                    'sizeMB': round(sat_size / 1024 / 1024, 1),
+                    'required': False,
+                    'checksum': sat_md5,
+                    'checksumAlgorithm': 'md5' if sat_md5 else None,
+                })
+                total_size += sat_size
+
+        if not satellite_per_zoom_found:
+            # Fall back to combined satellite zip
+            satellite_path = f'{district_id}/satellite/{prefix}_satellite.mbtiles.zip'
+            satellite_size = get_file_size(bucket, satellite_path)
+            if satellite_size > 0:
+                satellite_md5 = get_blob_md5(bucket, satellite_path)
+                download_packs.append({
+                    'id': 'satellite',
+                    'type': 'satellite',
+                    'name': 'Satellite Imagery',
+                    'description': 'Satellite imagery tiles',
+                    'storagePath': satellite_path,
+                    'sizeBytes': satellite_size,
+                    'sizeMB': round(satellite_size / 1024 / 1024, 1),
+                    'required': False,
+                    'checksum': satellite_md5,
+                    'checksumAlgorithm': 'md5' if satellite_md5 else None,
+                })
+                total_size += satellite_size
         
         # Charts are required — if no charts file exists, return an error
         has_charts = any(p['type'] == 'charts' for p in download_packs)
