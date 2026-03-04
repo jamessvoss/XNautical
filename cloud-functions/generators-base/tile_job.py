@@ -18,6 +18,7 @@ import json
 import gzip
 import time
 import shutil
+import sqlite3
 import logging
 import tempfile
 from pathlib import Path
@@ -28,7 +29,7 @@ from config import BUCKET_NAME, REGION_BOUNDS, get_district_prefix, get_basemap_
 from tile_utils import (
     get_all_tiles_for_region, download_and_store_tiles,
     zip_and_upload_pack, combine_and_zip, check_pack_exists,
-    update_generator_status, TileDownloadError,
+    update_generator_status, TileDownloadError, init_mbtiles,
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -89,9 +90,24 @@ def main():
         storage_path = f'{region_id}/{storage_folder}/{filename}'
         if check_pack_exists(bucket, storage_path):
             logger.info(f'  {pack_id} already exists, skipping download')
+            # For sub-packs reused from a previous partial run, write a result
+            # so finalize's metadata aggregation includes their size.
+            if pack.get('parentPack'):
+                blob = bucket.blob(storage_path)
+                blob.reload()
+                _write_result(bucket, region_id, storage_folder, pack_id, {
+                    'packId': pack_id, 'status': 'success',
+                    'filename': filename, 'storagePath': storage_path,
+                    'sizeMB': round((blob.size or 0) / 1024 / 1024, 1),
+                    'sizeBytes': blob.size or 0,
+                    'tileCount': 0, 'failedTiles': 0,
+                    'minZoom': min_zoom, 'maxZoom': max_zoom,
+                    'parentPack': pack['parentPack'],
+                    'reused': True,
+                })
         else:
-            # Calculate tiles
-            bounds = manifest['bounds']
+            # Calculate tiles (sub-packs carry their own bounds slice)
+            bounds = pack.get('bounds', manifest['bounds'])
             buffer_nm = manifest.get('bufferNm', 25)
             geometry_mode = config.get('geometryMode', 'coastal')
 
@@ -147,22 +163,27 @@ def main():
                 # Upload raw MBTiles
                 bucket.blob(storage_path).upload_from_filename(str(db_path), timeout=600)
 
-                # Zip and upload
-                if layer_name == 'basemap':
-                    zip_internal = f'{get_basemap_filename(region_id)}_{pack_id}.mbtiles'
-                else:
-                    zip_internal = f'{get_district_prefix(region_id)}_{layer_name}_{pack_id}.mbtiles'
-                zip_and_upload_pack(bucket, region_id, storage_folder,
-                                    db_path, zip_internal, work_dir)
+                if not pack.get('parentPack'):
+                    # Normal pack: zip and upload
+                    if layer_name == 'basemap':
+                        zip_internal = f'{get_basemap_filename(region_id)}_{pack_id}.mbtiles'
+                    else:
+                        zip_internal = f'{get_district_prefix(region_id)}_{layer_name}_{pack_id}.mbtiles'
+                    zip_and_upload_pack(bucket, region_id, storage_folder,
+                                        db_path, zip_internal, work_dir)
+                # Sub-packs: raw mbtiles already uploaded; finalize will merge+zip
 
                 # Write per-pack result
-                _write_result(bucket, region_id, storage_folder, pack_id, {
+                result_data = {
                     'packId': pack_id, 'status': 'success',
                     'filename': filename, 'storagePath': storage_path,
                     'sizeMB': round(size_mb, 1), 'sizeBytes': file_size,
                     'tileCount': stats['completed'], 'failedTiles': stats['failed'],
                     'minZoom': min_zoom, 'maxZoom': max_zoom,
-                })
+                }
+                if pack.get('parentPack'):
+                    result_data['parentPack'] = pack['parentPack']
+                _write_result(bucket, region_id, storage_folder, pack_id, result_data)
 
                 db_path.unlink(missing_ok=True)
 
@@ -225,6 +246,132 @@ def _increment_completed(db, region_id, config, manifest):
         _finalize(db, region_id, config, manifest)
 
 
+def _merge_sub_packs(bucket, region_id, storage_folder, layer_name, manifest):
+    """Merge longitude-sliced sub-packs back into canonical per-zoom MBTiles.
+
+    For each parentPack group, downloads sub-pack MBTiles one at a time,
+    streams tiles into a canonical MBTiles, then uploads the canonical
+    raw + zip and deletes the sub-pack files from storage.
+
+    Returns dict of {parentPack: [missing_pack_ids, ...]} for any sub-packs
+    that were not found in storage (indicates partial failure).
+    """
+    # Identify sub-packs from manifest
+    parent_groups = {}  # parentPack -> [pack, ...]
+    for pack in manifest['packs']:
+        parent = pack.get('parentPack')
+        if parent:
+            parent_groups.setdefault(parent, []).append(pack)
+
+    if not parent_groups:
+        return {}
+
+    logger.info(f'  Merging {len(parent_groups)} split pack group(s)...')
+    missing_slices = {}  # parentPack -> [missing packId, ...]
+
+    for parent_id, sub_packs in parent_groups.items():
+        merge_dir = tempfile.mkdtemp(prefix=f'merge_{layer_name}_{region_id}_{parent_id}_')
+        try:
+            # Determine zoom range from sub-packs (all share same zoom)
+            min_z = sub_packs[0]['minZoom']
+            max_z = sub_packs[0]['maxZoom']
+            canonical_filename = f'{layer_name}_{parent_id}.mbtiles'
+            canonical_path = Path(merge_dir) / canonical_filename
+
+            # Init canonical MBTiles with the full region bounds
+            region_bounds = manifest['bounds']
+            conn = init_mbtiles(
+                canonical_path, min_z, max_z,
+                f'{region_id} {layer_name.title()} ({parent_id})',
+                region_bounds,
+            )
+            conn.close()
+
+            # Copy tiles from each sub-pack one at a time
+            pack_missing = []
+            for sp in sorted(sub_packs, key=lambda p: p['packId']):
+                sp_filename = f'{layer_name}_{sp["packId"]}.mbtiles'
+                sp_storage_path = f'{region_id}/{storage_folder}/{sp_filename}'
+                sp_local = Path(merge_dir) / sp_filename
+
+                logger.info(f'    Downloading sub-pack {sp["packId"]}...')
+                blob = bucket.blob(sp_storage_path)
+                if not blob.exists():
+                    logger.warning(f'    Sub-pack not found: {sp_storage_path}')
+                    pack_missing.append(sp['packId'])
+                    continue
+                blob.download_to_filename(str(sp_local))
+
+                # Stream tiles into canonical
+                src_conn = sqlite3.connect(str(sp_local))
+                dst_conn = sqlite3.connect(str(canonical_path))
+                dst_conn.execute('PRAGMA journal_mode=WAL')
+                dst_conn.execute('BEGIN TRANSACTION')
+                cursor = src_conn.execute(
+                    'SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles')
+                while True:
+                    batch = cursor.fetchmany(1000)
+                    if not batch:
+                        break
+                    dst_conn.executemany(
+                        'INSERT OR REPLACE INTO tiles VALUES (?, ?, ?, ?)', batch)
+                dst_conn.execute('COMMIT')
+                dst_conn.close()
+                src_conn.close()
+
+                # Delete local sub-pack immediately to control disk usage
+                sp_local.unlink()
+
+            if pack_missing:
+                missing_slices[parent_id] = pack_missing
+                logger.error(f'    {parent_id}: {len(pack_missing)}/{len(sub_packs)} '
+                             f'sub-packs missing — canonical will have gaps')
+
+            # Compact the canonical MBTiles (reclaims WAL journal space)
+            vac_conn = sqlite3.connect(str(canonical_path))
+            vac_conn.execute('PRAGMA journal_mode=DELETE')
+            vac_conn.execute('VACUUM')
+            vac_conn.close()
+
+            canonical_size_mb = canonical_path.stat().st_size / 1024 / 1024
+            logger.info(f'    Canonical {canonical_filename}: {canonical_size_mb:.1f} MB')
+            if canonical_size_mb > 10_000:
+                logger.warning(f'    Large canonical ({canonical_size_mb:.0f} MB) — '
+                               f'ensure Cloud Run Job has sufficient disk/memory')
+
+            # Upload canonical raw mbtiles
+            canonical_storage = f'{region_id}/{storage_folder}/{canonical_filename}'
+            logger.info(f'    Uploading merged {canonical_filename}...')
+            bucket.blob(canonical_storage).upload_from_filename(
+                str(canonical_path), timeout=1200)
+
+            # Zip and upload canonical
+            if layer_name == 'basemap':
+                zip_internal = f'{get_basemap_filename(region_id)}_{parent_id}.mbtiles'
+            else:
+                zip_internal = f'{get_district_prefix(region_id)}_{layer_name}_{parent_id}.mbtiles'
+            zip_and_upload_pack(bucket, region_id, storage_folder,
+                                canonical_path, zip_internal, merge_dir)
+
+            # Delete sub-pack raw files from storage
+            for sp in sub_packs:
+                sp_filename = f'{layer_name}_{sp["packId"]}.mbtiles'
+                sp_path = f'{region_id}/{storage_folder}/{sp_filename}'
+                try:
+                    bucket.blob(sp_path).delete()
+                except Exception:
+                    pass
+
+            logger.info(f'    Merged {len(sub_packs) - len(pack_missing)}/{len(sub_packs)} '
+                        f'sub-packs into {canonical_filename}')
+
+        finally:
+            if os.path.exists(merge_dir):
+                shutil.rmtree(merge_dir, ignore_errors=True)
+
+    return missing_slices
+
+
 def _finalize(db, region_id, config, manifest):
     """Called by the last task: combine packs, write final Firestore status."""
     layer_name = config['layerName']
@@ -237,27 +384,69 @@ def _finalize(db, region_id, config, manifest):
     storage_client = storage.Client()
     bucket = storage_client.bucket(os.environ.get('BUCKET_NAME', BUCKET_NAME))
 
+    # Merge any longitude-sliced sub-packs before combining
+    missing_slices = {}
+    try:
+        missing_slices = _merge_sub_packs(bucket, region_id, storage_folder, layer_name, manifest)
+    except Exception as e:
+        logger.error(f'Sub-pack merge failed: {e}', exc_info=True)
+
     # Read all per-pack results
     prefix = f'{region_id}/{storage_folder}/_job_results/'
     result_blobs = list(bucket.list_blobs(prefix=prefix))
     pack_results = {}
+    sub_pack_results = {}  # parentPack -> [result, ...]
+    failed_packs = []
     for blob in result_blobs:
         try:
             result = json.loads(blob.download_as_text())
             if result.get('status') == 'success':
                 pack_id = result['packId']
-                pack_results[pack_id] = {
-                    'filename': result['filename'],
-                    'storagePath': result['storagePath'],
-                    'sizeMB': result['sizeMB'],
-                    'sizeBytes': result['sizeBytes'],
-                    'tileCount': result['tileCount'],
-                    'failedTiles': result['failedTiles'],
-                    'minZoom': result['minZoom'],
-                    'maxZoom': result['maxZoom'],
-                }
+                parent = result.get('parentPack')
+                if parent:
+                    sub_pack_results.setdefault(parent, []).append(result)
+                else:
+                    pack_results[pack_id] = {
+                        'filename': result['filename'],
+                        'storagePath': result['storagePath'],
+                        'sizeMB': result['sizeMB'],
+                        'sizeBytes': result['sizeBytes'],
+                        'tileCount': result['tileCount'],
+                        'failedTiles': result['failedTiles'],
+                        'minZoom': result['minZoom'],
+                        'maxZoom': result['maxZoom'],
+                    }
+            elif result.get('status') == 'error':
+                failed_packs.append(result.get('packId', 'unknown'))
         except Exception as e:
             logger.warning(f'  Failed to read result {blob.name}: {e}')
+
+    # Aggregate sub-pack results into canonical entries
+    for parent_id, results in sub_pack_results.items():
+        canonical_filename = f'{layer_name}_{parent_id}.mbtiles'
+        canonical_storage_path = f'{region_id}/{storage_folder}/{canonical_filename}'
+        total_tiles = sum(r['tileCount'] for r in results)
+        total_failed = sum(r['failedTiles'] for r in results)
+
+        # Use actual merged file size from storage (accounts for dedup/overhead)
+        canonical_blob = bucket.blob(canonical_storage_path)
+        if canonical_blob.exists():
+            canonical_blob.reload()
+            actual_bytes = canonical_blob.size or 0
+        else:
+            # Fallback to sum if canonical wasn't uploaded (merge failed)
+            actual_bytes = sum(r['sizeBytes'] for r in results)
+
+        pack_results[parent_id] = {
+            'filename': canonical_filename,
+            'storagePath': canonical_storage_path,
+            'sizeMB': round(actual_bytes / 1024 / 1024, 1),
+            'sizeBytes': actual_bytes,
+            'tileCount': total_tiles,
+            'failedTiles': total_failed,
+            'minZoom': results[0]['minZoom'],
+            'maxZoom': results[0]['maxZoom'],
+        }
 
     # Combine per-zoom packs into single zip (best-effort)
     try:
@@ -273,10 +462,33 @@ def _finalize(db, region_id, config, manifest):
     except Exception as e:
         logger.warning(f'  Combined zip failed (per-zoom zips available): {e}')
 
+    # Determine final state
+    has_failures = bool(missing_slices) or bool(failed_packs)
+    if has_failures:
+        state = 'partial'
+        parts = []
+        if missing_slices:
+            total_missing = sum(len(v) for v in missing_slices.values())
+            parts.append(f'{total_missing} missing slices')
+        if failed_packs:
+            parts.append(f'{len(failed_packs)} failed packs')
+        failure_detail = ', '.join(parts)
+        message = f'{layer_name.title()} generation partial for {region_name} ({failure_detail})'
+        logger.warning(f'  Finalization with failures: {failure_detail}')
+    else:
+        state = 'complete'
+        message = f'{layer_name.title()} generation complete for {region_name}'
+
     # Write final Firestore status
     doc_ref = db.collection('districts').document(region_id)
-    region = REGION_BOUNDS.get(region_id, {})
-    region_name = region.get('name', region_id)
+
+    status_data = {
+        'state': state,
+        'message': message,
+        'completedAt': firestore.SERVER_TIMESTAMP,
+    }
+    if missing_slices:
+        status_data['missingSlices'] = missing_slices
 
     doc_ref.set({
         data_field: {
@@ -285,11 +497,7 @@ def _finalize(db, region_id, config, manifest):
             'bufferNm': buffer_nm,
             'packs': pack_results,
         },
-        status_field: {
-            'state': 'complete',
-            'message': f'{layer_name.title()} generation complete for {region_name}',
-            'completedAt': firestore.SERVER_TIMESTAMP,
-        },
+        status_field: status_data,
     }, merge=True)
 
     logger.info(f'  Finalization complete for {layer_name} / {region_id}')

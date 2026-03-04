@@ -91,6 +91,70 @@ def get_tiles_for_bounds(bounds, zoom):
     return tiles
 
 
+def tile_x_to_lon(x, zoom):
+    """Convert tile X index back to longitude (west edge of tile)."""
+    n = 1 << zoom
+    return x / n * 360.0 - 180.0
+
+
+def estimate_bbox_tile_count(bounds_list, zoom):
+    """Upper-bound tile count for a list of bounding boxes at a zoom level.
+
+    Pure arithmetic — no set creation, no shapefile. Fast enough for
+    launch-time decisions (e.g. whether to split a pack).
+    """
+    count = 0
+    for b in bounds_list:
+        x_min = lon_to_tile_x(b['west'], zoom)
+        x_max = lon_to_tile_x(b['east'], zoom)
+        y_min = lat_to_tile_y(b['north'], zoom)
+        y_max = lat_to_tile_y(b['south'], zoom)
+        count += (x_max - x_min + 1) * (y_max - y_min + 1)
+    return count
+
+
+def split_bounds_by_longitude(bounds_list, zoom, max_tiles):
+    """Split bounding boxes into longitude slices, each ≤ max_tiles bbox tiles.
+
+    Each input rectangle is sliced independently.  Slice boundaries are
+    aligned to tile column edges so there are no gaps or overlaps.
+
+    Returns a flat list of bounds dicts with tile-boundary-aligned longitudes.
+    The east boundary uses tile_x_to_lon(slice_x_max + 1) - epsilon so that
+    lon_to_tile_x(east) lands on slice_x_max, not slice_x_max + 1 (avoids
+    one-column overlap between adjacent slices).
+    """
+    slices = []
+    n = 1 << zoom
+    # Epsilon: half a tile column in degrees — large enough to survive
+    # float rounding but small enough to stay inside the last column.
+    eps = 360.0 / n * 0.5
+    for b in bounds_list:
+        x_min = lon_to_tile_x(b['west'], zoom)
+        x_max = lon_to_tile_x(b['east'], zoom)
+        y_min = lat_to_tile_y(b['north'], zoom)
+        y_max = lat_to_tile_y(b['south'], zoom)
+        y_count = y_max - y_min + 1
+
+        if y_count == 0:
+            continue
+
+        cols_per_slice = max(1, max_tiles // y_count)
+        x = x_min
+        while x <= x_max:
+            slice_x_max = min(x + cols_per_slice - 1, x_max)
+            # West: exact tile boundary; East: nudged inside last column
+            east = tile_x_to_lon(slice_x_max + 1, zoom) - eps
+            slices.append({
+                'west': tile_x_to_lon(x, zoom),
+                'east': east,
+                'south': b['south'],
+                'north': b['north'],
+            })
+            x = slice_x_max + 1
+    return slices
+
+
 def format_bytes(size):
     for unit in ['B', 'KB', 'MB', 'GB']:
         if size < 1024:
@@ -520,10 +584,13 @@ def combine_and_zip(bucket, region_id, layer_name, storage_folder,
     """
     prefix = f'{region_id}/{storage_folder}/'
     blobs = list(bucket.list_blobs(prefix=prefix))
-    # Only include per-zoom .mbtiles files, not combined or zip files
+    # Only include per-zoom .mbtiles files, not combined, zip, or sub-pack files.
+    # Sub-packs (e.g. basemap_z14_s0.mbtiles) contain '_z' but also '_s' —
+    # they should have been merged into canonical files already.
     mbtiles_blobs = [b for b in blobs
                      if b.name.endswith('.mbtiles')
-                     and '_z' in os.path.basename(b.name)]
+                     and '_z' in os.path.basename(b.name)
+                     and '_s' not in os.path.basename(b.name)]
 
     if not mbtiles_blobs:
         logger.warning(f'  No {layer_name} per-zoom MBTiles found at {prefix}, skipping combine')

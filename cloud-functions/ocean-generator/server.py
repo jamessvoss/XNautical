@@ -45,6 +45,7 @@ from tile_utils import (
     get_all_tiles_for_region, check_pack_exists,
     update_generator_status, combine_and_zip,
     LAND_SHAPEFILE, COASTAL_BUFFER_MIN_ZOOM,
+    estimate_bbox_tile_count, split_bounds_by_longitude,
 )
 
 app = Flask(__name__)
@@ -112,6 +113,25 @@ def generate_ocean():
             'minZoom': pack_cfg['minZoom'],
             'maxZoom': pack_cfg['maxZoom'],
         })
+
+    # Split oversized packs into longitude slices
+    MAX_TILES_PER_TASK = 1_000_000
+    final_packs = []
+    for pack in packs_to_generate:
+        est = estimate_bbox_tile_count(region['bounds'], pack['maxZoom'])
+        if est <= MAX_TILES_PER_TASK:
+            final_packs.append(pack)
+        else:
+            slices = split_bounds_by_longitude(region['bounds'], pack['maxZoom'], MAX_TILES_PER_TASK)
+            logger.info(f'  {pack["packId"]}: ~{est:,} bbox tiles, splitting into {len(slices)} tasks')
+            for i, sb in enumerate(slices):
+                final_packs.append({
+                    'packId': f'{pack["packId"]}_s{i}',
+                    'minZoom': pack['minZoom'], 'maxZoom': pack['maxZoom'],
+                    'parentPack': pack['packId'],
+                    'bounds': [sb],
+                })
+    packs_to_generate = final_packs
 
     if not packs_to_generate:
         logger.info(f'  All packs exist, marking complete')
