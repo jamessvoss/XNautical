@@ -109,7 +109,7 @@ def generate_satellite():
         })
 
     # Split oversized packs into longitude slices
-    MAX_TILES_PER_TASK = 1_000_000
+    MAX_TILES_PER_TASK = 500_000
     final_packs = []
     for pack in packs_to_generate:
         est = estimate_bbox_tile_count(region['bounds'], pack['maxZoom'])
