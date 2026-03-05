@@ -85,10 +85,18 @@ def generate(regions):
 
     # Zoom packs (static, not from regions.json)
     lines.append('# Standard zoom packs: z0-5 combined, then z6..z14 individually')
-    lines.append('# Used by basemap, ocean, terrain generators')
+    lines.append('# Used by basemap and terrain generators')
     lines.append('STANDARD_ZOOM_PACKS = {')
     lines.append("    'z0-5':  {'minZoom': 0,  'maxZoom': 5},")
     for z in range(6, 15):
+        lines.append(f"    'z{z}':{' ' * (4 - len(str(z)))}  {{'minZoom': {z}, {' ' if z < 10 else ''}'maxZoom': {z}}},")
+    lines.append('}')
+    lines.append('')
+
+    lines.append('# Ocean capped at z12 (z13-14 ocean tiles are massive and unnecessary)')
+    lines.append('OCEAN_ZOOM_PACKS = {')
+    lines.append("    'z0-5':  {'minZoom': 0,  'maxZoom': 5},")
+    for z in range(6, 13):
         lines.append(f"    'z{z}':{' ' * (4 - len(str(z)))}  {{'minZoom': {z}, {' ' if z < 10 else ''}'maxZoom': {z}}},")
     lines.append('}')
     lines.append('')

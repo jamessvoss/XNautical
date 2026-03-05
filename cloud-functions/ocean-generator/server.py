@@ -38,7 +38,7 @@ from google.cloud import storage, firestore
 from google.cloud import run_v2
 
 from config import (
-    BUCKET_NAME, REGION_BOUNDS, STANDARD_ZOOM_PACKS,
+    BUCKET_NAME, REGION_BOUNDS, OCEAN_ZOOM_PACKS,
     get_district_prefix,
 )
 from tile_utils import (
@@ -68,7 +68,7 @@ DATA_FIELD = 'oceanData'
 TILE_FORMAT = 'png'
 DESCRIPTION = 'ESRI Ocean Basemap tiles'
 ATTRIBUTION = 'Source: Esri, GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org, and other contributors'
-ZOOM_PACKS = STANDARD_ZOOM_PACKS
+ZOOM_PACKS = OCEAN_ZOOM_PACKS
 AVG_TILE_KB = 25            # Average tile size estimate for /estimate
 
 PROJECT_ID = 'xnautical-8a296'

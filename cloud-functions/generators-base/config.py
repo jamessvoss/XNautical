@@ -85,7 +85,7 @@ REGION_BOUNDS = {
 }
 
 # Standard zoom packs: z0-5 combined, then z6..z14 individually
-# Used by basemap, ocean, terrain generators
+# Used by basemap and terrain generators
 STANDARD_ZOOM_PACKS = {
     'z0-5':  {'minZoom': 0,  'maxZoom': 5},
     'z6':     {'minZoom': 6,  'maxZoom': 6},
@@ -97,6 +97,18 @@ STANDARD_ZOOM_PACKS = {
     'z12':    {'minZoom': 12, 'maxZoom': 12},
     'z13':    {'minZoom': 13, 'maxZoom': 13},
     'z14':    {'minZoom': 14, 'maxZoom': 14},
+}
+
+# Ocean capped at z12 (z13-14 ocean tiles are massive and unnecessary)
+OCEAN_ZOOM_PACKS = {
+    'z0-5':  {'minZoom': 0,  'maxZoom': 5},
+    'z6':     {'minZoom': 6,  'maxZoom': 6},
+    'z7':     {'minZoom': 7,  'maxZoom': 7},
+    'z8':     {'minZoom': 8,  'maxZoom': 8},
+    'z9':     {'minZoom': 9,  'maxZoom': 9},
+    'z10':    {'minZoom': 10, 'maxZoom': 10},
+    'z11':    {'minZoom': 11, 'maxZoom': 11},
+    'z12':    {'minZoom': 12, 'maxZoom': 12},
 }
 
 # Satellite uses different zoom groupings (z6-7 combined)
