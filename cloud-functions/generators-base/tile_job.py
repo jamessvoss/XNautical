@@ -456,6 +456,7 @@ def _finalize(db, region_id, config, manifest):
             get_zip_name = lambda rid: f'{get_district_prefix(rid)}_{layer_name}.mbtiles'
 
         region = REGION_BOUNDS.get(region_id, {})
+        region_name = region.get('name', region_id)
         region_bounds = region.get('bounds', bounds)
         combine_and_zip(bucket, region_id, layer_name, storage_folder,
                         region_bounds, db, status_field, get_zip_name)
