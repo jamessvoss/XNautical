@@ -504,6 +504,42 @@ def write_station_to_tide_db(db_path, station_id, station_name, lat, lng, predic
         conn.close()
 
 
+def _insert_tide_predictions(db_path, station_id, predictions):
+    """Insert additional tide predictions for an existing station (retry recovery)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        for date_key, events in predictions.items():
+            for event in events:
+                cursor.execute(
+                    'INSERT OR IGNORE INTO tide_predictions (station_id, date, time, type, height) VALUES (?, ?, ?, ?, ?)',
+                    (station_id, date_key, event['time'], event['type'], event['height'])
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _insert_current_predictions(db_path, station_id, monthly_predictions):
+    """Insert additional current predictions for an existing station (retry recovery)."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        for month_key, daily_preds in monthly_predictions.items():
+            for date_str, predictions in daily_preds.items():
+                for pred in predictions:
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO current_predictions '
+                        '(station_id, date, time, type, velocity, direction) '
+                        'VALUES (?, ?, ?, ?, ?, ?)',
+                        (station_id, date_str, pred['time'], pred['type'],
+                         pred['velocity'], pred['direction'])
+                    )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def write_station_to_current_db(db_path, station_id, station_name, lat, lng, noaa_type, monthly_predictions):
     """Write a single station's current predictions directly to SQLite."""
     conn = sqlite3.connect(db_path)
@@ -584,8 +620,11 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
     and streaming directly to SQLite (no in-memory collection).
 
     Writes only lightweight metadata to Firestore (no prediction data).
-    
+
     Checks for termination flag every 10 stations to allow graceful stopping.
+
+    After the first pass, retries any stations that had failed chunks to
+    recover from transient NOAA outages.
 
     Returns (stations_processed, total_events, stations_failed).
     """
@@ -598,6 +637,11 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
     total_events = 0
 
     chunks = date_range_chunks(start_date, end_date)
+
+    # Track stations with failed chunks for retry pass
+    # Each entry: (station, station_index, [(chunk_start, chunk_end), ...])
+    stations_with_gaps = []
+    total_chunk_failures = 0
 
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         for i, station in enumerate(stations):
@@ -630,16 +674,24 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
             ]
             results = await asyncio.gather(*tasks)
 
-            # Merge results
+            # Track which chunks failed
+            failed_chunks = []
             all_predictions = {}
-            for result in results:
+            for idx, result in enumerate(results):
                 if result and isinstance(result, dict):
                     all_predictions.update(result)
+                else:
+                    failed_chunks.append(chunks[idx])
 
             if not all_predictions:
                 logger.warning(f'  [{i+1}/{len(stations)}] No data: {station_name} ({station_id})')
                 stations_failed += 1
                 continue
+
+            if failed_chunks:
+                total_chunk_failures += len(failed_chunks)
+                logger.warning(f'  [TIDES {region_id}] [{i+1}/{len(stations)}] {station_name}: {len(failed_chunks)}/{len(chunks)} chunks failed, will retry')
+                stations_with_gaps.append((station, i, failed_chunks))
 
             event_count = sum(len(events) for events in all_predictions.values())
             total_events += event_count
@@ -677,6 +729,49 @@ async def process_all_tide_stations(db_client, region_id, stations, start_date, 
             instance_id = os.environ.get('K_REVISION', 'unknown')
             logger.info(f'  [TIDES {region_id}] [{i+1}/{len(stations)}] {station_name}: {event_count} events, {day_count} days (revision: {instance_id})')
 
+        # ── Retry pass for stations with failed chunks ──
+        if stations_with_gaps:
+            logger.info(f'  [TIDES {region_id}] Retry pass: {len(stations_with_gaps)} stations with {total_chunk_failures} failed chunks')
+            await asyncio.sleep(5)  # Brief pause before retrying
+
+            chunks_recovered = 0
+            chunks_still_failed = 0
+
+            for station, orig_idx, failed_chunks in stations_with_gaps:
+                station_id = station['id']
+                station_name = station.get('name', station_id)
+
+                await asyncio.sleep(NOAA_INTER_STATION_DELAY)
+
+                tasks = [
+                    fetch_tide_chunk(session, station_id, cs, ce, semaphore)
+                    for cs, ce in failed_chunks
+                ]
+                results = await asyncio.gather(*tasks)
+
+                recovered_predictions = {}
+                still_failed = 0
+                for idx, result in enumerate(results):
+                    if result and isinstance(result, dict):
+                        recovered_predictions.update(result)
+                        chunks_recovered += 1
+                    else:
+                        still_failed += 1
+                        chunks_still_failed += 1
+
+                if recovered_predictions:
+                    # Insert recovered predictions into the existing SQLite database
+                    _insert_tide_predictions(db_path, station_id, recovered_predictions)
+                    recovered_events = sum(len(events) for events in recovered_predictions.values())
+                    recovered_days = len(recovered_predictions)
+                    total_events += recovered_events
+                    logger.info(f'  [TIDES {region_id}] Retry {station_name}: recovered {recovered_events} events, {recovered_days} days')
+                    recovered_predictions.clear()
+
+                if still_failed:
+                    logger.warning(f'  [TIDES {region_id}] Retry {station_name}: {still_failed} chunks still failed')
+
+            logger.info(f'  [TIDES {region_id}] Retry complete: {chunks_recovered} chunks recovered, {chunks_still_failed} still failed')
 
     return stations_processed, total_events, stations_failed
 
@@ -698,6 +793,9 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
     
     Checks for termination flag every 10 stations to allow graceful stopping.
 
+    After the first pass, retries any stations that had failed chunks to
+    recover from transient NOAA outages.
+
     Returns (stations_processed, total_months, stations_failed, stations_weak, total_events).
     """
     semaphore = asyncio.Semaphore(NOAA_CONCURRENT_CHUNKS)
@@ -709,6 +807,11 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
     stations_weak = 0
     total_months = 0
     total_events = 0
+
+    # Track stations with failed chunks for retry pass
+    # Each entry: (station, station_index, [(chunk_start, chunk_end), ...])
+    stations_with_gaps = []
+    total_chunk_failures = 0
 
     chunks = date_range_chunks(start_date, end_date)
 
@@ -785,20 +888,28 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
                 non_empty = sum(1 for r in results if r and len(r) > 0)
                 logger.info(f'  Debug first station: {len(results)} chunks, {non_empty} non-empty')
 
-            # Organize results by month
+            # Organize results by month, tracking failed chunks
             all_monthly = {}
-            for result in results:
+            failed_chunks = []
+            for idx, result in enumerate(results):
                 if result and isinstance(result, list) and len(result) > 0:
                     month_data = organize_currents_by_month(result)
                     for month_key, days in month_data.items():
                         if month_key not in all_monthly:
                             all_monthly[month_key] = {}
                         all_monthly[month_key].update(days)
+                else:
+                    failed_chunks.append(chunks[idx])
 
             if not all_monthly:
                 logger.warning(f'  [{i+1}/{len(stations)}] No data: {station_name} ({station_id})')
                 stations_failed += 1
                 continue
+
+            if failed_chunks:
+                total_chunk_failures += len(failed_chunks)
+                logger.warning(f'  [CURRENTS {region_id}] [{i+1}/{len(stations)}] {station_name}: {len(failed_chunks)}/{len(chunks)} chunks failed, will retry')
+                stations_with_gaps.append((station, i, failed_chunks))
 
             # STREAM: Write directly to SQLite, then discard from memory
             event_count = write_station_to_current_db(
@@ -839,6 +950,55 @@ async def process_all_current_stations(db_client, region_id, stations, start_dat
             instance_id = os.environ.get('K_REVISION', 'unknown')
             logger.info(f'  [CURRENTS {region_id}] [{i+1}/{len(stations)}] {station_name}: {event_count} events, {months_count} months (revision: {instance_id})')
 
+        # ── Retry pass for stations with failed chunks ──
+        if stations_with_gaps:
+            logger.info(f'  [CURRENTS {region_id}] Retry pass: {len(stations_with_gaps)} stations with {total_chunk_failures} failed chunks')
+            await asyncio.sleep(5)  # Brief pause before retrying
+
+            chunks_recovered = 0
+            chunks_still_failed = 0
+
+            for station, orig_idx, failed_chunks in stations_with_gaps:
+                station_id = station['id']
+                station_name = station.get('name', station_id)
+                bin_num = station.get('bin', 1)
+
+                await asyncio.sleep(NOAA_INTER_STATION_DELAY)
+
+                tasks = [
+                    fetch_current_chunk(session, station_id, bin_num, cs, ce, semaphore)
+                    for cs, ce in failed_chunks
+                ]
+                results = await asyncio.gather(*tasks)
+
+                recovered_monthly = {}
+                still_failed = 0
+                for idx, result in enumerate(results):
+                    if result and isinstance(result, list) and len(result) > 0:
+                        month_data = organize_currents_by_month(result)
+                        for month_key, days in month_data.items():
+                            if month_key not in recovered_monthly:
+                                recovered_monthly[month_key] = {}
+                            recovered_monthly[month_key].update(days)
+                        chunks_recovered += 1
+                    else:
+                        still_failed += 1
+                        chunks_still_failed += 1
+
+                if recovered_monthly:
+                    # Insert recovered predictions into the existing SQLite database
+                    _insert_current_predictions(db_path, station_id, recovered_monthly)
+                    recovered_events = sum(
+                        len(preds) for days in recovered_monthly.values() for preds in days.values()
+                    )
+                    total_events += recovered_events
+                    logger.info(f'  [CURRENTS {region_id}] Retry {station_name}: recovered {recovered_events} events')
+                    recovered_monthly.clear()
+
+                if still_failed:
+                    logger.warning(f'  [CURRENTS {region_id}] Retry {station_name}: {still_failed} chunks still failed')
+
+            logger.info(f'  [CURRENTS {region_id}] Retry complete: {chunks_recovered} chunks recovered, {chunks_still_failed} still failed')
 
     return stations_processed, total_months, stations_failed, stations_weak, total_events
 
