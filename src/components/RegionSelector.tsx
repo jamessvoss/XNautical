@@ -645,6 +645,7 @@ export default function RegionSelector({ visible, onClose }: Props) {
               region={selectedRegion}
               selectedResolution={selectedResolution}
               selectedOptionalMaps={selectedOptionalMaps}
+              compact
               onComplete={() => {
                 setState('selecting');
                 getInstalledDistricts().then(setInstalledDistricts).catch(() => {});

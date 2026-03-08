@@ -48,6 +48,7 @@ interface DownloadProgressViewProps {
   region: Region;
   selectedResolution: SatelliteResolution;
   selectedOptionalMaps?: Set<string>;
+  compact?: boolean;
   onComplete: () => void;
   onCancel: () => void;
 }
@@ -87,6 +88,7 @@ export default function DownloadProgressView({
   region,
   selectedResolution,
   selectedOptionalMaps,
+  compact = false,
   onComplete,
   onCancel,
 }: DownloadProgressViewProps) {
@@ -124,6 +126,9 @@ export default function DownloadProgressView({
 
   // Progress logging deduplication
   const lastLoggedProgress = useRef<Map<string, number>>(new Map());
+
+  // Compact mode: log expander
+  const [showLog, setShowLog] = useState(false);
 
   const insets = useSafeAreaInsets();
   const { requestMapReset } = useOverlay();
@@ -901,12 +906,107 @@ export default function DownloadProgressView({
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#4FC3F7" />
+      <View style={compact ? styles.compactLoadingContainer : styles.loadingContainer}>
+        <ActivityIndicator size={compact ? 'small' : 'large'} color="#4FC3F7" />
         <Text style={styles.loadingText}>Preparing downloads...</Text>
       </View>
     );
   }
+
+  // ============================================
+  // Compact render (for sidebar)
+  // ============================================
+
+  if (compact) {
+    return (
+      <View style={styles.compactContainer}>
+        <ScrollView style={styles.compactBody} showsVerticalScrollIndicator={false}>
+          {/* Phase + progress */}
+          <View style={styles.compactSection}>
+            <Text style={styles.compactPhase}>{currentPhase || 'PREPARING...'}</Text>
+            <View style={styles.compactProgressRow}>
+              <View style={styles.compactProgressBar}>
+                <View style={[styles.compactProgressFill, { width: `${overallProgress}%` }]} />
+              </View>
+              <Text style={[styles.compactPct, { fontFamily: monoFont }]}>{overallProgress}%</Text>
+            </View>
+            {currentItem ? (
+              <Text style={styles.compactItem}>{currentItem}</Text>
+            ) : null}
+            {isPaused && <Text style={styles.compactPaused}>PAUSED</Text>}
+          </View>
+
+          {/* Compact stats grid (2-column) */}
+          <View style={styles.compactStats}>
+            {totalBytesToDownload > 0 && (
+              <View style={styles.compactStatBox}>
+                <Text style={styles.compactStatLabel}>Downloaded</Text>
+                <Text style={[styles.compactStatValue, { fontFamily: monoFont }]}>
+                  {formatBytes(totalBytesDownloaded)} / {formatBytes(totalBytesToDownload)}
+                </Text>
+              </View>
+            )}
+            {viewSpeedBps !== null && viewSpeedBps > 0 && (
+              <View style={styles.compactStatBox}>
+                <Text style={styles.compactStatLabel}>Speed</Text>
+                <Text style={[styles.compactStatValue, { fontFamily: monoFont }]}>{formatSpeed(viewSpeedBps)}</Text>
+              </View>
+            )}
+            {viewEtaSeconds !== null && viewEtaSeconds > 0 && (
+              <View style={styles.compactStatBox}>
+                <Text style={styles.compactStatLabel}>Time Left</Text>
+                <Text style={[styles.compactStatValue, { fontFamily: monoFont }]}>{formatEta(viewEtaSeconds)}</Text>
+              </View>
+            )}
+            <View style={styles.compactStatBox}>
+              <Text style={styles.compactStatLabel}>Elapsed</Text>
+              <Text style={[styles.compactStatValue, { fontFamily: monoFont }]}>{elapsedTime}</Text>
+            </View>
+          </View>
+
+          {/* Show Log expander */}
+          <TouchableOpacity
+            style={styles.compactLogToggle}
+            onPress={() => setShowLog(!showLog)}
+          >
+            <Ionicons
+              name={showLog ? 'chevron-down' : 'chevron-forward'}
+              size={12}
+              color="#4FC3F7"
+            />
+            <Text style={styles.compactLogToggleText}>{showLog ? 'Hide Log' : 'Show Log'}</Text>
+          </TouchableOpacity>
+
+          {showLog && (
+            <ScrollView
+              ref={consoleScrollRef}
+              style={styles.compactLogContainer}
+              showsVerticalScrollIndicator={true}
+              contentContainerStyle={{ paddingBottom: 4 }}
+            >
+              {consoleLog.map((entry, i) => renderConsoleEntry(entry, i))}
+            </ScrollView>
+          )}
+        </ScrollView>
+
+        {/* Compact action buttons */}
+        <View style={styles.compactActions}>
+          <TouchableOpacity onPress={handlePause} style={styles.compactActionBtn}>
+            <Ionicons name={isPaused ? 'play' : 'pause'} size={16} color="#4FC3F7" />
+            <Text style={styles.compactActionBtnText}>{isPaused ? 'Resume' : 'Pause'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleCancel} style={[styles.compactActionBtn, styles.compactCancelBtn]}>
+            <Ionicons name="close" size={16} color="#ef4444" />
+            <Text style={[styles.compactActionBtnText, { color: '#ef4444' }]}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // ============================================
+  // Full render (default)
+  // ============================================
 
   return (
     <View style={[styles.container, { paddingBottom: Math.max(insets.bottom, 20) }]}>
@@ -1141,5 +1241,144 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     marginLeft: 6,
+  },
+
+  // ============================================
+  // Compact mode styles (for sidebar)
+  // ============================================
+
+  compactContainer: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  compactLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  compactBody: {
+    flex: 1,
+  },
+  compactSection: {
+    padding: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  compactPhase: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4FC3F7',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  compactProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  compactProgressBar: {
+    flex: 1,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(79,195,247,0.15)',
+    overflow: 'hidden',
+  },
+  compactProgressFill: {
+    height: '100%',
+    borderRadius: 3,
+    backgroundColor: '#4FC3F7',
+  },
+  compactPct: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#4FC3F7',
+    width: 36,
+    textAlign: 'right',
+  },
+  compactItem: {
+    fontSize: 12,
+    color: '#8899aa',
+  },
+  compactPaused: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFA726',
+    letterSpacing: 1,
+    marginTop: 4,
+  },
+  compactStats: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    padding: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  compactStatBox: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 6,
+    padding: 8,
+    width: '46%',
+  },
+  compactStatLabel: {
+    fontSize: 10,
+    color: '#6b7b8d',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  compactStatValue: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#c0c8d0',
+    fontVariant: ['tabular-nums' as any],
+  },
+  compactLogToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    padding: 10,
+    paddingHorizontal: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  compactLogToggleText: {
+    fontSize: 11,
+    color: '#4FC3F7',
+  },
+  compactLogContainer: {
+    maxHeight: 120,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  compactActions: {
+    flexDirection: 'row',
+    gap: 8,
+    padding: 12,
+    paddingHorizontal: 14,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.08)',
+  },
+  compactActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(79,195,247,0.15)',
+  },
+  compactCancelBtn: {
+    backgroundColor: 'rgba(239,68,68,0.15)',
+  },
+  compactActionBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#4FC3F7',
   },
 });
