@@ -132,15 +132,24 @@ async function loginFlow(
     );
     cookies = mergeCookies(cookies, extractCookies(step2.headers));
 
-    const $ = cheerio.load(step2.data);
-    const csrfToken = $('input#csrf-token').val() as string;
+    // The response wraps the form HTML inside a <script> tag, so cheerio
+    // treats it as text. Extract the inner HTML content first.
+    let formHtml = String(step2.data);
+    const scriptMatch = formHtml.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+    if (scriptMatch) {
+      formHtml = scriptMatch[1];
+    }
+    const $ = cheerio.load(formHtml);
+    const csrfToken = $('input#csrf-token').val() as string || $('#csrf-token').attr('value') as string;
     if (!csrfToken) {
       return { error: 'Failed to extract CSRF token from login form' };
     }
 
     // Step 3: POST credentials
-    const encodedPassword = encodeURIComponent(password);
-    const body = `csrf-token=${encodeURIComponent(csrfToken)}&username=${encodeURIComponent(username)}&password=${encodedPassword}&uuid=&redirect=`;
+    // encodeURIComponent does not encode ! ' ( ) * ~ which can break PHP form parsing
+    const encodeFormValue = (v: string) =>
+      encodeURIComponent(v).replace(/[!'()*~]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    const body = `csrf-token=${encodeFormValue(csrfToken)}&username=${encodeFormValue(username)}&password=${encodeFormValue(password)}&uuid=&redirect=`;
 
     const client3 = createClient(cookies);
     const step3 = await client3.post(
