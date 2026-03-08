@@ -57,6 +57,37 @@
           ]
         }
       ]
+    },
+    {
+      "target": "3si-portal",
+      "public": "3si-portal/dist",
+      "ignore": [
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        ".*",
+        "node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "/api/**",
+          "function": "dtdProxy"
+        },
+        {
+          "source": "**",
+          "destination": "/index.html"
+        }
+      ],
+      "headers": [
+        {
+          "source": "**/*.@(js|css)",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "max-age=3600"
+            }
+          ]
+        }
+      ]
     }
   ],
   "firestore": {

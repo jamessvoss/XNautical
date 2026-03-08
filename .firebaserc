@@ -10,6 +10,9 @@
         ],
         "admin": [
           "xnautical-admin"
+        ],
+        "3si-portal": [
+          "3si-portal-dtd"
         ]
       }
     }
