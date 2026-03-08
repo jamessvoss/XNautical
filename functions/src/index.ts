@@ -4534,3 +4534,8 @@ export const refreshMarineForecasts = functions
       res.status(500).json({ success: false, error: error.message });
     }
   });
+
+// ============================================================================
+// 3SI DTD PORTAL PROXY
+// ============================================================================
+export { dtdProxy } from './dtd-proxy';
