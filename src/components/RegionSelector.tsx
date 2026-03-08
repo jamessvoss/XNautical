@@ -951,7 +951,7 @@ export default function RegionSelector({ visible, onClose }: Props) {
             textField: [
               'case',
               ['==', ['get', 'installed'], 1],
-              ['concat', ['get', 'name'], '\n\u2713 Downloaded'],
+              ['concat', ['get', 'name'], '\nDownloaded'],
               ['get', 'name'],
             ],
             textSize: 12,
@@ -963,7 +963,7 @@ export default function RegionSelector({ visible, onClose }: Props) {
             ],
             textHaloColor: 'rgba(0, 0, 0, 0.8)',
             textHaloWidth: 1.5,
-            textFont: ['Open Sans Bold'],
+            textFont: ['Noto Sans Bold'],
             textAllowOverlap: true,
             textIgnorePlacement: true,
           }}
