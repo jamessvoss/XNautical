@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { TopBar } from '@/components/TopBar'
 import { LeftPanel } from '@/components/LeftPanel'
 import { RightPanel } from '@/components/RightPanel'
@@ -5,10 +6,18 @@ import { BottomPanel } from '@/components/BottomPanel'
 import { MapView } from '@/components/MapView'
 import { FilterChips } from '@/components/FilterChips'
 import { MapStyleSelector } from '@/components/MapStyleSelector'
+import { AlertToastContainer } from '@/components/AlertToast'
 import { useUI } from '@/stores/ui'
+import { useAlerts } from '@/stores/alerts'
 
 export function CommandCenter() {
   const { leftPanelOpen, rightPanelOpen, bottomPanelOpen } = useUI()
+  const { startPolling, stopPolling } = useAlerts()
+
+  useEffect(() => {
+    startPolling()
+    return () => stopPolling()
+  }, [])
 
   return (
     <div className="h-screen w-screen flex flex-col bg-navy-900 overflow-hidden">
@@ -17,6 +26,9 @@ export function CommandCenter() {
       <div className="flex-1 relative overflow-hidden">
         {/* Map fills everything */}
         <MapView />
+
+        {/* Alert toasts */}
+        <AlertToastContainer />
 
         {/* Floating filter chips */}
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
