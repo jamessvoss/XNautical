@@ -7,15 +7,22 @@
  */
 
 import * as functions from 'firebase-functions';
+import * as admin from 'firebase-admin';
 import axios, { AxiosInstance } from 'axios';
 import * as cheerio from 'cheerio';
 
 const crypto = require('crypto');
 
+// Initialize admin if not already done (index.ts may have already called it)
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
+const db = admin.firestore();
+
 const BASE_URL = 'https://www.3sitracking.com';
 
 // ---------------------------------------------------------------------------
-// Session Management
+// Session Management (Firestore-backed for multi-instance support)
 // ---------------------------------------------------------------------------
 
 interface SessionData {
@@ -24,17 +31,27 @@ interface SessionData {
   lastUsed: number;
 }
 
-const sessions = new Map<string, SessionData>();
-
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const SESSIONS_COLLECTION = 'dtd_sessions';
 
-function cleanExpiredSessions(): void {
-  const now = Date.now();
-  for (const [key, session] of sessions) {
-    if (now - session.lastUsed > SESSION_TTL_MS) {
-      sessions.delete(key);
-    }
+async function saveSession(token: string, session: SessionData): Promise<void> {
+  await db.collection(SESSIONS_COLLECTION).doc(token).set(session);
+}
+
+async function loadSession(token: string): Promise<SessionData | null> {
+  const doc = await db.collection(SESSIONS_COLLECTION).doc(token).get();
+  if (!doc.exists) return null;
+  const data = doc.data() as SessionData;
+  if (Date.now() - data.lastUsed > SESSION_TTL_MS) {
+    await db.collection(SESSIONS_COLLECTION).doc(token).delete();
+    return null;
   }
+  return data;
+}
+
+async function touchSession(token: string, session: SessionData): Promise<void> {
+  session.lastUsed = Date.now();
+  await db.collection(SESSIONS_COLLECTION).doc(token).set(session);
 }
 
 function generateToken(): string {
@@ -169,7 +186,7 @@ async function loginFlow(
     const result = step3.data;
     if (result && result.success) {
       const token = generateToken();
-      sessions.set(token, {
+      await saveSession(token, {
         cookies,
         csrfToken,
         lastUsed: Date.now(),
@@ -314,22 +331,16 @@ function parseSearchResults(html: string): any[] {
 // Session Validation
 // ---------------------------------------------------------------------------
 
-function getSession(
+async function getSession(
   authHeader: string | undefined
-): SessionData | null {
+): Promise<{ token: string; session: SessionData } | null> {
   if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.substring(7);
-  const session = sessions.get(token);
+  const session = await loadSession(token);
   if (!session) return null;
 
-  // Check expiry
-  if (Date.now() - session.lastUsed > SESSION_TTL_MS) {
-    sessions.delete(token);
-    return null;
-  }
-
   session.lastUsed = Date.now();
-  return session;
+  return { token, session };
 }
 
 // ---------------------------------------------------------------------------
@@ -346,9 +357,6 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
     res.status(204).send('');
     return;
   }
-
-  // Clean expired sessions on every request
-  cleanExpiredSessions();
 
   // Strip /api prefix from path
   let routePath = req.path;
@@ -376,20 +384,22 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
     }
 
     // All remaining routes require authentication
-    const session = getSession(req.headers.authorization);
-    if (!session) {
+    const sessionResult = await getSession(req.headers.authorization);
+    if (!sessionResult) {
       res.status(401).json({ error: 'Unauthorized. Provide a valid Bearer token.' });
       return;
     }
 
+    const { token: sessionToken, session } = sessionResult;
     const client = createClient(session.cookies);
 
-    // Helper to update session cookies from response
-    const updateCookies = (headers: Record<string, any>) => {
+    // Helper to update session cookies from response and persist
+    const updateCookies = async (headers: Record<string, any>) => {
       const newCookies = extractCookies(headers);
       if (newCookies) {
         session.cookies = mergeCookies(session.cookies, newCookies);
       }
+      await touchSession(sessionToken, session);
     };
 
     // -----------------------------------------------------------------------
@@ -406,7 +416,7 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
       if (desc) url += `&desc=${desc}`;
 
       const response = await client.get(url);
-      updateCookies(response.headers);
+      await updateCookies(response.headers);
 
       const parsed = parseDeviceTable(response.data);
       parsed.offset = parseInt(offset as string, 10);
@@ -424,7 +434,7 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
 
       const url = `/tracker/app.php/location?rows=${rows}&offset=${offset}`;
       const response = await client.get(url);
-      updateCookies(response.headers);
+      await updateCookies(response.headers);
 
       const parsed = parseLocationTable(response.data);
       res.json(parsed);
@@ -439,7 +449,7 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
       const response = await client.get(url, {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
       });
-      updateCookies(response.headers);
+      await updateCookies(response.headers);
       res.json(response.data);
       return;
     }
@@ -451,7 +461,7 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
       const q = req.query.q || '';
       const url = `/tracker/app.php/device?search=${encodeURIComponent(q as string)}`;
       const response = await client.get(url);
-      updateCookies(response.headers);
+      await updateCookies(response.headers);
 
       const results = parseSearchResults(response.data);
       res.json({ results });
@@ -467,7 +477,7 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
       const response = await client.get(url, {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
       });
-      updateCookies(response.headers);
+      await updateCookies(response.headers);
       res.json(response.data);
       return;
     }
