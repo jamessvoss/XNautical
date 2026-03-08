@@ -277,14 +277,14 @@ export default function RegionSelector({ visible, onClose }: Props) {
           properties: {
             regionId: region.id,
             color: installed ? '#22c55e' : region.color,
-            borderColor: region.color,
-            name: region.name + (installed ? ' \u2713' : ''),
+            borderColor: installed ? '#22c55e' : region.color,
+            name: region.name,
             installed: installed ? 1 : 0,
             isSelected: isSelected ? 1 : 0,
             isAlaskaSub: isAlaskaSub ? 1 : 0,
-            fillOpacity: isSelected ? 0.3 : (installed ? 0.2 : 0.12),
-            borderWidth: isSelected ? 2.5 : 1.5,
-            borderOpacity: isSelected ? 1 : 0.5,
+            fillOpacity: isSelected ? 0.35 : (installed ? 0.3 : 0.12),
+            borderWidth: isSelected ? 2.5 : (installed ? 2 : 1.5),
+            borderOpacity: isSelected ? 1 : (installed ? 0.8 : 0.5),
           },
           geometry: {
             type: 'Polygon' as const,
@@ -315,7 +315,10 @@ export default function RegionSelector({ visible, onClose }: Props) {
           type: 'Feature' as const,
           properties: {
             regionId: region.id,
-            name: region.name + (installed ? ' \u2713' : ''),
+            name: region.name,
+            installed: installed ? 1 : 0,
+            // Checkmark label shown below name for installed regions
+            subtitle: installed ? '\u2713 Downloaded' : '',
           },
           geometry: {
             type: 'Point' as const,
@@ -945,9 +948,19 @@ export default function RegionSelector({ visible, onClose }: Props) {
         <MapLibre.SymbolLayer
           id="region-labels"
           style={{
-            textField: ['get', 'name'],
+            textField: [
+              'case',
+              ['==', ['get', 'installed'], 1],
+              ['concat', ['get', 'name'], '\n\u2713 Downloaded'],
+              ['get', 'name'],
+            ],
             textSize: 12,
-            textColor: '#ffffff',
+            textColor: [
+              'case',
+              ['==', ['get', 'installed'], 1],
+              '#a3e635',
+              '#ffffff',
+            ],
             textHaloColor: 'rgba(0, 0, 0, 0.8)',
             textHaloWidth: 1.5,
             textFont: ['Open Sans Bold'],
