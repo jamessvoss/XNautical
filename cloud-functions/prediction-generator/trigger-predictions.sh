@@ -152,7 +152,7 @@ trigger_generation() {
     # Execute the job with --wait (blocks until completion)
     gcloud run jobs execute $JOB_NAME \
         --region $REGION \
-        --set-env-vars "$env_vars" \
+        --update-env-vars "$env_vars" \
         --wait
     
     local exit_code=$?
