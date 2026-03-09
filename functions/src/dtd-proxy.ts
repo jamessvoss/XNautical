@@ -20,6 +20,7 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 const BASE_URL = 'https://www.3sitracking.com';
+const API_URL = 'https://api.3sitracking.com';
 
 // ---------------------------------------------------------------------------
 // Session Management (Firestore-backed for multi-instance support)
@@ -28,6 +29,7 @@ const BASE_URL = 'https://www.3sitracking.com';
 interface SessionData {
   cookies: string;
   csrfToken: string;
+  apiToken: string;       // Bearer token for api.3sitracking.com REST API
   lastUsed: number;
 }
 
@@ -132,22 +134,46 @@ async function loginFlow(
   username: string,
   password: string
 ): Promise<{ token: string } | { error: string }> {
+  // Use a permissive validateStatus for all login steps so we can inspect responses
+  const permissive = { validateStatus: (s: number) => s < 500 };
+
   try {
     // Step 1: GET /tracker/index.php to obtain initial session cookie
-    const step1 = await createClient().get('/tracker/index.php');
+    const step1 = await createClient().get('/tracker/index.php', {
+      ...permissive,
+      maxRedirects: 5,
+    });
     let cookies = extractCookies(step1.headers);
+    console.log(`[login] Step 1: status=${step1.status}, cookies=${cookies ? cookies.substring(0, 60) : 'none'}`);
+
+    // If step1 returned a redirect without following, grab cookies and continue
+    if (step1.status >= 300 && step1.status < 400) {
+      console.log('[login] Step 1 redirect location:', step1.headers.location);
+    }
+
+    // Generate a UUID like the browser JS does
+    const uuid = 'login-' + crypto.randomBytes(5).toString('hex');
 
     // Step 2: GET the authentication form to extract the CSRF token
     const client2 = createClient(cookies);
     const step2 = await client2.get(
-      '/tracker/app.php/authenticate/form?templates%5B%5D=login_form&uuid=',
+      `/tracker/app.php/authenticate/form?templates%5B%5D=login_form&uuid=${uuid}`,
       {
+        ...permissive,
         headers: {
           'X-Requested-With': 'XMLHttpRequest',
+          'Referer': `${BASE_URL}/tracker/index.php`,
         },
+        maxRedirects: 5,
       }
     );
     cookies = mergeCookies(cookies, extractCookies(step2.headers));
+    console.log(`[login] Step 2: status=${step2.status}, dataLen=${String(step2.data).length}`);
+
+    if (step2.status !== 200) {
+      console.error('[login] Step 2 non-200, body:', String(step2.data).substring(0, 300));
+      return { error: `Backend returned ${step2.status} when fetching login form` };
+    }
 
     // The response wraps the form HTML inside a <script> tag, so cheerio
     // treats it as text. Extract the inner HTML content first.
@@ -158,45 +184,81 @@ async function loginFlow(
     }
     const $ = cheerio.load(formHtml);
     const csrfToken = $('input#csrf-token').val() as string || $('#csrf-token').attr('value') as string;
+    const formUuid = ($('#uuid').val() as string) || uuid;
+    console.log(`[login] CSRF token: ${csrfToken ? csrfToken.substring(0, 8) + '...' : 'MISSING'}, uuid: ${formUuid}`);
     if (!csrfToken) {
+      console.error('[login] Form HTML (first 500 chars):', formHtml.substring(0, 500));
       return { error: 'Failed to extract CSRF token from login form' };
     }
 
     // Step 3: POST credentials
-    // encodeURIComponent does not encode ! ' ( ) * ~ which can break PHP form parsing
     const encodeFormValue = (v: string) =>
       encodeURIComponent(v).replace(/[!'()*~]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
-    const body = `csrf-token=${encodeFormValue(csrfToken)}&username=${encodeFormValue(username)}&password=${encodeFormValue(password)}&uuid=&redirect=`;
+    const body = `csrf-token=${encodeFormValue(csrfToken)}&username=${encodeFormValue(username)}&password=${encodeFormValue(password)}&uuid=${encodeFormValue(formUuid)}&redirect=`;
 
     const client3 = createClient(cookies);
     const step3 = await client3.post(
       '/tracker/app.php/authenticate/login',
       body,
       {
+        ...permissive,
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
           'X-Requested-With': 'XMLHttpRequest',
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
           'Origin': BASE_URL,
           'Referer': `${BASE_URL}/tracker/index.php`,
         },
+        maxRedirects: 0,
       }
     );
     cookies = mergeCookies(cookies, extractCookies(step3.headers));
+    console.log(`[login] Step 3: status=${step3.status}, data=${JSON.stringify(step3.data).substring(0, 300)}`);
+
+    if (step3.status === 401 || step3.status === 403) {
+      const msg = typeof step3.data === 'object' && step3.data?.error
+        ? step3.data.error
+        : `Backend rejected login (HTTP ${step3.status})`;
+      return { error: msg };
+    }
 
     const result = step3.data;
     if (result && result.success) {
+      // Also authenticate against the REST API to get a Bearer token for map data
+      let apiToken = '';
+      try {
+        const apiLogin = await axios.post(`${API_URL}/login`, {
+          username,
+          password,
+        }, { timeout: 15000 });
+        apiToken = apiLogin.data?.token || '';
+        console.log(`[login] REST API token obtained: ${apiToken ? 'yes' : 'no'}`);
+      } catch (apiErr: any) {
+        console.warn('[login] REST API login failed (non-fatal):', apiErr.message);
+      }
+
       const token = generateToken();
       await saveSession(token, {
         cookies,
         csrfToken,
+        apiToken,
         lastUsed: Date.now(),
       });
+      console.log('[login] Success, session saved');
       return { token };
     } else {
-      return { error: result?.error || 'Login failed' };
+      const errorMsg = typeof result === 'string'
+        ? `Login rejected (got HTML — status ${step3.status})`
+        : result?.error || 'Login failed — invalid credentials or server error';
+      console.error('[login] Failed:', errorMsg);
+      return { error: errorMsg };
     }
   } catch (err: any) {
-    console.error('Login flow error:', err.message);
+    console.error('[login] Exception:', err.message);
+    if (err.response) {
+      console.error('[login] Response status:', err.response.status);
+      console.error('[login] Response data:', String(err.response.data).substring(0, 300));
+    }
     return { error: `Login failed: ${err.message}` };
   }
 }
@@ -214,15 +276,14 @@ function parseDeviceTable(html: string): {
   const $ = cheerio.load(html);
   const headers: string[] = [];
 
-  $('table.table thead th, thead th').each((_i, el) => {
+  $('th').each((_i, el) => {
     headers.push($(el).text().trim());
   });
 
-  // Deduplicate headers (cheerio may match twice if both selectors hit)
   const uniqueHeaders = [...new Set(headers)];
 
   const devices: any[] = [];
-  $('table.table tbody tr, tbody tr').each((_i, row) => {
+  $('tbody tr').each((_i, row) => {
     const cells = $(row).find('td');
     if (cells.length === 0) return;
     const device: Record<string, string> = {};
@@ -245,7 +306,7 @@ function parseDeviceTable(html: string): {
   // Extract pagination total from text like "of X,XXX"
   let total = uniqueDevices.length;
   const bodyText = $.text();
-  const totalMatch = bodyText.match(/of\s+([\d,]+)/);
+  const totalMatch = bodyText.match(/(?:of|Total)\s+([\d,]+)/);
   if (totalMatch) {
     total = parseInt(totalMatch[1].replace(/,/g, ''), 10);
   }
@@ -260,14 +321,14 @@ function parseLocationTable(html: string): {
   const $ = cheerio.load(html);
   const headers: string[] = [];
 
-  $('table.table thead th, thead th').each((_i, el) => {
+  $('th').each((_i, el) => {
     headers.push($(el).text().trim());
   });
 
   const uniqueHeaders = [...new Set(headers)];
 
   const locations: any[] = [];
-  $('table.table tbody tr, tbody tr').each((_i, row) => {
+  $('tbody tr, table tr').each((_i, row) => {
     const cells = $(row).find('td');
     if (cells.length === 0) return;
     const location: Record<string, string> = {};
@@ -288,7 +349,7 @@ function parseLocationTable(html: string): {
 
   let total = uniqueLocations.length;
   const bodyText = $.text();
-  const totalMatch = bodyText.match(/of\s+([\d,]+)/);
+  const totalMatch = bodyText.match(/(?:of|Total)\s+([\d,]+)/);
   if (totalMatch) {
     total = parseInt(totalMatch[1].replace(/,/g, ''), 10);
   }
@@ -301,13 +362,13 @@ function parseSearchResults(html: string): any[] {
   const results: any[] = [];
   const headers: string[] = [];
 
-  $('table.table thead th, thead th').each((_i, el) => {
+  $('th').each((_i, el) => {
     headers.push($(el).text().trim());
   });
 
   const uniqueHeaders = [...new Set(headers)];
 
-  $('table.table tbody tr, tbody tr').each((_i, row) => {
+  $('tbody tr, table tr').each((_i, row) => {
     const cells = $(row).find('td');
     if (cells.length === 0) return;
     const item: Record<string, string> = {};
@@ -411,7 +472,7 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
       const sort = req.query.sort || '';
       const desc = req.query.desc || '';
 
-      let url = `/tracker/app.php/device?rows=${rows}&offset=${offset}`;
+      let url = `/tracker/app.php/device_list?rows=${rows}&offset=${offset}`;
       if (sort) url += `&sort=${sort}`;
       if (desc) url += `&desc=${desc}`;
 
@@ -432,7 +493,7 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
       const rows = req.query.rows || '25';
       const offset = req.query.offset || '0';
 
-      const url = `/tracker/app.php/location?rows=${rows}&offset=${offset}`;
+      const url = `/tracker/app.php/location_list?rows=${rows}&offset=${offset}`;
       const response = await client.get(url);
       await updateCookies(response.headers);
 
@@ -459,7 +520,7 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
     // -----------------------------------------------------------------------
     if (routePath === '/search' && req.method === 'GET') {
       const q = req.query.q || '';
-      const url = `/tracker/app.php/device?search=${encodeURIComponent(q as string)}`;
+      const url = `/tracker/app.php/device_list?search=${encodeURIComponent(q as string)}`;
       const response = await client.get(url);
       await updateCookies(response.headers);
 
@@ -479,6 +540,109 @@ export const dtdProxy = functions.https.onRequest(async (req, res) => {
       });
       await updateCookies(response.headers);
       res.json(response.data);
+      return;
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /devices/map — All devices with lat/lon from REST API
+    // -----------------------------------------------------------------------
+    if (routePath === '/devices/map' && req.method === 'GET') {
+      if (!session.apiToken) {
+        res.status(503).json({ error: 'REST API token not available. Please log in again.' });
+        return;
+      }
+
+      const page = parseInt(req.query.page as string, 10) || 1;
+      const maxPerPage = parseInt(req.query.max_per_page as string, 10) || 1000;
+
+      const apiRes = await axios.get(`${API_URL}/devices`, {
+        params: {
+          page,
+          max_per_page: maxPerPage,
+          sort_field: 'last_point_time',
+          sort_direction: 'desc',
+        },
+        headers: { Authorization: `Bearer ${session.apiToken}` },
+        timeout: 30000,
+      });
+
+      await touchSession(sessionToken, session);
+      res.json(apiRes.data);
+      return;
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /devices/active — Active devices from REST API
+    // -----------------------------------------------------------------------
+    if (routePath === '/devices/active' && req.method === 'GET') {
+      if (!session.apiToken) {
+        res.status(503).json({ error: 'REST API token not available. Please log in again.' });
+        return;
+      }
+
+      const page = parseInt(req.query.page as string, 10) || 1;
+      const maxPerPage = parseInt(req.query.max_per_page as string, 10) || 1000;
+
+      const apiRes = await axios.get(`${API_URL}/active_devices`, {
+        params: {
+          page,
+          max_per_page: maxPerPage,
+          sort_field: 'last_point_time',
+          sort_direction: 'desc',
+        },
+        headers: { Authorization: `Bearer ${session.apiToken}` },
+        timeout: 30000,
+      });
+
+      await touchSession(sessionToken, session);
+      res.json(apiRes.data);
+      return;
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /locations/map — All locations with lat/lon from REST API
+    // -----------------------------------------------------------------------
+    if (routePath === '/locations/map' && req.method === 'GET') {
+      if (!session.apiToken) {
+        res.status(503).json({ error: 'REST API token not available. Please log in again.' });
+        return;
+      }
+
+      const page = parseInt(req.query.page as string, 10) || 1;
+      const maxPerPage = parseInt(req.query.max_per_page as string, 10) || 1000;
+
+      const apiRes = await axios.get(`${API_URL}/locations`, {
+        params: {
+          page,
+          max_per_page: maxPerPage,
+        },
+        headers: { Authorization: `Bearer ${session.apiToken}` },
+        timeout: 30000,
+      });
+
+      await touchSession(sessionToken, session);
+      res.json(apiRes.data);
+      return;
+    }
+
+    // -----------------------------------------------------------------------
+    // GET /devices/position/:number — Single device position from REST API
+    // -----------------------------------------------------------------------
+    const positionMatch = routePath.match(/^\/devices\/position\/(.+)$/);
+    if (positionMatch && req.method === 'GET') {
+      if (!session.apiToken) {
+        res.status(503).json({ error: 'REST API token not available. Please log in again.' });
+        return;
+      }
+
+      const deviceNumber = positionMatch[1];
+      const apiRes = await axios.get(`${API_URL}/devices/position/${deviceNumber}`, {
+        headers: { Authorization: `Bearer ${session.apiToken}` },
+        timeout: 15000,
+      });
+
+      await touchSession(sessionToken, session);
+      res.json(apiRes.data);
       return;
     }
 

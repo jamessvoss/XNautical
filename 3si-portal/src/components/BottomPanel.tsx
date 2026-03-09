@@ -5,13 +5,13 @@ import { useDevices, type Device } from '@/stores/devices'
 import { cn } from '@/lib/cn'
 
 const COLUMNS = [
-  { key: 'name', label: 'Name', width: 'w-48' },
-  { key: 'number', label: 'Number', width: 'w-36' },
-  { key: 'device_type', label: 'Type', width: 'w-40' },
-  { key: 'location', label: 'Location', width: 'w-48' },
-  { key: 'last_battery_voltage', label: 'Battery', width: 'w-24' },
-  { key: 'last_point_time', label: 'Last Seen', width: 'w-40' },
-  { key: 'configuration', label: 'Configuration', width: 'w-36' },
+  { key: 'Name', label: 'Name', width: 'w-48' },
+  { key: 'Phone Number', label: 'Number', width: 'w-36' },
+  { key: 'Device Type', label: 'Type', width: 'w-40' },
+  { key: 'Home Location', label: 'Location', width: 'w-48' },
+  { key: 'Battery(V)', label: 'Battery', width: 'w-24' },
+  { key: 'Last Location Fix', label: 'Last Seen', width: 'w-40' },
+  { key: 'Configuration', label: 'Configuration', width: 'w-36' },
 ] as const
 
 export function BottomPanel() {
@@ -110,11 +110,11 @@ export function BottomPanel() {
             <tbody className="divide-y divide-panel-border">
               {devices.map((device, i) => (
                 <tr
-                  key={device.number || i}
+                  key={device.IMEI || device.Name || i}
                   onClick={() => handleRowClick(device)}
                   className={cn(
                     'cursor-pointer transition-colors',
-                    selectedDevice?.number === device.number
+                    selectedDevice?.IMEI === device.IMEI
                       ? 'bg-accent/10'
                       : 'hover:bg-navy-700/50'
                   )}

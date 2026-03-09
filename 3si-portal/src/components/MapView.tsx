@@ -1,52 +1,266 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useMemo } from 'react'
 import maplibregl from 'maplibre-gl'
-import 'maplibre-gl/dist/maplibre-gl.css'
 import { useUI } from '@/stores/ui'
-import { useAlerts, type AlertDevice } from '@/stores/alerts'
 import { useDevices } from '@/stores/devices'
-import { renderDevicePopupHTML } from '@/components/DevicePopup'
+import { useMapDevices } from '@/stores/mapDevices'
+import { useFavorites } from '@/stores/favorites'
 
-const STYLES: Record<string, string> = {
+const VECTOR_STYLES: Record<string, string> = {
   streets: 'https://tiles.openfreemap.org/styles/liberty',
-  satellite: 'https://tiles.openfreemap.org/styles/liberty',
-  terrain: 'https://tiles.openfreemap.org/styles/liberty',
   dark: 'https://tiles.openfreemap.org/styles/dark',
+}
+
+const RASTER_STYLES: Record<string, maplibregl.StyleSpecification> = {
+  satellite: {
+    version: 8,
+    sources: {
+      'esri-satellite': {
+        type: 'raster',
+        tiles: [
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        ],
+        tileSize: 256,
+        attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+        maxzoom: 19,
+      },
+      'esri-boundaries': {
+        type: 'raster',
+        tiles: [
+          'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+        ],
+        tileSize: 256,
+        maxzoom: 19,
+      },
+    },
+    layers: [
+      { id: 'satellite-tiles', type: 'raster', source: 'esri-satellite' },
+      { id: 'boundary-tiles', type: 'raster', source: 'esri-boundaries' },
+    ],
+  },
+  terrain: {
+    version: 8,
+    sources: {
+      'esri-topo': {
+        type: 'raster',
+        tiles: [
+          'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+        ],
+        tileSize: 256,
+        attribution: '&copy; Esri, HERE, Garmin, OpenStreetMap contributors',
+        maxzoom: 19,
+      },
+    },
+    layers: [{ id: 'topo-tiles', type: 'raster', source: 'esri-topo' }],
+  },
+}
+
+function getMapStyle(style: string): string | maplibregl.StyleSpecification {
+  if (style in RASTER_STYLES) return RASTER_STYLES[style]
+  return VECTOR_STYLES[style] || VECTOR_STYLES.streets
 }
 
 const DEVICE_SOURCE = 'device-markers'
 const DEVICE_LAYER = 'device-circles'
+const CLUSTER_LAYER = 'clusters'
+const CLUSTER_COUNT_LAYER = 'cluster-count'
+// Separate source/layer for special devices that should never be clustered
+const SPECIAL_SOURCE = 'special-markers'
+const SPECIAL_LAYER = 'special-circles'
+
+function isSpecialDevice(d: any, activeNumbers: Set<string>): boolean {
+  const dnaMsg = Array.isArray(d.dna_message) ? d.dna_message.join(' ') : (d.dna_message || '')
+  return activeNumbers.has(d.number || '') || d.device_needs_attention || dnaMsg.includes('CHARGE BATTERY')
+}
+
+function buildDeviceFeature(d: any, activeNumbers: Set<string>): GeoJSON.Feature {
+  const dnaMsg = Array.isArray(d.dna_message) ? d.dna_message.join(' ') : (d.dna_message || '')
+  return {
+    type: 'Feature' as const,
+    geometry: {
+      type: 'Point' as const,
+      coordinates: [Number(d.lon), Number(d.lat)],
+    },
+    properties: {
+      name: d.name || '',
+      number: d.number || '',
+      type: d.deviceType || '',
+      battery: d.batteryVoltage != null ? String(d.batteryVoltage) : '',
+      isActive: activeNumbers.has(d.number || ''),
+      needsAttention: d.device_needs_attention || dnaMsg.includes('CHARGE BATTERY'),
+    },
+  }
+}
+
+function buildGeoJSON(devices: any[], activeNumbers: Set<string>): GeoJSON.FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: devices.map((d) => buildDeviceFeature(d, activeNumbers)),
+  }
+}
+
+function addLayers(map: maplibregl.Map, clustered: boolean) {
+  // Remove existing layers/sources
+  for (const id of [SPECIAL_LAYER, CLUSTER_COUNT_LAYER, CLUSTER_LAYER, DEVICE_LAYER]) {
+    if (map.getLayer(id)) map.removeLayer(id)
+  }
+  if (map.getSource(DEVICE_SOURCE)) map.removeSource(DEVICE_SOURCE)
+  if (map.getSource(SPECIAL_SOURCE)) map.removeSource(SPECIAL_SOURCE)
+
+  const sourceOptions: maplibregl.GeoJSONSourceSpecification = {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: [] },
+  }
+
+  if (clustered) {
+    sourceOptions.cluster = true
+    sourceOptions.clusterMaxZoom = 12
+    sourceOptions.clusterRadius = 50
+  }
+
+  map.addSource(DEVICE_SOURCE, sourceOptions)
+
+  // In clustered mode, add a separate unclustered source for special devices
+  if (clustered) {
+    map.addSource(SPECIAL_SOURCE, {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    })
+  }
+
+  if (clustered) {
+    map.addLayer({
+      id: CLUSTER_LAYER,
+      type: 'circle',
+      source: DEVICE_SOURCE,
+      filter: ['has', 'point_count'],
+      paint: {
+        'circle-color': [
+          'step', ['get', 'point_count'],
+          '#3b82f6', 100, '#2563eb', 500, '#1d4ed8',
+        ],
+        'circle-radius': [
+          'step', ['get', 'point_count'],
+          18, 100, 24, 500, 30,
+        ],
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#ffffff',
+        'circle-opacity': 0.85,
+      },
+    })
+
+    map.addLayer({
+      id: CLUSTER_COUNT_LAYER,
+      type: 'symbol',
+      source: DEVICE_SOURCE,
+      filter: ['has', 'point_count'],
+      layout: { 'text-field': '{point_count_abbreviated}', 'text-size': 12 },
+      paint: { 'text-color': '#ffffff' },
+    })
+  }
+
+  // Normal device layer (unclustered singles from the clustered source)
+  const deviceLayerSpec: maplibregl.LayerSpecification = {
+    id: DEVICE_LAYER,
+    type: 'circle',
+    source: DEVICE_SOURCE,
+    paint: {
+      'circle-radius': 6,
+      'circle-color': '#3b82f6',
+      'circle-stroke-width': 2,
+      'circle-stroke-color': '#ffffff',
+      'circle-opacity': 0.9,
+    },
+  }
+
+  if (clustered) {
+    deviceLayerSpec.filter = ['!', ['has', 'point_count']]
+  } else {
+    // In all-pins mode, color by status
+    ;(deviceLayerSpec.paint as any)['circle-color'] = [
+      'case',
+      ['get', 'isActive'], '#ef4444',
+      ['get', 'needsAttention'], '#f59e0b',
+      '#3b82f6',
+    ]
+  }
+
+  map.addLayer(deviceLayerSpec)
+
+  // Special devices layer — always unclustered, rendered on top
+  if (clustered) {
+    map.addLayer({
+      id: SPECIAL_LAYER,
+      type: 'circle',
+      source: SPECIAL_SOURCE,
+      paint: {
+        'circle-radius': 7,
+        'circle-color': [
+          'case',
+          ['get', 'isActive'], '#ef4444',
+          ['get', 'needsAttention'], '#f59e0b',
+          '#3b82f6',
+        ],
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#ffffff',
+        'circle-opacity': 1,
+      },
+    })
+  }
+}
+
+/** Set data on both sources, splitting special devices out when clustered */
+function setSourceData(map: maplibregl.Map, devices: any[], activeNumbers: Set<string>, clustered: boolean) {
+  if (clustered) {
+    const normal = devices.filter((d) => !isSpecialDevice(d, activeNumbers))
+    const special = devices.filter((d) => isSpecialDevice(d, activeNumbers))
+
+    const mainSource = map.getSource(DEVICE_SOURCE) as maplibregl.GeoJSONSource | undefined
+    if (mainSource) mainSource.setData(buildGeoJSON(normal, activeNumbers))
+
+    const specialSource = map.getSource(SPECIAL_SOURCE) as maplibregl.GeoJSONSource | undefined
+    if (specialSource) specialSource.setData(buildGeoJSON(special, activeNumbers))
+  } else {
+    const source = map.getSource(DEVICE_SOURCE) as maplibregl.GeoJSONSource | undefined
+    if (source) source.setData(buildGeoJSON(devices, activeNumbers))
+  }
+}
 
 export function MapView() {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
-  const popupRef = useRef<maplibregl.Popup | null>(null)
   const mapStyle = useUI((s) => s.mapStyle)
-  const alertDevices = useAlerts((s) => s.alertDevices)
-  const { selectDevice, selectedDevice } = useDevices()
-  const openRightPanel = useUI((s) => s.openRightPanel)
+  const mapMode = useUI((s) => s.mapMode)
+  const mapFilter = useUI((s) => s.mapFilter)
+  const { selectMapDevice, selectedDevice } = useDevices()
+  const { allDevices, activeNumbers, loaded, fetchAllMapDevices } = useMapDevices()
+  const { favorites } = useFavorites()
+  // Keep a ref to allDevices so the map click handler always sees current data
+  const allDevicesRef = useRef(allDevices)
+  allDevicesRef.current = allDevices
 
-  // Handle "Details" button clicks from popups
-  useEffect(() => {
-    function handleDetail(e: Event) {
-      const number = (e as CustomEvent).detail
-      const device = alertDevices.find((d) => d.number === number)
-      if (device) {
-        selectDevice({
-          name: device.name,
-          number: device.number,
-          device_type: device.type || '',
-          vessel: '',
-          location: '',
-          last_battery_voltage: '',
-          last_point_time: '',
-          configuration: '',
+  // Filter devices based on active filter chip
+  const filteredDevices = useMemo(() => {
+    switch (mapFilter) {
+      case 'active':
+        return allDevices.filter((d) => activeNumbers.has(d.number || ''))
+      case 'attention':
+        return allDevices.filter((d) => d.device_needs_attention)
+      case 'low-battery':
+        return allDevices.filter((d) => {
+          const msg = Array.isArray(d.dna_message) ? d.dna_message.join(' ') : (d.dna_message || '')
+          return msg.includes('CHARGE BATTERY')
         })
-        openRightPanel()
-      }
+      case 'favorites':
+        return allDevices.filter((d) => favorites.has(d.number || ''))
+      default:
+        return allDevices
     }
-    window.addEventListener('device-detail', handleDetail)
-    return () => window.removeEventListener('device-detail', handleDetail)
-  }, [alertDevices, selectDevice, openRightPanel])
+  }, [allDevices, activeNumbers, favorites, mapFilter])
+
+  // Fetch map device data on mount (always refresh in background, cache shows instantly)
+  useEffect(() => {
+    fetchAllMapDevices()
+  }, [])
 
   // Initialize map
   useEffect(() => {
@@ -54,7 +268,7 @@ export function MapView() {
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: STYLES[mapStyle] || STYLES.streets,
+      style: getMapStyle(mapStyle),
       center: [-98.5, 39.8],
       zoom: 4,
     })
@@ -62,66 +276,53 @@ export function MapView() {
     map.addControl(new maplibregl.NavigationControl(), 'bottom-right')
 
     map.on('load', () => {
-      // Add empty source
-      map.addSource(DEVICE_SOURCE, {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features: [] },
+      addLayers(map, mapMode === 'clustered')
+
+      // Click handler for clusters — zoom in
+      map.on('click', CLUSTER_LAYER, (e) => {
+        const features = map.queryRenderedFeatures(e.point, { layers: [CLUSTER_LAYER] })
+        if (!features.length) return
+        const clusterId = features[0].properties?.cluster_id
+        const source = map.getSource(DEVICE_SOURCE) as maplibregl.GeoJSONSource
+        source.getClusterExpansionZoom(clusterId).then((zoom: number) => {
+          map.easeTo({
+            center: (features[0].geometry as GeoJSON.Point).coordinates as [number, number],
+            zoom,
+          })
+        })
       })
 
-      // Normal device circles (blue)
-      map.addLayer({
-        id: DEVICE_LAYER,
-        type: 'circle',
-        source: DEVICE_SOURCE,
-        paint: {
-          'circle-radius': 7,
-          'circle-color': [
-            'case',
-            ['get', 'isActive'], '#ef4444',
-            ['get', 'isLowBattery'], '#f59e0b',
-            '#3b82f6',
-          ],
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff',
-          'circle-opacity': 0.9,
-        },
+      // Click handler for special device markers (unclustered active/DNA/low-battery)
+      map.on('click', SPECIAL_LAYER, (e) => {
+        if (!e.features || e.features.length === 0) return
+        const props = e.features[0].properties
+        const deviceNumber = props?.number || ''
+        const device = allDevicesRef.current.find((d) => d.number === deviceNumber)
+        if (device) selectMapDevice(device)
       })
 
-      // Click handler for device markers
+      // Click handler for device markers — select device directly into right panel
       map.on('click', DEVICE_LAYER, (e) => {
         if (!e.features || e.features.length === 0) return
-        const feature = e.features[0]
-        const coords = (feature.geometry as GeoJSON.Point).coordinates.slice() as [number, number]
-        const props = feature.properties
+        const props = e.features[0].properties
+        const deviceNumber = props?.number || ''
 
-        // Remove existing popup
-        popupRef.current?.remove()
-
-        const popup = new maplibregl.Popup({ offset: 15, closeButton: true })
-          .setLngLat(coords)
-          .setHTML(
-            renderDevicePopupHTML({
-              name: props?.name || '',
-              number: props?.number || '',
-              type: props?.type || '',
-              battery: props?.battery || '',
-            })
-          )
-          .addTo(map)
-
-        popupRef.current = popup
+        // Find full device data from store and pass the complete MapDevice
+        const device = allDevicesRef.current.find((d) => d.number === deviceNumber)
+        if (device) {
+          selectMapDevice(device)
+        }
       })
 
-      // Cursor change on hover
-      map.on('mouseenter', DEVICE_LAYER, () => {
-        map.getCanvas().style.cursor = 'pointer'
-      })
-      map.on('mouseleave', DEVICE_LAYER, () => {
-        map.getCanvas().style.cursor = ''
-      })
+      // Cursor changes
+      for (const layer of [DEVICE_LAYER, CLUSTER_LAYER, SPECIAL_LAYER]) {
+        map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer' })
+        map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = '' })
+      }
     })
 
     mapRef.current = map
+    requestAnimationFrame(() => map.resize())
 
     return () => {
       map.remove()
@@ -129,103 +330,79 @@ export function MapView() {
     }
   }, [])
 
-  // Update map style
+  // Switch between clustered / all-pins mode
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+
+    addLayers(map, mapMode === 'clustered')
+
+    // Re-apply data
+    if (filteredDevices.length > 0) {
+      setSourceData(map, filteredDevices, activeNumbers, mapMode === 'clustered')
+    }
+  }, [mapMode])
+
+  // Update map style — re-add layers and re-apply device data after style swap
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
 
-    map.once('styledata', () => {
-      // Re-add source and layers after style change
-      if (!map.getSource(DEVICE_SOURCE)) {
-        map.addSource(DEVICE_SOURCE, {
-          type: 'geojson',
-          data: { type: 'FeatureCollection', features: [] },
-        })
-        map.addLayer({
-          id: DEVICE_LAYER,
-          type: 'circle',
-          source: DEVICE_SOURCE,
-          paint: {
-            'circle-radius': 7,
-            'circle-color': [
-              'case',
-              ['get', 'isActive'], '#ef4444',
-              ['get', 'isLowBattery'], '#f59e0b',
-              '#3b82f6',
-            ],
-            'circle-stroke-width': 2,
-            'circle-stroke-color': '#ffffff',
-            'circle-opacity': 0.9,
-          },
-        })
-      }
-    })
+    const restoreAfterStyle = () => {
+      // Wait until style is truly ready before adding layers
+      const tryRestore = () => {
+        if (!map.isStyleLoaded()) {
+          requestAnimationFrame(tryRestore)
+          return
+        }
 
-    map.setStyle(STYLES[mapStyle] || STYLES.streets)
+        addLayers(map, mapMode === 'clustered')
+
+        if (filteredDevices.length > 0) {
+          setSourceData(map, filteredDevices, activeNumbers, mapMode === 'clustered')
+        }
+      }
+
+      tryRestore()
+    }
+
+    map.once('style.load', restoreAfterStyle)
+    map.setStyle(getMapStyle(mapStyle))
   }, [mapStyle])
 
-  // Update device markers when alert data changes
+  // Update device markers when data or filter changes
   useEffect(() => {
     const map = mapRef.current
-    if (!map) return
+    if (!map || !loaded) return
 
-    // Build GeoJSON from alert devices that have GPS coordinates
-    // The alert data may include lat/lng — we'll use them if available
-    // For now, create features from devices that have coordinate data
-    const features: GeoJSON.Feature[] = alertDevices
-      .filter((d: AlertDevice) => {
-        // Check if device has any coordinate-like properties
-        const lat = parseFloat((d as any).latitude || (d as any).lat || '0')
-        const lng = parseFloat((d as any).longitude || (d as any).lng || (d as any).lon || '0')
-        return lat !== 0 && lng !== 0
-      })
-      .map((d: AlertDevice) => {
-        const lat = parseFloat((d as any).latitude || (d as any).lat || '0')
-        const lng = parseFloat((d as any).longitude || (d as any).lng || (d as any).lon || '0')
-        return {
-          type: 'Feature' as const,
-          geometry: {
-            type: 'Point' as const,
-            coordinates: [lng, lat],
-          },
-          properties: {
-            name: d.name,
-            number: d.number,
-            type: d.type || '',
-            battery: '',
-            isActive: d.tracking || d.dam,
-            isLowBattery: false,
-          },
-        }
-      })
-
-    const geojson: GeoJSON.FeatureCollection = {
-      type: 'FeatureCollection',
-      features,
+    const updateSource = () => {
+      setSourceData(map, filteredDevices, activeNumbers, mapMode === 'clustered')
     }
 
-    // Update the source if it exists
-    const source = map.getSource(DEVICE_SOURCE) as maplibregl.GeoJSONSource | undefined
-    if (source) {
-      source.setData(geojson)
+    if (map.isStyleLoaded()) {
+      updateSource()
+    } else {
+      map.once('load', updateSource)
     }
-  }, [alertDevices])
+  }, [filteredDevices, activeNumbers, loaded])
 
   // Fly to selected device
+  const selectedMapDevice = useDevices((s) => s.selectedMapDevice)
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !selectedDevice) return
+    // Determine which device to fly to
+    const phoneNumber = selectedMapDevice?.number || selectedDevice?.['Phone Number']
+    if (!map || !phoneNumber) return
 
-    // Try to find the device in alert data to get coordinates
-    const alertDevice = alertDevices.find((d) => d.number === selectedDevice.number)
-    if (alertDevice) {
-      const lat = parseFloat((alertDevice as any).latitude || (alertDevice as any).lat || '0')
-      const lng = parseFloat((alertDevice as any).longitude || (alertDevice as any).lng || (alertDevice as any).lon || '0')
-      if (lat !== 0 && lng !== 0) {
-        map.flyTo({ center: [lng, lat], zoom: 14, duration: 1500 })
+    const device = allDevices.find((d) => d.number === phoneNumber)
+    if (device) {
+      const lat = Number(device.lat)
+      const lon = Number(device.lon)
+      if (!isNaN(lat) && !isNaN(lon) && (lat !== 0 || lon !== 0)) {
+        map.flyTo({ center: [lon, lat], zoom: 14, duration: 1500 })
       }
     }
-  }, [selectedDevice, alertDevices])
+  }, [selectedDevice, selectedMapDevice, allDevices])
 
-  return <div ref={containerRef} className="absolute inset-0" />
+  return <div ref={containerRef} className="absolute inset-0 w-full h-full" style={{ minHeight: '100%' }} />
 }

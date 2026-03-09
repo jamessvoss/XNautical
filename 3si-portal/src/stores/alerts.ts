@@ -46,8 +46,12 @@ export const useAlerts = create<AlertState>((set, get) => ({
           newAlerts: [...s.newAlerts, ...newOnes],
           loading: false,
         }))
-      } catch {
-        // Silently retry on next poll
+      } catch (err: any) {
+        if (err.message === 'Session expired') {
+          const { pollingInterval } = get()
+          if (pollingInterval) clearInterval(pollingInterval)
+          set({ pollingInterval: null })
+        }
       }
     }
 

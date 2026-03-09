@@ -62,9 +62,9 @@ export function LeftPanel() {
 
             {devices.map((device) => (
               <DeviceListItem
-                key={device.number || device.name}
+                key={device.IMEI || device.Name}
                 device={device}
-                selected={selectedDevice?.number === device.number}
+                selected={selectedDevice?.IMEI === device.IMEI}
                 onClick={() => handleSelectDevice(device)}
               />
             ))}

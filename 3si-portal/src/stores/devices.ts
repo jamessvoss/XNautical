@@ -1,16 +1,20 @@
 import { create } from 'zustand'
 import { api } from '@/lib/api'
+import type { MapDevice } from '@/stores/mapDevices'
 
 export interface Device {
-  name: string
-  number: string
-  device_type: string
-  vessel: string
-  location: string
-  last_battery_voltage: string
-  last_point_time: string
-  configuration: string
-  name_link?: string
+  Name: string
+  'Phone Number': string
+  IMEI: string
+  'Vessel SN': string
+  Vessel: string
+  'Device Type': string
+  Configuration: string
+  'Last Location Fix': string
+  'Home Location': string
+  'Beacon Frequency': string
+  'Battery(V)': string
+  'Alert Message': string
   [key: string]: string | undefined
 }
 
@@ -20,10 +24,12 @@ interface DeviceState {
   loading: boolean
   error: string | null
   selectedDevice: Device | null
+  selectedMapDevice: MapDevice | null
   offset: number
   limit: number
   fetchDevices: (offset?: number, limit?: number) => Promise<void>
   selectDevice: (device: Device | null) => void
+  selectMapDevice: (device: MapDevice | null) => void
 }
 
 export const useDevices = create<DeviceState>((set) => ({
@@ -32,6 +38,7 @@ export const useDevices = create<DeviceState>((set) => ({
   loading: false,
   error: null,
   selectedDevice: null,
+  selectedMapDevice: null,
   offset: 0,
   limit: 50,
 
@@ -47,5 +54,6 @@ export const useDevices = create<DeviceState>((set) => ({
     }
   },
 
-  selectDevice: (device) => set({ selectedDevice: device }),
+  selectDevice: (device) => set({ selectedDevice: device, selectedMapDevice: null }),
+  selectMapDevice: (device) => set({ selectedMapDevice: device, selectedDevice: null }),
 }))

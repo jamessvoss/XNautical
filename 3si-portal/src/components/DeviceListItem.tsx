@@ -9,7 +9,7 @@ interface Props {
 }
 
 export function DeviceListItem({ device, selected, onClick }: Props) {
-  const batteryValue = parseFloat(device.last_battery_voltage || '0')
+  const batteryValue = parseFloat(device['Battery(V)'] || '0')
   const isLowBattery = batteryValue > 0 && batteryValue < 3.5
 
   return (
@@ -24,22 +24,22 @@ export function DeviceListItem({ device, selected, onClick }: Props) {
     >
       <div className="flex items-start justify-between">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-white truncate">{device.name || device.number}</p>
-          <p className="text-xs text-gray-400 truncate mt-0.5">{device.device_type}</p>
+          <p className="text-sm font-medium text-white truncate">{device.Name || device['Phone Number']}</p>
+          <p className="text-xs text-gray-400 truncate mt-0.5">{device['Device Type']}</p>
         </div>
         {isLowBattery && (
           <Battery className="w-4 h-4 text-alert-amber shrink-0 mt-0.5" />
         )}
       </div>
       <div className="flex items-center gap-3 mt-1.5">
-        {device.location && (
+        {device['Home Location'] && (
           <span className="flex items-center gap-1 text-xs text-gray-500 truncate">
             <MapPin className="w-3 h-3 shrink-0" />
-            {device.location}
+            {device['Home Location']}
           </span>
         )}
-        {device.last_battery_voltage && (
-          <span className="text-xs text-gray-500 shrink-0">{device.last_battery_voltage}</span>
+        {device['Battery(V)'] && (
+          <span className="text-xs text-gray-500 shrink-0">{device['Battery(V)']}</span>
         )}
       </div>
     </button>

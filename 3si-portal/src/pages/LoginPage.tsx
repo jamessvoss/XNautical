@@ -4,7 +4,7 @@ import { useAuth } from '@/stores/auth'
 export function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const { login, loading, error } = useAuth()
+  const { login, loading, error, loginSuccess } = useAuth()
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -27,7 +27,18 @@ export function LoginPage() {
           onSubmit={handleSubmit}
           className="bg-panel backdrop-blur-md border border-panel-border rounded-xl p-6 shadow-2xl"
         >
-          {error && (
+          {/* Success message */}
+          {loginSuccess && (
+            <div className="mb-4 p-3 rounded-lg bg-healthy-green/10 border border-healthy-green/30 text-healthy-green text-sm flex items-center gap-2">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              Login successful! Loading command center...
+            </div>
+          )}
+
+          {/* Error message */}
+          {error && !loginSuccess && (
             <div className="mb-4 p-3 rounded-lg bg-alert-red/10 border border-alert-red/30 text-alert-red text-sm">
               {error}
             </div>
@@ -42,7 +53,8 @@ export function LoginPage() {
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-3 py-2 bg-navy-800 border border-panel-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
+              disabled={loginSuccess}
+              className="w-full px-3 py-2 bg-navy-800 border border-panel-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent disabled:opacity-50"
               placeholder="Enter username"
               autoFocus
               required
@@ -58,7 +70,8 @@ export function LoginPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 bg-navy-800 border border-panel-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
+              disabled={loginSuccess}
+              className="w-full px-3 py-2 bg-navy-800 border border-panel-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent disabled:opacity-50"
               placeholder="Enter password"
               required
             />
@@ -66,10 +79,10 @@ export function LoginPage() {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || loginSuccess}
             className="w-full py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-50 text-white font-medium rounded-lg transition-colors cursor-pointer"
           >
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loginSuccess ? 'Loading...' : loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
 

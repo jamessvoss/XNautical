@@ -21,9 +21,7 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
 
   const res = await fetch(`${BASE}${path}`, { ...options, headers })
 
-  if (res.status === 401) {
-    setToken(null)
-    window.location.reload()
+  if (res.status === 401 && !path.startsWith('/auth/')) {
     throw new Error('Session expired')
   }
 
