@@ -79,6 +79,9 @@ import { useWaypoints } from '../contexts/WaypointContext';
 import { WaypointMapPin } from './WaypointIcons';
 import { useRoutes } from '../contexts/RouteContext';
 import RouteEditor from './RouteEditor';
+import { useMeasurement } from './DynamicChartViewer/hooks/useMeasurement';
+import MeasurementPanel from './MeasurementPanel';
+import { formatBearing } from '../utils/measurementUtils';
 import RoutesModal from './RoutesModal';
 import ActiveNavigation from './ActiveNavigation';
 import { getInstalledDistricts } from '../services/regionRegistryService';
@@ -202,6 +205,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   
   // Route UI state
   const [showRouteEditor, setShowRouteEditor] = useState(false);
+
+  // Measurement tool
+  const {
+    isMeasureMode, measurePoints, selectedMeasurePoint, legs, totalDistanceNm,
+    toggleMeasureMode, addPoint, undoLastPoint, removePoint, clearAll, selectPoint,
+  } = useMeasurement();
   
   // Throttle refs for camera change handler (100ms throttle)
   const lastCameraUpdateRef = useRef<number>(0);
@@ -2472,6 +2481,12 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
     
     const [longitude, latitude] = geometry.coordinates;
     logger.debug(LogCategory.UI, `Map tap at: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+
+    // If in measure mode, add a measurement point instead of querying features
+    if (isMeasureMode) {
+      addPoint({ latitude, longitude });
+      return;
+    }
     
     // Round screen coordinates to integers
     const screenX = Math.round(e.properties?.screenPointX || 0);
@@ -2750,7 +2765,8 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
       showSoundings, showCables, showPipelines, showDepthContours, showCoastline,
       showRestrictedAreas, showCautionAreas, showMilitaryAreas, showAnchorages,
       showMarineFarms, showTrafficRoutes, showSeabed, showBridges, showBuildings, showMoorings,
-      showShorelineConstruction, showDepthAreas, showLand, debugDumpFeatures]);
+      showShorelineConstruction, showDepthAreas, showLand, debugDumpFeatures,
+      isMeasureMode, addPoint]);
 
   // Handle map long press - create a waypoint or add to route depending on mode
   const handleMapLongPress = useCallback((e: any) => {
@@ -5872,6 +5888,96 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </MapLibre.MarkerView>
         ))}
 
+        {/* ── Measurement Overlays ── */}
+        {isMeasureMode && measurePoints.length >= 2 && (
+          <MapLibre.ShapeSource
+            id="measure-line-source"
+            shape={{
+              type: 'FeatureCollection',
+              features: [{
+                type: 'Feature',
+                geometry: {
+                  type: 'LineString',
+                  coordinates: measurePoints.map(p => [p.longitude, p.latitude]),
+                },
+                properties: {},
+              }],
+            }}
+          >
+            <MapLibre.LineLayer
+              id="measure-line"
+              style={{
+                lineColor: '#00E5FF',
+                lineWidth: 2.5,
+                lineDasharray: [6, 4],
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
+          </MapLibre.ShapeSource>
+        )}
+
+        {/* Measurement leg labels (distance + bearing at midpoint of each leg) */}
+        {isMeasureMode && legs.length > 0 && (
+          <MapLibre.ShapeSource
+            id="measure-labels-source"
+            shape={{
+              type: 'FeatureCollection',
+              features: legs.map((leg, i) => ({
+                type: 'Feature' as const,
+                geometry: {
+                  type: 'Point' as const,
+                  coordinates: [
+                    (leg.from.longitude + leg.to.longitude) / 2,
+                    (leg.from.latitude + leg.to.latitude) / 2,
+                  ],
+                },
+                properties: {
+                  label: `${unitFormat.formatDistance(leg.distanceNm, 2)} ${formatBearing(leg.bearingTrue)}`,
+                },
+              })),
+            }}
+          >
+            <MapLibre.SymbolLayer
+              id="measure-labels"
+              style={{
+                textField: ['get', 'label'],
+                textSize: 12,
+                textColor: '#00E5FF',
+                textHaloColor: 'rgba(0, 0, 0, 0.8)',
+                textHaloWidth: 1.5,
+                textOffset: [0, -1.2],
+                textAllowOverlap: true,
+                textFont: ['Noto Sans Regular'],
+              }}
+            />
+          </MapLibre.ShapeSource>
+        )}
+
+        {/* Measurement point markers */}
+        {isMeasureMode && measurePoints.map((point, index) => (
+          <MapLibre.MarkerView
+            key={`measure-pt-${index}`}
+            coordinate={[point.longitude, point.latitude]}
+          >
+            <TouchableOpacity
+              onPress={() => selectPoint(selectedMeasurePoint === index ? null : index)}
+              style={{
+                width: 24,
+                height: 24,
+                borderRadius: 12,
+                backgroundColor: selectedMeasurePoint === index ? '#FF6B6B' : '#00E5FF',
+                borderWidth: 2,
+                borderColor: '#fff',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>{index + 1}</Text>
+            </TouchableOpacity>
+          </MapLibre.MarkerView>
+        ))}
+
         {/* Region Boundary Overlay — green dashed rectangles for downloaded regions */}
         {displaySettings.showRegionBoundaries && regionBoundaryGeoJSON.polygons.features.length > 0 && (
           <>
@@ -6019,7 +6125,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           />
         </TouchableOpacity>
         <View style={styles.topMenuDivider} />
-        
+
+        {/* Measure button - toggles distance measurement mode */}
+        <TouchableOpacity
+          style={[styles.topMenuBtn, isMeasureMode && styles.topMenuBtnActive]}
+          onPress={toggleMeasureMode}
+        >
+          <Ionicons
+            name={isMeasureMode ? "analytics" : "analytics-outline"}
+            size={24}
+            color={isMeasureMode ? "#4FC3F7" : "#fff"}
+          />
+        </TouchableOpacity>
+        <View style={styles.topMenuDivider} />
+
         {/* Routes button - opens routes modal */}
         <TouchableOpacity 
           style={[styles.topMenuBtn, showRoutesModal && styles.topMenuBtnActive]}
@@ -7494,6 +7613,20 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </ScrollView>
         </View>
       </Modal>
+
+      {/* Measurement Panel */}
+      {isMeasureMode && (
+        <MeasurementPanel
+          legs={legs}
+          totalDistanceNm={totalDistanceNm}
+          selectedPointIndex={selectedMeasurePoint}
+          onUndo={undoLastPoint}
+          onClear={clearAll}
+          onClose={toggleMeasureMode}
+          onRemovePoint={removePoint}
+          onDeselectPoint={() => selectPoint(null)}
+        />
+      )}
 
       {/* Route Editor Panel */}
       {showRouteEditor && activeRoute && (

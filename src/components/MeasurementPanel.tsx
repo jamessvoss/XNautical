@@ -25,7 +25,7 @@ export default function MeasurementPanel({
   onRemovePoint,
   onDeselectPoint,
 }: Props) {
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<any>(null);
 
   // Auto-scroll to bottom when new leg added
   useEffect(() => {
