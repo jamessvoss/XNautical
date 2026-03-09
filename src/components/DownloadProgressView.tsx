@@ -210,12 +210,13 @@ export default function DownloadProgressView({
         const dt = (newest.time - oldest.time) / 1000;
         if (dt > 0.5) {
           const speed = (newest.bytes - oldest.bytes) / dt;
-          setViewSpeedBps(speed > 0 ? speed : null);
-          if (speed > 0 && totalBytesToDownload > 0) {
-            const remaining = totalBytesToDownload - currentBytes;
-            setViewEtaSeconds(remaining > 0 ? remaining / speed : 0);
-          } else {
-            setViewEtaSeconds(null);
+          // Keep last known speed during brief pauses (e.g. between items)
+          if (speed > 0) {
+            setViewSpeedBps(speed);
+            if (totalBytesToDownload > 0) {
+              const remaining = totalBytesToDownload - currentBytes;
+              setViewEtaSeconds(remaining > 0 ? remaining / speed : 0);
+            }
           }
         }
       }
@@ -946,18 +947,14 @@ export default function DownloadProgressView({
                 </Text>
               </View>
             )}
-            {viewSpeedBps !== null && viewSpeedBps > 0 && (
-              <View style={styles.compactStatBox}>
-                <Text style={styles.compactStatLabel}>Speed</Text>
-                <Text style={[styles.compactStatValue, { fontFamily: monoFont }]}>{formatSpeed(viewSpeedBps)}</Text>
-              </View>
-            )}
-            {viewEtaSeconds !== null && viewEtaSeconds > 0 && (
-              <View style={styles.compactStatBox}>
-                <Text style={styles.compactStatLabel}>Time Left</Text>
-                <Text style={[styles.compactStatValue, { fontFamily: monoFont }]}>{formatEta(viewEtaSeconds)}</Text>
-              </View>
-            )}
+            <View style={styles.compactStatBox}>
+              <Text style={styles.compactStatLabel}>Speed</Text>
+              <Text style={[styles.compactStatValue, { fontFamily: monoFont }]}>{viewSpeedBps !== null && viewSpeedBps > 0 ? formatSpeed(viewSpeedBps) : '--'}</Text>
+            </View>
+            <View style={styles.compactStatBox}>
+              <Text style={styles.compactStatLabel}>Time Left</Text>
+              <Text style={[styles.compactStatValue, { fontFamily: monoFont }]}>{viewEtaSeconds !== null && viewEtaSeconds > 0 ? formatEta(viewEtaSeconds) : '--'}</Text>
+            </View>
             <View style={styles.compactStatBox}>
               <Text style={styles.compactStatLabel}>Elapsed</Text>
               <Text style={[styles.compactStatValue, { fontFamily: monoFont }]}>{elapsedTime}</Text>
@@ -1047,8 +1044,8 @@ export default function DownloadProgressView({
             `${formatBytes(totalBytesDownloaded)} / ${formatBytes(totalBytesToDownload)}`
           )}
           {renderStatsRow('Progress', `${completedCount} / ${downloadItems.length} items`)}
-          {viewSpeedBps !== null && viewSpeedBps > 0 && renderStatsRow('Speed', formatSpeed(viewSpeedBps))}
-          {viewEtaSeconds !== null && viewEtaSeconds > 0 && renderStatsRow('Time Left', formatEta(viewEtaSeconds))}
+          {renderStatsRow('Speed', viewSpeedBps !== null && viewSpeedBps > 0 ? formatSpeed(viewSpeedBps) : '--')}
+          {renderStatsRow('Time Left', viewEtaSeconds !== null && viewEtaSeconds > 0 ? formatEta(viewEtaSeconds) : '--')}
           {renderStatsRow('Elapsed', elapsedTime, true)}
         </View>
       </View>
