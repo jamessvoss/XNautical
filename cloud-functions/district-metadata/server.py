@@ -73,11 +73,19 @@ def get_district_prefix(district_id: str) -> str:
 
 
 def get_file_size(bucket, storage_path):
-    """Get size of a file in Firebase Storage"""
+    """Get size of a file in Firebase Storage.
+    Uses get_blob() (single GET) instead of blob() + reload() for reliability
+    with Firebase Storage buckets.
+    """
     try:
-        blob = bucket.blob(storage_path)
-        blob.reload()  # Fetch metadata
-        return blob.size
+        blob = bucket.get_blob(storage_path)
+        if blob and blob.size:
+            return blob.size
+        if blob:
+            logger.warning(f'Blob exists but size is None/0 for {storage_path}')
+        else:
+            logger.info(f'Blob not found: {storage_path}')
+        return 0
     except Exception as e:
         logger.warning(f'Could not get size for {storage_path}: {e}')
         return 0
