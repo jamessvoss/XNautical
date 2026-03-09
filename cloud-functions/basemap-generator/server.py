@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 
 # -- Basemap-specific configuration ------------------------------------------
 TILE_URL = "https://tiles.versatiles.org/tiles/osm/{z}/{x}/{y}"
-MAX_CONCURRENT = 50
-REQUEST_DELAY = 0          # VersaTiles is open infrastructure
+MAX_CONCURRENT = 15
+REQUEST_DELAY = 0.01       # Small delay to avoid overwhelming VersaTiles
 DEFAULT_BUFFER_NM = 50     # Larger buffer -- basemap shows land features
 GEOMETRY_MODE = 'coastal'
 LAYER_NAME = 'basemap'

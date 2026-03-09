@@ -963,11 +963,11 @@ def trigger_imagery_generators(test_name, bounds, timeout=7200):
                     packs = status.get('completedPacks', '?')
                     total = status.get('totalPacks', '?')
                     logger.info(f'  {gen}: complete ({packs}/{total} packs) [{elapsed}s]')
-                elif state == 'error':
+                elif state in ('error', 'partial'):
                     results[gen] = False
                     newly_done.append(gen)
                     msg = status.get('message', 'unknown')
-                    logger.error(f'  {gen}: error — {msg} [{elapsed}s]')
+                    logger.error(f'  {gen}: {state} — {msg} [{elapsed}s]')
                 else:
                     # Still generating — log progress
                     completed = status.get('completedPacks', 0)
