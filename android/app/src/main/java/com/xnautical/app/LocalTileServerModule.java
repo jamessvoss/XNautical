@@ -1375,6 +1375,10 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                         // Composite request: /tiles/{z}/{x}/{y}.pbf
                         return handleCompositeTileRequest(uri);
                     } else {
+                        // Check for composite points request: /tiles/points-composite/{z}/{x}/{y}.pbf
+                        if (parts.length == 4 && parts[0].equals("points-composite")) {
+                            return handleCompositePointsRequest(uri);
+                        }
                         // Per-chart request: /tiles/{chartId}/{z}/{x}/{y}.pbf
                         return handleVectorTileRequest(uri);
                     }
@@ -1591,6 +1595,60 @@ public class LocalTileServerModule extends ReactContextBaseJavaModule {
                 return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Invalid tile coordinates");
             } catch (Exception e) {
                 Log.e(TAG, "Error handling composite tile request: " + uri, e);
+                return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Internal error");
+            }
+        }
+
+        /**
+         * Handle composite points request - tries all points-* databases.
+         * URL format: /tiles/points-composite/{z}/{x}/{y}.pbf
+         * Returns the first points pack that has tile data at the requested coordinates.
+         */
+        private Response handleCompositePointsRequest(String uri) {
+            try {
+                String path = uri.substring(7); // Remove "/tiles/"
+                path = path.substring(0, path.length() - 4); // Remove ".pbf"
+                String[] parts = path.split("/");
+                // parts = ["points-composite", z, x, y]
+                int z = Integer.parseInt(parts[1]);
+                int x = Integer.parseInt(parts[2]);
+                int y = Integer.parseInt(parts[3]);
+
+                // Try all points-* databases
+                File dir = new File(mbtilesDir);
+                if (dir.exists()) {
+                    File[] pointsFiles = dir.listFiles((d, name) ->
+                        name.startsWith("points-") && name.endsWith(".mbtiles"));
+                    if (pointsFiles != null) {
+                        for (File f : pointsFiles) {
+                            String chartId = f.getName().replace(".mbtiles", "");
+                            byte[] tileData = getTile(chartId, z, x, y);
+                            if (tileData != null && tileData.length > 0) {
+                                Response response = newFixedLengthResponse(
+                                    Response.Status.OK,
+                                    "application/x-protobuf",
+                                    new ByteArrayInputStream(tileData),
+                                    tileData.length
+                                );
+                                addCorsHeaders(response);
+                                addVectorTileHeaders(response);
+                                response.addHeader("Content-Encoding", "gzip");
+                                return response;
+                            }
+                        }
+                    }
+                }
+
+                // No points data found at this tile
+                Response response = newFixedLengthResponse(
+                    Response.Status.NO_CONTENT, "application/x-protobuf", "");
+                addCorsHeaders(response);
+                addVectorTileHeaders(response);
+                return response;
+            } catch (NumberFormatException e) {
+                return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Invalid tile coordinates");
+            } catch (Exception e) {
+                Log.e(TAG, "Error handling composite points request: " + uri, e);
                 return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain", "Internal error");
             }
         }

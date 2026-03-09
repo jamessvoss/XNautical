@@ -81,6 +81,8 @@ import { useRoutes } from '../contexts/RouteContext';
 import RouteEditor from './RouteEditor';
 import RoutesModal from './RoutesModal';
 import ActiveNavigation from './ActiveNavigation';
+import { getInstalledDistricts } from '../services/regionRegistryService';
+import { REGIONS } from '../config/regionData';
 
 interface TileSet {
   id: string;
@@ -287,6 +289,53 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
   // Tide correction for depth soundings
   const [currentTideCorrection, setCurrentTideCorrection] = useState<number>(0);
   const [tideCorrectionStation, setTideCorrectionStation] = useState<TideStation | null>(null);
+
+  // Region boundary overlay - installed district IDs for boundary display
+  const [installedRegionIds, setInstalledRegionIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const districts = await getInstalledDistricts();
+      const withCharts = districts.filter(d => d.hasCharts).map(d => d.districtId);
+      setInstalledRegionIds(withCharts);
+    })();
+  }, [mapResetKey, tileServerReady]);
+
+  const regionBoundaryGeoJSON = useMemo(() => {
+    const polygons: any[] = [];
+    const labels: any[] = [];
+    for (const id of installedRegionIds) {
+      const region = REGIONS.find(r => r.firestoreId === id);
+      if (!region) continue;
+      const [west, south, east, north] = region.mapBounds;
+      polygons.push({
+        type: 'Feature',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[
+            [west, south],
+            [east, south],
+            [east, north],
+            [west, north],
+            [west, south],
+          ]],
+        },
+        properties: {},
+      });
+      labels.push({
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [(west + east) / 2, north],
+        },
+        properties: { name: region.name },
+      });
+    }
+    return {
+      polygons: { type: 'FeatureCollection' as const, features: polygons },
+      labels: { type: 'FeatureCollection' as const, features: labels },
+    };
+  }, [installedRegionIds]);
 
   // Handler for selecting a special feature (tide/current station, live buoy) from the picker
   const handleSpecialFeatureSelect = (feature: FeatureInfo) => {
@@ -1787,32 +1836,38 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
             logger.setStartupParam('tileServerPort', 8765);
             logger.setStartupParam('tileServerStatus', 'running');
             
-            // Find unified chart pack (composed by compose_job.py)
-            const unifiedPack = loadedMbtiles.find(m => m.chartId.endsWith('_charts'));
+            // Find ALL unified chart packs (one per installed region)
+            const unifiedPacks = loadedMbtiles.filter(m => m.chartId.endsWith('_charts'));
             const scaleSources: ChartScaleSource[] = [];
 
-            if (unifiedPack) {
-              scaleSources.push({
-                sourceId: 'charts-unified',
-                packId: unifiedPack.chartId,
-                scaleNumber: 0,
-                tileUrl: `${serverUrl}/tiles/${unifiedPack.chartId}/{z}/{x}/{y}.pbf`,
-                minZoom: 0,
-                maxZoom: 15,
-              });
-              logger.info(LogCategory.CHARTS, `Unified chart source: ${unifiedPack.chartId} z0-15`);
+            if (unifiedPacks.length > 0) {
+              for (const pack of unifiedPacks) {
+                scaleSources.push({
+                  sourceId: `charts-${pack.chartId}`,
+                  packId: pack.chartId,
+                  scaleNumber: 0,
+                  tileUrl: `${serverUrl}/tiles/${pack.chartId}/{z}/{x}/{y}.pbf`,
+                  minZoom: 0,
+                  maxZoom: 15,
+                });
+                logger.info(LogCategory.CHARTS, `Unified chart source: ${pack.chartId} z0-15`);
+              }
             } else {
-              logger.warn(LogCategory.CHARTS, 'No unified chart pack found (*_charts.mbtiles)');
+              logger.warn(LogCategory.CHARTS, 'No unified chart packs found (*_charts.mbtiles)');
             }
 
             setChartScaleSources(scaleSources);
             logger.info(LogCategory.CHARTS, `Chart rendering: ${scaleSources.length} source(s)`);
 
-            // Detect points MBTiles (all point features: soundings, nav-aids, hazards).
-            // Served as a VectorSource — no JSON parsing, no ShapeSource, no JS bridge overhead.
-            const pointsPack = loadedMbtiles.find(m => m.chartId.startsWith('points-'));
-            if (pointsPack) {
-              setPointsTileUrl(`${serverUrl}/tiles/${pointsPack.chartId}/{z}/{x}/{y}.pbf`);
+            // Detect ALL points MBTiles (one per installed region).
+            // Served as VectorSources — no JSON parsing, no ShapeSource, no JS bridge overhead.
+            const pointsPacks = loadedMbtiles.filter(m => m.chartId.startsWith('points-'));
+            const pointsUrls: string[] = [];
+            // Clear metadata refs before merging across regions (prevents stale data on reload)
+            sectorLightIndexRef.current = [];
+            coverageBoundariesRef.current = {};
+            for (const pointsPack of pointsPacks) {
+              pointsUrls.push(`${serverUrl}/tiles/${pointsPack.chartId}/{z}/{x}/{y}.pbf`);
               logger.info(LogCategory.CHARTS, `Points VectorSource: ${pointsPack.chartId}`);
 
               // Load sector light index from MBTiles metadata (embedded by compose pipeline).
@@ -1821,19 +1876,34 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                 const meta = await tileServer.getMetadata(pointsPack.chartId);
                 if (meta?.sector_lights) {
                   const sectorLights = JSON.parse(meta.sector_lights);
-                  sectorLightIndexRef.current = sectorLights;
-                  logger.info(LogCategory.CHARTS, `Sector light index: ${sectorLights.length} lights loaded from metadata`);
+                  // Merge sector lights from all regions
+                  sectorLightIndexRef.current = [
+                    ...(sectorLightIndexRef.current || []),
+                    ...sectorLights,
+                  ];
+                  logger.info(LogCategory.CHARTS, `Sector light index: ${sectorLights.length} lights loaded from ${pointsPack.chartId}`);
                 } else {
-                  logger.warn(LogCategory.CHARTS, 'No sector_lights in points.mbtiles metadata');
+                  logger.warn(LogCategory.CHARTS, `No sector_lights in ${pointsPack.chartId} metadata`);
                 }
                 if (meta?.coverage_boundaries) {
                   const boundaries = JSON.parse(meta.coverage_boundaries);
-                  coverageBoundariesRef.current = boundaries;
-                  logger.info(LogCategory.CHARTS, `Coverage boundaries: ${Object.keys(boundaries).length} scales loaded from metadata`);
+                  // Merge coverage boundaries from all regions
+                  coverageBoundariesRef.current = {
+                    ...coverageBoundariesRef.current,
+                    ...boundaries,
+                  };
+                  logger.info(LogCategory.CHARTS, `Coverage boundaries: ${Object.keys(boundaries).length} scales from ${pointsPack.chartId}`);
                 }
               } catch (e) {
-                logger.warn(LogCategory.CHARTS, `Failed to load points.mbtiles metadata: ${e}`);
+                logger.warn(LogCategory.CHARTS, `Failed to load ${pointsPack.chartId} metadata: ${e}`);
               }
+            }
+            // Use composite points endpoint when multiple regions installed
+            if (pointsPacks.length > 1) {
+              setPointsTileUrl(`${serverUrl}/tiles/points-composite/{z}/{x}/{y}.pbf`);
+              logger.info(LogCategory.CHARTS, `Points: using composite endpoint for ${pointsPacks.length} regions`);
+            } else if (pointsUrls.length > 0) {
+              setPointsTileUrl(pointsUrls[0]);
             }
 
             const chartSummary = `${loadedMbtiles.length} mbtiles (${scaleSources.length > 0 ? 'unified' : 'none'})`;
@@ -5802,6 +5872,39 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
           </MapLibre.MarkerView>
         ))}
 
+        {/* Region Boundary Overlay — green dashed rectangles for downloaded regions */}
+        {displaySettings.showRegionBoundaries && regionBoundaryGeoJSON.polygons.features.length > 0 && (
+          <>
+            <MapLibre.ShapeSource id="region-boundaries-source" shape={regionBoundaryGeoJSON.polygons as any}>
+              <MapLibre.LineLayer
+                id="region-boundaries-line"
+                style={{
+                  lineColor: '#22c55e',
+                  lineDasharray: [6, 4],
+                  lineWidth: 2,
+                  lineOpacity: 0.8,
+                }}
+              />
+            </MapLibre.ShapeSource>
+            <MapLibre.ShapeSource id="region-boundaries-labels-source" shape={regionBoundaryGeoJSON.labels as any}>
+              <MapLibre.SymbolLayer
+                id="region-boundaries-label"
+                style={{
+                  textField: ['get', 'name'],
+                  textFont: ['Noto Sans Bold'],
+                  textSize: 14,
+                  textColor: '#22c55e',
+                  textHaloColor: '#000000',
+                  textHaloWidth: 1.5,
+                  textAllowOverlap: true,
+                  textAnchor: 'bottom',
+                  textOffset: [0, -0.5],
+                }}
+              />
+            </MapLibre.ShapeSource>
+          </>
+        )}
+
         {/* GPS Position Marker — isolated component with own 1s timer.
             Only this tiny subtree re-renders from GPS changes, not the
             entire DynamicChartViewer with 200+ MapLibre layers. */}
@@ -6958,9 +7061,24 @@ export default function DynamicChartViewer({ onNavigateToDownloads }: Props = {}
                     </Text>
                   )}
                 </Text>
-                
+
                 <View style={[styles.panelDivider, themedStyles.panelDivider]} />
-                <TouchableOpacity 
+                <Text style={[styles.panelSectionTitle, themedStyles.panelSectionTitle]}>Region Boundaries</Text>
+                <FFToggle
+                  label="Show Region Boundaries"
+                  value={displaySettings.showRegionBoundaries}
+                  onToggle={async (value) => {
+                    const newSettings = { ...displaySettings, showRegionBoundaries: value };
+                    setDisplaySettings(newSettings);
+                    await displaySettingsService.saveSettings(newSettings);
+                  }}
+                />
+                <Text style={[styles.settingNote, themedStyles.settingNote]}>
+                  Show green dashed boundary boxes for downloaded chart regions
+                </Text>
+
+                <View style={[styles.panelDivider, themedStyles.panelDivider]} />
+                <TouchableOpacity
                   style={styles.resetAllBtn}
                   onPress={async () => {
                     await displaySettingsService.resetSettings();
