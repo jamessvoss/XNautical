@@ -141,6 +141,7 @@ const DEFAULT_DISPLAY_SETTINGS: DisplaySettings = {
   orientationMode: 'north-up',
   depthUnits: 'meters',
   tideCorrectedSoundings: false,
+  showRegionBoundaries: true,
   chartDetail: 'max',
   // Unit preferences
   distanceUnits: 'nm',

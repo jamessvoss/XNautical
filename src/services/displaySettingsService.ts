@@ -154,6 +154,7 @@ export interface DisplaySettings {
   orientationMode: 'north-up' | 'head-up' | 'course-up';
   depthUnits: 'meters' | 'feet' | 'fathoms';
   tideCorrectedSoundings: boolean;
+  showRegionBoundaries: boolean;
 
   // Chart detail level - SCAMIN offset for feature visibility
   // Controls how many zoom levels earlier features appear relative to their S-57 SCAMIN value
@@ -302,6 +303,7 @@ const DEFAULT_SETTINGS: DisplaySettings = {
   orientationMode: 'north-up',
   depthUnits: 'meters',
   tideCorrectedSoundings: true,
+  showRegionBoundaries: true,
   chartDetail: 'max',  // Default: +4 offset, maximum detail — all features visible at earliest zoom levels
   // Unit preferences
   distanceUnits: 'nm',
