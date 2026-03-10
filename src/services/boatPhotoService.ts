@@ -27,15 +27,13 @@ let storageInstance: any = null;
 if (Platform.OS !== 'web') {
   try {
     const rnfbStorage = require('@react-native-firebase/storage');
-    storageInstance = rnfbStorage.default();
+    storageInstance = rnfbStorage.getStorage();
     storageFns = {
-      getStorage: () => storageInstance,
-      ref: (storage: any, path: string) => storage.ref(path),
-      uploadBytesResumable: async (ref: any, blob: any, metadata?: any) => {
-        return ref.put(blob, metadata);
-      },
-      getDownloadURL: async (ref: any) => ref.getDownloadURL(),
-      deleteObject: async (ref: any) => ref.delete(),
+      getStorage: rnfbStorage.getStorage,
+      ref: rnfbStorage.ref,
+      uploadBytesResumable: rnfbStorage.uploadBytesResumable,
+      getDownloadURL: rnfbStorage.getDownloadURL,
+      deleteObject: rnfbStorage.deleteObject,
     };
   } catch (e) {
     console.warn('[BoatPhotoService] Firebase Storage not available:', e);
